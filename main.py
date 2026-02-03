@@ -781,7 +781,7 @@ class BREadbeatsWindow(QMainWindow):
     
     def _start_engines(self):
         """Initialize and start all engines"""
-        self.stroke_mapper = StrokeMapper(self.config)
+        self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct)
         
         # Set selected audio device
         combo_idx = self.device_combo.currentIndex()
@@ -797,6 +797,12 @@ class BREadbeatsWindow(QMainWindow):
             self.network_engine.start()
         
         self.is_running = True
+    
+    def _send_command_direct(self, cmd: TCodeCommand):
+        """Send a command directly (used by StrokeMapper for return strokes)"""
+        if self.network_engine and self.is_sending:
+            print(f"[Main] Sending cmd (direct): a={cmd.alpha:.2f} b={cmd.beta:.2f}")
+            self.network_engine.send_command(cmd)
     
     def _stop_engines(self):
         """Stop all engines"""

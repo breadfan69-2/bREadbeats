@@ -24,24 +24,25 @@ class TCodeCommand:
     def to_tcode(self) -> str:
         """
         Convert to T-code string for restim.
-        restim uses:
-          - L0 for alpha axis
-          - L1 for beta axis
+        restim coordinate system:
+          - L0 = vertical axis (our beta/Y, inverted: +1=bottom, -1=top in restim)
+          - L1 = horizontal axis (our alpha/X, inverted: +1=left, -1=right in restim)
         Format: L0[value:4digits]I[duration] where value is 0000-9999
         Value 0.0 = 0000, Value 1.0 = 9999
-        We map -1.0..1.0 to 0.0..1.0 for restim
+        We map -1.0..1.0 to 0.0..1.0 for restim (with inversion)
         """
-        # Map -1.0..1.0 to 0..9999
-        alpha_val = int((self.alpha + 1.0) / 2.0 * 9999)
-        beta_val = int((self.beta + 1.0) / 2.0 * 9999)
+        # Map -1.0..1.0 to 0..9999 (inverted: negate before mapping)
+        # Swap and invert: our alpha(X) -> L1(horizontal), our beta(Y) -> L0(vertical)
+        l0_val = int((-self.beta + 1.0) / 2.0 * 9999)   # -beta -> L0 (vertical, inverted)
+        l1_val = int((-self.alpha + 1.0) / 2.0 * 9999)  # -alpha -> L1 (horizontal, inverted)
         
         # Clamp to valid range
-        alpha_val = max(0, min(9999, alpha_val))
-        beta_val = max(0, min(9999, beta_val))
+        l0_val = max(0, min(9999, l0_val))
+        l1_val = max(0, min(9999, l1_val))
         
         # Build command string - both axes in one message
         # Format: L0xxxxIyyy L1xxxxIyyy
-        cmd = f"L0{alpha_val:04d}I{self.duration_ms} L1{beta_val:04d}I{self.duration_ms}\n"
+        cmd = f"L0{l0_val:04d}I{self.duration_ms} L1{l1_val:04d}I{self.duration_ms}\n"
         return cmd
 
 
@@ -157,19 +158,20 @@ class NetworkEngine:
         print("[NetworkEngine] Sending test pattern...")
         
         # Test pattern with longer durations so each point is visible
-        # Based on restim coords: alpha=vertical (+1=top), beta=horizontal (+1=right)
-        # Using 1 second moves with 1 second holds
+        # Our display: alpha=X(horizontal), beta=Y(vertical)
+        # restim: L0=vertical, L1=horizontal (we swap in to_tcode)
+        # So TCodeCommand(alpha, beta) = (X, Y) in our display
         test_cmds = [
             # Start at center
             ("Center", TCodeCommand(0.0, 0.0, 1000)),
-            # Go to each cardinal direction
-            ("Top", TCodeCommand(1.0, 0.0, 1000)),
+            # Go to each cardinal direction (alpha=X, beta=Y)
+            ("Top", TCodeCommand(0.0, 1.0, 1000)),      # Y+
             ("Center", TCodeCommand(0.0, 0.0, 500)),
-            ("Bottom", TCodeCommand(-1.0, 0.0, 1000)),
+            ("Bottom", TCodeCommand(0.0, -1.0, 1000)),  # Y-
             ("Center", TCodeCommand(0.0, 0.0, 500)),
-            ("Right", TCodeCommand(0.0, 1.0, 1000)),
+            ("Right", TCodeCommand(1.0, 0.0, 1000)),    # X+
             ("Center", TCodeCommand(0.0, 0.0, 500)),
-            ("Left", TCodeCommand(0.0, -1.0, 1000)),
+            ("Left", TCodeCommand(-1.0, 0.0, 1000)),    # X-
             ("Center", TCodeCommand(0.0, 0.0, 1000)),
         ]
         

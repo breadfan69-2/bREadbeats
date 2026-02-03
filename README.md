@@ -2,6 +2,8 @@
 
 Audio beat detection to restim controller.
 
+Based on [Breadbeats by breadfan-69](https://github.com/breadfan-69/Breadbeats) - motion patterns and stroke logic adapted from that project.
+
 ## Features
 
 - **Real-time audio capture** - Captures system audio ("What-U-Hear") using sounddevice
