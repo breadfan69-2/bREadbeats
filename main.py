@@ -1,0 +1,884 @@
+"""
+bREadbeats - Main Application
+Qt GUI with beat detection, stroke mapping, and spectrum visualization.
+"""
+
+import sys
+import numpy as np
+import queue
+import threading
+import time
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QCheckBox,
+    QSpinBox, QDoubleSpinBox, QLineEdit, QTabWidget, QFrame,
+    QGridLayout, QSizePolicy
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QFont, QPalette, QColor
+
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
+
+from config import Config, StrokeMode, BeatDetectionType
+from audio_engine import AudioEngine, BeatEvent
+from network_engine import NetworkEngine, TCodeCommand
+from stroke_mapper import StrokeMapper
+
+
+class SignalBridge(QObject):
+    """Bridge for thread-safe signal emission"""
+    beat_detected = pyqtSignal(object)
+    spectrum_ready = pyqtSignal(object)
+    status_changed = pyqtSignal(str, bool)
+
+
+class SpectrumCanvas(FigureCanvas):
+    """Simple spectrum visualizer using matplotlib with frequency band overlay"""
+    
+    def __init__(self, parent=None, width=8, height=3):
+        # Dark theme
+        plt.style.use('dark_background')
+        
+        self.fig = Figure(figsize=(width, height), facecolor='#1e1e1e')
+        self.ax = self.fig.add_subplot(111)
+        self.ax.set_facecolor('#1e1e1e')
+        
+        super().__init__(self.fig)
+        self.setParent(parent)
+        
+        # Pre-create bar plot for efficiency
+        self.num_bars = 64
+        self.x = np.arange(self.num_bars)
+        self.bars = None
+        self.band_overlay = None  # Frequency band selection overlay
+        self.band_low = 0.0
+        self.band_high = 0.1  # Default bass range
+        
+        self.setup_plot()
+        
+    def setup_plot(self):
+        """Initialize the spectrum plot"""
+        self.ax.clear()
+        self.ax.set_xlim(-0.5, self.num_bars - 0.5)
+        self.ax.set_ylim(0, 1.1)
+        self.ax.set_xlabel('Frequency', fontsize=8, color='#888')
+        self.ax.set_ylabel('Amplitude', fontsize=8, color='#888')
+        self.ax.tick_params(colors='#666', labelsize=7)
+        self.ax.spines['bottom'].set_color('#444')
+        self.ax.spines['left'].set_color('#444')
+        self.ax.spines['top'].set_visible(False)
+        self.ax.spines['right'].set_visible(False)
+        
+        # Create initial bars
+        self.bars = self.ax.bar(self.x, np.zeros(self.num_bars), 
+                                 color='#00aaff', alpha=0.8, width=0.8)
+        
+        # Create frequency band overlay (yellow semi-transparent rectangle)
+        from matplotlib.patches import Rectangle
+        low_bar = int(self.band_low * self.num_bars)
+        high_bar = int(self.band_high * self.num_bars)
+        self.band_overlay = Rectangle((low_bar - 0.5, 0), high_bar - low_bar + 1, 1.1,
+                                        facecolor='#ffff00', alpha=0.2, edgecolor='#ffff00', linewidth=2)
+        self.ax.add_patch(self.band_overlay)
+        
+        self.fig.tight_layout(pad=0.5)
+    
+    def set_frequency_band(self, low_norm: float, high_norm: float):
+        """Update frequency band overlay position (normalized 0-1)"""
+        self.band_low = low_norm
+        self.band_high = high_norm
+        
+        if self.band_overlay:
+            low_bar = int(low_norm * self.num_bars)
+            high_bar = int(high_norm * self.num_bars)
+            width = max(1, high_bar - low_bar + 1)
+            self.band_overlay.set_x(low_bar - 0.5)
+            self.band_overlay.set_width(width)
+        
+    def update_spectrum(self, spectrum: np.ndarray):
+        """Update with new spectrum data - efficient bar update"""
+        if spectrum is None or len(spectrum) == 0 or self.bars is None:
+            return
+            
+        # Downsample to bar count
+        if len(spectrum) > self.num_bars:
+            factor = len(spectrum) // self.num_bars
+            spectrum = spectrum[:factor * self.num_bars].reshape(-1, factor).mean(axis=1)
+        elif len(spectrum) < self.num_bars:
+            spectrum = np.pad(spectrum, (0, self.num_bars - len(spectrum)))
+        
+        # Normalize
+        max_val = np.max(spectrum) if np.max(spectrum) > 0 else 1
+        spectrum = np.clip(spectrum / max_val, 0, 1)
+        
+        # Update bar heights and colors
+        low_bar = int(self.band_low * self.num_bars)
+        high_bar = int(self.band_high * self.num_bars)
+        
+        for i, (bar, h) in enumerate(zip(self.bars, spectrum)):
+            bar.set_height(h)
+            # Highlight bars in the selected frequency band
+            if low_bar <= i <= high_bar:
+                bar.set_color('#00ffaa')  # Cyan-green for selected band
+            else:
+                bar.set_color('#00aaff')  # Blue for unselected
+        
+        self.draw_idle()
+
+
+class PositionCanvas(FigureCanvas):
+    """Alpha/Beta position visualizer - circular display"""
+    
+    def __init__(self, parent=None, size=2):
+        plt.style.use('dark_background')
+        
+        self.fig = Figure(figsize=(size, size), facecolor='#1e1e1e')
+        self.ax = self.fig.add_subplot(111, aspect='equal')
+        self.ax.set_facecolor('#1e1e1e')
+        
+        super().__init__(self.fig)
+        self.setParent(parent)
+        
+        # Position history for trail
+        self.trail_x = []
+        self.trail_y = []
+        self.max_trail = 50
+        
+        self.setup_plot()
+        
+    def setup_plot(self):
+        """Initialize the position plot"""
+        self.ax.clear()
+        self.ax.set_xlim(-1.2, 1.2)
+        self.ax.set_ylim(-1.2, 1.2)
+        
+        # Draw reference circle
+        theta = np.linspace(0, 2*np.pi, 100)
+        self.ax.plot(np.cos(theta), np.sin(theta), 'g-', alpha=0.3, linewidth=1)
+        
+        # Draw axes
+        self.ax.axhline(y=0, color='#444', linewidth=0.5)
+        self.ax.axvline(x=0, color='#444', linewidth=0.5)
+        
+        # Labels
+        self.ax.set_xlabel('Alpha', fontsize=8, color='#888')
+        self.ax.set_ylabel('Beta', fontsize=8, color='#888')
+        self.ax.tick_params(colors='#666', labelsize=6)
+        
+        for spine in self.ax.spines.values():
+            spine.set_visible(False)
+            
+        self.fig.tight_layout(pad=0.3)
+        
+    def update_position(self, alpha: float, beta: float):
+        """Update current position"""
+        # Add to trail
+        self.trail_x.append(alpha)
+        self.trail_y.append(beta)
+        if len(self.trail_x) > self.max_trail:
+            self.trail_x.pop(0)
+            self.trail_y.pop(0)
+        
+        self.ax.clear()
+        self.setup_plot()
+        
+        # Draw trail
+        if len(self.trail_x) > 1:
+            for i in range(1, len(self.trail_x)):
+                alpha_val = i / len(self.trail_x)
+                self.ax.plot([self.trail_x[i-1], self.trail_x[i]], 
+                           [self.trail_y[i-1], self.trail_y[i]], 
+                           color='#00aaff', alpha=alpha_val * 0.5, linewidth=1)
+        
+        # Draw current position
+        self.ax.scatter([alpha], [beta], c='#00ffff', s=80, zorder=5)
+        
+        self.draw()
+
+
+class SliderWithLabel(QWidget):
+    """Slider with label showing current value"""
+    
+    valueChanged = pyqtSignal(float)
+    
+    def __init__(self, name: str, min_val: float, max_val: float, 
+                 default: float, decimals: int = 2, parent=None):
+        super().__init__(parent)
+        
+        self.min_val = min_val
+        self.max_val = max_val
+        self.decimals = decimals
+        self.multiplier = 10 ** decimals
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.label = QLabel(name)
+        self.label.setFixedWidth(120)
+        self.label.setStyleSheet("color: #aaa;")
+        
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setMinimum(int(min_val * self.multiplier))
+        self.slider.setMaximum(int(max_val * self.multiplier))
+        self.slider.setValue(int(default * self.multiplier))
+        self.slider.valueChanged.connect(self._on_change)
+        
+        self.value_label = QLabel(f"{default:.{decimals}f}")
+        self.value_label.setFixedWidth(50)
+        self.value_label.setStyleSheet("color: #0af;")
+        
+        layout.addWidget(self.label)
+        layout.addWidget(self.slider)
+        layout.addWidget(self.value_label)
+        
+    def _on_change(self, value: int):
+        real_value = value / self.multiplier
+        self.value_label.setText(f"{real_value:.{self.decimals}f}")
+        self.valueChanged.emit(real_value)
+        
+    def value(self) -> float:
+        return self.slider.value() / self.multiplier
+    
+    def setValue(self, value: float):
+        self.slider.setValue(int(value * self.multiplier))
+
+
+class BREadbeatsWindow(QMainWindow):
+    """Main application window"""
+    
+    def __init__(self):
+        super().__init__()
+        
+        self.setWindowTitle("bREadbeats - Audio to restim")
+        self.setMinimumSize(900, 700)
+        self.setStyleSheet(self._get_stylesheet())
+        
+        # Initialize config and components
+        self.config = Config()
+        self.signals = SignalBridge()
+        
+        # Command queue
+        self.cmd_queue = queue.Queue()
+        
+        # Setup UI
+        self._setup_ui()
+        
+        # Initialize engines (but don't start yet)
+        self.audio_engine = None
+        self.network_engine = None
+        self.stroke_mapper = None
+        
+        # Connect signals
+        self.signals.beat_detected.connect(self._on_beat)
+        self.signals.spectrum_ready.connect(self._on_spectrum)
+        self.signals.status_changed.connect(self._on_status_change)
+        
+        # Update timer for position display (30 FPS)
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self._update_display)
+        self.update_timer.start(33)  # ~30 FPS
+        
+        # Spectrum update throttling
+        self._pending_spectrum = None
+        self._spectrum_timer = QTimer()
+        self._spectrum_timer.timeout.connect(self._do_spectrum_update)
+        self._spectrum_timer.start(33)  # ~30 FPS max
+        
+        # State
+        self.is_running = False
+        self.is_sending = False
+        
+    def _get_stylesheet(self) -> str:
+        return """
+            QMainWindow { background-color: #1e1e1e; }
+            QWidget { background-color: #1e1e1e; color: #ddd; }
+            QGroupBox { 
+                border: 1px solid #444; 
+                border-radius: 5px; 
+                margin-top: 10px;
+                padding-top: 10px;
+                font-weight: bold;
+            }
+            QGroupBox::title { 
+                subcontrol-origin: margin; 
+                left: 10px; 
+                color: #0af;
+            }
+            QPushButton {
+                background-color: #333;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 8px 16px;
+                color: #ddd;
+            }
+            QPushButton:hover { background-color: #444; }
+            QPushButton:pressed { background-color: #555; }
+            QPushButton:checked { background-color: #0a5; border-color: #0c7; }
+            QSlider::groove:horizontal {
+                height: 6px;
+                background: #333;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #0af;
+                width: 14px;
+                margin: -4px 0;
+                border-radius: 7px;
+            }
+            QComboBox {
+                background-color: #333;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QComboBox::drop-down { border: none; }
+            QLineEdit {
+                background-color: #333;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QCheckBox::indicator { width: 16px; height: 16px; }
+            QCheckBox::indicator:unchecked { background: #333; border: 1px solid #555; }
+            QCheckBox::indicator:checked { background: #0a5; border: 1px solid #0c7; }
+            QTabWidget::pane { border: 1px solid #444; }
+            QTabBar::tab {
+                background: #333;
+                border: 1px solid #444;
+                padding: 8px 16px;
+            }
+            QTabBar::tab:selected { background: #444; border-bottom: 2px solid #0af; }
+        """
+        
+    def _setup_ui(self):
+        """Build the user interface"""
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setSpacing(10)
+        
+        # Top: Connection and controls
+        top_layout = QHBoxLayout()
+        top_layout.addWidget(self._create_connection_panel())
+        top_layout.addWidget(self._create_control_panel())
+        main_layout.addLayout(top_layout)
+        
+        # Middle: Visualizers
+        viz_layout = QHBoxLayout()
+        viz_layout.addWidget(self._create_spectrum_panel(), stretch=3)
+        viz_layout.addWidget(self._create_position_panel(), stretch=1)
+        main_layout.addLayout(viz_layout)
+        
+        # Bottom: Tabs with sliders
+        main_layout.addWidget(self._create_settings_tabs())
+        
+    def _create_connection_panel(self) -> QGroupBox:
+        """Connection settings panel"""
+        group = QGroupBox("Connection to restim")
+        layout = QGridLayout(group)
+        
+        # Host/Port
+        layout.addWidget(QLabel("Host:"), 0, 0)
+        self.host_edit = QLineEdit(self.config.connection.host)
+        layout.addWidget(self.host_edit, 0, 1)
+        
+        layout.addWidget(QLabel("Port:"), 0, 2)
+        self.port_spin = QSpinBox()
+        self.port_spin.setRange(1, 65535)
+        self.port_spin.setValue(self.config.connection.port)
+        layout.addWidget(self.port_spin, 0, 3)
+        
+        # Status
+        self.status_label = QLabel("Disconnected")
+        self.status_label.setStyleSheet("color: #f55;")
+        layout.addWidget(self.status_label, 1, 0, 1, 2)
+        
+        # Connect/Test buttons
+        self.connect_btn = QPushButton("Connect")
+        self.connect_btn.clicked.connect(self._on_connect)
+        layout.addWidget(self.connect_btn, 1, 2)
+        
+        self.test_btn = QPushButton("Test")
+        self.test_btn.clicked.connect(self._on_test)
+        self.test_btn.setEnabled(False)
+        layout.addWidget(self.test_btn, 1, 3)
+        
+        return group
+    
+    def _create_control_panel(self) -> QGroupBox:
+        """Main control buttons"""
+        group = QGroupBox("Controls")
+        layout = QVBoxLayout(group)
+        
+        # Audio device selector
+        device_layout = QHBoxLayout()
+        device_layout.addWidget(QLabel("Audio Device:"))
+        self.device_combo = QComboBox()
+        self._populate_audio_devices()
+        self.device_combo.setMinimumWidth(300)
+        device_layout.addWidget(self.device_combo)
+        device_layout.addStretch()
+        layout.addLayout(device_layout)
+        
+        # Buttons row
+        btn_layout = QHBoxLayout()
+        
+        # Start/Stop audio capture
+        self.start_btn = QPushButton("▶ Start")
+        self.start_btn.setCheckable(True)
+        self.start_btn.clicked.connect(self._on_start_stop)
+        self.start_btn.setFixedSize(100, 40)
+        btn_layout.addWidget(self.start_btn)
+        
+        # Play/Pause sending
+        self.play_btn = QPushButton("▶ Play")
+        self.play_btn.setCheckable(True)
+        self.play_btn.clicked.connect(self._on_play_pause)
+        self.play_btn.setEnabled(False)
+        self.play_btn.setFixedSize(100, 40)
+        btn_layout.addWidget(self.play_btn)
+        
+        # Beat indicator
+        self.beat_indicator = QLabel("●")
+        self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+        self.beat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_layout.addWidget(self.beat_indicator)
+        
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+        
+        return group
+    
+    def _populate_audio_devices(self):
+        """Populate audio device dropdown"""
+        import sounddevice as sd
+        devices = sd.query_devices()
+        
+        self.device_combo.clear()
+        self.audio_device_map = {}  # Map combo index to device index
+        
+        combo_idx = 0
+        for i, dev in enumerate(devices):
+            if dev['max_input_channels'] > 0:
+                name = f"[{i}] {dev['name']}"
+                self.device_combo.addItem(name)
+                self.audio_device_map[combo_idx] = i
+                combo_idx += 1
+                
+                # Pre-select device 21 (Realtek HD Audio Stereo) if available
+                if i == 21:
+                    self.device_combo.setCurrentIndex(combo_idx - 1)
+    
+    def _create_spectrum_panel(self) -> QGroupBox:
+        """Spectrum visualizer panel"""
+        group = QGroupBox("Spectrum Analyzer")
+        layout = QVBoxLayout(group)
+        
+        self.spectrum_canvas = SpectrumCanvas(self, width=8, height=2.5)
+        layout.addWidget(self.spectrum_canvas)
+        
+        return group
+    
+    def _create_position_panel(self) -> QGroupBox:
+        """Alpha/Beta position display"""
+        group = QGroupBox("Position (α/β)")
+        layout = QVBoxLayout(group)
+        
+        self.position_canvas = PositionCanvas(self, size=2)
+        layout.addWidget(self.position_canvas)
+        
+        # Position labels
+        pos_layout = QHBoxLayout()
+        self.alpha_label = QLabel("α: 0.00")
+        self.alpha_label.setStyleSheet("color: #0af;")
+        self.beta_label = QLabel("β: 0.00")
+        self.beta_label.setStyleSheet("color: #0fa;")
+        pos_layout.addWidget(self.alpha_label)
+        pos_layout.addWidget(self.beta_label)
+        layout.addLayout(pos_layout)
+        
+        return group
+    
+    def _create_settings_tabs(self) -> QTabWidget:
+        """Settings tabs with all the sliders"""
+        tabs = QTabWidget()
+        
+        tabs.addTab(self._create_beat_detection_tab(), "Beat Detection")
+        tabs.addTab(self._create_stroke_settings_tab(), "Stroke Settings")
+        tabs.addTab(self._create_jitter_creep_tab(), "Jitter / Creep")
+        tabs.addTab(self._create_axis_weights_tab(), "Axis Weights")
+        
+        return tabs
+    
+    def _create_beat_detection_tab(self) -> QWidget:
+        """Beat detection settings"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Detection type
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("Detection Type:"))
+        self.detection_type_combo = QComboBox()
+        self.detection_type_combo.addItems(["Peak Energy", "Spectral Flux", "Combined"])
+        self.detection_type_combo.setCurrentIndex(2)  # Combined
+        self.detection_type_combo.currentIndexChanged.connect(self._on_detection_type_change)
+        type_layout.addWidget(self.detection_type_combo)
+        type_layout.addStretch()
+        layout.addLayout(type_layout)
+        
+        # Frequency band selection
+        freq_group = QGroupBox("Frequency Band (Hz) - shown as overlay on spectrum")
+        freq_layout = QVBoxLayout(freq_group)
+        
+        # Full range up to ~20kHz (Nyquist for 44100 Hz)
+        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, 15000, 20, 0)
+        self.freq_low_slider.valueChanged.connect(self._on_freq_band_change)
+        freq_layout.addWidget(self.freq_low_slider)
+        
+        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, 20000, 200, 0)
+        self.freq_high_slider.valueChanged.connect(self._on_freq_band_change)
+        freq_layout.addWidget(self.freq_high_slider)
+        
+        # Preset buttons for common ranges
+        preset_layout = QHBoxLayout()
+        preset_layout.addWidget(QLabel("Presets:"))
+        
+        bass_btn = QPushButton("Bass (20-200)")
+        bass_btn.clicked.connect(lambda: self._set_freq_preset(20, 200))
+        preset_layout.addWidget(bass_btn)
+        
+        kick_btn = QPushButton("Kick (40-100)")
+        kick_btn.clicked.connect(lambda: self._set_freq_preset(40, 100))
+        preset_layout.addWidget(kick_btn)
+        
+        snare_btn = QPushButton("Snare (200-1000)")
+        snare_btn.clicked.connect(lambda: self._set_freq_preset(200, 1000))
+        preset_layout.addWidget(snare_btn)
+        
+        hihat_btn = QPushButton("Hi-Hat (5k-15k)")
+        hihat_btn.clicked.connect(lambda: self._set_freq_preset(5000, 15000))
+        preset_layout.addWidget(hihat_btn)
+        
+        full_btn = QPushButton("Full")
+        full_btn.clicked.connect(lambda: self._set_freq_preset(20, 20000))
+        preset_layout.addWidget(full_btn)
+        
+        preset_layout.addStretch()
+        freq_layout.addLayout(preset_layout)
+        
+        layout.addWidget(freq_group)
+        
+        # Sliders - with better defaults
+        # Sensitivity: higher = more beats detected (0.0=strict, 1.0=very sensitive)
+        self.sensitivity_slider = SliderWithLabel("Sensitivity", 0.0, 1.0, 0.7)
+        self.sensitivity_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'sensitivity', v))
+        layout.addWidget(self.sensitivity_slider)
+        
+        # Peak floor: minimum energy to consider (0 = disabled)
+        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.0, 0.01, 0.0, 4)
+        self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
+        layout.addWidget(self.peak_floor_slider)
+        
+        self.peak_decay_slider = SliderWithLabel("Peak Decay", 0.5, 0.999, 0.9, 3)
+        self.peak_decay_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_decay', v))
+        layout.addWidget(self.peak_decay_slider)
+        
+        # Rise sensitivity: 0 = disabled, higher = require more rise
+        self.rise_sens_slider = SliderWithLabel("Rise Sensitivity", 0.0, 1.0, 0.0)
+        self.rise_sens_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'rise_sensitivity', v))
+        layout.addWidget(self.rise_sens_slider)
+        
+        self.flux_mult_slider = SliderWithLabel("Flux Multiplier", 0.1, 5.0, 1.0, 1)
+        self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
+        layout.addWidget(self.flux_mult_slider)
+        
+        layout.addStretch()
+        return widget
+    
+    def _on_freq_band_change(self, _=None):
+        """Update frequency band in config and spectrum overlay"""
+        low = self.freq_low_slider.value()
+        high = self.freq_high_slider.value()
+        
+        # Ensure low < high
+        if low >= high:
+            high = low + 20
+            self.freq_high_slider.setValue(high)
+        
+        self.config.beat.freq_low = low
+        self.config.beat.freq_high = high
+        
+        # Update spectrum overlay
+        sr = self.config.audio.sample_rate
+        max_freq = sr / 2
+        self.spectrum_canvas.set_frequency_band(low / max_freq, high / max_freq)
+    
+    def _set_freq_preset(self, low: int, high: int):
+        """Set frequency band to a preset"""
+        self.freq_low_slider.setValue(low)
+        self.freq_high_slider.setValue(high)
+        self._on_freq_band_change()
+    
+    def _create_stroke_settings_tab(self) -> QWidget:
+        """Stroke generation settings"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Mode selection
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Stroke Mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["1: Simple Circle", "2: Figure-8", "3: Random Arc", "4: User"])
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
+        mode_layout.addWidget(self.mode_combo)
+        mode_layout.addStretch()
+        layout.addLayout(mode_layout)
+        
+        # Sliders
+        self.stroke_min_slider = SliderWithLabel("Stroke Min", 0.0, 1.0, 0.2)
+        self.stroke_min_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'stroke_min', v))
+        layout.addWidget(self.stroke_min_slider)
+        
+        self.stroke_max_slider = SliderWithLabel("Stroke Max", 0.0, 1.0, 1.0)
+        self.stroke_max_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'stroke_max', v))
+        layout.addWidget(self.stroke_max_slider)
+        
+        self.min_interval_slider = SliderWithLabel("Min Interval (ms)", 50, 500, 100, 0)
+        self.min_interval_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'min_interval_ms', int(v)))
+        layout.addWidget(self.min_interval_slider)
+        
+        self.fullness_slider = SliderWithLabel("Stroke Fullness", 0.0, 1.0, 0.7)
+        self.fullness_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'stroke_fullness', v))
+        layout.addWidget(self.fullness_slider)
+        
+        self.min_depth_slider = SliderWithLabel("Minimum Depth", 0.0, 1.0, 0.0)
+        self.min_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'minimum_depth', v))
+        layout.addWidget(self.min_depth_slider)
+        
+        self.freq_depth_slider = SliderWithLabel("Freq Depth Factor", 0.0, 1.0, 0.3)
+        self.freq_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'freq_depth_factor', v))
+        layout.addWidget(self.freq_depth_slider)
+        
+        layout.addStretch()
+        return widget
+    
+    def _create_jitter_creep_tab(self) -> QWidget:
+        """Jitter and creep settings"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        # Jitter section
+        jitter_group = QGroupBox("Jitter (micro-circles when idle)")
+        jitter_layout = QVBoxLayout(jitter_group)
+        
+        self.jitter_enabled = QCheckBox("Enable Jitter")
+        self.jitter_enabled.setChecked(True)
+        self.jitter_enabled.stateChanged.connect(lambda s: setattr(self.config.jitter, 'enabled', s == 2))
+        jitter_layout.addWidget(self.jitter_enabled)
+        
+        self.jitter_intensity_slider = SliderWithLabel("Jitter Intensity", 0.0, 1.0, 0.3)
+        self.jitter_intensity_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'intensity', v))
+        jitter_layout.addWidget(self.jitter_intensity_slider)
+        
+        self.jitter_amplitude_slider = SliderWithLabel("Jitter Amplitude", 0.0, 0.5, 0.1)
+        self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
+        jitter_layout.addWidget(self.jitter_amplitude_slider)
+        
+        layout.addWidget(jitter_group)
+        
+        # Creep section
+        creep_group = QGroupBox("Creep (slow drift when idle)")
+        creep_layout = QVBoxLayout(creep_group)
+        
+        self.creep_enabled = QCheckBox("Enable Creep")
+        self.creep_enabled.setChecked(True)
+        self.creep_enabled.stateChanged.connect(lambda s: setattr(self.config.creep, 'enabled', s == 2))
+        creep_layout.addWidget(self.creep_enabled)
+        
+        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 0.2, 0.05, 3)
+        self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
+        creep_layout.addWidget(self.creep_speed_slider)
+        
+        layout.addWidget(creep_group)
+        
+        layout.addStretch()
+        return widget
+    
+    def _create_axis_weights_tab(self) -> QWidget:
+        """Axis weight settings"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        layout.addWidget(QLabel("Adjust how much each axis responds to beats and frequency:"))
+        
+        self.alpha_weight_slider = SliderWithLabel("Alpha Weight", 0.0, 2.0, 1.0)
+        self.alpha_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'alpha_weight', v))
+        layout.addWidget(self.alpha_weight_slider)
+        
+        self.beta_weight_slider = SliderWithLabel("Beta Weight", 0.0, 2.0, 1.0)
+        self.beta_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'beta_weight', v))
+        layout.addWidget(self.beta_weight_slider)
+        
+        layout.addStretch()
+        return widget
+    
+    # Event handlers
+    def _on_connect(self):
+        """Handle connect button"""
+        if self.network_engine is None:
+            self.config.connection.host = self.host_edit.text()
+            self.config.connection.port = self.port_spin.value()
+            
+            self.network_engine = NetworkEngine(self.config, self._network_status_callback)
+            self.network_engine.start()
+        else:
+            if self.network_engine.connected:
+                self.network_engine.disconnect()
+            else:
+                self.network_engine.connect()
+    
+    def _on_test(self):
+        """Send test pattern"""
+        if self.network_engine and self.network_engine.connected:
+            # Temporarily enable sending for test
+            was_sending = self.network_engine.sending_enabled
+            self.network_engine.set_sending_enabled(True)
+            self.network_engine.send_test()
+            # Restore after a delay (test takes ~2.5 seconds)
+            if not was_sending:
+                QTimer.singleShot(3000, lambda: self.network_engine.set_sending_enabled(was_sending) if self.network_engine else None)
+    
+    def _on_start_stop(self, checked: bool):
+        """Start/stop audio capture"""
+        if checked:
+            self._start_engines()
+            self.start_btn.setText("■ Stop")
+            self.play_btn.setEnabled(True)
+        else:
+            self._stop_engines()
+            self.start_btn.setText("▶ Start")
+            self.play_btn.setEnabled(False)
+            self.play_btn.setChecked(False)
+            self.is_sending = False
+    
+    def _on_play_pause(self, checked: bool):
+        """Play/pause sending commands"""
+        self.is_sending = checked
+        if self.network_engine:
+            self.network_engine.set_sending_enabled(checked)
+        self.play_btn.setText("⏸ Pause" if checked else "▶ Play")
+    
+    def _on_detection_type_change(self, index: int):
+        """Change beat detection type"""
+        self.config.beat.detection_type = BeatDetectionType(index + 1)
+    
+    def _on_mode_change(self, index: int):
+        """Change stroke mode"""
+        self.config.stroke.mode = StrokeMode(index + 1)
+    
+    def _start_engines(self):
+        """Initialize and start all engines"""
+        self.stroke_mapper = StrokeMapper(self.config)
+        
+        # Set selected audio device
+        combo_idx = self.device_combo.currentIndex()
+        if combo_idx >= 0 and combo_idx in self.audio_device_map:
+            self.config.audio.device_index = self.audio_device_map[combo_idx]
+            print(f"[Main] Using audio device index: {self.config.audio.device_index}")
+        
+        self.audio_engine = AudioEngine(self.config, self._audio_callback)
+        self.audio_engine.start()
+        
+        if self.network_engine is None:
+            self.network_engine = NetworkEngine(self.config, self._network_status_callback)
+            self.network_engine.start()
+        
+        self.is_running = True
+    
+    def _stop_engines(self):
+        """Stop all engines"""
+        self.is_running = False
+        
+        if self.audio_engine:
+            self.audio_engine.stop()
+            self.audio_engine = None
+    
+    def _audio_callback(self, event: BeatEvent):
+        """Called from audio thread on each frame"""
+        # Emit signal for thread-safe GUI update
+        self.signals.beat_detected.emit(event)
+        
+        # Get spectrum for visualization
+        if self.audio_engine:
+            spectrum = self.audio_engine.get_spectrum()
+            if spectrum is not None:
+                self.signals.spectrum_ready.emit(spectrum)
+        
+        # Process through stroke mapper
+        if self.stroke_mapper and self.is_sending:
+            cmd = self.stroke_mapper.process_beat(event)
+            if cmd and self.network_engine:
+                print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f}")
+                self.network_engine.send_command(cmd)
+        elif event.is_beat and not self.is_sending:
+            print("[Main] Beat detected but Play not enabled")
+    
+    def _network_status_callback(self, message: str, connected: bool):
+        """Called from network thread on status change"""
+        self.signals.status_changed.emit(message, connected)
+    
+    def _on_beat(self, event: BeatEvent):
+        """Handle beat event in GUI thread"""
+        if event.is_beat:
+            self.beat_indicator.setStyleSheet("color: #0f0; font-size: 24px;")
+        else:
+            self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+    
+    def _on_spectrum(self, spectrum: np.ndarray):
+        """Queue spectrum for throttled update"""
+        self._pending_spectrum = spectrum
+    
+    def _do_spectrum_update(self):
+        """Actually update spectrum at throttled rate"""
+        if self._pending_spectrum is not None:
+            self.spectrum_canvas.update_spectrum(self._pending_spectrum)
+            self._pending_spectrum = None
+    
+    def _on_status_change(self, message: str, connected: bool):
+        """Update connection status"""
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet(f"color: {'#0f0' if connected else '#f55'};")
+        self.connect_btn.setText("Disconnect" if connected else "Connect")
+        self.test_btn.setEnabled(connected)
+    
+    def _update_display(self):
+        """Periodic display update"""
+        if self.stroke_mapper:
+            alpha, beta = self.stroke_mapper.get_current_position()
+            self.position_canvas.update_position(alpha, beta)
+            self.alpha_label.setText(f"α: {alpha:.2f}")
+            self.beta_label.setText(f"β: {beta:.2f}")
+    
+    def closeEvent(self, event):
+        """Cleanup on close"""
+        self._stop_engines()
+        if self.network_engine:
+            self.network_engine.stop()
+        event.accept()
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+    
+    window = BREadbeatsWindow()
+    window.show()
+    
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

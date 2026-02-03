@@ -1,0 +1,269 @@
+"""
+bREadbeats - Network Engine
+TCP connection to restim using T-code format.
+Sends alpha/beta position commands.
+"""
+
+import socket
+import threading
+import queue
+import time
+from typing import Optional, Callable
+from dataclasses import dataclass
+
+from config import Config
+
+
+@dataclass
+class TCodeCommand:
+    """T-code command for restim"""
+    alpha: float      # Alpha position (-1.0 to 1.0, will be mapped to 0-9999)
+    beta: float       # Beta position (-1.0 to 1.0, will be mapped to 0-9999)
+    duration_ms: int  # Duration for the move
+    
+    def to_tcode(self) -> str:
+        """
+        Convert to T-code string for restim.
+        restim uses:
+          - L0 for alpha axis
+          - L1 for beta axis
+        Format: L0[value:4digits]I[duration] where value is 0000-9999
+        Value 0.0 = 0000, Value 1.0 = 9999
+        We map -1.0..1.0 to 0.0..1.0 for restim
+        """
+        # Map -1.0..1.0 to 0..9999
+        alpha_val = int((self.alpha + 1.0) / 2.0 * 9999)
+        beta_val = int((self.beta + 1.0) / 2.0 * 9999)
+        
+        # Clamp to valid range
+        alpha_val = max(0, min(9999, alpha_val))
+        beta_val = max(0, min(9999, beta_val))
+        
+        # Build command string - both axes in one message
+        # Format: L0xxxxIyyy L1xxxxIyyy
+        cmd = f"L0{alpha_val:04d}I{self.duration_ms} L1{beta_val:04d}I{self.duration_ms}\n"
+        return cmd
+
+
+class NetworkEngine:
+    """
+    Engine 2: The Hands
+    Manages TCP connection to restim and sends T-code commands.
+    """
+    
+    def __init__(self, config: Config, 
+                 status_callback: Optional[Callable[[str, bool], None]] = None):
+        """
+        Args:
+            config: Application configuration
+            status_callback: Called with (status_message, is_connected)
+        """
+        self.config = config
+        self.status_callback = status_callback
+        
+        # Connection state
+        self.socket: Optional[socket.socket] = None
+        self.connected = False
+        self.running = False
+        
+        # Command queue (thread-safe)
+        self.cmd_queue: queue.Queue[TCodeCommand] = queue.Queue()
+        
+        # Control
+        self.sending_enabled = False  # Play/pause control
+        
+        # Worker thread
+        self.worker_thread: Optional[threading.Thread] = None
+        
+    def start(self):
+        """Start the network engine"""
+        if self.running:
+            return
+            
+        self.running = True
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self.worker_thread.start()
+        print("[NetworkEngine] Started")
+        
+        # Auto-connect if configured
+        if self.config.connection.auto_connect:
+            self.connect()
+            
+    def stop(self):
+        """Stop the network engine"""
+        self.running = False
+        self.disconnect()
+        
+        # Clear queue
+        while not self.cmd_queue.empty():
+            try:
+                self.cmd_queue.get_nowait()
+            except queue.Empty:
+                break
+                
+        print("[NetworkEngine] Stopped")
+        
+    def connect(self) -> bool:
+        """Connect to restim"""
+        if self.connected:
+            return True
+            
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(5.0)  # 5 second timeout for connect
+            self.socket.connect((
+                self.config.connection.host,
+                self.config.connection.port
+            ))
+            self.socket.settimeout(1.0)  # 1 second timeout for operations
+            
+            self.connected = True
+            self._was_connected = True  # Track that we've successfully connected before
+            self._notify_status(f"Connected to restim at {self.config.connection.host}:{self.config.connection.port}", True)
+            print(f"[NetworkEngine] Connected to restim")
+            return True
+            
+        except Exception as e:
+            self._notify_status(f"Connection failed: {e}", False)
+            print(f"[NetworkEngine] Connection failed: {e}")
+            self.socket = None
+            self.connected = False
+            return False
+            
+    def disconnect(self):
+        """Disconnect from restim"""
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+            self.socket = None
+            
+        self.connected = False
+        self._notify_status("Disconnected", False)
+        print("[NetworkEngine] Disconnected")
+        
+    def send_command(self, cmd: TCodeCommand):
+        """Queue a command to send"""
+        if self.running:
+            self.cmd_queue.put(cmd)
+            
+    def send_test(self):
+        """Send a test pattern to verify connection"""
+        if not self.connected:
+            print("[NetworkEngine] Cannot test - not connected")
+            return
+            
+        print("[NetworkEngine] Sending test pattern...")
+        
+        # Test pattern with longer durations so each point is visible
+        # Based on restim coords: alpha=vertical (+1=top), beta=horizontal (+1=right)
+        # Using 1 second moves with 1 second holds
+        test_cmds = [
+            # Start at center
+            ("Center", TCodeCommand(0.0, 0.0, 1000)),
+            # Go to each cardinal direction
+            ("Top", TCodeCommand(1.0, 0.0, 1000)),
+            ("Center", TCodeCommand(0.0, 0.0, 500)),
+            ("Bottom", TCodeCommand(-1.0, 0.0, 1000)),
+            ("Center", TCodeCommand(0.0, 0.0, 500)),
+            ("Right", TCodeCommand(0.0, 1.0, 1000)),
+            ("Center", TCodeCommand(0.0, 0.0, 500)),
+            ("Left", TCodeCommand(0.0, -1.0, 1000)),
+            ("Center", TCodeCommand(0.0, 0.0, 1000)),
+        ]
+        
+        # Send with real delays between commands
+        def send_sequence():
+            for name, cmd in test_cmds:
+                if not self.connected:
+                    break
+                print(f"[Test] -> {name} (a={cmd.alpha}, b={cmd.beta})")
+                self._send_tcode(cmd)
+                time.sleep(cmd.duration_ms / 1000.0)  # Wait for move to complete
+            print("[NetworkEngine] Test pattern complete")
+        
+        # Run in separate thread to not block
+        threading.Thread(target=send_sequence, daemon=True).start()
+            
+    def set_sending_enabled(self, enabled: bool):
+        """Enable/disable sending commands (play/pause)"""
+        self.sending_enabled = enabled
+        status = "Playing" if enabled else "Paused"
+        print(f"[NetworkEngine] {status}")
+        
+    def _worker_loop(self):
+        """Background worker that sends queued commands"""
+        reconnect_timer = 0
+        
+        while self.running:
+            # Handle reconnection (only if we were connected before and lost connection)
+            if not self.connected and self.config.connection.auto_connect and self.socket is None:
+                if reconnect_timer <= 0:
+                    # Only auto-reconnect if we've been disconnected, not on initial start
+                    if hasattr(self, '_was_connected') and self._was_connected:
+                        self.connect()
+                    reconnect_timer = self.config.connection.reconnect_delay_ms / 1000.0
+                else:
+                    reconnect_timer -= 0.1
+                    
+            # Process command queue
+            try:
+                cmd = self.cmd_queue.get(timeout=0.1)
+                
+                if self.connected and self.sending_enabled:
+                    self._send_tcode(cmd)
+                    
+                self.cmd_queue.task_done()
+                
+            except queue.Empty:
+                pass
+            except Exception as e:
+                print(f"[NetworkEngine] Worker error: {e}")
+                
+    def _send_tcode(self, cmd: TCodeCommand):
+        """Send a T-code command over the socket"""
+        if not self.socket:
+            return
+            
+        tcode = cmd.to_tcode()
+        
+        try:
+            self.socket.sendall(tcode.encode('utf-8'))
+            # print(f"[NetworkEngine] Sent: {tcode.strip()}")  # Debug
+        except socket.timeout:
+            print("[NetworkEngine] Send timeout")
+        except Exception as e:
+            print(f"[NetworkEngine] Send error: {e}")
+            self.disconnect()
+            
+    def _notify_status(self, message: str, connected: bool):
+        """Notify status callback"""
+        if self.status_callback:
+            self.status_callback(message, connected)
+
+
+# Test
+if __name__ == "__main__":
+    from config import Config
+    
+    def on_status(msg, connected):
+        print(f"Status: {msg} (connected={connected})")
+        
+    config = Config()
+    engine = NetworkEngine(config, on_status)
+    
+    print("Starting network engine...")
+    engine.start()
+    
+    print("\nAttempting to connect...")
+    time.sleep(2)
+    
+    if engine.connected:
+        print("\nSending test pattern...")
+        engine.set_sending_enabled(True)
+        engine.send_test()
+        time.sleep(3)
+        
+    engine.stop()
+    print("Done")
