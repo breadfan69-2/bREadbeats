@@ -763,7 +763,7 @@ class BREadbeatsWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         
         # Jitter section
-        jitter_group = QGroupBox("Jitter (micro-circles when idle)")
+        jitter_group = QGroupBox("Vibration (micro-circles when idle)")
         jitter_layout = QVBoxLayout(jitter_group)
         
         self.jitter_enabled = QCheckBox("Enable Jitter")
@@ -771,13 +771,13 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_enabled.stateChanged.connect(lambda s: setattr(self.config.jitter, 'enabled', s == 2))
         jitter_layout.addWidget(self.jitter_enabled)
         
-        self.jitter_intensity_slider = SliderWithLabel("Jitter Intensity", 0.0, 1.0, 0.3)
-        self.jitter_intensity_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'intensity', v))
-        jitter_layout.addWidget(self.jitter_intensity_slider)
-        
-        self.jitter_amplitude_slider = SliderWithLabel("Jitter Amplitude", 0.0, 0.5, 0.1)
+        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.0, 0.1, 0.02)
         self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
         jitter_layout.addWidget(self.jitter_amplitude_slider)
+        
+        self.jitter_intensity_slider = SliderWithLabel("Circle Speed", 0.0, 3.0, 0.5)
+        self.jitter_intensity_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'intensity', v))
+        jitter_layout.addWidget(self.jitter_intensity_slider)
         
         layout.addWidget(jitter_group)
         

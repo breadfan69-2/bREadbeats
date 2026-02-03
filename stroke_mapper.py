@@ -72,13 +72,13 @@ class StrokeMapper:
         else:
             self.state.idle_time = now - self.state.last_beat_time
         
-        # Check minimum interval
-        time_since_stroke = (now - self.state.last_stroke_time) * 1000
-        if time_since_stroke < cfg.min_interval_ms:
-            return None
-        
         # Determine what to do
         if event.is_beat:
+            # Check minimum interval for beats only (jitter bypasses this)
+            time_since_stroke = (now - self.state.last_stroke_time) * 1000
+            if time_since_stroke < cfg.min_interval_ms:
+                return None
+            
             # Calculate beat rate and apply factoring if too fast
             beat_interval = (now - self.state.last_beat_time) if self.state.last_beat_time > 0 else 1.0
             beat_rate = 1.0 / beat_interval if beat_interval > 0 else 0
@@ -299,55 +299,50 @@ class StrokeMapper:
         return alpha, beta
     
     def _generate_idle_motion(self, event: BeatEvent) -> Optional[TCodeCommand]:
-        """Generate jitter or creep motion when idle"""
+        """Generate jitter motion when idle - quick random movements to nearby targets"""
         now = time.time()
         jitter_cfg = self.config.jitter
         creep_cfg = self.config.creep
         
-        # Throttle idle updates to every 500ms for smooth slow motion
-        time_since_stroke = (now - self.state.last_stroke_time) * 1000
-        if time_since_stroke < 500:  # Only send idle motion every 500ms
+        # Update throttle for jitter frequency (17ms = ~60 updates/sec)
+        time_since_last = (now - self.state.last_stroke_time) * 1000
+        if time_since_last < 17:
+            return None
+        
+        # Skip if jitter is disabled
+        if not jitter_cfg.enabled or jitter_cfg.amplitude <= 0:
             return None
         
         alpha, beta = self.state.alpha, self.state.beta
-        duration_ms = 500  # Long duration for smooth interpolation
         
-        has_motion = False
+        # Jitter: small random movement to nearby target
+        # Amplitude controls the range of movement (circle size)
+        jitter_range = jitter_cfg.amplitude
         
-        # Apply jitter (micro-circles) - max 10% of range (0.1 on -1 to 1 scale)
-        if jitter_cfg.enabled and jitter_cfg.amplitude > 0:
-            self.state.jitter_angle += jitter_cfg.intensity * 0.1  # Slower rotation
-            # Max amplitude is 0.1 (10% of full range), scaled by user setting
-            jitter_r = jitter_cfg.amplitude * 0.1  # 10% max
-            alpha += np.cos(self.state.jitter_angle) * jitter_r
-            beta += np.sin(self.state.jitter_angle) * jitter_r
-            has_motion = True
-        
-        # Apply creep (slow drift) - also limited to 10% max
-        if creep_cfg.enabled and creep_cfg.speed > 0:
-            self.state.creep_angle += creep_cfg.speed * 0.05  # Very slow rotation
-            creep_r = 0.1 * creep_cfg.speed  # Scale by speed setting, max 10%
-            # Move toward creep target smoothly
-            target_alpha = np.cos(self.state.creep_angle) * creep_r
-            target_beta = np.sin(self.state.creep_angle) * creep_r
-            # Blend slowly toward target
-            alpha = alpha * 0.9 + target_alpha * 0.1
-            beta = beta * 0.9 + target_beta * 0.1
-            has_motion = True
-        
-        if not has_motion:
-            return None
+        # Generate random target nearby current position
+        alpha_target = alpha + np.random.uniform(-jitter_range, jitter_range)
+        beta_target = beta + np.random.uniform(-jitter_range, jitter_range)
         
         # Clamp to valid range
-        alpha = max(-1.0, min(1.0, alpha))
-        beta = max(-1.0, min(1.0, beta))
+        alpha_target = np.clip(alpha_target, -1.0, 1.0)
+        beta_target = np.clip(beta_target, -1.0, 1.0)
+        
+        # Intensity controls jitter speed (how fast to move - inversely related to duration)
+        # High intensity = short duration = fast vibration
+        # Low intensity = long duration = slow vibration
+        # intensity: 0-3, map to duration: 200ms to 20ms (faster = higher intensity)
+        base_duration = 200  # ms at intensity=0
+        if jitter_cfg.intensity > 0:
+            duration_ms = max(20, int(base_duration / (1.0 + jitter_cfg.intensity * 5)))
+        else:
+            duration_ms = base_duration
         
         # Update state and timing
-        self.state.alpha = alpha
-        self.state.beta = beta
-        self.state.last_stroke_time = now  # Throttle future idle updates
+        self.state.alpha = alpha_target
+        self.state.beta = beta_target
+        self.state.last_stroke_time = now
         
-        return TCodeCommand(alpha, beta, duration_ms)
+        return TCodeCommand(alpha_target, beta_target, duration_ms)
     
     def _freq_to_factor(self, freq: float) -> float:
         """Convert frequency to a 0-1 factor (bass=0, treble=1)"""

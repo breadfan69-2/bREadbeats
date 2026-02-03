@@ -36,7 +36,7 @@ class StrokeConfig:
     mode: StrokeMode = StrokeMode.SIMPLE_CIRCLE
     stroke_min: float = 0.2           # Minimum stroke length (0.0-1.0)
     stroke_max: float = 1.0           # Maximum stroke length (0.0-1.0)
-    min_interval_ms: int = 150        # Minimum time between strokes (ms)
+    min_interval_ms: int = 170        # Minimum time between strokes (ms)
     stroke_fullness: float = 0.7      # How much params affect stroke length
     minimum_depth: float = 0.0        # Lower limit of stroke (absolute bottom)
     freq_depth_factor: float = 0.3    # How much frequency affects depth
