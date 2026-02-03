@@ -31,6 +31,7 @@ class BeatEvent:
     is_beat: bool            # True if this is an actual beat
     spectral_flux: float     # Current spectral flux value
     peak_energy: float       # Current peak energy value
+    is_downbeat: bool = False # True if this is a downbeat (strong beat, beat 1)
 
 
 class AudioEngine:
@@ -64,6 +65,21 @@ class AudioEngine:
         # FFT settings
         self.fft_size = 2048
         self.hop_size = 512
+        
+        # Tempo tracking (based on madmom resonating comb filter concept)
+        # Keep recent beat intervals for smooth tempo estimation
+        self.beat_intervals: list[float] = []  # In seconds
+        self.smoothed_tempo: float = 0.0       # In BPM
+        self.tempo_history: list[float] = []   # For visualization
+        self.last_beat_time: float = 0.0       # For calculating intervals
+        self.beat_times: list[float] = []      # Last 10 beat times for stability
+        self.predicted_next_beat: float = 0.0  # Predicted next beat time
+        self.beat_position_in_measure: int = 0 # For downbeat tracking (1, 2, 3, 4...)
+        
+        # Downbeat detection (energy-based)
+        self.beat_energies: list[float] = []   # Track intensity of beats
+        self.is_downbeat: bool = False         # True if this beat is a downbeat (strong beat)
+        self.downbeat_threshold: float = 1.3   # Beats stronger than 1.3x avg are likely downbeats
         
     def start(self):
         """Start audio capture and beat detection"""
@@ -225,7 +241,8 @@ class AudioEngine:
             frequency=freq,
             is_beat=is_beat,
             spectral_flux=spectral_flux,
-            peak_energy=band_energy
+            peak_energy=band_energy,
+            is_downbeat=self.is_downbeat if is_beat else False  # Only downbeat if it's an actual beat
         )
         
         # Notify callback
@@ -337,9 +354,81 @@ class AudioEngine:
         
         if is_beat:
             self._last_beat_time = current_time
-            print(f"[Beat] energy={energy:.4f} (thresh={energy_threshold:.4f}) flux={flux:.4f}")
+            self._update_tempo_tracking(current_time)
+            print(f"[Beat] energy={energy:.4f} (thresh={energy_threshold:.4f}) flux={flux:.4f} bpm={self.smoothed_tempo:.1f}")
         
         return is_beat
+    
+    def _update_tempo_tracking(self, current_time: float):
+        """Update tempo estimate with beat-based interval tracking (madmom-inspired)"""
+        # Calculate interval from last beat
+        if self.last_beat_time > 0:
+            interval = current_time - self.last_beat_time
+            
+            # Sanity check: ignore tiny intervals (< 0.2s = 300 BPM max)
+            if interval > 0.2:
+                # Outlier rejection: if interval is way off from average, it might be a false beat
+                if len(self.beat_intervals) > 0:
+                    avg_interval = np.mean(self.beat_intervals)
+                    # Accept if within 0.5x to 2.0x of average (allows tempo changes but rejects glitches)
+                    if interval < (0.5 * avg_interval) or interval > (2.0 * avg_interval):
+                        print(f"[Tempo] Outlier interval rejected: {interval:.3f}s (avg: {avg_interval:.3f}s)")
+                        return
+                
+                # Add to interval history
+                self.beat_intervals.append(interval)
+                self.beat_times.append(current_time)
+                
+                # Keep only last 12 intervals (provides smooth averaging over ~1 minute)
+                if len(self.beat_intervals) > 12:
+                    self.beat_intervals.pop(0)
+                    self.beat_times.pop(0)
+                
+                # Calculate smoothed tempo using weighted average
+                # Recent beats get higher weight (madmom approach: prefer recent data)
+                weights = np.linspace(0.5, 1.5, len(self.beat_intervals))
+                weighted_avg_interval = np.average(self.beat_intervals, weights=weights)
+                
+                # Convert to BPM
+                new_tempo = 60.0 / weighted_avg_interval if weighted_avg_interval > 0 else 0
+                
+                # Apply exponential smoothing for stability (like madmom's tempo state space)
+                smoothing_factor = 0.7  # Higher = more smooth (less responsive)
+                if self.smoothed_tempo > 0:
+                    self.smoothed_tempo = (smoothing_factor * self.smoothed_tempo + 
+                                          (1 - smoothing_factor) * new_tempo)
+                else:
+                    self.smoothed_tempo = new_tempo
+                
+                # Predict next beat time
+                self._predict_next_beat(current_time)
+                
+                # Track beat position for downbeat detection (4/4 time assumption)
+                self.beat_position_in_measure += 1
+                if self.beat_position_in_measure > 4:  # 4/4 time
+                    self.beat_position_in_measure = 1
+                    self.is_downbeat = True  # Downbeat on beat 1
+                else:
+                    self.is_downbeat = False
+        
+        self.last_beat_time = current_time
+    
+    def _predict_next_beat(self, current_time: float):
+        """Predict the time of the next beat based on smoothed tempo"""
+        if self.smoothed_tempo > 0:
+            predicted_interval = 60.0 / self.smoothed_tempo
+            self.predicted_next_beat = current_time + predicted_interval
+        
+    def get_tempo_info(self) -> dict:
+        """Get current tempo information for UI display"""
+        return {
+            'bpm': self.smoothed_tempo,
+            'beat_position': self.beat_position_in_measure,
+            'is_downbeat': self.is_downbeat,
+            'predicted_next_beat': self.predicted_next_beat,
+            'interval_count': len(self.beat_intervals),
+            'confidence': min(1.0, len(self.beat_intervals) / 4.0)  # Confidence grows with more beats
+        }
             
     def _estimate_frequency(self, spectrum: np.ndarray) -> float:
         """Estimate dominant frequency from spectrum"""

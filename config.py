@@ -40,6 +40,11 @@ class StrokeConfig:
     stroke_fullness: float = 0.7      # How much params affect stroke length
     minimum_depth: float = 0.0        # Lower limit of stroke (absolute bottom)
     freq_depth_factor: float = 0.3    # How much frequency affects depth
+    
+    # Spectral flux-based stroke control
+    flux_threshold: float = 0.03      # Threshold to distinguish low vs high flux
+    # Low flux (<threshold): only full strokes on downbeats
+    # High flux (>=threshold): full strokes on every beat
 
 @dataclass
 class JitterConfig:

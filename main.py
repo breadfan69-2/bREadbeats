@@ -118,15 +118,19 @@ class SpectrumCanvas(FigureCanvas):
         low_bar = int(self.band_low * self.num_bars)
         high_bar = int(self.band_high * self.num_bars)
         
-        for i, (bar, h) in enumerate(zip(self.bars, spectrum)):
-            bar.set_height(h)
-            # Highlight bars in the selected frequency band
-            if low_bar <= i <= high_bar:
-                bar.set_color('#00ffaa')  # Cyan-green for selected band
-            else:
-                bar.set_color('#00aaff')  # Blue for unselected
-        
-        self.draw_idle()
+        try:
+            for i, (bar, h) in enumerate(zip(self.bars, spectrum)):
+                bar.set_height(h)
+                # Highlight bars in the selected frequency band
+                if low_bar <= i <= high_bar:
+                    bar.set_color('#00ffaa')  # Cyan-green for selected band
+                else:
+                    bar.set_color('#00aaff')  # Blue for unselected
+            
+            self.draw_idle()
+        except Exception:
+            # Silently ignore matplotlib rendering errors
+            pass
 
 
 class PositionCanvas(FigureCanvas):
@@ -182,21 +186,25 @@ class PositionCanvas(FigureCanvas):
             self.trail_x.pop(0)
             self.trail_y.pop(0)
         
-        self.ax.clear()
-        self.setup_plot()
-        
-        # Draw trail
-        if len(self.trail_x) > 1:
-            for i in range(1, len(self.trail_x)):
-                alpha_val = i / len(self.trail_x)
-                self.ax.plot([self.trail_x[i-1], self.trail_x[i]], 
-                           [self.trail_y[i-1], self.trail_y[i]], 
-                           color='#00aaff', alpha=alpha_val * 0.5, linewidth=1)
-        
-        # Draw current position
-        self.ax.scatter([alpha], [beta], c='#00ffff', s=80, zorder=5)
-        
-        self.draw()
+        try:
+            self.ax.clear()
+            self.setup_plot()
+            
+            # Draw trail
+            if len(self.trail_x) > 1:
+                for i in range(1, len(self.trail_x)):
+                    alpha_val = i / len(self.trail_x)
+                    self.ax.plot([self.trail_x[i-1], self.trail_x[i]], 
+                               [self.trail_y[i-1], self.trail_y[i]], 
+                               color='#00aaff', alpha=alpha_val * 0.5, linewidth=1)
+            
+            # Draw current position
+            self.ax.scatter([alpha], [beta], c='#00ffff', s=80, zorder=5)
+            
+            self.draw()
+        except Exception:
+            # Silently ignore matplotlib rendering errors
+            pass
 
 
 class SliderWithLabel(QWidget):
@@ -461,6 +469,12 @@ class BREadbeatsWindow(QMainWindow):
         self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
         self.beat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         btn_layout.addWidget(self.beat_indicator)
+        
+        # Beat indicator timer for visual feedback duration
+        self.beat_timer = QTimer()
+        self.beat_timer.setSingleShot(True)
+        self.beat_timer.timeout.connect(self._turn_off_beat_indicator)
+        self.beat_indicator_min_duration = 100  # ms
         
         # BPM display
         self.bpm_label = QLabel("BPM: --")
@@ -754,6 +768,13 @@ class BREadbeatsWindow(QMainWindow):
         self.freq_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'freq_depth_factor', v))
         layout.addWidget(self.freq_depth_slider)
         
+        # Spectral flux threshold for stroke control
+        layout.addWidget(QLabel(""))  # Spacing
+        layout.addWidget(QLabel("Spectral Flux Control (Low flux→downbeats only, High flux→every beat)"))
+        self.flux_threshold_slider = SliderWithLabel("Flux Threshold", 0.001, 0.2, 0.03, 4)
+        self.flux_threshold_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_threshold', v))
+        layout.addWidget(self.flux_threshold_slider)
+        
         layout.addStretch()
         return widget
     
@@ -931,29 +952,38 @@ class BREadbeatsWindow(QMainWindow):
     def _on_beat(self, event: BeatEvent):
         """Handle beat event in GUI thread"""
         if event.is_beat:
+            # Light up the beat indicator
             self.beat_indicator.setStyleSheet("color: #0f0; font-size: 24px;")
             
-            # Calculate BPM from beat interval
-            now = time.time()
-            if not hasattr(self, '_last_beat_time'):
-                self._last_beat_time = now
-                self._beat_intervals = []
+            # Reset timer to keep it lit for minimum duration
+            self.beat_timer.stop()
+            self.beat_timer.start(self.beat_indicator_min_duration)
             
-            beat_interval = now - self._last_beat_time
-            self._last_beat_time = now
-            
-            # Keep a rolling window of beat intervals (last 5 beats)
-            self._beat_intervals.append(beat_interval)
-            if len(self._beat_intervals) > 5:
-                self._beat_intervals.pop(0)
-            
-            # Calculate average BPM
-            if len(self._beat_intervals) > 1:
-                avg_interval = np.mean(self._beat_intervals)
-                bpm = 60.0 / avg_interval if avg_interval > 0 else 0
-                self.bpm_label.setText(f"BPM: {bpm:.1f}")
-        else:
-            self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+            # Get tempo from audio engine (now includes smoothing, beat prediction, downbeat detection)
+            if self.audio_engine:
+                tempo_info = self.audio_engine.get_tempo_info()
+                if tempo_info['bpm'] > 0:
+                    confidence = tempo_info['confidence']
+                    beat_pos = tempo_info['beat_position']
+                    is_downbeat = tempo_info.get('is_downbeat', False)
+                    
+                    # Format BPM display
+                    bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
+                    
+                    # Add beat position indicator (1/2/3/4 and ⬇ for downbeat)
+                    if beat_pos > 0:
+                        downbeat_marker = " ⬇" if is_downbeat else ""
+                        bpm_display += f" [{beat_pos}{downbeat_marker}]"
+                    
+                    # Add confidence indicator
+                    if confidence < 0.5:
+                        bpm_display += " (stabilizing...)"
+                    
+                    self.bpm_label.setText(bpm_display)
+    
+    def _turn_off_beat_indicator(self):
+        """Turn off beat indicator after minimum duration"""
+        self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
     
     def _on_spectrum(self, spectrum: np.ndarray):
         """Queue spectrum for throttled update"""

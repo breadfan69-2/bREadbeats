@@ -59,6 +59,10 @@ class StrokeMapper:
         """
         Process a beat event and return a stroke command.
         
+        Spectral flux-based behavior:
+        - Low flux (<threshold): Only full strokes on downbeats
+        - High flux (>=threshold): Full strokes on every beat
+        
         Returns:
             TCodeCommand if a stroke should be sent, None otherwise
         """
@@ -79,30 +83,112 @@ class StrokeMapper:
             if time_since_stroke < cfg.min_interval_ms:
                 return None
             
-            # Calculate beat rate and apply factoring if too fast
-            beat_interval = (now - self.state.last_beat_time) if self.state.last_beat_time > 0 else 1.0
-            beat_rate = 1.0 / beat_interval if beat_interval > 0 else 0
+            # Check if flux is high or low
+            is_high_flux = event.spectral_flux >= cfg.flux_threshold
+            is_downbeat = getattr(event, 'is_downbeat', False)
             
-            # Determine beat factor to limit strokes to max_strokes_per_sec
-            if beat_rate > self.max_strokes_per_sec:
-                self.beat_factor = max(2, int(np.ceil(beat_rate / self.max_strokes_per_sec)))
-            else:
-                self.beat_factor = 1
+            # DOWNBEAT: Always generate full stroke on downbeat
+            if is_downbeat:
+                cmd = self._generate_downbeat_stroke(event)
+                if cmd is None:
+                    # Arc is handled asynchronously, no immediate command
+                    return None
+                print(f"[StrokeMapper] ⬇ DOWNBEAT -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} (full loop, flux={event.spectral_flux:.4f})")
+                return cmd
             
-            # Skip beat if not on factor boundary
-            self.state.beat_counter += 1
-            if self.state.beat_counter % self.beat_factor != 0:
+            # REGULAR BEAT:
+            # - Low flux: skip regular beats (only downbeats get strokes)
+            # - High flux: do full strokes on all beats
+            if not is_high_flux:
+                # Low flux: skip this beat
+                print(f"[StrokeMapper] Skipping beat (low flux={event.spectral_flux:.4f} < {cfg.flux_threshold})")
                 return None
             
+            # High flux: Generate full stroke on regular beat too
             cmd = self._generate_beat_stroke(event)
-            print(f"[StrokeMapper] Beat (factor={self.beat_factor}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
+            print(f"[StrokeMapper] Beat (HIGH FLUX={event.spectral_flux:.4f}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
             return cmd
+            
         elif self.state.idle_time > 0.5:  # 500ms of silence for idle motion
             cmd = self._generate_idle_motion(event)
             if cmd:
                 print(f"[StrokeMapper] Idle -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} jitter={self.config.jitter.enabled} creep={self.config.creep.enabled}")
             return cmd
         
+        return None
+    
+    def _generate_downbeat_stroke(self, event: BeatEvent) -> TCodeCommand:
+        """
+        Generate a full measure-length stroke on downbeat.
+        
+        On downbeats (beat 1 of measure), create an extended full loop that takes
+        approximately one full measure (4 beats) to complete. This makes downbeats
+        feel more pronounced and creates a clear measure structure.
+        """
+        cfg = self.config.stroke
+        now = time.time()
+        
+        # Cancel any pending arc thread
+        if hasattr(self, '_arc_thread') and self._arc_thread and self._arc_thread.is_alive():
+            self._stop_arc = True
+            self._arc_thread.join(timeout=0.1)
+        
+        # On downbeat, use extended duration (estimate ~4 beats for measure)
+        # Use last beat interval * 4 for the measure length
+        if self.state.last_beat_time == 0.0:
+            measure_duration_ms = 2000  # Default 2 seconds
+        else:
+            beat_interval_ms = (now - self.state.last_beat_time) * 1000
+            beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+            measure_duration_ms = beat_interval_ms * 4  # Full measure
+        
+        # Calculate stroke parameters
+        intensity = event.intensity
+        
+        # On downbeat, use full stroke amplitude
+        stroke_len = cfg.stroke_max  # Always full on downbeat
+        
+        freq_factor = self._freq_to_factor(event.frequency)
+        depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
+        
+        # Radius for the arc - full radius on downbeat for emphasis
+        radius = 1.0  # Always full circle on downbeat
+        
+        # Apply axis weights
+        alpha_weight = self.config.alpha_weight
+        beta_weight = self.config.beta_weight
+        
+        # Generate arc: FULL circle (0 to 2π) 
+        # More points for smoother motion over longer duration
+        n_points = max(16, int(measure_duration_ms / 20))  # 1 point per 20ms
+        arc_theta = np.linspace(0, 2 * np.pi, n_points)
+        
+        # Alpha = cos, Beta = sin
+        alpha_arc = radius * alpha_weight * np.cos(arc_theta)
+        beta_arc = radius * beta_weight * np.sin(arc_theta)
+        
+        # Calculate step durations with proper remainder distribution
+        base_step = measure_duration_ms // n_points
+        remainder = measure_duration_ms % n_points
+        step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
+        
+        # Start arc thread
+        self._stop_arc = False
+        self._arc_thread = threading.Thread(
+            target=self._send_arc_synchronous,
+            args=[alpha_arc, beta_arc, step_durations, n_points],
+            daemon=True
+        )
+        self._arc_thread.start()
+        
+        # Update state
+        self.state.last_stroke_time = now
+        self.state.last_beat_time = now
+        
+        print(f"[StrokeMapper] ⬇ DOWNBEAT ARC start r={radius:.2f} ({n_points} pts, {measure_duration_ms}ms total, full measure)")
+        
+        # Don't return a command here - the arc thread will send all points
+        # Returning None signals that the arc is being handled asynchronously
         return None
     
     def _generate_beat_stroke(self, event: BeatEvent) -> TCodeCommand:
