@@ -25,16 +25,17 @@ class TCodeCommand:
         """
         Convert to T-code string for restim.
         restim coordinate system:
-          - L0 = vertical axis (our beta/Y, inverted: +1=bottom, -1=top in restim)
-          - L1 = horizontal axis (our alpha/X, inverted: +1=left, -1=right in restim)
-        Format: L0[value:4digits]I[duration] where value is 0000-9999
-        Value 0.0 = 0000, Value 1.0 = 9999
-        We map -1.0..1.0 to 0.0..1.0 for restim (with inversion)
+          - L0 = vertical axis (our alpha/Y, negated)
+          - L1 = horizontal axis (our beta/X, negated)
+        Rotated 90 degrees clockwise to match restim display orientation
         """
-        # Map -1.0..1.0 to 0..9999 (inverted: negate before mapping)
-        # Swap and invert: our alpha(X) -> L1(horizontal), our beta(Y) -> L0(vertical)
-        l0_val = int((-self.beta + 1.0) / 2.0 * 9999)   # -beta -> L0 (vertical, inverted)
-        l1_val = int((-self.alpha + 1.0) / 2.0 * 9999)  # -alpha -> L1 (horizontal, inverted)
+        # Rotate 90 degrees clockwise: swap and negate appropriately
+        rotated_alpha = self.beta
+        rotated_beta = -self.alpha
+        
+        # Map -1.0..1.0 to 0..9999
+        l0_val = int((-rotated_alpha + 1.0) / 2.0 * 9999)  # rotated_alpha -> L0 (vertical, negated)
+        l1_val = int((-rotated_beta + 1.0) / 2.0 * 9999)   # rotated_beta -> L1 (horizontal, negated)
         
         # Clamp to valid range
         l0_val = max(0, min(9999, l0_val))
