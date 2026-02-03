@@ -191,6 +191,9 @@ class AudioEngine:
         # Filter spectrum to selected frequency band for beat detection
         band_spectrum = self._filter_frequency_band(spectrum)
         
+        # Apply audio gain amplification (for weak devices like Stereo Mix)
+        band_spectrum = band_spectrum * self.config.audio.gain
+        
         # Compute beat detection metrics on filtered band
         band_energy = np.sqrt(np.mean(band_spectrum ** 2)) if len(band_spectrum) > 0 else 0
         spectral_flux = self._compute_spectral_flux(band_spectrum)

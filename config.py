@@ -68,8 +68,10 @@ class AudioConfig:
     sample_rate: int = 44100
     buffer_size: int = 1024
     channels: int = 2
-    # Device index - 8 = Primary Sound Capture Driver
-    device_index: int | None = 8
+    # Device index - None = auto-detect Stereo Mix/loopback, otherwise use specified index
+    device_index: int | None = None
+    # Audio gain/amplification (for weak devices like Stereo Mix)
+    gain: float = 5.0  # Multiply input signal by this amount
 
 @dataclass
 class Config:
