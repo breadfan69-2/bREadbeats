@@ -29,6 +29,7 @@ class StrokeState:
     idle_time: float = 0.0       # Time since last beat
     jitter_angle: float = 0.0    # Current jitter rotation
     creep_angle: float = 0.0     # Current creep rotation
+    beat_counter: int = 0        # For beat skipping on fast tempos
 
 
 class StrokeMapper:
@@ -49,6 +50,10 @@ class StrokeMapper:
         self.random_arc_start = 0.0
         self.random_arc_end = np.pi
         self._return_timer: Optional[threading.Timer] = None
+        
+        # Beat factoring for fast tempos
+        self.max_strokes_per_sec = 4.5  # Maximum strokes per second
+        self.beat_factor = 1  # Skip every Nth beat
         
     def process_beat(self, event: BeatEvent) -> Optional[TCodeCommand]:
         """
@@ -74,8 +79,23 @@ class StrokeMapper:
         
         # Determine what to do
         if event.is_beat:
+            # Calculate beat rate and apply factoring if too fast
+            beat_interval = (now - self.state.last_beat_time) if self.state.last_beat_time > 0 else 1.0
+            beat_rate = 1.0 / beat_interval if beat_interval > 0 else 0
+            
+            # Determine beat factor to limit strokes to max_strokes_per_sec
+            if beat_rate > self.max_strokes_per_sec:
+                self.beat_factor = max(2, int(np.ceil(beat_rate / self.max_strokes_per_sec)))
+            else:
+                self.beat_factor = 1
+            
+            # Skip beat if not on factor boundary
+            self.state.beat_counter += 1
+            if self.state.beat_counter % self.beat_factor != 0:
+                return None
+            
             cmd = self._generate_beat_stroke(event)
-            print(f"[StrokeMapper] Beat -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} phase={self.state.phase:.2f}")
+            print(f"[StrokeMapper] Beat (factor={self.beat_factor}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
             return cmd
         elif self.state.idle_time > 0.5:  # 500ms of silence for idle motion
             cmd = self._generate_idle_motion(event)

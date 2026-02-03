@@ -420,6 +420,21 @@ class BREadbeatsWindow(QMainWindow):
         self._populate_audio_devices()
         self.device_combo.setMinimumWidth(300)
         device_layout.addWidget(self.device_combo)
+        
+        # Quick presets for common devices
+        self.preset_mic_btn = QPushButton("🎤 Mic (Reactive)")
+        self.preset_mic_btn.setFixedWidth(140)
+        self.preset_mic_btn.clicked.connect(self._set_device_preset_mic)
+        device_layout.addWidget(self.preset_mic_btn)
+        
+        self.preset_loopback_btn = QPushButton("🔊 System Audio")
+        self.preset_loopback_btn.setFixedWidth(140)
+        self.preset_loopback_btn.clicked.connect(self._set_device_preset_loopback)
+        device_layout.addWidget(self.preset_loopback_btn)
+        
+        # Connect device changes to update button states
+        self.device_combo.currentIndexChanged.connect(self._update_preset_button_states)
+        
         device_layout.addStretch()
         layout.addLayout(device_layout)
         
@@ -447,6 +462,13 @@ class BREadbeatsWindow(QMainWindow):
         self.beat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         btn_layout.addWidget(self.beat_indicator)
         
+        # BPM display
+        self.bpm_label = QLabel("BPM: --")
+        self.bpm_label.setStyleSheet("color: #0a0; font-size: 14px; font-weight: bold;")
+        self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.bpm_label.setFixedWidth(90)
+        btn_layout.addWidget(self.bpm_label)
+        
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
         
@@ -460,17 +482,82 @@ class BREadbeatsWindow(QMainWindow):
         self.device_combo.clear()
         self.audio_device_map = {}  # Map combo index to device index
         
+        loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
+        loopback_idx = None
         combo_idx = 0
         for i, dev in enumerate(devices):
             if dev['max_input_channels'] > 0:
                 name = f"[{i}] {dev['name']}"
                 self.device_combo.addItem(name)
                 self.audio_device_map[combo_idx] = i
-                combo_idx += 1
                 
-                # Pre-select device 21 (Realtek HD Audio Stereo) if available
-                if i == 21:
-                    self.device_combo.setCurrentIndex(combo_idx - 1)
+                # Find loopback device for default selection
+                if loopback_idx is None and any(keyword in dev['name'].lower() for keyword in loopback_keywords):
+                    loopback_idx = combo_idx
+                
+                combo_idx += 1
+        
+        # Pre-select Stereo Mix/loopback if available, otherwise first device
+        if loopback_idx is not None:
+            self.device_combo.setCurrentIndex(loopback_idx)
+        elif combo_idx > 0:
+            self.device_combo.setCurrentIndex(0)
+    
+    def _set_device_preset_mic(self):
+        """Switch to Sound Reactive mode (Microphone input)"""
+        # Find device 21 (microphone) in the map
+        for combo_idx, device_idx in self.audio_device_map.items():
+            if device_idx == 21:
+                self.device_combo.setCurrentIndex(combo_idx)
+                self.device_combo.currentIndexChanged.emit(combo_idx)
+                print("[Main] Switched to Sound Reactive mode (Microphone - Device 21)")
+                self._update_preset_button_states()
+                return
+        print("[Main] Sound Reactive device (21) not found")
+    
+    def _set_device_preset_loopback(self):
+        """Switch to System Audio mode (Loopback/Stereo Mix)"""
+        # Look for loopback/stereo mix devices
+        import sounddevice as sd
+        devices = sd.query_devices()
+        
+        loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
+        
+        for i, dev in enumerate(devices):
+            if dev['max_input_channels'] > 0:
+                name = dev['name'].lower()
+                if any(keyword in name for keyword in loopback_keywords):
+                    # Find this device in the combo
+                    for combo_idx, device_idx in self.audio_device_map.items():
+                        if device_idx == i:
+                            self.device_combo.setCurrentIndex(combo_idx)
+                            self.device_combo.currentIndexChanged.emit(combo_idx)
+                            print(f"[Main] Switched to System Audio mode (Device {i}: {dev['name']})")
+                            self._update_preset_button_states()
+                            return
+        
+        print("[Main] System Audio device not found. Enable 'Stereo Mix' or 'What U Hear' in sound settings")
+    
+    def _update_preset_button_states(self):
+        """Update button colors based on current device selection"""
+        current_device_idx = self.audio_device_map.get(self.device_combo.currentIndex())
+        
+        # Check if current device is microphone (device 21)
+        is_mic = current_device_idx == 21
+        
+        # Check if current device is loopback/stereo mix
+        is_loopback = False
+        if current_device_idx is not None:
+            import sounddevice as sd
+            devices = sd.query_devices()
+            if current_device_idx < len(devices):
+                dev_name = devices[current_device_idx]['name'].lower()
+                loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
+                is_loopback = any(keyword in dev_name for keyword in loopback_keywords)
+        
+        # Update button colors: green = active, white = inactive
+        self.preset_mic_btn.setStyleSheet("color: #0a0; font-weight: bold;" if is_mic else "color: #fff;")
+        self.preset_loopback_btn.setStyleSheet("color: #0a0; font-weight: bold;" if is_loopback else "color: #fff;")
     
     def _create_spectrum_panel(self) -> QGroupBox:
         """Spectrum visualizer panel"""
@@ -578,7 +665,7 @@ class BREadbeatsWindow(QMainWindow):
         layout.addWidget(self.sensitivity_slider)
         
         # Peak floor: minimum energy to consider (0 = disabled)
-        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.0, 0.01, 0.0, 4)
+        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.0, 0.005, 0.0, 5)
         self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
         layout.addWidget(self.peak_floor_slider)
         
@@ -594,6 +681,11 @@ class BREadbeatsWindow(QMainWindow):
         self.flux_mult_slider = SliderWithLabel("Flux Multiplier", 0.1, 5.0, 1.0, 1)
         self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
         layout.addWidget(self.flux_mult_slider)
+        
+        # Audio amplification/gain: boost weak signals (0.1=quiet, 10.0=loud)
+        self.audio_gain_slider = SliderWithLabel("Audio Amplification", 0.1, 10.0, 5.0, 1)
+        self.audio_gain_slider.valueChanged.connect(lambda v: setattr(self.config.audio, 'gain', v))
+        layout.addWidget(self.audio_gain_slider)
         
         layout.addStretch()
         return widget
@@ -840,6 +932,26 @@ class BREadbeatsWindow(QMainWindow):
         """Handle beat event in GUI thread"""
         if event.is_beat:
             self.beat_indicator.setStyleSheet("color: #0f0; font-size: 24px;")
+            
+            # Calculate BPM from beat interval
+            now = time.time()
+            if not hasattr(self, '_last_beat_time'):
+                self._last_beat_time = now
+                self._beat_intervals = []
+            
+            beat_interval = now - self._last_beat_time
+            self._last_beat_time = now
+            
+            # Keep a rolling window of beat intervals (last 5 beats)
+            self._beat_intervals.append(beat_interval)
+            if len(self._beat_intervals) > 5:
+                self._beat_intervals.pop(0)
+            
+            # Calculate average BPM
+            if len(self._beat_intervals) > 1:
+                avg_interval = np.mean(self._beat_intervals)
+                bpm = 60.0 / avg_interval if avg_interval > 0 else 0
+                self.bpm_label.setText(f"BPM: {bpm:.1f}")
         else:
             self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
     
