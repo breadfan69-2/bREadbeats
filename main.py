@@ -8,6 +8,10 @@ import numpy as np
 import queue
 import threading
 import time
+import json
+import os
+from pathlib import Path
+from dataclasses import asdict
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -26,6 +30,79 @@ from config import Config, StrokeMode, BeatDetectionType
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from stroke_mapper import StrokeMapper
+
+
+# Config persistence
+CONFIG_DIR = Path.home() / '.breadbeats'
+CONFIG_FILE = CONFIG_DIR / 'config.json'
+
+def save_config(config: Config) -> bool:
+    """Save config to JSON file"""
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(asdict(config), f, indent=2)
+        print(f"[Config] Saved to {CONFIG_FILE}")
+        return True
+    except Exception as e:
+        print(f"[Config] Failed to save: {e}")
+        return False
+
+def load_config() -> Config:
+    """Load config from JSON file, returns default if not found"""
+    try:
+        if CONFIG_FILE.exists():
+            with open(CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+            
+            # Reconstruct Config from dict (handles nested dataclasses)
+            config = Config()
+            
+            # Apply loaded values
+            if 'beat' in data:
+                for key, value in data['beat'].items():
+                    if hasattr(config.beat, key):
+                        setattr(config.beat, key, value)
+            
+            if 'stroke' in data:
+                for key, value in data['stroke'].items():
+                    if hasattr(config.stroke, key):
+                        setattr(config.stroke, key, value)
+            
+            if 'jitter' in data:
+                for key, value in data['jitter'].items():
+                    if hasattr(config.jitter, key):
+                        setattr(config.jitter, key, value)
+            
+            if 'creep' in data:
+                for key, value in data['creep'].items():
+                    if hasattr(config.creep, key):
+                        setattr(config.creep, key, value)
+            
+            if 'connection' in data:
+                for key, value in data['connection'].items():
+                    if hasattr(config.connection, key):
+                        setattr(config.connection, key, value)
+            
+            if 'audio' in data:
+                for key, value in data['audio'].items():
+                    if hasattr(config.audio, key):
+                        setattr(config.audio, key, value)
+            
+            # Top-level values
+            if 'alpha_weight' in data:
+                config.alpha_weight = data['alpha_weight']
+            if 'beta_weight' in data:
+                config.beta_weight = data['beta_weight']
+            
+            print(f"[Config] Loaded from {CONFIG_FILE}")
+            return config
+        else:
+            print(f"[Config] No saved config found, using defaults")
+            return Config()
+    except Exception as e:
+        print(f"[Config] Failed to load: {e}, using defaults")
+        return Config()
 
 
 class SignalBridge(QObject):
@@ -264,8 +341,8 @@ class BREadbeatsWindow(QMainWindow):
         self.setMinimumSize(900, 700)
         self.setStyleSheet(self._get_stylesheet())
         
-        # Initialize config and components
-        self.config = Config()
+        # Initialize config from saved file (or defaults)
+        self.config = load_config()
         self.signals = SignalBridge()
         
         # Command queue
@@ -273,6 +350,9 @@ class BREadbeatsWindow(QMainWindow):
         
         # Setup UI
         self._setup_ui()
+        
+        # Load config values into UI sliders
+        self._apply_config_to_ui()
         
         # Initialize engines (but don't start yet)
         self.audio_engine = None
@@ -382,6 +462,50 @@ class BREadbeatsWindow(QMainWindow):
         
         # Bottom: Tabs with sliders
         main_layout.addWidget(self._create_settings_tabs())
+    
+    def _apply_config_to_ui(self):
+        """Apply loaded config values to UI sliders"""
+        try:
+            # Beat detection tab
+            self.detection_type_combo.setCurrentIndex(self.config.beat.detection_type - 1)
+            self.sensitivity_slider.setValue(self.config.beat.sensitivity)
+            self.peak_floor_slider.setValue(self.config.beat.peak_floor)
+            self.peak_decay_slider.setValue(self.config.beat.peak_decay)
+            self.rise_sens_slider.setValue(self.config.beat.rise_sensitivity)
+            self.flux_mult_slider.setValue(self.config.beat.flux_multiplier)
+            self.audio_gain_slider.setValue(self.config.audio.gain)
+            self.freq_low_slider.setValue(self.config.beat.freq_low)
+            self.freq_high_slider.setValue(self.config.beat.freq_high)
+            self._on_freq_band_change()  # Update spectrum overlay
+            
+            # Stroke settings tab
+            self.mode_combo.setCurrentIndex(self.config.stroke.mode - 1)
+            self.stroke_min_slider.setValue(self.config.stroke.stroke_min)
+            self.stroke_max_slider.setValue(self.config.stroke.stroke_max)
+            self.min_interval_slider.setValue(self.config.stroke.min_interval_ms)
+            self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
+            self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
+            self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
+            self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
+            
+            # Jitter/Creep tab
+            self.jitter_enabled.setChecked(self.config.jitter.enabled)
+            self.jitter_amplitude_slider.setValue(self.config.jitter.amplitude)
+            self.jitter_intensity_slider.setValue(self.config.jitter.intensity)
+            self.creep_enabled.setChecked(self.config.creep.enabled)
+            self.creep_speed_slider.setValue(self.config.creep.speed)
+            
+            # Axis weights tab
+            self.alpha_weight_slider.setValue(self.config.alpha_weight)
+            self.beta_weight_slider.setValue(self.config.beta_weight)
+            
+            # Connection settings
+            self.host_edit.setText(self.config.connection.host)
+            self.port_spin.setValue(self.config.connection.port)
+            
+            print("[UI] Loaded all settings from config")
+        except AttributeError as e:
+            print(f"[UI] Warning: Could not apply all config values: {e}")
         
     def _create_connection_panel(self) -> QGroupBox:
         """Connection settings panel"""
@@ -1049,6 +1173,10 @@ class BREadbeatsWindow(QMainWindow):
         self._stop_engines()
         if self.network_engine:
             self.network_engine.stop()
+        
+        # Save config before closing
+        save_config(self.config)
+        
         event.accept()
 
 

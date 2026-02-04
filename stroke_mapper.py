@@ -384,7 +384,7 @@ class StrokeMapper:
         
         return alpha, beta
     
-    def _generate_idle_motion(self, event: BeatEvent) -> Optional[TCodeCommand]:
+    def _generate_idle_motion(self, event: Optional[BeatEvent]) -> Optional[TCodeCommand]:
         """Generate jitter motion when idle - quick random movements to nearby targets"""
         now = time.time()
         jitter_cfg = self.config.jitter
@@ -401,13 +401,43 @@ class StrokeMapper:
         
         alpha, beta = self.state.alpha, self.state.beta
         
-        # Jitter: small random movement to nearby target
+        # Creep: slowly rotate around outer edge of circle
+        if creep_cfg.enabled and creep_cfg.speed > 0:
+            # Tempo-synced creep: move 1/4 circle per beat
+            # Default speed multiplier is 1.0 = quarter circle per beat
+            # At 60 updates/sec (17ms throttle), calculate increment per update
+            bpm = getattr(event, 'bpm', 0.0) if event else 0.0
+            
+            if bpm > 0:
+                # Calculate: (π/2 radians per beat) / (updates per beat)
+                beats_per_sec = bpm / 60.0
+                updates_per_sec = 1000.0 / 17.0  # ~60 fps at 17ms throttle
+                updates_per_beat = updates_per_sec / beats_per_sec
+                angle_increment = (np.pi / 2.0) / updates_per_beat * creep_cfg.speed
+            else:
+                # Fallback when no tempo detected: use manual speed
+                angle_increment = creep_cfg.speed * 0.1
+            
+            self.state.creep_angle += angle_increment
+            if self.state.creep_angle >= 2 * np.pi:
+                self.state.creep_angle -= 2 * np.pi
+            
+            # Position on outer edge of circle (radius close to 1.0 for maximum extent)
+            creep_radius = 0.98
+            base_alpha = np.sin(self.state.creep_angle) * creep_radius
+            base_beta = np.cos(self.state.creep_angle) * creep_radius
+        else:
+            # No creep - stay at current position
+            base_alpha = alpha
+            base_beta = beta
+        
+        # Jitter: small random movement around the creep position
         # Amplitude controls the range of movement (circle size)
         jitter_range = jitter_cfg.amplitude
         
-        # Generate random target nearby current position
-        alpha_target = alpha + np.random.uniform(-jitter_range, jitter_range)
-        beta_target = beta + np.random.uniform(-jitter_range, jitter_range)
+        # Generate random target nearby creep position
+        alpha_target = base_alpha + np.random.uniform(-jitter_range, jitter_range)
+        beta_target = base_beta + np.random.uniform(-jitter_range, jitter_range)
         
         # Clamp to valid range
         alpha_target = np.clip(alpha_target, -1.0, 1.0)

@@ -25,6 +25,7 @@ class BeatDetectionConfig:
     peak_floor: float = 0.1           # Minimum threshold
     peak_decay: float = 0.9           # How fast peaks decay (0.0-1.0)
     rise_sensitivity: float = 0.5     # How fast a peak must hit to register
+    amplification: float = 1.0        # Audio amplification (slider 0-2)
     flux_multiplier: float = 1.0      # Weight of spectral flux
     # Frequency band selection (Hz)
     freq_low: float = 20.0            # Low cutoff frequency (Hz)
@@ -36,7 +37,7 @@ class StrokeConfig:
     mode: StrokeMode = StrokeMode.SIMPLE_CIRCLE
     stroke_min: float = 0.2           # Minimum stroke length (0.0-1.0)
     stroke_max: float = 1.0           # Maximum stroke length (0.0-1.0)
-    min_interval_ms: int = 170        # Minimum time between strokes (ms)
+    min_interval_ms: int = 300        # Minimum time between strokes (ms) - slider 200->1000
     stroke_fullness: float = 0.7      # How much params affect stroke length
     minimum_depth: float = 0.0        # Lower limit of stroke (absolute bottom)
     freq_depth_factor: float = 0.3    # How much frequency affects depth
@@ -51,13 +52,13 @@ class JitterConfig:
     """Jitter - micro-circles when no beat detected"""
     enabled: bool = True
     intensity: float = 0.3            # Speed of jitter movement
-    amplitude: float = 0.1            # Size of jitter circles (0.0-1.0)
+    amplitude: float = 0.1            # Circle size (slider 0.05-0.2)
 
 @dataclass
 class CreepConfig:
     """Creep - very slow movement when idle"""
     enabled: bool = True
-    speed: float = 0.05               # How fast to creep (0.0-1.0)
+    speed: float = 0.25               # How fast to creep (0.0-1.0) - 0.25 = 1/4 tempo speed
 
 @dataclass 
 class ConnectionConfig:

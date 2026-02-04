@@ -32,6 +32,7 @@ class BeatEvent:
     spectral_flux: float     # Current spectral flux value
     peak_energy: float       # Current peak energy value
     is_downbeat: bool = False # True if this is a downbeat (strong beat, beat 1)
+    bpm: float = 0.0          # Current tempo in beats per minute
 
 
 class AudioEngine:
@@ -71,11 +72,13 @@ class AudioEngine:
         # Keep recent beat intervals for smooth tempo estimation
         self.beat_intervals: list[float] = []  # In seconds
         self.smoothed_tempo: float = 0.0       # In BPM
+        self.last_known_tempo: float = 0.0     # Preserved tempo during silence
         self.tempo_history: list[float] = []   # For visualization
         self.last_beat_time: float = 0.0       # For calculating intervals
         self.beat_times: list[float] = []      # Last 10 beat times for stability
         self.predicted_next_beat: float = 0.0  # Predicted next beat time
         self.beat_position_in_measure: int = 0 # For downbeat tracking (1, 2, 3, 4...)
+        self.tempo_timeout_ms: float = 2000.0  # Reset tempo tracking after this many ms of silence
         
         # Downbeat detection (energy-based)
         self.beat_energies: list[float] = []   # Track intensity of beats
@@ -210,6 +213,19 @@ class AudioEngine:
         else:
             self.peak_envelope *= decay
             
+        # Check for tempo timeout (no beats for 2000ms)
+        current_time = time.time()
+        time_since_last_beat = (current_time - self.last_beat_time) * 1000 if self.last_beat_time > 0 else 0
+        
+        if time_since_last_beat > self.tempo_timeout_ms and len(self.beat_intervals) > 0:
+            # Timeout reached - reset tempo tracking but preserve last known tempo
+            print(f"[Tempo] No beats for {time_since_last_beat:.0f}ms - resetting tempo tracker (keeping BPM={self.smoothed_tempo:.1f})")
+            self.last_known_tempo = self.smoothed_tempo  # Preserve current tempo
+            self.beat_intervals.clear()
+            self.beat_times.clear()
+            self.beat_position_in_measure = 0
+            self.is_downbeat = False
+        
         # Detect beat based on mode (using band energy)
         is_beat = self._detect_beat(band_energy, spectral_flux)
         
@@ -217,6 +233,9 @@ class AudioEngine:
         freq = self._estimate_frequency(spectrum)
         
         # Create beat event using correct structure
+        # Use last_known_tempo if smoothed_tempo was reset
+        current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else self.last_known_tempo
+        
         event = BeatEvent(
             timestamp=time.time(),
             intensity=min(1.0, band_energy / max(0.0001, self.peak_envelope)),
@@ -224,7 +243,8 @@ class AudioEngine:
             is_beat=is_beat,
             spectral_flux=spectral_flux,
             peak_energy=band_energy,
-            is_downbeat=self.is_downbeat if is_beat else False  # Only downbeat if it's an actual beat
+            is_downbeat=self.is_downbeat if is_beat else False,  # Only downbeat if it's an actual beat
+            bpm=current_bpm
         )
         
         # Notify callback
@@ -383,6 +403,9 @@ class AudioEngine:
                                           (1 - smoothing_factor) * new_tempo)
                 else:
                     self.smoothed_tempo = new_tempo
+                
+                # Update last known tempo
+                self.last_known_tempo = self.smoothed_tempo
                 
                 # Predict next beat time
                 self._predict_next_beat(current_time)
