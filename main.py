@@ -1413,7 +1413,7 @@ class BREadbeatsWindow(QMainWindow):
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(QLabel("Stroke Mode:"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["1: Simple Circle", "2: Figure-8", "3: Random Arc", "4: User"])
+        self.mode_combo.addItems(["1: Circle", "2: Tear", "3: Spiral", "4: User (Flux/Peak)"])
         self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
         mode_layout.addWidget(self.mode_combo)
         mode_layout.addStretch()
@@ -1501,7 +1501,9 @@ class BREadbeatsWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
-        layout.addWidget(QLabel("Adjust how much each axis responds to beats and frequency:"))
+        layout.addWidget(QLabel("Modes 1-3: Scales axis amplitude (0=off, 1=normal, 2=double)"))
+        layout.addWidget(QLabel("Mode 4 (User): Controls flux/peak response (0=flux, 1=balanced, 2=peak)"))
+        layout.addWidget(QLabel(""))
         
         self.alpha_weight_slider = SliderWithLabel("Alpha Weight", 0.0, 2.0, 1.0)
         self.alpha_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'alpha_weight', v))

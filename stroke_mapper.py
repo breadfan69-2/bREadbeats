@@ -309,6 +309,10 @@ class StrokeMapper:
         """Calculate target position based on stroke mode"""
         mode = self.config.stroke.mode
         
+        # Get axis weights (used differently per mode)
+        alpha_weight = self.config.alpha_weight  # 0-2 range
+        beta_weight = self.config.beta_weight    # 0-2 range
+        
         if mode == StrokeMode.SIMPLE_CIRCLE:
             # Trace around the circle - each beat advances position on the edge
             # Larger movements (1/4 circle) for more noticeable motion
@@ -321,60 +325,94 @@ class StrokeMapper:
             radius = min_radius + (stroke_len * depth - min_radius) * event.intensity
             radius = max(min_radius, min(1.0, radius))
             
-            # Breadbeats uses sin for alpha (horizontal), cos for beta (vertical)
-            alpha = np.sin(angle) * radius
-            beta = np.cos(angle) * radius
+            # Modes 1-3: axis weights scale amplitude (0=off, 1=normal, 2=double)
+            alpha = np.sin(angle) * radius * alpha_weight
+            beta = np.cos(angle) * radius * beta_weight
             
         elif mode == StrokeMode.FIGURE_EIGHT:
-            # Figure-8 (lemniscate) pattern - smooth continuous trace
-            # Based on Breadbeats oscillating mode with varied positions
+            # TEAR-SHAPED - Variable radius semicircular motion (from edger477/funscript-tools)
+            # Creates teardrop shape: full radius at top, tapering to point at bottom
+            # Based on prostate 2D algorithm with tear-shaped radius variation
             self.figure8_phase = (self.figure8_phase + 0.125) % 1.0
-            t = self.figure8_phase * 2 * np.pi
             
-            # Radius based on intensity
-            min_radius = 0.2
-            scale = min_radius + (stroke_len * depth - min_radius) * event.intensity
+            # Angle traverses semicircle (0 to π) - top to bottom
+            angle = self.figure8_phase * np.pi
             
-            # Figure-8 parametric equations
-            alpha = np.sin(t) * scale
-            beta = np.sin(2 * t) * scale * 0.5
+            # Base radius from intensity
+            min_base = 0.2
+            max_radius = min_base + (stroke_len * depth - min_base) * event.intensity
+            
+            # Tear-shaped radius: full at top (0°), tapers to min at bottom (180°)
+            # Linear interpolation from 0° to 120°, then constant min from 120° to 180°
+            min_distance = 0.3  # Point of the tear (30% of max radius)
+            taper_end_angle = 2 * np.pi / 3  # 120 degrees
+            
+            if angle < taper_end_angle:
+                # Taper zone: interpolate from 1.0 to min_distance
+                taper_progress = angle / taper_end_angle
+                radius_scale = 1.0 - (1.0 - min_distance) * taper_progress
+            else:
+                # Constant zone: stay at min_distance
+                radius_scale = min_distance
+            
+            tear_radius = max_radius * radius_scale
+            
+            # Modes 1-3: axis weights scale amplitude (0=off, 1=normal, 2=double)
+            alpha = np.sin(angle) * tear_radius * alpha_weight
+            beta = np.cos(angle) * tear_radius * beta_weight
             
         elif mode == StrokeMode.RANDOM_ARC:
-            # Random arc segments - like Breadbeats "varied" mode
-            # Cycles through different positions based on time
-            if random.random() < 0.3:  # 30% chance to pick new arc
-                self.random_arc_start = random.uniform(0, 2 * np.pi)
-                arc_length = random.uniform(np.pi/4, np.pi)
-                self.random_arc_end = self.random_arc_start + arc_length
-            
-            # Move along current arc
+            # SPIRAL IN/OUT - Expanding and contracting spiral motion
+            # Creates a hypnotic spiral that pulses with intensity
             self.state.phase = (self.state.phase + 0.125) % 1.0
-            t = self.random_arc_start + self.state.phase * (self.random_arc_end - self.random_arc_start)
-            
-            # Radius based on intensity
-            min_radius = 0.2
-            radius = min_radius + (stroke_len * depth - min_radius) * event.intensity
-            
-            alpha = np.sin(t) * radius  # Match Breadbeats: sin for alpha
-            beta = np.cos(t) * radius   # cos for beta
-            
-        elif mode == StrokeMode.USER:
-            # User-controlled mode - like Breadbeats "adaptive" with frequency response
-            # Shape and radius react to frequency and intensity
-            self.state.phase = (self.state.phase + 0.125) % 1.0
-            freq_factor = self._freq_to_factor(event.frequency)
             angle = self.state.phase * 2 * np.pi
             
-            # Radius based on intensity
+            # Spiral radius oscillates based on beat counter
+            self.state.beat_counter = (self.state.beat_counter + 1) % 8
+            spiral_progress = self.state.beat_counter / 8.0  # 0-1 over 8 beats
+            
+            # Radius pulses: expands for 4 beats, contracts for 4 beats
+            if spiral_progress < 0.5:
+                radius_mult = spiral_progress * 2  # 0 to 1
+            else:
+                radius_mult = (1.0 - spiral_progress) * 2  # 1 to 0
+            
+            min_radius = 0.1
+            max_radius = min_radius + (stroke_len * depth - min_radius) * event.intensity
+            radius = min_radius + (max_radius - min_radius) * radius_mult
+            
+            # Modes 1-3: axis weights scale amplitude (0=off, 1=normal, 2=double)
+            alpha = np.sin(angle) * radius * alpha_weight
+            beta = np.cos(angle) * radius * beta_weight
+            
+        elif mode == StrokeMode.USER:
+            # User-controlled mode with axis weight sliders controlling flux/peak biasing
+            # Mode 4 (User): axis weights control flux/peak biasing
+            # Alpha weight: 0 = respond to flux, 2 = respond to peak (1 = balanced)
+            # Beta weight: 0 = respond to flux, 2 = respond to peak (1 = balanced)
+            self.state.phase = (self.state.phase + 0.125) % 1.0
+            angle = self.state.phase * 2 * np.pi
+            
+            # Get flux and peak values (normalized 0-1)
+            flux = min(1.0, event.spectral_flux * 10)  # Scale flux to roughly 0-1
+            peak = event.peak_energy
+            
+            # Calculate blend factors (0=flux, 1=peak) from axis weights
+            # weight=0 → 100% flux, weight=1 → 50/50, weight=2 → 100% peak
+            alpha_blend = alpha_weight / 2.0  # 0-1 range
+            beta_blend = beta_weight / 2.0    # 0-1 range
+            
+            # Blend flux and peak for each axis radius
+            alpha_response = flux * (1.0 - alpha_blend) + peak * alpha_blend
+            beta_response = flux * (1.0 - beta_blend) + peak * beta_blend
+            
+            # Base radius with response-based scaling
             min_radius = 0.2
-            radius = min_radius + (stroke_len * depth - min_radius) * event.intensity
+            alpha_radius = min_radius + (stroke_len * depth - min_radius) * alpha_response
+            beta_radius = min_radius + (stroke_len * depth - min_radius) * beta_response
             
-            # Ellipse with frequency-controlled aspect ratio (like Breadbeats alpha/beta weights)
-            # Low frequency = more vertical, high frequency = more horizontal
-            aspect = 0.5 + freq_factor  # 0.5 to 1.5
-            
-            alpha = np.sin(angle) * radius
-            beta = np.cos(angle) * radius * aspect
+            alpha = np.sin(angle) * alpha_radius
+            beta = np.cos(angle) * beta_radius
             
         else:
             # Fallback - simple continuous circle trace
