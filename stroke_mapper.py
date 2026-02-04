@@ -160,20 +160,23 @@ class StrokeMapper:
         alpha_weight = self.config.alpha_weight
         beta_weight = self.config.beta_weight
         
-        # Generate arc: FULL circle (0 to 2π) 
-        # More points for smoother motion over longer duration
+        # Generate arc: Use _get_stroke_target for each point in the arc
         n_points = max(16, int(measure_duration_ms / 20))  # 1 point per 20ms
-        arc_theta = np.linspace(0, 2 * np.pi, n_points)
-        
-        # Alpha = cos, Beta = sin
-        alpha_arc = radius * alpha_weight * np.cos(arc_theta)
-        beta_arc = radius * beta_weight * np.sin(arc_theta)
-        
+        arc_phases = np.linspace(0, 1, n_points, endpoint=False)
+        alpha_arc = np.zeros(n_points)
+        beta_arc = np.zeros(n_points)
+        for i, phase in enumerate(arc_phases):
+            # Temporarily set phase for this point
+            prev_phase = self.state.phase
+            self.state.phase = phase
+            alpha, beta = self._get_stroke_target(stroke_len, depth, event)
+            alpha_arc[i] = alpha
+            beta_arc[i] = beta
+            self.state.phase = prev_phase  # Restore phase
         # Calculate step durations with proper remainder distribution
         base_step = measure_duration_ms // n_points
         remainder = measure_duration_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
-        
         # Start arc thread
         self._stop_arc = False
         self._arc_thread = threading.Thread(
@@ -182,13 +185,10 @@ class StrokeMapper:
             daemon=True
         )
         self._arc_thread.start()
-        
         # Update state
         self.state.last_stroke_time = now
         self.state.last_beat_time = now
-        
-        print(f"[StrokeMapper] ⬇ DOWNBEAT ARC start r={radius:.2f} ({n_points} pts, {measure_duration_ms}ms total, full measure)")
-        
+        print(f"[StrokeMapper] ⬇ DOWNBEAT ARC start (mode={self.config.stroke.mode.name}) ({n_points} pts, {measure_duration_ms}ms total, full measure)")
         # Don't return a command here - the arc thread will send all points
         # Returning None signals that the arc is being handled asynchronously
         return None
@@ -233,22 +233,23 @@ class StrokeMapper:
         alpha_weight = self.config.alpha_weight
         beta_weight = self.config.beta_weight
         
-        # Generate arc: FULL circle (0 to 2π) like Breadbeats
-        # n_points = duration/10ms (Breadbeats standard)
+        # Generate arc: Use _get_stroke_target for each point in the arc
         n_points = max(8, int(beat_interval_ms / 10))
-        arc_theta = np.linspace(0, 2 * np.pi, n_points)
-        
-        # Alpha = cos, Beta = sin (Breadbeats convention for arc)
-        alpha_arc = radius * alpha_weight * np.cos(arc_theta)
-        beta_arc = radius * beta_weight * np.sin(arc_theta)
-        
-        # Calculate step durations with proper remainder distribution (Breadbeats approach)
-        # This ensures all ms are used without losing precision
+        arc_phases = np.linspace(0, 1, n_points, endpoint=False)
+        alpha_arc = np.zeros(n_points)
+        beta_arc = np.zeros(n_points)
+        for i, phase in enumerate(arc_phases):
+            prev_phase = self.state.phase
+            self.state.phase = phase
+            alpha, beta = self._get_stroke_target(stroke_len, depth, event)
+            alpha_arc[i] = alpha
+            beta_arc[i] = beta
+            self.state.phase = prev_phase
+        # Calculate step durations with proper remainder distribution
         base_step = beat_interval_ms // n_points
         remainder = beat_interval_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
-        
-        # Start arc thread to send points synchronously with sleep (like Breadbeats)
+        # Start arc thread
         self._stop_arc = False
         self._arc_thread = threading.Thread(
             target=self._send_arc_synchronous,
@@ -256,18 +257,15 @@ class StrokeMapper:
             daemon=True
         )
         self._arc_thread.start()
-        
         # Update state
         self.state.last_stroke_time = now
         self.state.last_beat_time = now
-        
         # Return first point immediately
         first_alpha = float(alpha_arc[0])
         first_beta = float(beta_arc[0])
         self.state.alpha = first_alpha
         self.state.beta = first_beta
-        
-        print(f"[StrokeMapper] ARC start r={radius:.2f} ({n_points} pts, {beat_interval_ms}ms total, full 2π)")
+        print(f"[StrokeMapper] ARC start (mode={self.config.stroke.mode.name}) ({n_points} pts, {beat_interval_ms}ms total)")
         return TCodeCommand(first_alpha, first_beta, step_durations[0])
     
     def _send_arc_synchronous(self, alpha_arc: np.ndarray, beta_arc: np.ndarray, step_durations: list, n_points: int):
@@ -308,90 +306,64 @@ class StrokeMapper:
     def _get_stroke_target(self, stroke_len: float, depth: float, event: BeatEvent) -> Tuple[float, float]:
         """Calculate target position based on stroke mode"""
         mode = self.config.stroke.mode
-        
+        # Debug print to confirm mode switching and parameters
+        print(f"[StrokeMapper] _get_stroke_target: mode={mode.name} stroke_len={stroke_len:.3f} depth={depth:.3f} intensity={event.intensity:.3f}")
         # Get axis weights (used differently per mode)
         alpha_weight = self.config.alpha_weight  # 0-2 range
         beta_weight = self.config.beta_weight    # 0-2 range
         
+        phase_advance = self.config.stroke.phase_advance
         if mode == StrokeMode.SIMPLE_CIRCLE:
-            # Trace around the circle - each beat advances position on the edge
-            # Larger movements (1/4 circle) for more noticeable motion
-            self.state.phase = (self.state.phase + 0.25) % 1.0  # 1/4 circle per beat = 4 beats full circle
+            # Standard circle
+            self.state.phase = (self.state.phase + phase_advance) % 1.0
             angle = self.state.phase * 2 * np.pi
-            
-            # Radius based on intensity (like Breadbeats norm_energy * impact)
-            # At minimum, use some radius so there's always motion
             min_radius = 0.3
             radius = min_radius + (stroke_len * depth - min_radius) * event.intensity
             radius = max(min_radius, min(1.0, radius))
-            
-            # Modes 1-3: axis weights scale amplitude (0=off, 1=normal, 2=double)
             alpha = np.sin(angle) * radius * alpha_weight
             beta = np.cos(angle) * radius * beta_weight
-            
-        elif mode == StrokeMode.FIGURE_EIGHT:
-            # TEAR-SHAPED - Variable radius semicircular motion (from edger477/funscript-tools)
-            # Creates teardrop shape: full radius at top, tapering to point at bottom
-            # Based on prostate 2D algorithm with tear-shaped radius variation
-            self.figure8_phase = (self.figure8_phase + 0.125) % 1.0
-            
-            # Angle traverses semicircle (0 to π) - top to bottom
-            angle = self.figure8_phase * np.pi
-            
-            # Base radius from intensity
-            min_base = 0.2
-            max_radius = min_base + (stroke_len * depth - min_base) * event.intensity
-            
-            # Tear-shaped radius: full at top (0°), tapers to min at bottom (180°)
-            # Linear interpolation from 0° to 120°, then constant min from 120° to 180°
-            min_distance = 0.3  # Point of the tear (30% of max radius)
-            taper_end_angle = 2 * np.pi / 3  # 120 degrees
-            
-            if angle < taper_end_angle:
-                # Taper zone: interpolate from 1.0 to min_distance
-                taper_progress = angle / taper_end_angle
-                radius_scale = 1.0 - (1.0 - min_distance) * taper_progress
-            else:
-                # Constant zone: stay at min_distance
-                radius_scale = min_distance
-            
-            tear_radius = max_radius * radius_scale
-            
-            # Modes 1-3: axis weights scale amplitude (0=off, 1=normal, 2=double)
-            alpha = np.sin(angle) * tear_radius * alpha_weight
-            beta = np.cos(angle) * tear_radius * beta_weight
-            
-        elif mode == StrokeMode.RANDOM_ARC:
-            # SPIRAL IN/OUT - Expanding and contracting spiral motion
-            # Creates a hypnotic spiral that pulses with intensity
-            self.state.phase = (self.state.phase + 0.125) % 1.0
-            angle = self.state.phase * 2 * np.pi
-            
-            # Spiral radius oscillates based on beat counter
-            self.state.beat_counter = (self.state.beat_counter + 1) % 8
-            spiral_progress = self.state.beat_counter / 8.0  # 0-1 over 8 beats
-            
-            # Radius pulses: expands for 4 beats, contracts for 4 beats
-            if spiral_progress < 0.5:
-                radius_mult = spiral_progress * 2  # 0 to 1
-            else:
-                radius_mult = (1.0 - spiral_progress) * 2  # 1 to 0
-            
-            min_radius = 0.1
-            max_radius = min_radius + (stroke_len * depth - min_radius) * event.intensity
-            radius = min_radius + (max_radius - min_radius) * radius_mult
-            
-            # Modes 1-3: axis weights scale amplitude (0=off, 1=normal, 2=double)
-            alpha = np.sin(angle) * radius * alpha_weight
-            beta = np.cos(angle) * radius * beta_weight
+
+        elif mode == StrokeMode.SPIRAL:
+            # Symmetric, centered Archimedean spiral: r = b * theta, theta in [-theta_max, +theta_max]
+            self.state.phase = (self.state.phase + phase_advance) % 1.0
+            revolutions = 2  # Number of spiral turns (adjustable)
+            theta_max = revolutions * 2 * np.pi
+            theta = (self.state.phase - 0.5) * 2 * theta_max  # theta in [-theta_max, +theta_max]
+            # Scale b so that at theta_max, r nearly reaches 1.0 (with margin)
+            margin = 0.1
+            b = (1.0 - margin) / theta_max
+            # Spiral radius modulated by stroke_len, depth, and intensity
+            r = b * theta * stroke_len * depth * event.intensity
+            alpha = r * np.cos(theta) * alpha_weight
+            beta = r * np.sin(theta) * beta_weight
+            # Clamp to [-1,1]
+            alpha = np.clip(alpha, -1.0, 1.0)
+            beta = np.clip(beta, -1.0, 1.0)
+
+        elif mode == StrokeMode.TEARDROP:
+            # Teardrop shape (piriform):
+            # x = a * (sin t - 0.5 * sin(2t)), y = -a * cos t, t in [-pi, pi] for full sweep
+            self.state.phase = (self.state.phase + phase_advance) % 1.0
+            t = (self.state.phase - 0.5) * 2 * np.pi  # t in [-pi, pi]
+            a = stroke_len * depth * event.intensity
+            x = a * (np.sin(t) - 0.5 * np.sin(2 * t))
+            y = -a * np.cos(t)
+            # Rotate so the teardrop points up
+            angle = np.pi / 2
+            alpha = x * np.cos(angle) - y * np.sin(angle)
+            beta = x * np.sin(angle) + y * np.cos(angle)
+            # Apply axis weights
+            alpha *= alpha_weight
+            beta *= beta_weight
+            # Clamp to [-1,1]
+            alpha = np.clip(alpha, -1.0, 1.0)
+            beta = np.clip(beta, -1.0, 1.0)
             
         elif mode == StrokeMode.USER:
             # User-controlled mode with axis weight sliders controlling flux/peak biasing
-            # Mode 4 (User): axis weights control flux/peak biasing
-            # Alpha weight: 0 = respond to flux, 2 = respond to peak (1 = balanced)
-            # Beta weight: 0 = respond to flux, 2 = respond to peak (1 = balanced)
-            self.state.phase = (self.state.phase + 0.125) % 1.0
+            self.state.phase = (self.state.phase + phase_advance) % 1.0
             angle = self.state.phase * 2 * np.pi
+            print(f"[DEBUG] MODE4 (USER): angle={angle:.2f}, alpha_radius={{alpha_radius if 'alpha_radius' in locals() else 'N/A'}}, beta_radius={{beta_radius if 'beta_radius' in locals() else 'N/A'}}, alpha={{np.sin(angle) * alpha_radius if 'alpha_radius' in locals() else 'N/A'}}, beta={{np.cos(angle) * beta_radius if 'beta_radius' in locals() else 'N/A'}}")
             
             # Get flux and peak values (normalized 0-1)
             flux = min(1.0, event.spectral_flux * 10)  # Scale flux to roughly 0-1
@@ -416,7 +388,7 @@ class StrokeMapper:
             
         else:
             # Fallback - simple continuous circle trace
-            self.state.phase = (self.state.phase + 0.125) % 1.0
+            self.state.phase = (self.state.phase + phase_advance) % 1.0
             angle = self.state.phase * 2 * np.pi
             
             # Radius based on intensity
