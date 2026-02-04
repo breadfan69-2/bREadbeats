@@ -500,6 +500,9 @@ class BREadbeatsWindow(QMainWindow):
         # Load config values into UI sliders
         self._apply_config_to_ui()
         
+        # Load presets from disk
+        self._load_presets_from_disk()
+        
         # Initialize engines (but don't start yet)
         self.audio_engine = None
         self.network_engine = None
@@ -1257,8 +1260,9 @@ class BREadbeatsWindow(QMainWindow):
         self.spectrum_canvas.set_frequency_band(low / max_freq, high / max_freq)
     
     def _save_freq_preset(self, idx: int):
-        """Save current beat detection settings (all sliders + frequency band) to custom preset"""
+        """Save ALL settings from all 4 tabs to custom preset"""
         preset_data = {
+            # Beat Detection Tab
             'freq_low': self.freq_low_slider.value(),
             'freq_high': self.freq_high_slider.value(),
             'sensitivity': self.sensitivity_slider.value(),
@@ -1267,15 +1271,39 @@ class BREadbeatsWindow(QMainWindow):
             'rise_sensitivity': self.rise_sens_slider.value(),
             'flux_multiplier': self.flux_mult_slider.value(),
             'audio_gain': self.audio_gain_slider.value(),
+            'detection_type': self.detection_type_combo.currentIndex(),
+            
+            # Stroke Settings Tab
+            'stroke_mode': self.mode_combo.currentIndex(),
+            'stroke_min': self.stroke_min_slider.value(),
+            'stroke_max': self.stroke_max_slider.value(),
+            'min_interval_ms': int(self.min_interval_slider.value()),
+            'stroke_fullness': self.fullness_slider.value(),
+            'minimum_depth': self.min_depth_slider.value(),
+            'freq_depth_factor': self.freq_depth_slider.value(),
+            'flux_threshold': self.flux_threshold_slider.value(),
+            
+            # Jitter / Creep Tab
+            'jitter_enabled': self.jitter_enabled.isChecked(),
+            'jitter_amplitude': self.jitter_amplitude_slider.value(),
+            'jitter_intensity': self.jitter_intensity_slider.value(),
+            'creep_enabled': self.creep_enabled.isChecked(),
+            'creep_speed': self.creep_speed_slider.value(),
+            
+            # Axis Weights Tab
+            'alpha_weight': self.alpha_weight_slider.value(),
+            'beta_weight': self.beta_weight_slider.value(),
         }
         self.custom_beat_presets[idx] = preset_data
         self.preset_buttons[idx].setStyleSheet("background-color: #5d5f5f; font-weight: bold;")  # Highlight saved preset
-        print(f"[Config] Saved beat detection preset {idx+1}: {preset_data}")
+        print(f"[Config] Saved preset {idx+1} with all settings")
     
     def _load_freq_preset(self, idx: int):
-        """Load custom beat detection preset (all sliders + frequency band)"""
+        """Load ALL settings from all 4 tabs from custom preset"""
         if idx in self.custom_beat_presets:
             preset_data = self.custom_beat_presets[idx]
+            
+            # Beat Detection Tab
             self.freq_low_slider.setValue(preset_data['freq_low'])
             self.freq_high_slider.setValue(preset_data['freq_high'])
             self.sensitivity_slider.setValue(preset_data['sensitivity'])
@@ -1284,7 +1312,30 @@ class BREadbeatsWindow(QMainWindow):
             self.rise_sens_slider.setValue(preset_data['rise_sensitivity'])
             self.flux_mult_slider.setValue(preset_data['flux_multiplier'])
             self.audio_gain_slider.setValue(preset_data['audio_gain'])
-            print(f"[Config] Loaded beat detection preset {idx+1}")
+            self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
+            
+            # Stroke Settings Tab
+            self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
+            self.stroke_min_slider.setValue(preset_data['stroke_min'])
+            self.stroke_max_slider.setValue(preset_data['stroke_max'])
+            self.min_interval_slider.setValue(preset_data['min_interval_ms'])
+            self.fullness_slider.setValue(preset_data['stroke_fullness'])
+            self.min_depth_slider.setValue(preset_data['minimum_depth'])
+            self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
+            self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
+            
+            # Jitter / Creep Tab
+            self.jitter_enabled.setChecked(preset_data['jitter_enabled'])
+            self.jitter_amplitude_slider.setValue(preset_data['jitter_amplitude'])
+            self.jitter_intensity_slider.setValue(preset_data['jitter_intensity'])
+            self.creep_enabled.setChecked(preset_data['creep_enabled'])
+            self.creep_speed_slider.setValue(preset_data['creep_speed'])
+            
+            # Axis Weights Tab
+            self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
+            self.beta_weight_slider.setValue(preset_data['beta_weight'])
+            
+            print(f"[Config] Loaded preset {idx+1} with all settings")
         else:
             print(f"[Config] Preset {idx+1} not saved yet")
     
@@ -1295,6 +1346,42 @@ class BREadbeatsWindow(QMainWindow):
     def _load_beat_preset(self, idx: int):
         """Alias for _load_freq_preset (called by left-click)"""
         self._load_freq_preset(idx)
+    
+    def _get_presets_file_path(self) -> Path:
+        """Get the path to the presets file"""
+        config_dir = Path.home() / ".bREadbeats"
+        config_dir.mkdir(exist_ok=True)
+        return config_dir / "presets.json"
+    
+    def _save_presets_to_disk(self):
+        """Save all custom presets to disk"""
+        try:
+            presets_file = self._get_presets_file_path()
+            with open(presets_file, 'w') as f:
+                json.dump(self.custom_beat_presets, f, indent=2)
+            print(f"[Presets] Saved {len(self.custom_beat_presets)} presets to {presets_file}")
+        except Exception as e:
+            print(f"[Presets] Error saving presets: {e}")
+    
+    def _load_presets_from_disk(self):
+        """Load custom presets from disk"""
+        try:
+            presets_file = self._get_presets_file_path()
+            if presets_file.exists():
+                with open(presets_file, 'r') as f:
+                    self.custom_beat_presets = json.load(f)
+                # Highlight any saved presets
+                for idx in self.custom_beat_presets.keys():
+                    idx_int = int(idx)
+                    if idx_int < len(self.preset_buttons):
+                        self.preset_buttons[idx_int].setStyleSheet("background-color: #5d5f5f; font-weight: bold;")
+                print(f"[Presets] Loaded {len(self.custom_beat_presets)} presets from {presets_file}")
+            else:
+                self.custom_beat_presets = {}
+                print(f"[Presets] No presets file found, starting with empty presets")
+        except Exception as e:
+            print(f"[Presets] Error loading presets: {e}")
+            self.custom_beat_presets = {}
     
     def _create_stroke_settings_tab(self) -> QWidget:
         """Stroke generation settings"""
@@ -1599,6 +1686,9 @@ class BREadbeatsWindow(QMainWindow):
         
         # Save config before closing
         save_config(self.config)
+        
+        # Save presets to disk
+        self._save_presets_to_disk()
         
         event.accept()
 
