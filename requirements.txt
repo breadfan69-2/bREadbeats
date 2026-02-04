@@ -13,3 +13,6 @@ matplotlib>=3.7.0
 
 # Optional: beat detection enhancement (falls back gracefully if missing)
 aubio>=0.4.9
+
+# Build tool (for creating standalone exe from source)
+PyInstaller>=6.0.0

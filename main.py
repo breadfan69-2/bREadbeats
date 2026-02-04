@@ -483,9 +483,30 @@ class BREadbeatsWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        self.setWindowTitle("bREadbeats - Audio to restim")
+        self.setWindowTitle("bREadbeats")
         self.setMinimumSize(900, 700)
         self.setStyleSheet(self._get_stylesheet())
+        
+        # Set window icon (appears in taskbar and title bar)
+        try:
+            from pathlib import Path
+            import sys
+            from PyQt6.QtGui import QIcon
+            
+            # Handle both development and packaged (PyInstaller) modes
+            if getattr(sys, 'frozen', False):
+                # Running as packaged exe
+                icon_path = Path(sys._MEIPASS) / 'bREadbeats.ico'
+            else:
+                # Running from source
+                icon_path = Path(__file__).parent / 'bREadbeats.ico'
+            
+            if icon_path.exists():
+                self.setWindowIcon(QIcon(str(icon_path)))
+            else:
+                print(f"[UI] Icon not found at: {icon_path}")
+        except Exception as e:
+            print(f"[UI] Could not load icon: {e}")
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
