@@ -73,10 +73,12 @@ class AudioConfig:
     sample_rate: int = 44100
     buffer_size: int = 1024
     channels: int = 2
-    # Device index - None = auto-detect Stereo Mix/loopback, otherwise use specified index
-    device_index: int | None = None
-    # Audio gain/amplification (for weak devices like Stereo Mix)
-    gain: float = 5.0  # Multiply input signal by this amount
+    # Device 1 = Stereo Mix (MME) - should capture after linking to LOGITECH SPEAKERS
+    device_index: int | None = 1
+    # Audio gain/amplification removed - not in original working config
+    gain: float = 1.0  # Changed from 100x back to 1x (no amplification)
+    # Audio gain/amplification removed - not in original working config
+    gain: float = 1.0  # Changed from 100x back to 1x (no amplification)
 
 @dataclass
 class Config:

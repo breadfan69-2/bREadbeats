@@ -1,11 +1,11 @@
 """
 bREadbeats - Audio Engine
 Captures system audio and detects beats using spectral flux / peak energy.
-Uses sounddevice for low-latency capture and aubio for beat detection.
+Uses pyaudiowpatch for WASAPI loopback capture.
 """
 
 import numpy as np
-import sounddevice as sd
+import pyaudiowpatch as pyaudio
 import threading
 import queue
 from dataclasses import dataclass
@@ -44,8 +44,9 @@ class AudioEngine:
         self.config = config
         self.beat_callback = beat_callback
         
-        # Audio stream
-        self.stream: Optional[sd.InputStream] = None
+        # Audio stream (PyAudio)
+        self.pyaudio = None
+        self.stream = None
         self.running = False
         
         # Beat detection state
@@ -104,93 +105,71 @@ class AudioEngine:
             )
             self.beat_detector.set_threshold(self.config.beat.sensitivity)
         
-        # Find loopback device (system audio)
-        device = self._find_loopback_device()
+        # Initialize PyAudio
+        self.pyaudio = pyaudio.PyAudio()
         
-        # Start audio stream with error handling
         try:
-            self.stream = sd.InputStream(
-                device=device,
+            # Get default WASAPI loopback device
+            wasapi_info = self.pyaudio.get_host_api_info_by_type(pyaudio.paWASAPI)
+            default_speakers = self.pyaudio.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            
+            # Check if it's already a loopback device, otherwise find the loopback version
+            if not default_speakers["isLoopbackDevice"]:
+                for loopback in self.pyaudio.get_loopback_device_info_generator():
+                    if default_speakers["name"] in loopback["name"]:
+                        default_speakers = loopback
+                        break
+            
+            print(f"[AudioEngine] Using WASAPI loopback: {default_speakers['name']}")
+            print(f"[AudioEngine] Channels: {default_speakers['maxInputChannels']}, SR: {int(default_speakers['defaultSampleRate'])}Hz")
+            
+            # Update config with actual sample rate
+            self.config.audio.sample_rate = int(default_speakers['defaultSampleRate'])
+            self.config.audio.channels = default_speakers['maxInputChannels']
+            
+            # Open stream
+            self.stream = self.pyaudio.open(
+                format=pyaudio.paFloat32,
                 channels=self.config.audio.channels,
-                samplerate=self.config.audio.sample_rate,
-                blocksize=self.config.audio.buffer_size,
-                callback=self._audio_callback,
-                dtype=np.float32
+                rate=self.config.audio.sample_rate,
+                frames_per_buffer=self.config.audio.buffer_size,
+                input=True,
+                input_device_index=default_speakers["index"],
+                stream_callback=self._audio_callback_pyaudio
             )
-            self.stream.start()
-            print(f"[AudioEngine] Started - Device: {device}, SR: {self.config.audio.sample_rate}")
+            
+            self.stream.start_stream()
+            print("[AudioEngine] WASAPI loopback capture started successfully!")
+            
         except Exception as e:
-            print(f"[AudioEngine] Error opening device {device}: {e}")
-            # Try with device's native sample rate
-            try:
-                dev_info = sd.query_devices(device)
-                native_sr = int(dev_info['default_samplerate'])
-                print(f"[AudioEngine] Retrying with native sample rate: {native_sr}")
-                self.config.audio.sample_rate = native_sr
-                self.stream = sd.InputStream(
-                    device=device,
-                    channels=self.config.audio.channels,
-                    samplerate=native_sr,
-                    blocksize=self.config.audio.buffer_size,
-                    callback=self._audio_callback,
-                    dtype=np.float32
-                )
-                self.stream.start()
-                print(f"[AudioEngine] Started - Device: {device}, SR: {native_sr}")
-            except Exception as e2:
-                print(f"[AudioEngine] Failed to open audio device: {e2}")
-                self.running = False
-                return
+            print(f"[AudioEngine] Failed to start: {e}")
+            self.running = False
+            if self.pyaudio:
+                self.pyaudio.terminate()
+                self.pyaudio = None
+
         
     def stop(self):
         """Stop audio capture"""
         self.running = False
         if self.stream:
-            self.stream.stop()
+            self.stream.stop_stream()
             self.stream.close()
             self.stream = None
+        if self.pyaudio:
+            self.pyaudio.terminate()
+            self.pyaudio = None
         print("[AudioEngine] Stopped")
-        
-    def _find_loopback_device(self) -> Optional[int]:
-        """Find the system loopback device for 'What-U-Hear' capture"""
-        if self.config.audio.device_index is not None:
-            return self.config.audio.device_index
-            
-        devices = sd.query_devices()
-        
-        # Print all available devices for debugging
-        print("[AudioEngine] Available audio devices:")
-        for i, dev in enumerate(devices):
-            if dev['max_input_channels'] > 0:
-                print(f"  [{i}] {dev['name']} (inputs={dev['max_input_channels']})")
-        
-        # Look for WASAPI loopback on Windows (preferred)
-        for i, dev in enumerate(devices):
-            name = dev['name'].lower()
-            # WASAPI loopback is the most reliable on Windows
-            if 'wasapi' in name and 'loopback' in name:
-                print(f"[AudioEngine] Selected WASAPI loopback: {dev['name']}")
-                return i
-        
-        # Fallback to Stereo Mix or similar
-        for i, dev in enumerate(devices):
-            name = dev['name'].lower()
-            if 'loopback' in name or 'stereo mix' in name or 'what u hear' in name:
-                print(f"[AudioEngine] Selected: {dev['name']}")
-                return i
-                
-        # Fallback to default input
-        print("[AudioEngine] No loopback found, using default input")
-        return None
-        
-    def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
-        """Process incoming audio data"""
-        if status:
-            print(f"[AudioEngine] Status: {status}")
-            
+    
+    def _audio_callback_pyaudio(self, in_data, frame_count, time_info, status):
+        """PyAudio callback - process incoming audio data"""
         if not self.running:
-            return
-            
+            return (in_data, pyaudio.paContinue)
+        
+        # Convert bytes to numpy array
+        indata = np.frombuffer(in_data, dtype=np.float32)
+        indata = indata.reshape(-1, self.config.audio.channels)
+        
         # Convert to mono
         if indata.shape[1] > 1:
             mono = np.mean(indata, axis=1)
@@ -219,7 +198,10 @@ class AudioEngine:
             self._debug_counter = 0
         self._debug_counter += 1
         if self._debug_counter % 20 == 0:
-            print(f"[Audio] band_energy={band_energy:.6f} flux={spectral_flux:.4f} peak_env={self.peak_envelope:.6f}")
+            # Log raw audio level too
+            raw_rms = np.sqrt(np.mean(mono ** 2))
+            full_spectrum_energy = np.sqrt(np.mean(spectrum ** 2)) if len(spectrum) > 0 else 0
+            print(f"[Audio] raw_rms={raw_rms:.6f} full_spectrum={full_spectrum_energy:.6f} band_energy={band_energy:.6f} flux={spectral_flux:.4f} peak_env={self.peak_envelope:.6f}")
         
         # Track peak envelope with decay (using band energy)
         decay = self.config.beat.peak_decay
@@ -234,7 +216,7 @@ class AudioEngine:
         # Estimate dominant frequency
         freq = self._estimate_frequency(spectrum)
         
-        # Create beat event
+        # Create beat event using correct structure
         event = BeatEvent(
             timestamp=time.time(),
             intensity=min(1.0, band_energy / max(0.0001, self.peak_envelope)),
@@ -247,6 +229,8 @@ class AudioEngine:
         
         # Notify callback
         self.beat_callback(event)
+        
+        return (in_data, pyaudio.paContinue)
     
     def _filter_frequency_band(self, spectrum: np.ndarray) -> np.ndarray:
         """Filter spectrum to selected frequency band"""
