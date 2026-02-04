@@ -58,7 +58,7 @@ class JitterConfig:
 class CreepConfig:
     """Creep - very slow movement when idle"""
     enabled: bool = True
-    speed: float = 0.25               # How fast to creep (0.0-1.0) - 0.25 = 1/4 tempo speed
+    speed: float = 0.25               # Multiplier for creep rotation (0.0-1.0+) - 1.0 = 1/4 circle per beat
 
 @dataclass 
 class ConnectionConfig:

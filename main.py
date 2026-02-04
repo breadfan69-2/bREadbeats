@@ -412,6 +412,24 @@ class PositionCanvas(FigureCanvas):
             pass
 
 
+class PresetButton(QPushButton):
+    """Custom button that emits different signals for left-click (load) vs right-click (save)"""
+    
+    left_clicked = pyqtSignal()
+    right_clicked = pyqtSignal()
+    
+    def __init__(self, label: str):
+        super().__init__(label)
+        self.setMinimumWidth(40)
+    
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.left_clicked.emit()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.right_clicked.emit()
+        super().mousePressEvent(event)
+
+
 class SliderWithLabel(QWidget):
     """Slider with label showing current value"""
     
@@ -1164,34 +1182,29 @@ class BREadbeatsWindow(QMainWindow):
         self.freq_high_slider.valueChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_high_slider)
         
-        # Preset buttons for common ranges
-        preset_layout = QHBoxLayout()
-        preset_layout.addWidget(QLabel("Presets:"))
-        
-        bass_btn = QPushButton("Bass (20-200)")
-        bass_btn.clicked.connect(lambda: self._set_freq_preset(20, 200))
-        preset_layout.addWidget(bass_btn)
-        
-        kick_btn = QPushButton("Kick (40-100)")
-        kick_btn.clicked.connect(lambda: self._set_freq_preset(40, 100))
-        preset_layout.addWidget(kick_btn)
-        
-        snare_btn = QPushButton("Snare (200-1000)")
-        snare_btn.clicked.connect(lambda: self._set_freq_preset(200, 1000))
-        preset_layout.addWidget(snare_btn)
-        
-        hihat_btn = QPushButton("Hi-Hat (5k-15k)")
-        hihat_btn.clicked.connect(lambda: self._set_freq_preset(5000, 15000))
-        preset_layout.addWidget(hihat_btn)
-        
-        full_btn = QPushButton("Full")
-        full_btn.clicked.connect(lambda: self._set_freq_preset(20, 20000))
-        preset_layout.addWidget(full_btn)
-        
-        preset_layout.addStretch()
-        freq_layout.addLayout(preset_layout)
-        
         layout.addWidget(freq_group)
+        
+        # Beat Detection Presets - User Definable
+        preset_group = QGroupBox("Presets")
+        preset_layout = QVBoxLayout(preset_group)
+        
+        # User custom presets row
+        custom_presets_layout = QHBoxLayout()
+        custom_presets_layout.addWidget(QLabel("Custom (L=Load, R=Save):"))
+        
+        self.custom_beat_presets = {}
+        self.preset_buttons = []
+        for i in range(5):
+            btn = PresetButton(f"{i+1}")
+            btn.left_clicked.connect(lambda idx=i: self._load_beat_preset(idx))
+            btn.right_clicked.connect(lambda idx=i: self._save_beat_preset(idx))
+            self.preset_buttons.append(btn)
+            custom_presets_layout.addWidget(btn)
+        
+        custom_presets_layout.addStretch()
+        preset_layout.addLayout(custom_presets_layout)
+        
+        layout.addWidget(preset_group)
         
         # Sliders - with better defaults
         # Sensitivity: higher = more beats detected (0.0=strict, 1.0=very sensitive)
@@ -1200,7 +1213,7 @@ class BREadbeatsWindow(QMainWindow):
         layout.addWidget(self.sensitivity_slider)
         
         # Peak floor: minimum energy to consider (0 = disabled)
-        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.0, 0.005, 0.0, 5)
+        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.0, 0.8, 0.0, 2)
         self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
         layout.addWidget(self.peak_floor_slider)
         
@@ -1243,11 +1256,45 @@ class BREadbeatsWindow(QMainWindow):
         max_freq = sr / 2
         self.spectrum_canvas.set_frequency_band(low / max_freq, high / max_freq)
     
-    def _set_freq_preset(self, low: int, high: int):
-        """Set frequency band to a preset"""
-        self.freq_low_slider.setValue(low)
-        self.freq_high_slider.setValue(high)
-        self._on_freq_band_change()
+    def _save_freq_preset(self, idx: int):
+        """Save current beat detection settings (all sliders + frequency band) to custom preset"""
+        preset_data = {
+            'freq_low': self.freq_low_slider.value(),
+            'freq_high': self.freq_high_slider.value(),
+            'sensitivity': self.sensitivity_slider.value(),
+            'peak_floor': self.peak_floor_slider.value(),
+            'peak_decay': self.peak_decay_slider.value(),
+            'rise_sensitivity': self.rise_sens_slider.value(),
+            'flux_multiplier': self.flux_mult_slider.value(),
+            'audio_gain': self.audio_gain_slider.value(),
+        }
+        self.custom_beat_presets[idx] = preset_data
+        self.preset_buttons[idx].setStyleSheet("background-color: #5d5f5f; font-weight: bold;")  # Highlight saved preset
+        print(f"[Config] Saved beat detection preset {idx+1}: {preset_data}")
+    
+    def _load_freq_preset(self, idx: int):
+        """Load custom beat detection preset (all sliders + frequency band)"""
+        if idx in self.custom_beat_presets:
+            preset_data = self.custom_beat_presets[idx]
+            self.freq_low_slider.setValue(preset_data['freq_low'])
+            self.freq_high_slider.setValue(preset_data['freq_high'])
+            self.sensitivity_slider.setValue(preset_data['sensitivity'])
+            self.peak_floor_slider.setValue(preset_data['peak_floor'])
+            self.peak_decay_slider.setValue(preset_data['peak_decay'])
+            self.rise_sens_slider.setValue(preset_data['rise_sensitivity'])
+            self.flux_mult_slider.setValue(preset_data['flux_multiplier'])
+            self.audio_gain_slider.setValue(preset_data['audio_gain'])
+            print(f"[Config] Loaded beat detection preset {idx+1}")
+        else:
+            print(f"[Config] Preset {idx+1} not saved yet")
+    
+    def _save_beat_preset(self, idx: int):
+        """Alias for _save_freq_preset (called by right-click)"""
+        self._save_freq_preset(idx)
+    
+    def _load_beat_preset(self, idx: int):
+        """Alias for _load_freq_preset (called by left-click)"""
+        self._load_freq_preset(idx)
     
     def _create_stroke_settings_tab(self) -> QWidget:
         """Stroke generation settings"""
@@ -1332,7 +1379,7 @@ class BREadbeatsWindow(QMainWindow):
         self.creep_enabled.stateChanged.connect(lambda s: setattr(self.config.creep, 'enabled', s == 2))
         creep_layout.addWidget(self.creep_enabled)
         
-        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 0.2, 0.05, 3)
+        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 1.0, 0.25, 2)
         self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
         creep_layout.addWidget(self.creep_speed_slider)
         

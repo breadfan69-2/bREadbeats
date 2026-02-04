@@ -30,6 +30,8 @@ class StrokeState:
     jitter_angle: float = 0.0    # Current jitter rotation
     creep_angle: float = 0.0     # Current creep rotation
     beat_counter: int = 0        # For beat skipping on fast tempos
+    creep_reset_start_time: float = 0.0  # When creep reset began
+    creep_reset_active: bool = False     # Whether creep is resetting to 0
 
 
 class StrokeMapper:
@@ -289,6 +291,10 @@ class StrokeMapper:
             time.sleep(step_ms / 1000.0)
         
         print(f"[StrokeMapper] ARC complete ({n_points} points)")
+        
+        # Initiate smooth creep reset to (0, -1) after arc completes
+        self.state.creep_reset_active = True
+        self.state.creep_reset_start_time = time.time()
     
     def _send_return_stroke(self, duration_ms: int, alpha: float, beta: float):
         """Send the return stroke to opposite position (called by timer)"""
@@ -401,31 +407,67 @@ class StrokeMapper:
         
         alpha, beta = self.state.alpha, self.state.beta
         
+        # Handle smooth creep reset after beat stroke
+        if self.state.creep_reset_active:
+            reset_duration_ms = 500  # Smooth return over 500ms
+            elapsed_ms = (now - self.state.creep_reset_start_time) * 1000
+            
+            if elapsed_ms < reset_duration_ms:
+                # Smoothly interpolate creep_angle from current value back to 0
+                progress = elapsed_ms / reset_duration_ms
+                # Ease-out: decelerate the motion smoothly
+                eased_progress = 1.0 - (1.0 - progress) ** 2
+                
+                current_angle = self.state.creep_angle
+                # Normalize to -π to π for shortest path
+                if current_angle > np.pi:
+                    current_angle = current_angle - 2 * np.pi
+                
+                target_angle = 0.0
+                self.state.creep_angle = current_angle * (1.0 - eased_progress) + target_angle * eased_progress
+            else:
+                # Reset complete
+                self.state.creep_angle = 0.0
+                self.state.creep_reset_active = False
+                print(f"[StrokeMapper] Creep reset complete, now at (0, -1)")
+        
         # Creep: slowly rotate around outer edge of circle
         if creep_cfg.enabled and creep_cfg.speed > 0:
-            # Tempo-synced creep: move 1/4 circle per beat
-            # Default speed multiplier is 1.0 = quarter circle per beat
+            # Tempo-synced creep: speed=1.0 moves 1/4 circle per beat
+            # Lower speeds scale proportionally (e.g., 0.25 = 1/16 circle per beat)
             # At 60 updates/sec (17ms throttle), calculate increment per update
             bpm = getattr(event, 'bpm', 0.0) if event else 0.0
             
             if bpm > 0:
+                # Tempo detected: rotate around circle
                 # Calculate: (π/2 radians per beat) / (updates per beat)
                 beats_per_sec = bpm / 60.0
                 updates_per_sec = 1000.0 / 17.0  # ~60 fps at 17ms throttle
                 updates_per_beat = updates_per_sec / beats_per_sec
                 angle_increment = (np.pi / 2.0) / updates_per_beat * creep_cfg.speed
+                
+                # Only increment creep angle if reset is not active
+                if not self.state.creep_reset_active:
+                    self.state.creep_angle += angle_increment
+                    if self.state.creep_angle >= 2 * np.pi:
+                        self.state.creep_angle -= 2 * np.pi
+                
+                # Position on outer edge of circle (radius close to 1.0 for maximum extent)
+                creep_radius = 0.98
+                base_alpha = np.sin(self.state.creep_angle) * creep_radius
+                base_beta = np.cos(self.state.creep_angle) * creep_radius
             else:
-                # Fallback when no tempo detected: use manual speed
-                angle_increment = creep_cfg.speed * 0.1
-            
-            self.state.creep_angle += angle_increment
-            if self.state.creep_angle >= 2 * np.pi:
-                self.state.creep_angle -= 2 * np.pi
-            
-            # Position on outer edge of circle (radius close to 1.0 for maximum extent)
-            creep_radius = 0.98
-            base_alpha = np.sin(self.state.creep_angle) * creep_radius
-            base_beta = np.cos(self.state.creep_angle) * creep_radius
+                # No tempo detected: slowly oscillate toward center
+                # Use creep_angle as oscillation phase, 0.1 base radius
+                if not self.state.creep_reset_active:
+                    self.state.creep_angle += creep_cfg.speed * 0.02  # Slow oscillation
+                    if self.state.creep_angle >= 2 * np.pi:
+                        self.state.creep_angle -= 2 * np.pi
+                
+                # Oscillate between center (0.1) and partial radius (0.3)
+                oscillation = 0.2 + 0.1 * np.sin(self.state.creep_angle)
+                base_alpha = oscillation * np.sin(self.state.creep_angle * 0.5)
+                base_beta = oscillation * np.cos(self.state.creep_angle * 0.5) - 0.2  # Bias downward
         else:
             # No creep - stay at current position
             base_alpha = alpha
