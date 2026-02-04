@@ -68,6 +68,12 @@ def load_config() -> Config:
                 for key, value in data['stroke'].items():
                     if hasattr(config.stroke, key):
                         setattr(config.stroke, key, value)
+                # Ensure mode is always a StrokeMode enum
+                if hasattr(config.stroke, 'mode') and not isinstance(config.stroke.mode, StrokeMode):
+                    try:
+                        config.stroke.mode = StrokeMode(config.stroke.mode)
+                    except Exception as e:
+                        print(f"[Config] Warning: Could not convert stroke.mode to StrokeMode enum: {e}")
             
             if 'jitter' in data:
                 for key, value in data['jitter'].items():
@@ -1323,9 +1329,10 @@ class BREadbeatsWindow(QMainWindow):
     
     def _load_freq_preset(self, idx: int):
         """Load ALL settings from all 4 tabs from custom preset"""
-        if idx in self.custom_beat_presets:
-            preset_data = self.custom_beat_presets[idx]
-            
+        from config import StrokeMode
+        key = str(idx)
+        if key in self.custom_beat_presets:
+            preset_data = self.custom_beat_presets[key]
             # Beat Detection Tab
             self.freq_low_slider.setValue(preset_data['freq_low'])
             self.freq_high_slider.setValue(preset_data['freq_high'])
@@ -1336,7 +1343,6 @@ class BREadbeatsWindow(QMainWindow):
             self.flux_mult_slider.setValue(preset_data['flux_multiplier'])
             self.audio_gain_slider.setValue(preset_data['audio_gain'])
             self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
-            
             # Stroke Settings Tab
             self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
             self.stroke_min_slider.setValue(preset_data['stroke_min'])
@@ -1348,18 +1354,17 @@ class BREadbeatsWindow(QMainWindow):
             self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
             if 'phase_advance' in preset_data:
                 self.phase_advance_slider.setValue(preset_data['phase_advance'])
-            
             # Jitter / Creep Tab
             self.jitter_enabled.setChecked(preset_data['jitter_enabled'])
             self.jitter_amplitude_slider.setValue(preset_data['jitter_amplitude'])
             self.jitter_intensity_slider.setValue(preset_data['jitter_intensity'])
             self.creep_enabled.setChecked(preset_data['creep_enabled'])
             self.creep_speed_slider.setValue(preset_data['creep_speed'])
-            
             # Axis Weights Tab
             self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
             self.beta_weight_slider.setValue(preset_data['beta_weight'])
-            
+            # --- Sync config object with UI (especially enum) ---
+            self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)
             print(f"[Config] Loaded preset {idx+1} with all settings")
         else:
             print(f"[Config] Preset {idx+1} not saved yet")
