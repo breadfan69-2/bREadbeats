@@ -1,19 +1,15 @@
 # bREadbeats - Audio Beat Detection to restim
-# Core dependencies
-
-# Audio capture and processing
-sounddevice>=0.4.6
-aubio>=0.4.9
-numpy>=1.24.0
+# MINIMAL dependencies - only what's actually used
 
 # GUI
 PyQt6>=6.5.0
 
+# Audio and math
+numpy>=1.24.0
+pyaudiowpatch>=0.2.12
+
 # Visualization
 matplotlib>=3.7.0
 
-# Networking (built-in socket, but we need these for async)
-# No extra deps needed - using threading + socket
-
-# Optional: for spectrum analysis
-scipy>=1.10.0
+# Optional: beat detection enhancement (falls back gracefully if missing)
+aubio>=0.4.9

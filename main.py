@@ -113,15 +113,15 @@ class SignalBridge(QObject):
 
 
 class SpectrumCanvas(FigureCanvas):
-    """Simple spectrum visualizer using matplotlib with frequency band overlay"""
+    """Spectrum visualizer with interactive frequency band and peak/flux indicators"""
     
     def __init__(self, parent=None, width=8, height=3):
-        # Dark theme
+        # Dark theme matching restim-coyote3
         plt.style.use('dark_background')
         
-        self.fig = Figure(figsize=(width, height), facecolor='#1e1e1e')
+        self.fig = Figure(figsize=(width, height), facecolor='#2d2d2d')
         self.ax = self.fig.add_subplot(111)
-        self.ax.set_facecolor('#1e1e1e')
+        self.ax.set_facecolor('#232323')
         
         super().__init__(self.fig)
         self.setParent(parent)
@@ -134,6 +134,25 @@ class SpectrumCanvas(FigureCanvas):
         self.band_low = 0.0
         self.band_high = 0.1  # Default bass range
         
+        # Peak and flux indicator lines
+        self.peak_line = None
+        self.flux_line = None
+        self.peak_value = 0.0
+        self.flux_value = 0.0
+        
+        # Interactive band dragging state
+        self.drag_mode = None  # 'left', 'right', or 'move'
+        self.drag_start_x = None
+        self.band_width = None
+        
+        # Reference to main window for slider updates
+        self.parent_window = parent
+        
+        # Mouse event handlers
+        self.mpl_connect('button_press_event', self._on_press)
+        self.mpl_connect('button_release_event', self._on_release)
+        self.mpl_connect('motion_notify_event', self._on_motion)
+        
         self.setup_plot()
         
     def setup_plot(self):
@@ -141,25 +160,30 @@ class SpectrumCanvas(FigureCanvas):
         self.ax.clear()
         self.ax.set_xlim(-0.5, self.num_bars - 0.5)
         self.ax.set_ylim(0, 1.1)
-        self.ax.set_xlabel('Frequency', fontsize=8, color='#888')
-        self.ax.set_ylabel('Amplitude', fontsize=8, color='#888')
-        self.ax.tick_params(colors='#666', labelsize=7)
-        self.ax.spines['bottom'].set_color('#444')
-        self.ax.spines['left'].set_color('#444')
+        self.ax.set_xlabel('Frequency', fontsize=8, color='#999')
+        self.ax.set_ylabel('Amplitude', fontsize=8, color='#999')
+        self.ax.tick_params(colors='#aaa', labelsize=7)
+        self.ax.spines['bottom'].set_color('#555')
+        self.ax.spines['left'].set_color('#555')
         self.ax.spines['top'].set_visible(False)
         self.ax.spines['right'].set_visible(False)
         
-        # Create initial bars
+        # Create initial bars (blue for unselected range)
         self.bars = self.ax.bar(self.x, np.zeros(self.num_bars), 
-                                 color='#00aaff', alpha=0.8, width=0.8)
+                                 color='#6688ff', alpha=0.8, width=0.8)
         
-        # Create frequency band overlay (yellow semi-transparent rectangle)
+        # Create frequency band overlay (grey thin bar at top, no border)
         from matplotlib.patches import Rectangle
         low_bar = int(self.band_low * self.num_bars)
         high_bar = int(self.band_high * self.num_bars)
-        self.band_overlay = Rectangle((low_bar - 0.5, 0), high_bar - low_bar + 1, 1.1,
-                                        facecolor='#ffff00', alpha=0.2, edgecolor='#ffff00', linewidth=2)
+        self.band_overlay = Rectangle((low_bar - 0.5, 0.9), high_bar - low_bar + 1, 0.2,
+                                        facecolor='#555555', alpha=0.5, edgecolor='none')
         self.ax.add_patch(self.band_overlay)
+        
+        # Create peak and flux threshold indicator lines
+        self.peak_line = self.ax.axhline(y=0.0, color='#ff6644', linestyle='--', linewidth=1.5, alpha=0.6, label='Peak')
+        self.flux_line = self.ax.axhline(y=0.0, color='#44ff66', linestyle=':', linewidth=1.5, alpha=0.6, label='Flux')
+        self.ax.legend(loc='upper right', fontsize=7, framealpha=0.7)
         
         self.fig.tight_layout(pad=0.5)
     
@@ -174,8 +198,94 @@ class SpectrumCanvas(FigureCanvas):
             width = max(1, high_bar - low_bar + 1)
             self.band_overlay.set_x(low_bar - 0.5)
             self.band_overlay.set_width(width)
+    
+    def set_peak_and_flux(self, peak_value: float, flux_value: float):
+        """Update peak and flux indicator lines"""
+        self.peak_value = np.clip(peak_value, 0, 1.1)
+        self.flux_value = np.clip(flux_value, 0, 1.1)
         
-    def update_spectrum(self, spectrum: np.ndarray):
+        if self.peak_line:
+            self.peak_line.set_ydata([self.peak_value, self.peak_value])
+        if self.flux_line:
+            self.flux_line.set_ydata([self.flux_value, self.flux_value])
+        
+    def _on_press(self, event):
+        """Handle mouse press for interactive band adjustment"""
+        if event.inaxes != self.ax or event.xdata is None:
+            return
+        
+        low_bar = int(self.band_low * self.num_bars)
+        high_bar = int(self.band_high * self.num_bars)
+        x = event.xdata
+        
+        # Check if clicking on left edge (within 0.5 bars)
+        if abs(x - low_bar) < 0.5:
+            self.drag_mode = 'left'
+            self.drag_start_x = x
+        # Check if clicking on right edge (within 0.5 bars)
+        elif abs(x - high_bar) < 0.5:
+            self.drag_mode = 'right'
+            self.drag_start_x = x
+        # Check if clicking inside band (move entire band)
+        elif low_bar <= x <= high_bar:
+            self.drag_mode = 'move'
+            self.drag_start_x = x
+            self.band_width = high_bar - low_bar
+    
+    def _on_release(self, event):
+        """Handle mouse release"""
+        self.drag_mode = None
+        self.drag_start_x = None
+        self.band_width = None
+    
+    def _on_motion(self, event):
+        """Handle mouse motion for dragging band"""
+        if self.drag_mode is None or event.xdata is None:
+            return
+        
+        x = event.xdata
+        dx = x - self.drag_start_x
+        
+        # Only process if there's meaningful movement (at least 0.1 bar width)
+        if abs(dx) < 0.1:
+            return
+        
+        low_bar = int(self.band_low * self.num_bars)
+        high_bar = int(self.band_high * self.num_bars)
+        
+        if self.drag_mode == 'left':
+            # Dragging left edge - don't cross right edge
+            new_low = max(0, min(high_bar - 1, low_bar + dx))
+            self.band_low = new_low / self.num_bars
+            
+        elif self.drag_mode == 'right':
+            # Dragging right edge - don't cross left edge
+            new_high = min(self.num_bars - 1, max(low_bar + 1, high_bar + dx))
+            self.band_high = new_high / self.num_bars
+            
+        elif self.drag_mode == 'move':
+            # Moving entire band - keep width constant
+            new_low = max(0, min(self.num_bars - self.band_width - 1, low_bar + dx))
+            new_high = new_low + self.band_width
+            self.band_low = new_low / self.num_bars
+            self.band_high = min(1.0, new_high / self.num_bars)
+        
+        # Update overlay
+        self.set_frequency_band(self.band_low, self.band_high)
+        
+        # Update sliders in parent window if available
+        if hasattr(self.parent_window, 'freq_low_slider') and hasattr(self.parent_window, 'audio_engine'):
+            sr = self.parent_window.audio_engine.config.audio.sample_rate if self.parent_window.audio_engine else 44100
+            low_hz = self.band_low * sr / 2
+            high_hz = self.band_high * sr / 2
+            self.parent_window.freq_low_slider.setValue(low_hz)
+            self.parent_window.freq_high_slider.setValue(high_hz)
+        
+        # Update drag start for next incremental motion
+        self.drag_start_x = x
+        self.draw_idle()
+        
+    def update_spectrum(self, spectrum: np.ndarray, peak_energy: float = None, spectral_flux: float = None):
         """Update with new spectrum data - efficient bar update"""
         if spectrum is None or len(spectrum) == 0 or self.bars is None:
             return
@@ -190,6 +300,13 @@ class SpectrumCanvas(FigureCanvas):
         # Normalize
         max_val = np.max(spectrum) if np.max(spectrum) > 0 else 1
         spectrum = np.clip(spectrum / max_val, 0, 1)
+        
+        # Update peak and flux indicators if provided
+        if peak_energy is not None and spectral_flux is not None:
+            # Normalize to 0-1 range for visualization
+            peak_norm = np.clip(peak_energy / max(1.0, max_val), 0, 1)
+            flux_norm = np.clip(spectral_flux / 10.0, 0, 1)  # Flux typically 0-10 range
+            self.set_peak_and_flux(peak_norm, flux_norm)
         
         # Update bar heights and colors
         low_bar = int(self.band_low * self.num_bars)
@@ -216,9 +333,9 @@ class PositionCanvas(FigureCanvas):
     def __init__(self, parent=None, size=2):
         plt.style.use('dark_background')
         
-        self.fig = Figure(figsize=(size, size), facecolor='#1e1e1e')
+        self.fig = Figure(figsize=(size, size), facecolor='#2d2d2d')
         self.ax = self.fig.add_subplot(111, aspect='equal')
-        self.ax.set_facecolor('#1e1e1e')
+        self.ax.set_facecolor('#232323')
         
         super().__init__(self.fig)
         self.setParent(parent)
@@ -238,16 +355,16 @@ class PositionCanvas(FigureCanvas):
         
         # Draw reference circle
         theta = np.linspace(0, 2*np.pi, 100)
-        self.ax.plot(np.cos(theta), np.sin(theta), 'g-', alpha=0.3, linewidth=1)
+        self.ax.plot(np.cos(theta), np.sin(theta), color='#666666', alpha=0.5, linewidth=1)
         
         # Draw axes
-        self.ax.axhline(y=0, color='#444', linewidth=0.5)
-        self.ax.axvline(x=0, color='#444', linewidth=0.5)
+        self.ax.axhline(y=0, color='#555555', linewidth=0.5)
+        self.ax.axvline(x=0, color='#555555', linewidth=0.5)
         
         # Labels
-        self.ax.set_xlabel('Alpha', fontsize=8, color='#888')
-        self.ax.set_ylabel('Beta', fontsize=8, color='#888')
-        self.ax.tick_params(colors='#666', labelsize=6)
+        self.ax.set_xlabel('Alpha', fontsize=8, color='#aaa')
+        self.ax.set_ylabel('Beta', fontsize=8, color='#aaa')
+        self.ax.tick_params(colors='#999', labelsize=6)
         
         for spine in self.ax.spines.values():
             spine.set_visible(False)
@@ -380,65 +497,269 @@ class BREadbeatsWindow(QMainWindow):
         self.is_sending = False
         
     def _get_stylesheet(self) -> str:
+        """Restim-Coyote3 darkmode theme with #3d3d3d background"""
         return """
-            QMainWindow { background-color: #1e1e1e; }
-            QWidget { background-color: #1e1e1e; color: #ddd; }
-            QGroupBox { 
-                border: 1px solid #444; 
-                border-radius: 5px; 
-                margin-top: 10px;
-                padding-top: 10px;
-                font-weight: bold;
+            /* Main Window and Widgets */
+            QMainWindow, QWidget {
+                background-color: #3d3d3d;
+                color: #e0e0e0;
             }
-            QGroupBox::title { 
-                subcontrol-origin: margin; 
-                left: 10px; 
-                color: #0af;
+
+            QFrame {
+                background-color: #3d3d3d;
+                color: #e0e0e0;
             }
+
+            /* Menu Bar */
+            QMenuBar {
+                background-color: #4d4d4d;
+                color: #e0e0e0;
+                border-bottom: 1px solid #5d5d5d;
+            }
+
+            QMenuBar::item:selected {
+                background-color: #5d5d5d;
+            }
+
+            /* Menus */
+            QMenu {
+                background-color: #4d4d4d;
+                color: #e0e0e0;
+                border: 1px solid #5d5d5d;
+            }
+
+            QMenu::item:selected {
+                background-color: #565d7f;
+                color: #ffffff;
+            }
+
+            /* Buttons */
             QPushButton {
-                background-color: #333;
-                border: 1px solid #555;
+                background-color: #565d7f;
+                color: #ffffff;
+                border: none;
                 border-radius: 4px;
-                padding: 8px 16px;
-                color: #ddd;
+                padding: 5px 15px;
             }
-            QPushButton:hover { background-color: #444; }
-            QPushButton:pressed { background-color: #555; }
-            QPushButton:checked { background-color: #0a5; border-color: #0c7; }
+
+            QPushButton:hover {
+                background-color: #6d6d8f;
+            }
+
+            QPushButton:pressed {
+                background-color: #4a4d6f;
+            }
+
+            QPushButton:disabled {
+                background-color: #424242;
+                color: #757575;
+            }
+
+            /* Labels */
+            QLabel {
+                color: #e0e0e0;
+            }
+
+            /* Line Edit */
+            QLineEdit {
+                background-color: #4d4d4d;
+                color: #e0e0e0;
+                border: 1px solid #5d5d5d;
+                border-radius: 4px;
+                padding: 5px;
+            }
+
+            QLineEdit:focus {
+                border: 1px solid #565d7f;
+            }
+
+            /* Spin Box */
+            QSpinBox, QDoubleSpinBox {
+                background-color: #4d4d4d;
+                color: #e0e0e0;
+                border: 1px solid #5d5d5d;
+                border-radius: 4px;
+                padding: 5px;
+            }
+
+            QSpinBox::up-button, QDoubleSpinBox::up-button,
+            QSpinBox::down-button, QDoubleSpinBox::down-button {
+                background-color: #3d3d3d;
+                border: 1px solid #2d2d2d;
+                width: 20px;
+            }
+
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+                background-color: #4d4d4d;
+            }
+
+            QSpinBox:focus, QDoubleSpinBox:focus {
+                border: 1px solid #565d7f;
+            }
+
+            /* Sliders */
             QSlider::groove:horizontal {
-                height: 6px;
-                background: #333;
+                background-color: #5d5d5d;
+                height: 8px;
+                border-radius: 4px;
+            }
+
+            QSlider::handle:horizontal {
+                background-color: #565d7f;
+                width: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }
+
+            QSlider::handle:horizontal:hover {
+                background-color: #6d6d8f;
+            }
+
+            /* ComboBox */
+            QComboBox {
+                background-color: #4d4d4d;
+                color: #e0e0e0;
+                border: 1px solid #5d5d5d;
+                border-radius: 4px;
+                padding: 5px;
+            }
+
+            QComboBox:focus {
+                border: 1px solid #565d7f;
+            }
+
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+
+            /* CheckBox and RadioButton */
+            QCheckBox, QRadioButton {
+                color: #e0e0e0;
+            }
+
+            QCheckBox::indicator, QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+            }
+
+            QCheckBox::indicator:unchecked, QRadioButton::indicator:unchecked {
+                background-color: #4d4d4d;
+                border: 1px solid #5d5d5d;
                 border-radius: 3px;
             }
-            QSlider::handle:horizontal {
-                background: #0af;
-                width: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
+
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+                background-color: #565d7f;
+                border: 1px solid #565d7f;
+                border-radius: 3px;
             }
-            QComboBox {
-                background-color: #333;
-                border: 1px solid #555;
+
+            /* GroupBox */
+            QGroupBox {
+                color: #e0e0e0;
+                border: 1px solid #5d5d5d;
                 border-radius: 4px;
-                padding: 4px 8px;
+                margin-top: 10px;
+                padding-top: 10px;
             }
-            QComboBox::drop-down { border: none; }
-            QLineEdit {
-                background-color: #333;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 4px;
+
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px 0 3px;
             }
-            QCheckBox::indicator { width: 16px; height: 16px; }
-            QCheckBox::indicator:unchecked { background: #333; border: 1px solid #555; }
-            QCheckBox::indicator:checked { background: #0a5; border: 1px solid #0c7; }
-            QTabWidget::pane { border: 1px solid #444; }
+
+            /* Tabs */
             QTabBar::tab {
-                background: #333;
-                border: 1px solid #444;
-                padding: 8px 16px;
+                background-color: #4d4d4d;
+                color: #e0e0e0;
+                border: 1px solid #5d5d5d;
+                padding: 8px 20px;
             }
-            QTabBar::tab:selected { background: #444; border-bottom: 2px solid #0af; }
+
+            QTabBar::tab:selected {
+                background-color: #565d7f;
+                color: #ffffff;
+            }
+
+            QTabWidget::pane {
+                border: 1px solid #5d5d5d;
+            }
+
+            /* ScrollBar */
+            QScrollBar:vertical {
+                background-color: #3d3d3d;
+                width: 12px;
+                border: none;
+            }
+
+            QScrollBar::handle:vertical {
+                background-color: #626262;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+
+            QScrollBar::handle:vertical:hover {
+                background-color: #727272;
+            }
+
+            QScrollBar:horizontal {
+                background-color: #3d3d3d;
+                height: 12px;
+                border: none;
+            }
+
+            QScrollBar::handle:horizontal {
+                background-color: #626262;
+                border-radius: 6px;
+                min-width: 20px;
+            }
+
+            QScrollBar::handle:horizontal:hover {
+                background-color: #727272;
+            }
+
+            /* ProgressBar */
+            QProgressBar {
+                background-color: #4d4d4d;
+                color: #e0e0e0;
+                border: 1px solid #5d5d5d;
+                border-radius: 4px;
+                text-align: center;
+            }
+
+            QProgressBar::chunk {
+                background-color: #565d7f;
+                border-radius: 3px;
+            }
+
+            /* Text Edit */
+            QTextEdit, QPlainTextEdit {
+                background-color: #4d4d4d;
+                color: #e0e0e0;
+                border: 1px solid #5d5d5d;
+                border-radius: 4px;
+            }
+
+            /* List View and Table View */
+            QListView, QTableView, QTreeView {
+                background-color: #4d4d4d;
+                color: #e0e0e0;
+                border: 1px solid #5d5d5d;
+                gridline-color: #5d5d5d;
+            }
+
+            QListView::item:selected, QTableView::item:selected, QTreeView::item:selected {
+                background-color: #565d7f;
+            }
+
+            /* Dialogs */
+            QDialog {
+                background-color: #3d3d3d;
+                color: #e0e0e0;
+            }
         """
         
     def _setup_ui(self):
@@ -676,56 +997,87 @@ class BREadbeatsWindow(QMainWindow):
             self.device_combo.setCurrentIndex(0)
     
     def _set_device_preset_mic(self):
-        """Switch to Sound Reactive mode (Microphone input)"""
-        # Find device 21 (microphone) in the map
-        for combo_idx, device_idx in self.audio_device_map.items():
-            if device_idx == 21:
-                self.device_combo.setCurrentIndex(combo_idx)
-                self.device_combo.currentIndexChanged.emit(combo_idx)
-                print("[Main] Switched to Sound Reactive mode (Microphone - Device 21)")
-                self._update_preset_button_states()
-                return
-        print("[Main] Sound Reactive device (21) not found")
-    
-    def _set_device_preset_loopback(self):
-        """Switch to System Audio mode (Loopback/Stereo Mix)"""
-        # Look for loopback/stereo mix devices
+        """Filter to show only microphone/input devices"""
         import sounddevice as sd
         devices = sd.query_devices()
         
+        # Find first non-loopback input device (regular microphone)
         loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
         
-        for i, dev in enumerate(devices):
-            if dev['max_input_channels'] > 0:
-                name = dev['name'].lower()
-                if any(keyword in name for keyword in loopback_keywords):
-                    # Find this device in the combo
-                    for combo_idx, device_idx in self.audio_device_map.items():
-                        if device_idx == i:
-                            self.device_combo.setCurrentIndex(combo_idx)
-                            self.device_combo.currentIndexChanged.emit(combo_idx)
-                            print(f"[Main] Switched to System Audio mode (Device {i}: {dev['name']})")
-                            self._update_preset_button_states()
-                            return
+        for combo_idx, device_idx in self.audio_device_map.items():
+            # Skip if this is marked as loopback
+            if self.audio_device_is_loopback.get(combo_idx, False):
+                continue
+            
+            # Check if this device has input channels and is not a loopback device
+            if device_idx < len(devices):
+                dev = devices[device_idx]
+                if dev['max_input_channels'] > 0:
+                    dev_name = dev['name'].lower()
+                    # Skip if it matches loopback keywords
+                    if not any(keyword in dev_name for keyword in loopback_keywords):
+                        self.device_combo.setCurrentIndex(combo_idx)
+                        self.device_combo.currentIndexChanged.emit(combo_idx)
+                        print(f"[Main] Switched to Microphone mode (Device {device_idx}: {dev['name']})")
+                        self._update_preset_button_states()
+                        return
         
-        print("[Main] System Audio device not found. Enable 'Stereo Mix' or 'What U Hear' in sound settings")
+        print("[Main] No microphone device found")
+    
+    def _set_device_preset_loopback(self):
+        """Filter to show only system audio/playback loopback devices"""
+        # First, try to find a marked loopback device (WASAPI output)
+        for combo_idx, device_idx in self.audio_device_map.items():
+            if self.audio_device_is_loopback.get(combo_idx, False):
+                self.device_combo.setCurrentIndex(combo_idx)
+                self.device_combo.currentIndexChanged.emit(combo_idx)
+                print(f"[Main] Switched to System Audio mode (WASAPI Loopback Device {device_idx})")
+                self._update_preset_button_states()
+                return
+        
+        # Fallback: look for devices with loopback keywords
+        import sounddevice as sd
+        devices = sd.query_devices()
+        loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
+        
+        for combo_idx, device_idx in self.audio_device_map.items():
+            if device_idx < len(devices):
+                dev = devices[device_idx]
+                if dev['max_input_channels'] > 0:
+                    if any(keyword in dev['name'].lower() for keyword in loopback_keywords):
+                        self.device_combo.setCurrentIndex(combo_idx)
+                        self.device_combo.currentIndexChanged.emit(combo_idx)
+                        print(f"[Main] Switched to System Audio mode (Device {device_idx}: {dev['name']})")
+                        self._update_preset_button_states()
+                        return
+        
+        print("[Main] No system audio/loopback device found. Enable 'Stereo Mix' or 'What U Hear' in sound settings")
     
     def _update_preset_button_states(self):
         """Update button colors based on current device selection"""
-        current_device_idx = self.audio_device_map.get(self.device_combo.currentIndex())
+        current_combo_idx = self.device_combo.currentIndex()
+        current_device_idx = self.audio_device_map.get(current_combo_idx)
         
-        # Check if current device is microphone (device 21)
-        is_mic = current_device_idx == 21
+        # Check if current device is marked as loopback or has loopback keywords
+        is_loopback = self.audio_device_is_loopback.get(current_combo_idx, False)
         
-        # Check if current device is loopback/stereo mix
-        is_loopback = False
-        if current_device_idx is not None:
+        if not is_loopback and current_device_idx is not None:
             import sounddevice as sd
             devices = sd.query_devices()
             if current_device_idx < len(devices):
                 dev_name = devices[current_device_idx]['name'].lower()
                 loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
                 is_loopback = any(keyword in dev_name for keyword in loopback_keywords)
+        
+        # Check if current device is a regular microphone (input, not loopback)
+        is_mic = current_device_idx is not None and not is_loopback
+        if is_mic and current_device_idx is not None:
+            import sounddevice as sd
+            devices = sd.query_devices()
+            if current_device_idx < len(devices):
+                dev = devices[current_device_idx]
+                # Must be input device
+                is_mic = dev['max_input_channels'] > 0
         
         # Update button colors: green = active, white = inactive
         self.preset_mic_btn.setStyleSheet("color: #0a0; font-weight: bold;" if is_mic else "color: #fff;")
@@ -950,7 +1302,7 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_enabled.stateChanged.connect(lambda s: setattr(self.config.jitter, 'enabled', s == 2))
         jitter_layout.addWidget(self.jitter_enabled)
         
-        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.0, 0.1, 0.02)
+        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.0, 0.2, 0.02)
         self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
         jitter_layout.addWidget(self.jitter_amplitude_slider)
         
@@ -1092,7 +1444,13 @@ class BREadbeatsWindow(QMainWindow):
         if self.audio_engine:
             spectrum = self.audio_engine.get_spectrum()
             if spectrum is not None:
-                self.signals.spectrum_ready.emit(spectrum)
+                # Also emit peak and flux for indicator lines
+                spectrum_with_stats = {
+                    'spectrum': spectrum,
+                    'peak_energy': event.peak_energy,
+                    'spectral_flux': event.spectral_flux
+                }
+                self.signals.spectrum_ready.emit(spectrum_with_stats)
         
         # Process through stroke mapper
         if self.stroke_mapper and self.is_sending:
@@ -1150,7 +1508,14 @@ class BREadbeatsWindow(QMainWindow):
     def _do_spectrum_update(self):
         """Actually update spectrum at throttled rate"""
         if self._pending_spectrum is not None:
-            self.spectrum_canvas.update_spectrum(self._pending_spectrum)
+            # Handle both old format (numpy array) and new format (dict with stats)
+            if isinstance(self._pending_spectrum, dict):
+                spectrum = self._pending_spectrum['spectrum']
+                peak = self._pending_spectrum.get('peak_energy', 0)
+                flux = self._pending_spectrum.get('spectral_flux', 0)
+                self.spectrum_canvas.update_spectrum(spectrum, peak, flux)
+            else:
+                self.spectrum_canvas.update_spectrum(self._pending_spectrum)
             self._pending_spectrum = None
     
     def _on_status_change(self, message: str, connected: bool):
