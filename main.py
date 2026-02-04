@@ -861,6 +861,7 @@ class BREadbeatsWindow(QMainWindow):
             self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
             self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
             self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
+            self.phase_advance_slider.setValue(self.config.stroke.phase_advance)
             
             # Jitter/Creep tab
             self.jitter_enabled.setChecked(self.config.jitter.enabled)
@@ -1303,6 +1304,7 @@ class BREadbeatsWindow(QMainWindow):
             'minimum_depth': self.min_depth_slider.value(),
             'freq_depth_factor': self.freq_depth_slider.value(),
             'flux_threshold': self.flux_threshold_slider.value(),
+            'phase_advance': self.phase_advance_slider.value(),
             
             # Jitter / Creep Tab
             'jitter_enabled': self.jitter_enabled.isChecked(),
@@ -1344,6 +1346,8 @@ class BREadbeatsWindow(QMainWindow):
             self.min_depth_slider.setValue(preset_data['minimum_depth'])
             self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
             self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
+            if 'phase_advance' in preset_data:
+                self.phase_advance_slider.setValue(preset_data['phase_advance'])
             
             # Jitter / Creep Tab
             self.jitter_enabled.setChecked(preset_data['jitter_enabled'])
@@ -1413,7 +1417,7 @@ class BREadbeatsWindow(QMainWindow):
         mode_layout = QHBoxLayout()
         mode_layout.addWidget(QLabel("Stroke Mode:"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["1: Circle", "2: Tear", "3: Spiral", "4: User (Flux/Peak)"])
+        self.mode_combo.addItems(["1: Circle", "2: Spiral", "3: Teardrop", "4: User (Flux/Peak)"])
         self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
         mode_layout.addWidget(self.mode_combo)
         mode_layout.addStretch()
@@ -1450,6 +1454,12 @@ class BREadbeatsWindow(QMainWindow):
         self.flux_threshold_slider = SliderWithLabel("Flux Threshold", 0.001, 0.2, 0.03, 4)
         self.flux_threshold_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_threshold', v))
         layout.addWidget(self.flux_threshold_slider)
+
+        # Phase Advance slider (controls per-beat phase increment)
+        layout.addWidget(QLabel(""))  # Spacing
+        self.phase_advance_slider = SliderWithLabel("Phase Advance (0=downbeats, 1=all beats)", 0.0, 1.0, self.config.stroke.phase_advance, 2)
+        self.phase_advance_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'phase_advance', v))
+        layout.addWidget(self.phase_advance_slider)
         
         layout.addStretch()
         return widget
@@ -1558,6 +1568,9 @@ class BREadbeatsWindow(QMainWindow):
     def _on_play_pause(self, checked: bool):
         """Play/pause sending commands"""
         self.is_sending = checked
+        if checked:
+            # Re-instantiate StrokeMapper with current config (for live mode switching)
+            self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct)
         if self.network_engine:
             self.network_engine.set_sending_enabled(checked)
         self.play_btn.setText("⏸ Pause" if checked else "▶ Play")
@@ -1707,6 +1720,8 @@ class BREadbeatsWindow(QMainWindow):
         if self.network_engine:
             self.network_engine.stop()
         
+        # Save phase advance from slider before closing
+        self.config.stroke.phase_advance = self.phase_advance_slider.value()
         # Save config before closing
         save_config(self.config)
         

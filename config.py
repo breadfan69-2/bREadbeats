@@ -8,8 +8,8 @@ from enum import IntEnum
 class StrokeMode(IntEnum):
     """Stroke mapping modes - all use alpha/beta circular coordinates"""
     SIMPLE_CIRCLE = 1      # Trace full circle on beat
-    FIGURE_EIGHT = 2       # Figure-8 pattern
-    RANDOM_ARC = 3         # Random arc segments
+    SPIRAL = 2             # Spiral pattern (Archimedean)
+    TEARDROP = 3           # Teardrop pattern (piriform)
     USER = 4               # User-controlled via sliders (freq/peak reactive)
 
 class BeatDetectionType(IntEnum):
@@ -46,6 +46,9 @@ class StrokeConfig:
     flux_threshold: float = 0.03      # Threshold to distinguish low vs high flux
     # Low flux (<threshold): only full strokes on downbeats
     # High flux (>=threshold): full strokes on every beat
+
+    # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
+    phase_advance: float = 0.25
 
 @dataclass
 class JitterConfig:
