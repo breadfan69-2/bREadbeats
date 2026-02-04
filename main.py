@@ -429,6 +429,13 @@ class BREadbeatsWindow(QMainWindow):
         self.device_combo.setMinimumWidth(300)
         device_layout.addWidget(self.device_combo)
         
+        # Info label showing available devices count
+        import sounddevice as sd
+        available_count = len([d for d in sd.query_devices() if d['max_input_channels'] > 0])
+        self.device_info_label = QLabel(f"({available_count} devices available)")
+        self.device_info_label.setStyleSheet("color: gray; font-size: 9pt;")
+        device_layout.addWidget(self.device_info_label)
+        
         # Quick presets for common devices
         self.preset_mic_btn = QPushButton("🎤 Mic (Reactive)")
         self.preset_mic_btn.setFixedWidth(140)
@@ -492,24 +499,51 @@ class BREadbeatsWindow(QMainWindow):
         """Populate audio device dropdown"""
         import sounddevice as sd
         devices = sd.query_devices()
+        hostapis = sd.query_hostapis()
+        
+        # Find WASAPI host API index
+        wasapi_idx = None
+        for idx, api in enumerate(hostapis):
+            if 'WASAPI' in api['name']:
+                wasapi_idx = idx
+                break
         
         self.device_combo.clear()
         self.audio_device_map = {}  # Map combo index to device index
+        self.audio_device_is_loopback = {}  # Track which devices should use WASAPI loopback
         
         loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
         loopback_idx = None
         combo_idx = 0
+        
+        # Add all input devices
         for i, dev in enumerate(devices):
             if dev['max_input_channels'] > 0:
                 name = f"[{i}] {dev['name']}"
                 self.device_combo.addItem(name)
                 self.audio_device_map[combo_idx] = i
+                self.audio_device_is_loopback[combo_idx] = False
                 
                 # Find loopback device for default selection
                 if loopback_idx is None and any(keyword in dev['name'].lower() for keyword in loopback_keywords):
                     loopback_idx = combo_idx
                 
                 combo_idx += 1
+        
+        # Add WASAPI output devices as loopback sources
+        if wasapi_idx is not None:
+            for i, dev in enumerate(devices):
+                if dev['hostapi'] == wasapi_idx and dev['max_output_channels'] > 0:
+                    name = f"[{i}] {dev['name']} [WASAPI Loopback]"
+                    self.device_combo.addItem(name)
+                    self.audio_device_map[combo_idx] = i
+                    self.audio_device_is_loopback[combo_idx] = True
+                    
+                    # Prefer WASAPI loopback for default
+                    if loopback_idx is None:
+                        loopback_idx = combo_idx
+                    
+                    combo_idx += 1
         
         # Pre-select Stereo Mix/loopback if available, otherwise first device
         if loopback_idx is not None:
