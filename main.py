@@ -345,6 +345,10 @@ class PositionCanvas(FigureCanvas):
         self.trail_y = []
         self.max_trail = 50
         
+        # Store line and scatter objects for efficient updates
+        self.trail_lines = []
+        self.position_scatter = None
+        
         self.setup_plot()
         
     def setup_plot(self):
@@ -371,8 +375,11 @@ class PositionCanvas(FigureCanvas):
             
         self.fig.tight_layout(pad=0.3)
         
+        # Initialize scatter plot for current position
+        self.position_scatter = self.ax.scatter([], [], c='#00ffff', s=80, zorder=5)
+        
     def update_position(self, alpha: float, beta: float):
-        """Update current position"""
+        """Update current position without clearing axes"""
         # Add to trail
         self.trail_x.append(alpha)
         self.trail_y.append(beta)
@@ -381,22 +388,26 @@ class PositionCanvas(FigureCanvas):
             self.trail_y.pop(0)
         
         try:
-            self.ax.clear()
-            self.setup_plot()
+            # Remove old trail lines if we have more than max_trail points
+            while len(self.trail_lines) > self.max_trail - 1:
+                line = self.trail_lines.pop(0)
+                line.remove()
             
-            # Draw trail
+            # Add new trail line segment
             if len(self.trail_x) > 1:
-                for i in range(1, len(self.trail_x)):
-                    alpha_val = i / len(self.trail_x)
-                    self.ax.plot([self.trail_x[i-1], self.trail_x[i]], 
-                               [self.trail_y[i-1], self.trail_y[i]], 
-                               color='#00aaff', alpha=alpha_val * 0.5, linewidth=1)
+                i = len(self.trail_x)
+                alpha_val = i / len(self.trail_x)
+                line, = self.ax.plot([self.trail_x[-2], self.trail_x[-1]], 
+                                     [self.trail_y[-2], self.trail_y[-1]], 
+                                     color='#00aaff', alpha=alpha_val * 0.5, linewidth=1)
+                self.trail_lines.append(line)
             
-            # Draw current position
-            self.ax.scatter([alpha], [beta], c='#00ffff', s=80, zorder=5)
+            # Update current position scatter
+            if self.position_scatter:
+                self.position_scatter.set_offsets([[alpha, beta]])
             
-            self.draw()
-        except Exception:
+            self.draw_idle()
+        except Exception as e:
             # Silently ignore matplotlib rendering errors
             pass
 
