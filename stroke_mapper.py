@@ -42,10 +42,11 @@ class StrokeMapper:
     Alpha and beta range from -1 to 1, with (0,0) at center.
     """
     
-    def __init__(self, config: Config, send_callback: Callable[[TCodeCommand], None] = None):
+    def __init__(self, config: Config, send_callback: Callable[[TCodeCommand], None] = None, get_volume: Callable[[], float] = None):
         self.config = config
         self.state = StrokeState()
         self.send_callback = send_callback  # Callback to send commands directly
+        self.get_volume = get_volume if get_volume is not None else (lambda: 1.0)
         
         # Mode-specific state
         self.figure8_phase = 0.0
@@ -266,7 +267,7 @@ class StrokeMapper:
         self.state.alpha = first_alpha
         self.state.beta = first_beta
         print(f"[StrokeMapper] ARC start (mode={self.config.stroke.mode.name}) ({n_points} pts, {beat_interval_ms}ms total)")
-        return TCodeCommand(first_alpha, first_beta, step_durations[0])
+        return TCodeCommand(first_alpha, first_beta, step_durations[0], self.get_volume())
     
     def _send_arc_synchronous(self, alpha_arc: np.ndarray, beta_arc: np.ndarray, step_durations: list, n_points: int):
         """Send arc points synchronously with proper sleep timing (Breadbeats approach)"""
@@ -280,7 +281,7 @@ class StrokeMapper:
             step_ms = step_durations[i]  # Each step has its own duration
             
             if self.send_callback:
-                cmd = TCodeCommand(alpha, beta, step_ms)
+                cmd = TCodeCommand(alpha, beta, step_ms, self.get_volume())
                 self.send_callback(cmd)
                 self.state.alpha = alpha
                 self.state.beta = beta
@@ -297,7 +298,7 @@ class StrokeMapper:
     def _send_return_stroke(self, duration_ms: int, alpha: float, beta: float):
         """Send the return stroke to opposite position (called by timer)"""
         if self.send_callback:
-            cmd = TCodeCommand(alpha, beta, duration_ms)
+            cmd = TCodeCommand(alpha, beta, duration_ms, self.get_volume())
             print(f"[StrokeMapper] RETURN stroke a={alpha:.2f} b={beta:.2f} dur={duration_ms}ms")
             self.send_callback(cmd)
             self.state.alpha = alpha
@@ -510,7 +511,7 @@ class StrokeMapper:
         self.state.beta = beta_target
         self.state.last_stroke_time = now
         
-        return TCodeCommand(alpha_target, beta_target, duration_ms)
+        return TCodeCommand(alpha_target, beta_target, duration_ms, self.get_volume())
     
     def _freq_to_factor(self, freq: float) -> float:
         """Convert frequency to a 0-1 factor (bass=0, treble=1)"""

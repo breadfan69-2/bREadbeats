@@ -988,16 +988,24 @@ class BREadbeatsWindow(QMainWindow):
         self.beat_timer.timeout.connect(self._turn_off_beat_indicator)
         self.beat_indicator_min_duration = 100  # ms
         
+        # Volume slider (0.0 - 1.0)
+        self.volume_slider = SliderWithLabel("Volume", 0.0, 1.0, 1.0, decimals=2)
+        self.volume_slider.setFixedWidth(220)
+        btn_layout.addWidget(self.volume_slider)
+
+        # Add spacing between volume and BPM
+        btn_layout.addSpacing(20)
+
         # BPM display
         self.bpm_label = QLabel("BPM: --")
         self.bpm_label.setStyleSheet("color: #0a0; font-size: 14px; font-weight: bold;")
         self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bpm_label.setFixedWidth(90)
         btn_layout.addWidget(self.bpm_label)
-        
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
-        
+
         return group
     
     def _populate_audio_devices(self):
@@ -1005,7 +1013,6 @@ class BREadbeatsWindow(QMainWindow):
         import sounddevice as sd
         devices = sd.query_devices()
         hostapis = sd.query_hostapis()
-        
         # Find WASAPI host API index
         wasapi_idx = None
         for idx, api in enumerate(hostapis):
@@ -1575,7 +1582,7 @@ class BREadbeatsWindow(QMainWindow):
         self.is_sending = checked
         if checked:
             # Re-instantiate StrokeMapper with current config (for live mode switching)
-            self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct)
+            self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value())
         if self.network_engine:
             self.network_engine.set_sending_enabled(checked)
         self.play_btn.setText("⏸ Pause" if checked else "▶ Play")
@@ -1590,7 +1597,7 @@ class BREadbeatsWindow(QMainWindow):
     
     def _start_engines(self):
         """Initialize and start all engines"""
-        self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct)
+        self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value())
         
         # Set selected audio device
         combo_idx = self.device_combo.currentIndex()
@@ -1609,14 +1616,24 @@ class BREadbeatsWindow(QMainWindow):
     
     def _send_command_direct(self, cmd: TCodeCommand):
         """Send a command directly (used by StrokeMapper for return strokes)"""
+        # Always update volume before sending
+        cmd.volume = self.volume_slider.value()
         if self.network_engine and self.is_sending:
-            print(f"[Main] Sending cmd (direct): a={cmd.alpha:.2f} b={cmd.beta:.2f}")
+            print(f"[Main] Sending cmd (direct): a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f}")
             self.network_engine.send_command(cmd)
     
     def _stop_engines(self):
-        """Stop all engines"""
+        """Stop all engines and background threads"""
         self.is_running = False
-        
+
+        # Stop stroke mapper arc thread if running
+        if self.stroke_mapper and hasattr(self.stroke_mapper, '_arc_thread'):
+            arc_thread = getattr(self.stroke_mapper, '_arc_thread', None)
+            if arc_thread and arc_thread.is_alive():
+                self.stroke_mapper._stop_arc = True
+                arc_thread.join(timeout=1.0)
+        self.stroke_mapper = None
+
         if self.audio_engine:
             self.audio_engine.stop()
             self.audio_engine = None
@@ -1642,7 +1659,8 @@ class BREadbeatsWindow(QMainWindow):
         if self.stroke_mapper and self.is_sending:
             cmd = self.stroke_mapper.process_beat(event)
             if cmd and self.network_engine:
-                print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f}")
+                cmd.volume = self.volume_slider.value()
+                print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f}")
                 self.network_engine.send_command(cmd)
         elif event.is_beat and not self.is_sending:
             print("[Main] Beat detected but Play not enabled")
@@ -1720,19 +1738,19 @@ class BREadbeatsWindow(QMainWindow):
             self.beta_label.setText(f"β: {beta:.2f}")
     
     def closeEvent(self, event):
-        """Cleanup on close"""
+        """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
         self._stop_engines()
         if self.network_engine:
             self.network_engine.stop()
-        
+
         # Save phase advance from slider before closing
         self.config.stroke.phase_advance = self.phase_advance_slider.value()
         # Save config before closing
         save_config(self.config)
-        
+
         # Save presets to disk
         self._save_presets_to_disk()
-        
+
         event.accept()
 
 

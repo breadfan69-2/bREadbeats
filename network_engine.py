@@ -16,35 +16,39 @@ from config import Config
 
 @dataclass
 class TCodeCommand:
-    """T-code command for restim"""
-    alpha: float      # Alpha position (-1.0 to 1.0, will be mapped to 0-9999)
-    beta: float       # Beta position (-1.0 to 1.0, will be mapped to 0-9999)
-    duration_ms: int  # Duration for the move
-    
-    def to_tcode(self) -> str:
-        """
-        Convert to T-code string for restim.
-        restim coordinate system:
-          - L0 = vertical axis (our alpha/Y, negated)
-          - L1 = horizontal axis (our beta/X, negated)
-        Rotated 90 degrees clockwise to match restim display orientation
-        """
-        # Rotate 90 degrees clockwise: swap and negate appropriately
-        rotated_alpha = self.beta
-        rotated_beta = -self.alpha
-        
-        # Map -1.0..1.0 to 0..9999
-        l0_val = int((-rotated_alpha + 1.0) / 2.0 * 9999)  # rotated_alpha -> L0 (vertical, negated)
-        l1_val = int((-rotated_beta + 1.0) / 2.0 * 9999)   # rotated_beta -> L1 (horizontal, negated)
-        
-        # Clamp to valid range
-        l0_val = max(0, min(9999, l0_val))
-        l1_val = max(0, min(9999, l1_val))
-        
-        # Build command string - both axes in one message
-        # Format: L0xxxxIyyy L1xxxxIyyy
-        cmd = f"L0{l0_val:04d}I{self.duration_ms} L1{l1_val:04d}I{self.duration_ms}\n"
-        return cmd
+        """T-code command for restim"""
+        alpha: float      # Alpha position (-1.0 to 1.0, will be mapped to 0-9999)
+        beta: float       # Beta position (-1.0 to 1.0, will be mapped to 0-9999)
+        duration_ms: int  # Duration for the move
+        volume: float = 1.0  # Volume (0.0 to 1.0)
+
+        def to_tcode(self) -> str:
+                """
+                Convert to T-code string for restim.
+                restim coordinate system:
+                    - L0 = vertical axis (our alpha/Y, negated)
+                    - L1 = horizontal axis (our beta/X, negated)
+                Rotated 90 degrees clockwise to match restim display orientation
+                """
+                # Rotate 90 degrees clockwise: swap and negate appropriately
+                rotated_alpha = self.beta
+                rotated_beta = -self.alpha
+
+                # Map -1.0..1.0 to 0..9999
+                l0_val = int((-rotated_alpha + 1.0) / 2.0 * 9999)  # rotated_alpha -> L0 (vertical, negated)
+                l1_val = int((-rotated_beta + 1.0) / 2.0 * 9999)   # rotated_beta -> L1 (horizontal, negated)
+
+                # Clamp to valid range
+                l0_val = max(0, min(9999, l0_val))
+                l1_val = max(0, min(9999, l1_val))
+
+                # Volume to 0..9999
+                v0_val = int(max(0.0, min(1.0, self.volume)) * 9999)
+
+                # Build command string - all axes in one message
+                # Format: L0xxxxIyyy L1xxxxIyyy V0xxxxIyyy
+                cmd = f"L0{l0_val:04d}I{self.duration_ms} L1{l1_val:04d}I{self.duration_ms} V0{v0_val:04d}I{self.duration_ms}\n"
+                return cmd
 
 
 class NetworkEngine:
