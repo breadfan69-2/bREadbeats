@@ -46,8 +46,18 @@ class TCodeCommand:
                 v0_val = int(max(0.0, min(1.0, self.volume)) * 9999)
 
                 # Build command string - all axes in one message
-                # Format: L0xxxxIyyy L1xxxxIyyy V0xxxxIyyy
-                cmd = f"L0{l0_val:04d}I{self.duration_ms} L1{l1_val:04d}I{self.duration_ms} V0{v0_val:04d}I{self.duration_ms}\n"
+                # Format: L0xxxxIyyy L1xxxxIyyy V0xxxxIyyy [P0xxxx]
+                cmd = f"L0{l0_val:04d}I{self.duration_ms} L1{l1_val:04d}I{self.duration_ms} V0{v0_val:04d}I{self.duration_ms}"
+                    # Add P0xxxxIyyy if present (4 digits, 0000-1000)
+                p0_val = getattr(self, 'pulse_freq', None)
+                if p0_val is not None:
+                        cmd += f" P0{int(p0_val):04d}I{self.duration_ms}"
+                # Add any other tcode_tags if present
+                tcode_tags = getattr(self, 'tcode_tags', {})
+                for tag, val in tcode_tags.items():
+                    if tag != 'P0':
+                        cmd += f" {tag}{int(val):04d}"
+                cmd += "\n"
                 return cmd
 
 

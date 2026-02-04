@@ -1183,13 +1183,47 @@ class BREadbeatsWindow(QMainWindow):
     def _create_settings_tabs(self) -> QTabWidget:
         """Settings tabs with all the sliders"""
         tabs = QTabWidget()
-        
         tabs.addTab(self._create_beat_detection_tab(), "Beat Detection")
         tabs.addTab(self._create_stroke_settings_tab(), "Stroke Settings")
         tabs.addTab(self._create_jitter_creep_tab(), "Jitter / Creep")
         tabs.addTab(self._create_axis_weights_tab(), "Axis Weights")
-        
+        tabs.addTab(self._create_other_tab(), "Other")
         return tabs
+
+    def _create_other_tab(self) -> QWidget:
+        """Other tab for dominant frequency to TCode P0xxxx"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        freq_group = QGroupBox("Dominant Frequency to TCode [P0xxxx]")
+        freq_layout = QVBoxLayout(freq_group)
+
+        self.pulse_freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, 20000, 20, 0)
+        self.pulse_freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, 20000, 200, 0)
+        freq_layout.addWidget(self.pulse_freq_low_slider)
+        freq_layout.addWidget(self.pulse_freq_high_slider)
+
+        # TCode output range sliders
+        self.tcode_freq_min_slider = SliderWithLabel("TCode Min (Hz)", 1000, 9999, 1000, 0)
+        self.tcode_freq_max_slider = SliderWithLabel("TCode Max (Hz)", 1000, 9999, 9999, 0)
+        freq_layout.addWidget(self.tcode_freq_min_slider)
+        freq_layout.addWidget(self.tcode_freq_max_slider)
+
+        # Optional: Frequency weight slider (not yet wired)
+        self.freq_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 1.0, 1.0, 2)
+        freq_layout.addWidget(self.freq_weight_slider)
+
+        # Display for current dominant frequency
+        freq_display_layout = QHBoxLayout()
+        freq_display_layout.addWidget(QLabel("Dominant Frequency:"))
+        self.dominant_freq_label = QLabel("-- Hz")
+        self.dominant_freq_label.setStyleSheet("color: #0af; font-size: 16px; font-weight: bold;")
+        freq_display_layout.addWidget(self.dominant_freq_label)
+        freq_layout.addLayout(freq_display_layout)
+
+        layout.addWidget(freq_group)
+        layout.addStretch()
+        return widget
     
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings"""
@@ -1642,7 +1676,17 @@ class BREadbeatsWindow(QMainWindow):
         """Called from audio thread on each frame"""
         # Emit signal for thread-safe GUI update
         self.signals.beat_detected.emit(event)
-        
+
+        # Track and display dominant frequency in 'Other' tab
+        dom_freq = event.frequency if hasattr(event, 'frequency') else 0.0
+        low = self.pulse_freq_low_slider.value()
+        high = self.pulse_freq_high_slider.value()
+        # Only update if within selected range
+        if low <= dom_freq <= high:
+            self.dominant_freq_label.setText(f"{dom_freq:.1f} Hz")
+        else:
+            self.dominant_freq_label.setText("-- Hz")
+
         # Get spectrum for visualization
         if self.audio_engine:
             spectrum = self.audio_engine.get_spectrum()
@@ -1654,13 +1698,37 @@ class BREadbeatsWindow(QMainWindow):
                     'spectral_flux': event.spectral_flux
                 }
                 self.signals.spectrum_ready.emit(spectrum_with_stats)
-        
+
         # Process through stroke mapper
         if self.stroke_mapper and self.is_sending:
             cmd = self.stroke_mapper.process_beat(event)
             if cmd and self.network_engine:
                 cmd.volume = self.volume_slider.value()
-                print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f}")
+                # Use the actual dominant frequency
+                dom_freq = event.frequency if hasattr(event, 'frequency') else 0.0
+                # Map dominant frequency to TCode output range
+                tcode_min = self.tcode_freq_min_slider.value()
+                tcode_max = self.tcode_freq_max_slider.value()
+                # Normalize dom_freq within selected input range
+                in_low = self.pulse_freq_low_slider.value()
+                in_high = self.pulse_freq_high_slider.value()
+                norm = (dom_freq - in_low) / max(1, in_high - in_low)
+                norm = max(0.0, min(1.0, norm))
+                # Bias by movement speed (stroke intensity)
+                freq_weight = self.freq_weight_slider.value()  # 0.0–1.0
+                intensity = getattr(event, 'intensity', 1.0)
+                # Blend: norm + freq_weight * intensity, clamped to [0,1]
+                norm_biased = norm + freq_weight * intensity * (1.0 - norm)
+                norm_biased = max(0.0, min(1.0, norm_biased))
+                # Map to TCode output range
+                p0_val = int(tcode_min + norm_biased * (tcode_max - tcode_min))
+                p0_val = max(1000, min(9999, p0_val))
+                cmd.pulse_freq = p0_val
+                # Format as 4 digits (P0xxxx)
+                p0_str = f"P0{p0_val:04d}"
+                cmd.tcode_tags = getattr(cmd, 'tcode_tags', {})
+                cmd.tcode_tags['P0'] = p0_str
+                print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} P0={p0_str}")
                 self.network_engine.send_command(cmd)
         elif event.is_beat and not self.is_sending:
             print("[Main] Beat detected but Play not enabled")
