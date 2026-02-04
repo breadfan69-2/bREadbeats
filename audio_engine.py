@@ -370,6 +370,14 @@ class AudioEngine:
             interval = current_time - self.last_beat_time
             
             # Sanity check: ignore tiny intervals (< 0.2s = 300 BPM max)
+            # Add min/max BPM limits
+            min_bpm = 70.0
+            max_bpm = 180.0
+            min_interval = 60.0 / max_bpm
+            max_interval = 60.0 / min_bpm
+            if interval < min_interval or interval > max_interval:
+                print(f"[Tempo] Interval rejected by BPM limits: {interval:.3f}s (BPM would be {60.0/interval:.1f})")
+                return
             if interval > 0.2:
                 # Outlier rejection: if interval is way off from average, it might be a false beat
                 if len(self.beat_intervals) > 0:
@@ -378,24 +386,19 @@ class AudioEngine:
                     if interval < (0.5 * avg_interval) or interval > (2.0 * avg_interval):
                         print(f"[Tempo] Outlier interval rejected: {interval:.3f}s (avg: {avg_interval:.3f}s)")
                         return
-                
                 # Add to interval history
                 self.beat_intervals.append(interval)
                 self.beat_times.append(current_time)
-                
                 # Keep only last 12 intervals (provides smooth averaging over ~1 minute)
                 if len(self.beat_intervals) > 12:
                     self.beat_intervals.pop(0)
                     self.beat_times.pop(0)
-                
                 # Calculate smoothed tempo using weighted average
                 # Recent beats get higher weight (madmom approach: prefer recent data)
                 weights = np.linspace(0.5, 1.5, len(self.beat_intervals))
                 weighted_avg_interval = np.average(self.beat_intervals, weights=weights)
-                
                 # Convert to BPM
                 new_tempo = 60.0 / weighted_avg_interval if weighted_avg_interval > 0 else 0
-                
                 # Apply exponential smoothing for stability (like madmom's tempo state space)
                 smoothing_factor = 0.7  # Higher = more smooth (less responsive)
                 if self.smoothed_tempo > 0:

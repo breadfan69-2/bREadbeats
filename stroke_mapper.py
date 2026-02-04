@@ -71,6 +71,30 @@ class StrokeMapper:
         """
         now = time.time()
         cfg = self.config.stroke
+        beat_cfg = self.config.beat
+        # Fade-out state for quiet suppression
+        if not hasattr(self, '_fade_intensity'):
+            self._fade_intensity = 1.0
+        if not hasattr(self, '_last_quiet_time'):
+            self._last_quiet_time = 0.0
+        # Thresholds for true silence
+        quiet_flux_thresh = cfg.flux_threshold * 0.5
+        quiet_energy_thresh = beat_cfg.peak_floor * 1.5
+        fade_duration = 2.0  # seconds to fade out
+        # If both flux and energy are very low, treat as truly silent
+        is_truly_silent = (event.spectral_flux < quiet_flux_thresh and event.peak_energy < quiet_energy_thresh)
+        if is_truly_silent:
+            if self._fade_intensity > 0.0:
+                # Start fade-out
+                if self._last_quiet_time == 0.0:
+                    self._last_quiet_time = now
+                elapsed = now - self._last_quiet_time
+                self._fade_intensity = max(0.0, 1.0 - (elapsed / fade_duration))
+            else:
+                self._fade_intensity = 0.0
+        else:
+            self._fade_intensity = min(1.0, self._fade_intensity + 0.1)
+            self._last_quiet_time = 0.0
         
         # Track idle time
         if event.is_beat:
@@ -94,10 +118,14 @@ class StrokeMapper:
             if is_downbeat:
                 cmd = self._generate_downbeat_stroke(event)
                 if cmd is None:
-                    # Arc is handled asynchronously, no immediate command
                     return None
-                print(f"[StrokeMapper] ⬇ DOWNBEAT -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} (full loop, flux={event.spectral_flux:.4f})")
-                return cmd
+                # Apply fade-out to intensity
+                if hasattr(cmd, 'intensity'):
+                    cmd.intensity *= self._fade_intensity
+                if hasattr(cmd, 'volume'):
+                    cmd.volume *= self._fade_intensity
+                print(f"[StrokeMapper] ⬇ DOWNBEAT -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} (full loop, flux={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f})")
+                return cmd if self._fade_intensity > 0.01 else None
             
             # REGULAR BEAT:
             # - Low flux: skip regular beats (only downbeats get strokes)
@@ -109,14 +137,30 @@ class StrokeMapper:
             
             # High flux: Generate full stroke on regular beat too
             cmd = self._generate_beat_stroke(event)
-            print(f"[StrokeMapper] Beat (HIGH FLUX={event.spectral_flux:.4f}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
-            return cmd
+            if hasattr(cmd, 'intensity'):
+                cmd.intensity *= self._fade_intensity
+            if hasattr(cmd, 'volume'):
+                cmd.volume *= self._fade_intensity
+            print(f"[StrokeMapper] Beat (HIGH FLUX={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
+            return cmd if self._fade_intensity > 0.01 else None
             
-        elif self.state.idle_time > 0.5:  # 500ms of silence for idle motion
-            cmd = self._generate_idle_motion(event)
-            if cmd:
-                print(f"[StrokeMapper] Idle -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} jitter={self.config.jitter.enabled} creep={self.config.creep.enabled}")
-            return cmd
+        elif self.state.idle_time > 0.5:
+            # Only allow idle motion if not truly silent and fade intensity > 0
+            if not is_truly_silent and self._fade_intensity > 0.01:
+                cmd = self._generate_idle_motion(event)
+                if hasattr(cmd, 'intensity'):
+                    cmd.intensity *= self._fade_intensity
+                if hasattr(cmd, 'volume'):
+                    cmd.volume *= self._fade_intensity
+                if cmd is not None:
+                    print(f"[StrokeMapper] Idle -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} jitter={self.config.jitter.enabled} creep={self.config.creep.enabled} fade={self._fade_intensity:.2f}")
+                else:
+                    print(f"[StrokeMapper] Idle -> cmd=None jitter={self.config.jitter.enabled} creep={self.config.creep.enabled} fade={self._fade_intensity:.2f}")
+                return cmd
+            else:
+                # Suppress idle motion if truly silent
+                print(f"[StrokeMapper] Idle suppressed (truly silent, fade={self._fade_intensity:.2f})")
+                return None
         
         return None
     

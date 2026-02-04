@@ -1198,8 +1198,8 @@ class BREadbeatsWindow(QMainWindow):
         freq_group = QGroupBox("Dominant Frequency to TCode [P0xxxx]")
         freq_layout = QVBoxLayout(freq_group)
 
-        self.pulse_freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, 20000, 20, 0)
-        self.pulse_freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, 20000, 200, 0)
+        self.pulse_freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, 1000, 20, 0)
+        self.pulse_freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, 1000, 200, 0)
         freq_layout.addWidget(self.pulse_freq_low_slider)
         freq_layout.addWidget(self.pulse_freq_high_slider)
 
@@ -1246,11 +1246,11 @@ class BREadbeatsWindow(QMainWindow):
         freq_layout = QVBoxLayout(freq_group)
         
         # Full range up to ~20kHz (Nyquist for 44100 Hz)
-        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, 15000, 20, 0)
+        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, 1000, 20, 0)
         self.freq_low_slider.valueChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_low_slider)
-        
-        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, 20000, 200, 0)
+
+        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, 1000, 200, 0)
         self.freq_high_slider.valueChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_high_slider)
         
@@ -1741,33 +1741,30 @@ class BREadbeatsWindow(QMainWindow):
         """Handle beat event in GUI thread"""
         if event.is_beat:
             # Light up the beat indicator
-            self.beat_indicator.setStyleSheet("color: #0f0; font-size: 24px;")
-            
+            if hasattr(self, 'beat_indicator') and self.beat_indicator is not None:
+                self.beat_indicator.setStyleSheet("color: #0f0; font-size: 24px;")
             # Reset timer to keep it lit for minimum duration
-            self.beat_timer.stop()
-            self.beat_timer.start(self.beat_indicator_min_duration)
-            
+            if hasattr(self, 'beat_timer') and self.beat_timer is not None:
+                self.beat_timer.stop()
+                self.beat_timer.start(self.beat_indicator_min_duration)
             # Get tempo from audio engine (now includes smoothing, beat prediction, downbeat detection)
-            if self.audio_engine:
+            if hasattr(self, 'audio_engine') and self.audio_engine is not None:
                 tempo_info = self.audio_engine.get_tempo_info()
                 if tempo_info['bpm'] > 0:
                     confidence = tempo_info['confidence']
                     beat_pos = tempo_info['beat_position']
                     is_downbeat = tempo_info.get('is_downbeat', False)
-                    
                     # Format BPM display
                     bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
-                    
                     # Add beat position indicator (1/2/3/4 and ⬇ for downbeat)
                     if beat_pos > 0:
                         downbeat_marker = " ⬇" if is_downbeat else ""
                         bpm_display += f" [{beat_pos}{downbeat_marker}]"
-                    
                     # Add confidence indicator
                     if confidence < 0.5:
                         bpm_display += " (stabilizing...)"
-                    
-                    self.bpm_label.setText(bpm_display)
+                    if hasattr(self, 'bpm_label') and self.bpm_label is not None:
+                        self.bpm_label.setText(bpm_display)
     
     def _turn_off_beat_indicator(self):
         """Turn off beat indicator after minimum duration"""
@@ -1779,7 +1776,7 @@ class BREadbeatsWindow(QMainWindow):
     
     def _do_spectrum_update(self):
         """Actually update spectrum at throttled rate"""
-        if self._pending_spectrum is not None:
+        if self._pending_spectrum is not None and hasattr(self, 'spectrum_canvas') and self.spectrum_canvas is not None:
             # Handle both old format (numpy array) and new format (dict with stats)
             if isinstance(self._pending_spectrum, dict):
                 spectrum = self._pending_spectrum['spectrum']
