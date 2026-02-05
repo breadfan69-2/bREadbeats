@@ -380,14 +380,32 @@ class AudioEngine:
         if self.last_beat_time > 0:
             interval = current_time - self.last_beat_time
             
-            # Sanity check: ignore tiny intervals (< 0.2s = 300 BPM max)
-            # Add min/max BPM limits
-            min_bpm = 70.0
+            # Auto-halve/double interval to bring BPM into 60-180 range
+            min_bpm = 60.0
             max_bpm = 180.0
-            min_interval = 60.0 / max_bpm
-            max_interval = 60.0 / min_bpm
-            if interval < min_interval or interval > max_interval:
-                print(f"[Tempo] Interval rejected by BPM limits: {interval:.3f}s (BPM would be {60.0/interval:.1f})")
+            min_interval = 60.0 / max_bpm  # ~0.333s
+            max_interval = 60.0 / min_bpm  # 1.0s
+            
+            # Calculate what BPM this interval would give
+            if interval > 0:
+                raw_bpm = 60.0 / interval
+                adjusted_interval = interval
+                
+                # Auto-halve: if BPM > 180, double the interval (halve BPM)
+                while 60.0 / adjusted_interval > max_bpm and adjusted_interval < 2.0:
+                    adjusted_interval *= 2
+                    print(f"[Tempo] Auto-halved BPM: {60.0/interval:.1f} -> {60.0/adjusted_interval:.1f}")
+                
+                # Auto-double: if BPM < 60, halve the interval (double BPM)
+                while 60.0 / adjusted_interval < min_bpm and adjusted_interval > 0.1:
+                    adjusted_interval /= 2
+                    print(f"[Tempo] Auto-doubled BPM: {60.0/interval:.1f} -> {60.0/adjusted_interval:.1f}")
+                
+                interval = adjusted_interval
+            
+            # Reject intervals still outside reasonable range after adjustment
+            if interval < 0.15 or interval > 2.0:
+                print(f"[Tempo] Interval rejected: {interval:.3f}s (BPM would be {60.0/interval:.1f})")
                 return
             if interval > 0.2:
                 # Outlier rejection: if interval is way off from average, it might be a false beat

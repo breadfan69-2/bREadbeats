@@ -271,27 +271,28 @@ class SpectrumCanvas(FigureCanvas):
             
         elif self.drag_mode == 'move':
             # Moving entire band - keep width constant
-            new_low = max(0, min(self.num_bars - self.band_width - 1, low_bar + dx))
-            new_high = new_low + self.band_width
-            self.band_low = new_low / self.num_bars
-            self.band_high = min(1.0, new_high / self.num_bars)
+            if self.band_width is not None:
+                new_low = max(0, min(self.num_bars - self.band_width - 1, low_bar + int(dx)))
+                new_high = new_low + self.band_width
+                self.band_low = new_low / self.num_bars
+                self.band_high = min(1.0, new_high / self.num_bars)
         
         # Update overlay
         self.set_frequency_band(self.band_low, self.band_high)
         
         # Update sliders in parent window if available
-        if hasattr(self.parent_window, 'freq_low_slider') and hasattr(self.parent_window, 'audio_engine'):
+        if self.parent_window and hasattr(self.parent_window, 'freq_low_slider') and hasattr(self.parent_window, 'audio_engine'):
             sr = self.parent_window.audio_engine.config.audio.sample_rate if self.parent_window.audio_engine else 44100
             low_hz = self.band_low * sr / 2
             high_hz = self.band_high * sr / 2
-            self.parent_window.freq_low_slider.setValue(low_hz)
-            self.parent_window.freq_high_slider.setValue(high_hz)
+            self.parent_window.freq_low_slider.setValue(int(low_hz))
+            self.parent_window.freq_high_slider.setValue(int(high_hz))
         
         # Update drag start for next incremental motion
         self.drag_start_x = x
         self.draw_idle()
         
-    def update_spectrum(self, spectrum: np.ndarray, peak_energy: float = None, spectral_flux: float = None):
+    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update with new spectrum data - efficient bar update"""
         if spectrum is None or len(spectrum) == 0 or self.bars is None:
             return
@@ -372,13 +373,13 @@ class PositionCanvas(FigureCanvas):
 
     def update_position(self, alpha: float, beta: float):
         # Alpha = vertical (y-axis): 1.0 = top, -1.0 = bottom
-        # Beta = horizontal (x-axis): 1.0 = right, -1.0 = left
+        # Beta = horizontal (x-axis): 1.0 = LEFT, -1.0 = right (matches restim orientation)
         # Apply rotation if available
         angle_deg = self.get_rotation() if self.get_rotation else 0.0
         angle_rad = np.deg2rad(angle_deg)
         cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-        # Map: x = beta (horizontal), y = alpha (vertical), then rotate
-        x_base = beta
+        # Map: x = -beta (negated to match restim), y = alpha (vertical), then rotate
+        x_base = -beta  # Negated to match restim (positive beta = left)
         y_base = alpha
         x_rot = x_base * cos_a - y_base * sin_a
         y_rot = x_base * sin_a + y_base * cos_a
@@ -502,19 +503,22 @@ class BREadbeatsWindow(QMainWindow):
         super().__init__()
         
         self.setWindowTitle("bREadbeats")
-        self.setMinimumSize(900, 750)
+        self.setMinimumSize(950, 850)
         self.setStyleSheet(self._get_stylesheet())
         
         # Set window icon (appears in taskbar and title bar)
         try:
             from pathlib import Path
-            import sys
             from PyQt6.QtGui import QIcon
             
             # Handle both development and packaged (PyInstaller) modes
             if getattr(sys, 'frozen', False):
                 # Running as packaged exe
-                icon_path = Path(sys._MEIPASS) / 'bREadbeats.ico'
+                meipass = getattr(sys, '_MEIPASS', None)
+                if meipass:
+                    icon_path = Path(meipass) / 'bREadbeats.ico'
+                else:
+                    icon_path = Path(__file__).parent / 'bREadbeats.ico'
             else:
                 # Running from source
                 icon_path = Path(__file__).parent / 'bREadbeats.ico'
@@ -854,6 +858,9 @@ class BREadbeatsWindow(QMainWindow):
         
         # Bottom: Tabs with sliders
         main_layout.addWidget(self._create_settings_tabs())
+        
+        # Presets panel - always visible below tabs
+        main_layout.addWidget(self._create_presets_panel())
     
     def _apply_config_to_ui(self):
         """Apply loaded config values to UI sliders"""
@@ -994,6 +1001,13 @@ class BREadbeatsWindow(QMainWindow):
         self.volume_slider = SliderWithLabel("Volume", 0.0, 1.0, 1.0, decimals=2)
         self.volume_slider.setFixedWidth(220)
         btn_layout.addWidget(self.volume_slider)
+
+        # Pulse Freq display (shows sent TCode value x2)
+        self.pulse_freq_label = QLabel("Pulse: --")
+        self.pulse_freq_label.setStyleSheet("color: #f80; font-size: 12px; font-weight: bold;")
+        self.pulse_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pulse_freq_label.setFixedWidth(80)
+        btn_layout.addWidget(self.pulse_freq_label)
 
         # Beat indicator (closer to BPM display)
         self.beat_indicator = QLabel("●")
@@ -1167,7 +1181,7 @@ class BREadbeatsWindow(QMainWindow):
         group = QGroupBox("Spectrum Analyzer")
         layout = QVBoxLayout(group)
         
-        self.spectrum_canvas = SpectrumCanvas(self, width=8, height=2.5)
+        self.spectrum_canvas = SpectrumCanvas(self, width=8, height=3)
         layout.addWidget(self.spectrum_canvas)
         
         return group
@@ -1225,23 +1239,40 @@ class BREadbeatsWindow(QMainWindow):
         tabs.addTab(self._create_axis_weights_tab(), "Axis Weights")
         tabs.addTab(self._create_other_tab(), "Other")
         return tabs
+    
+    def _create_presets_panel(self) -> QGroupBox:
+        """Presets panel - always displayed below all tabs"""
+        group = QGroupBox("Presets (L=Load, R=Save)")
+        layout = QHBoxLayout(group)
+        
+        self.custom_beat_presets = {}
+        self.preset_buttons = []
+        for i in range(5):
+            btn = PresetButton(f"{i+1}")
+            btn.left_clicked.connect(lambda idx=i: self._load_beat_preset(idx))
+            btn.right_clicked.connect(lambda idx=i: self._save_beat_preset(idx))
+            self.preset_buttons.append(btn)
+            layout.addWidget(btn)
+        
+        layout.addStretch()
+        return group
 
     def _create_other_tab(self) -> QWidget:
         """Other tab for dominant frequency to TCode P0xxxx"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        freq_group = QGroupBox("Dominant Frequency to TCode [P0xxxx]")
+        freq_group = QGroupBox("Pulse Frequency Controls")
         freq_layout = QVBoxLayout(freq_group)
 
-        self.pulse_freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, 1000, 20, 0)
-        self.pulse_freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, 1000, 200, 0)
+        self.pulse_freq_low_slider = SliderWithLabel("Monitor Freq Min (Hz)", 20, 1000, 20, 0)
+        self.pulse_freq_high_slider = SliderWithLabel("Monitor Freq Max (Hz)", 20, 1000, 200, 0)
         freq_layout.addWidget(self.pulse_freq_low_slider)
         freq_layout.addWidget(self.pulse_freq_high_slider)
 
-        # TCode output range sliders
-        self.tcode_freq_min_slider = SliderWithLabel("TCode Min (Hz)", 1000, 9999, 2000, 0)
-        self.tcode_freq_max_slider = SliderWithLabel("TCode Max (Hz)", 1000, 9999, 7000, 0)
+        # TCode output range sliders (as percentage 0-100%)
+        self.tcode_freq_min_slider = SliderWithLabel("Sent Freq Min (%)", 0, 100, 20, 0)
+        self.tcode_freq_max_slider = SliderWithLabel("Sent Freq Max (%)", 0, 100, 70, 0)
         freq_layout.addWidget(self.tcode_freq_min_slider)
         freq_layout.addWidget(self.tcode_freq_max_slider)
 
@@ -1295,28 +1326,6 @@ class BREadbeatsWindow(QMainWindow):
         freq_layout.addWidget(self.freq_high_slider)
         
         layout.addWidget(freq_group)
-        
-        # Beat Detection Presets - User Definable
-        preset_group = QGroupBox("Presets")
-        preset_layout = QVBoxLayout(preset_group)
-        
-        # User custom presets row
-        custom_presets_layout = QHBoxLayout()
-        custom_presets_layout.addWidget(QLabel("Custom (L=Load, R=Save):"))
-        
-        self.custom_beat_presets = {}
-        self.preset_buttons = []
-        for i in range(5):
-            btn = PresetButton(f"{i+1}")
-            btn.left_clicked.connect(lambda idx=i: self._load_beat_preset(idx))
-            btn.right_clicked.connect(lambda idx=i: self._save_beat_preset(idx))
-            self.preset_buttons.append(btn)
-            custom_presets_layout.addWidget(btn)
-        
-        custom_presets_layout.addStretch()
-        preset_layout.addLayout(custom_presets_layout)
-        
-        layout.addWidget(preset_group)
         
         # Sliders - with better defaults
         # Sensitivity: higher = more beats detected (0.0=strict, 1.0=very sensitive)
@@ -1608,7 +1617,7 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
         jitter_layout.addWidget(self.jitter_amplitude_slider)
         
-        self.jitter_intensity_slider = SliderWithLabel("Circle Speed", 0.0, 3.0, 0.5)
+        self.jitter_intensity_slider = SliderWithLabel("Circle Speed", 0.0, 10.0, 0.5)
         self.jitter_intensity_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'intensity', v))
         jitter_layout.addWidget(self.jitter_intensity_slider)
         
@@ -1789,9 +1798,9 @@ class BREadbeatsWindow(QMainWindow):
                 cmd.volume = base_volume * silence_factor
                 # Use the actual dominant frequency
                 dom_freq = event.frequency if hasattr(event, 'frequency') else 0.0
-                # Map dominant frequency to TCode output range
-                tcode_min = self.tcode_freq_min_slider.value()
-                tcode_max = self.tcode_freq_max_slider.value()
+                # Map dominant frequency to TCode output range (percentage-based)
+                tcode_min_pct = self.tcode_freq_min_slider.value() / 100.0  # 0-100% -> 0.0-1.0
+                tcode_max_pct = self.tcode_freq_max_slider.value() / 100.0
                 # Normalize dom_freq within selected input range
                 in_low = self.pulse_freq_low_slider.value()
                 in_high = self.pulse_freq_high_slider.value()
@@ -1803,15 +1812,17 @@ class BREadbeatsWindow(QMainWindow):
                 # Blend: norm + freq_weight * intensity, clamped to [0,1]
                 norm_biased = norm + freq_weight * intensity * (1.0 - norm)
                 norm_biased = max(0.0, min(1.0, norm_biased))
-                # Map to TCode output range
-                p0_val = int(tcode_min + norm_biased * (tcode_max - tcode_min))
-                p0_val = max(1000, min(9999, p0_val))
+                # Map to TCode output range (0-9999 based on percentage)
+                tcode_min_val = int(tcode_min_pct * 9999)
+                tcode_max_val = int(tcode_max_pct * 9999)
+                p0_val = int(tcode_min_val + norm_biased * (tcode_max_val - tcode_min_val))
+                p0_val = max(0, min(9999, p0_val))
                 cmd.pulse_freq = p0_val
-                # Format as 4 digits (P0xxxx)
-                p0_str = f"P0{p0_val:04d}"
-                cmd.tcode_tags = getattr(cmd, 'tcode_tags', {})
-                cmd.tcode_tags['P0'] = p0_str
-                print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} P0={p0_str}")
+                # Update Pulse Freq display
+                if hasattr(self, 'pulse_freq_label'):
+                    display_freq = p0_val * 2  # Multiply by 2 for display
+                    self.pulse_freq_label.setText(f"Pulse: {display_freq}")
+                print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} P0={p0_val:04d}")
                 self.network_engine.send_command(cmd)
         elif event.is_beat and not self.is_sending:
             print("[Main] Beat detected but Play not enabled")
@@ -1851,7 +1862,7 @@ class BREadbeatsWindow(QMainWindow):
         # Show reset in GUI and console if tempo was reset
         if hasattr(event, 'tempo_reset') and event.tempo_reset:
             if hasattr(self, 'bpm_label') and self.bpm_label is not None:
-                self.bpm_label.setText("BPM: -- [reset]")
+                self.bpm_label.setText("BPM: -- [silent]")
             print("[GUI] Beat counter/tempo reset due to silence.")
     
     def _turn_off_beat_indicator(self):
