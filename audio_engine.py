@@ -46,6 +46,10 @@ class AudioEngine:
         self.is_downbeat = False
         self.beat_stability = 0.0
         self.stable_tempo = 0.0
+        # Reset energy-based downbeat accumulators
+        self.measure_energy_accum = [0.0] * self.beats_per_measure
+        self.measure_beat_counts = [0] * self.beats_per_measure
+        self.downbeat_confidence = 0.0
     """
     Engine 1: The Ears
     Captures system audio and detects beats in real-time.
@@ -96,10 +100,15 @@ class AudioEngine:
         self.beat_stability: float = 0.0       # 0.0 = chaotic, 1.0 = perfectly stable
         self.stability_threshold: float = 0.15 # Max coefficient of variation to consider "stable"
         
-        # Downbeat detection (energy-based)
+        # Downbeat detection (energy-based, StackOverflow/librosa-inspired)
+        # Accumulate energy at each measure position to find the strongest = beat 1
         self.beat_energies: list[float] = []   # Track intensity of beats
         self.is_downbeat: bool = False         # True if this beat is a downbeat (strong beat)
-        self.downbeat_threshold: float = 1.3   # Beats stronger than 1.3x avg are likely downbeats
+        self.beats_per_measure: int = 4        # 4/4 time assumption
+        self.measure_energy_accum: list[float] = [0.0] * 4  # Accumulated energy per position
+        self.measure_beat_counts: list[int] = [0] * 4       # How many beats at each position
+        self.downbeat_position: int = 0        # Which position (0-3) is the downbeat
+        self.downbeat_confidence: float = 0.0  # How confident we are in downbeat placement
         
     def start(self):
         """Start audio capture and beat detection"""
@@ -377,12 +386,12 @@ class AudioEngine:
         
         if is_beat:
             self._last_beat_time = current_time
-            self._update_tempo_tracking(current_time)
+            self._update_tempo_tracking(current_time, energy)
             print(f"[Beat] energy={energy:.4f} (thresh={energy_threshold:.4f}) flux={flux:.4f} bpm={self.smoothed_tempo:.1f}")
         
         return is_beat
     
-    def _update_tempo_tracking(self, current_time: float):
+    def _update_tempo_tracking(self, current_time: float, energy: float = 0.0):
         """Update tempo estimate with beat-based interval tracking (madmom-inspired)"""
         # Calculate interval from last beat
         if self.last_beat_time > 0:
@@ -467,13 +476,41 @@ class AudioEngine:
                 # Predict next beat time
                 self._predict_next_beat(current_time)
                 
-                # Track beat position for downbeat detection (4/4 time assumption)
-                self.beat_position_in_measure += 1
-                if self.beat_position_in_measure > 4:  # 4/4 time
-                    self.beat_position_in_measure = 1
-                    self.is_downbeat = True  # Downbeat on beat 1
-                else:
-                    self.is_downbeat = False
+                # Energy-based downbeat detection (StackOverflow/librosa-inspired)
+                # Accumulate energy at each measure position over multiple measures
+                # The position with highest accumulated energy is likely beat 1
+                self.beat_position_in_measure = (self.beat_position_in_measure % self.beats_per_measure) + 1
+                pos_idx = self.beat_position_in_measure - 1  # 0-based index
+                
+                # Accumulate energy with exponential decay (recent measures weighted more)
+                decay = 0.85  # Older measures fade out
+                for i in range(self.beats_per_measure):
+                    self.measure_energy_accum[i] *= decay
+                self.measure_energy_accum[pos_idx] += energy
+                self.measure_beat_counts[pos_idx] += 1
+                
+                # Find which position has highest average energy
+                avg_energies = []
+                for i in range(self.beats_per_measure):
+                    if self.measure_beat_counts[i] > 0:
+                        avg_energies.append(self.measure_energy_accum[i] / max(1, self.measure_beat_counts[i]))
+                    else:
+                        avg_energies.append(0.0)
+                
+                # Need at least 2 full measures of data before trusting
+                total_beats = sum(self.measure_beat_counts)
+                if total_beats >= self.beats_per_measure * 2:
+                    strongest_pos = int(np.argmax(avg_energies))
+                    # Calculate confidence: ratio of strongest to average
+                    mean_energy = np.mean(avg_energies) if np.mean(avg_energies) > 0 else 1.0
+                    self.downbeat_confidence = avg_energies[strongest_pos] / mean_energy
+                    self.downbeat_position = strongest_pos
+                
+                # Downbeat = when current position matches the strongest position
+                self.is_downbeat = (pos_idx == self.downbeat_position) and total_beats >= self.beats_per_measure * 2
+                
+                if self.is_downbeat:
+                    print(f"[Downbeat] Position {pos_idx+1}/{self.beats_per_measure} (confidence={self.downbeat_confidence:.2f}, energies={[f'{e:.2f}' for e in avg_energies]})")
         
         self.last_beat_time = current_time
     
