@@ -4,41 +4,15 @@ You helped me start writing this program, but you're too expensive, so i used ch
 
 ----------------------------------------------
 First, please look through the WHOLE codebase and check for errors, missing guards, and unnecessary code fragments.  I mistakedly let GPT do a lot of work in here.
+-------------------------------------------------------
 
+Should we change the "connection to restim" box in the UI since we seem to be connecting automatically?   instead of "connect" mabye we need "reset".   and change box title from [connection to restim]->[TCP Connection].   can we clean up the host/port selection boxes a bit?  i don't think the scrollwheel is needed for port.
 ----------------------------------------------------
-****[POSITION] MATPLOTLIB VISUALIZER ORIENTATION- MOST IMPORTANT ISSUE***
--------------------------------------------------
-I feel like our "position" matplotlib visualizer is mirrored, backwards, or flipped.  check reference orientation in https://github.com/diglet48/restim [threephasewidget][threephasecalibrationwidget]   and make sure that our visualizer is displayed with the same orientation as our output targer (restim).
- 
-We also need to make sure the program opens with appropriate window size to show the full dimensions of the matplotlib visualizers.
----------------------------------------------------
 
------BPM COUNTER/ DOWNBEAT DETECTOR RESET AND AUTO RANGING---
-I don't see the bpm display indicating when its been reset for silence.  It still says "BPM: ***.* (stabilizing) when there is no music playing.   I fear this is keeping it from preperly resetting to pick up new beat in next track.   We may need to lower the [truly silent] time threshold for resetting the beat/downbeat counter as well.  150ms is probably a good number.   
- I would also like the beat detector to auto-halve/double if detected beat is outside range of 60-180 bpm.  Is that feasable without messing up any of our current logic?
-
-------------------------------------------------------
------JITTER/CREEP-------
-on [jitter/creep] tab, what does value of [creep speed] slider indicate?  i think its intended to be a fraction/multiple of the beat.  we may need to adjust its range.
-
-also need to increase maximum [jitter][circle speed] to 10 from current value of 3.
-
-
-----------------------------------------------------------
-------PRESET BUTTONS-----
-The preset buttons need to be moved to their own independent box that will always be displayed underneath all tabs.  
-
-
-----------------------------------------------------------
------------OTHER TAB/FREQ TO TCODE-------------
-Labeling is not intuitive. change from=to:
-Box label change from "dominannt freq to tcode...." to "Pulse Frequency Controls"
-*Low/high freq= Monitor freq min/max
-*tcode min/max= sent freq min/max; and change slider values to % of 100% available.
-
-Also, please add "Pulse Freq" display to reflect sent tcode value with multiplier of x2.  Place this display next to "volume" display and slider. 
+-what value is the new pulse_freq display showing?   it seems waaaay too high.  is it raw tcode?   if its raw tcode, we need to divide by 500, not multiply.  that's my fault.   the total tcode range of [0000-9999] creates a pulse_freq from 1-200hz.   
 
 -----------------------------------------------------
+ -now the beat counter reset is resetting a little too fast on silence.  change threshold?   what is it currently?
 
 ---------------------
  Make sure window launch size is adjusted if necessary to not squash/distort any UI elements that we have changed.

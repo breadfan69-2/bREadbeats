@@ -9,7 +9,7 @@ import threading
 import queue
 import time
 from typing import Optional, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from config import Config
 
@@ -21,6 +21,8 @@ class TCodeCommand:
         beta: float       # Beta position (-1.0 to 1.0, will be mapped to 0-9999)
         duration_ms: int  # Duration for the move
         volume: float = 1.0  # Volume (0.0 to 1.0)
+        pulse_freq: Optional[int] = None  # Optional P0 frequency (0-9999)
+        tcode_tags: dict = field(default_factory=dict)  # Optional additional T-code tags
 
         def to_tcode(self) -> str:
                 """
