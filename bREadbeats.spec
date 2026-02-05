@@ -1,18 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
+datas = [('presets.json', '.')]
+binaries = []
+hiddenimports = [
+    'sounddevice', 'aubio', 'pyaudiowpatch', 'numpy', 'matplotlib',
+    'PyQt6', 'dateutil', 'six', 'fonttools', 'pywin32-ctypes',
+    'pillow', 'cycler', 'kiwisolver', 'contourpy'
+]
+tmp_ret = collect_all('PyQt6')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('matplotlib')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[('bREadbeats.ico', '.'), ('presets.json', '.')],
-    hiddenimports=[
-        'numpy',
-        'PyQt6',
-        'pyaudiowpatch',
-        'matplotlib',
-        'aubio',
-    ],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
