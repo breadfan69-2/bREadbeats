@@ -32,17 +32,30 @@ from network_engine import NetworkEngine, TCodeCommand
 from stroke_mapper import StrokeMapper
 
 
-# Config persistence
-CONFIG_DIR = Path.home() / '.breadbeats'
-CONFIG_FILE = CONFIG_DIR / 'config.json'
+# Config persistence - use exe folder when packaged, home dir when running from source
+def get_config_dir() -> Path:
+    """Get config directory - exe folder when packaged, home dir otherwise"""
+    if getattr(sys, 'frozen', False):
+        # Running as packaged exe - save in same folder as exe
+        return Path(sys.executable).parent
+    else:
+        # Running from source - use home directory
+        config_dir = Path.home() / '.breadbeats'
+        config_dir.mkdir(parents=True, exist_ok=True)
+        return config_dir
+
+def get_config_file() -> Path:
+    """Get config file path"""
+    return get_config_dir() / 'config.json'
 
 def save_config(config: Config) -> bool:
     """Save config to JSON file"""
     try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        with open(CONFIG_FILE, 'w') as f:
+        config_file = get_config_file()
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_file, 'w') as f:
             json.dump(asdict(config), f, indent=2)
-        print(f"[Config] Saved to {CONFIG_FILE}")
+        print(f"[Config] Saved to {config_file}")
         return True
     except Exception as e:
         print(f"[Config] Failed to save: {e}")
@@ -51,8 +64,9 @@ def save_config(config: Config) -> bool:
 def load_config() -> Config:
     """Load config from JSON file, returns default if not found"""
     try:
-        if CONFIG_FILE.exists():
-            with open(CONFIG_FILE, 'r') as f:
+        config_file = get_config_file()
+        if config_file.exists():
+            with open(config_file, 'r') as f:
                 data = json.load(f)
             
             # Reconstruct Config from dict (handles nested dataclasses)
@@ -101,7 +115,7 @@ def load_config() -> Config:
             if 'beta_weight' in data:
                 config.beta_weight = data['beta_weight']
             
-            print(f"[Config] Loaded from {CONFIG_FILE}")
+            print(f"[Config] Loaded from {config_file}")
             return config
         else:
             print(f"[Config] No saved config found, using defaults")
@@ -1513,10 +1527,13 @@ class BREadbeatsWindow(QMainWindow):
         self._load_freq_preset(idx)
     
     def _get_presets_file_path(self) -> Path:
-        """Get the path to the presets file"""
-        config_dir = Path.home() / ".bREadbeats"
-        config_dir.mkdir(exist_ok=True)
-        return config_dir / "presets.json"
+        """Get the path to the presets file - exe folder when packaged, workspace when developing"""
+        if getattr(sys, 'frozen', False):
+            # Running as packaged exe - save in same folder as exe
+            return Path(sys.executable).parent / "presets.json"
+        else:
+            # Running from source - use workspace folder (for editing factory presets)
+            return Path(__file__).parent / "presets.json"
     
     def _save_presets_to_disk(self):
         """Save all custom presets to disk"""
@@ -1532,6 +1549,17 @@ class BREadbeatsWindow(QMainWindow):
         """Load custom presets from disk"""
         try:
             presets_file = self._get_presets_file_path()
+            
+            # If no user presets file exists, try to copy factory presets from bundled location
+            if not presets_file.exists() and getattr(sys, 'frozen', False):
+                meipass = getattr(sys, '_MEIPASS', None)
+                if meipass:
+                    factory_presets = Path(meipass) / 'presets.json'
+                    if factory_presets.exists():
+                        import shutil
+                        shutil.copy(factory_presets, presets_file)
+                        print(f"[Presets] Copied factory presets to {presets_file}")
+            
             if presets_file.exists():
                 with open(presets_file, 'r') as f:
                     self.custom_beat_presets = json.load(f)

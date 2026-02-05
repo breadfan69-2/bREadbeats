@@ -3,18 +3,26 @@ Hi expensive claude.
 You helped me start writing this program, but you're too expensive, so i used cheap claude to help get it running the way i want.  its mostly done but i want you to go over it a final time.
 
 ----------------------------------------------
-First, please look through the WHOLE codebase and check for errors, missing guards, and unnecessary code fragments.  I mistakedly let GPT do a lot of work in here.
+First, please look through the WHOLE codebase and check for errors, missing guards, and unnecessary code fragments.  I mistakedly let GPT do a lot of work in here.  Check against original 5-6 commits and make sure [strokemode1] has not changed one single bit.  [strokemode2] and [strokemode3] have improvements that are to be kept.   [strokemode4] should be as originally implemented but with the functioning flux/peak sliders added.
 -------------------------------------------------------
+-can we make a pop-up dialogue when rightclicking preset buttons to save, a double check warning before saving and overwriting?  [WARNING - OVERWRITE PRESET]  and buttons for "confirm" and "cancel"?
 
-Should we change the "connection to restim" box in the UI since we seem to be connecting automatically?   instead of "connect" mabye we need "reset".   and change box title from [connection to restim]->[TCP Connection].   can we clean up the host/port selection boxes a bit?  i don't think the scrollwheel is needed for port.
-----------------------------------------------------
+-------------------------------------------
 
--what value is the new pulse_freq display showing?   it seems waaaay too high.  is it raw tcode?   if its raw tcode, we need to divide by 500, not multiply.  that's my fault.   the total tcode range of [0000-9999] creates a pulse_freq from 1-200hz.   
 
------------------------------------------------------
- -now the beat counter reset is resetting a little too fast on silence.  change threshold?   what is it currently?
+-it looks like our autoconnect to TCP logic doesn't happen until pressing [start] for audio monitoring.  This is confusing to the user.  We should auto connect when the program starts.
 
 ---------------------
+
+-the beat detector display jumps around a lot.  is our beat pickup really that inconsistent?  can we do any better on the logic?  read these references and lets talk about what could possibly be better, if anything:  https://github.com/mjhydri/BeatNet
+https://transactions.ismir.net/articles/10.5334/tismir.189
+https://stackoverflow.com/questions/57384448/detecting-beat-energy-with-librosa-finding-the-first-beat-of-each-bar
+https://www.cs.cmu.edu/~music/cmp/theses/che-yuan_liang_thesis.pdf
+https://biff.ai/a-rundown-of-open-source-beat-detection-models/
+
+
+
+ 
  Make sure window launch size is adjusted if necessary to not squash/distort any UI elements that we have changed.
 
 
