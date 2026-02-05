@@ -30,6 +30,7 @@ class BeatDetectionConfig:
     # Frequency band selection (Hz)
     freq_low: float = 20.0            # Low cutoff frequency (Hz)
     freq_high: float = 200.0          # High cutoff frequency (Hz) - bass range default
+    silence_reset_ms: int = 400       # How long silence before resetting beat tracking (ms)
 
 @dataclass
 class StrokeConfig:
