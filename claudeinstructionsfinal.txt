@@ -6,16 +6,43 @@ You helped me start writing this program, but you're too expensive, so i used ch
 First, please look through the WHOLE codebase and check for errors, missing guards, and unnecessary code fragments.  I mistakedly let GPT do a lot of work in here.
 
 ----------------------------------------------------
+****[POSITION] MATPLOTLIB VISUALIZER ORIENTATION- MOST IMPORTANT ISSUE***
+-------------------------------------------------
+I feel like our "position" matplotlib visualizer is mirrored, backwards, or flipped.  check reference orientation in https://github.com/diglet48/restim [threephasewidget][threephasecalibrationwidget]   and make sure that our visualizer is displayed with the same orientation as our output targer (restim).
+ 
+We also need to make sure the program opens with appropriate window size to show the full dimensions of the matplotlib visualizers.
+---------------------------------------------------
 
-[jitter]  function still looks jerky.  it should be smooth tiny sinuisoidal circles.   remember we are using all 4 quadrants of x/y axis with limits at 1.0/-1.0
-
-----------------------------------------------------
-
-i think we have the a/b (x/y) axis mixed up.  alpha is the vertical axis, with value [1.0] at the maximum top and [-1.0] at bottom.  beta is horizontal axis, with value [1.0] at far right and [-1.0] at far left.   please make the [position]matplotlib visualizer is displayed accurately.
+-----BPM COUNTER/ DOWNBEAT DETECTOR RESET AND AUTO RANGING---
+I don't see the bpm display indicating when its been reset for silence.  It still says "BPM: ***.* (stabilizing) when there is no music playing.   I fear this is keeping it from preperly resetting to pick up new beat in next track.   We may need to lower the [truly silent] time threshold for resetting the beat/downbeat counter as well.  150ms is probably a good number.   
+ I would also like the beat detector to auto-halve/double if detected beat is outside range of 60-180 bpm.  Is that feasable without messing up any of our current logic?
 
 ------------------------------------------------------
+-----JITTER/CREEP-------
+on [jitter/creep] tab, what does value of [creep speed] slider indicate?  i think its intended to be a fraction/multiple of the beat.  we may need to adjust its range.
 
-check [save presets] logic.  currently, buttons are grey when presets are loaded in them, (always loaded with default presets so this is kind of redundant) and turn pink when a preset is new saved.   can we do this in a more user friendly way?
+also need to increase maximum [jitter][circle speed] to 10 from current value of 3.
+
+
+----------------------------------------------------------
+------PRESET BUTTONS-----
+The preset buttons need to be moved to their own independent box that will always be displayed underneath all tabs.  
+
+
+----------------------------------------------------------
+-----------OTHER TAB/FREQ TO TCODE-------------
+Labeling is not intuitive. change from=to:
+Box label change from "dominannt freq to tcode...." to "Pulse Frequency Controls"
+*Low/high freq= Monitor freq min/max
+*tcode min/max= sent freq min/max; and change slider values to % of 100% available.
+
+Also, please add "Pulse Freq" display to reflect sent tcode value with multiplier of x2.  Place this display next to "volume" display and slider. 
+
+-----------------------------------------------------
+
+---------------------
+ Make sure window launch size is adjusted if necessary to not squash/distort any UI elements that we have changed.
+
 
 please complete these instructions, stop and ask any questions you need for clarification.
 
