@@ -1177,21 +1177,21 @@ class BREadbeatsWindow(QMainWindow):
         group = QGroupBox("Position (α/β)")
         layout = QVBoxLayout(group)
 
-        # Rotation slider (-180 to 180, default -180)
+        # Rotation slider (-180 to 180, default 0 for correct axis mapping)
         rot_layout = QHBoxLayout()
         rot_label = QLabel("Rotation (°):")
         rot_label.setStyleSheet("color: #aaa;")
         self.position_rotation_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_rotation_slider.setMinimum(-180)
         self.position_rotation_slider.setMaximum(180)
-        self.position_rotation_slider.setValue(-180)
+        self.position_rotation_slider.setValue(0)
         self.position_rotation_slider.setFixedWidth(180)
         self.position_rotation_slider.setSingleStep(1)
         self.position_rotation_slider.setPageStep(10)
         self.position_rotation_slider.setTickInterval(30)
         self.position_rotation_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.position_rotation_slider.valueChanged.connect(lambda _: self.position_canvas.setup_plot())
-        self.position_rotation_value = QLabel("-180°")
+        self.position_rotation_value = QLabel("0°")
         self.position_rotation_value.setStyleSheet("color: #0af;")
         self.position_rotation_slider.valueChanged.connect(
             lambda v: self.position_rotation_value.setText(f"{v}°"))
@@ -1604,7 +1604,7 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_enabled.stateChanged.connect(lambda s: setattr(self.config.jitter, 'enabled', s == 2))
         jitter_layout.addWidget(self.jitter_enabled)
         
-        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.0, 0.2, 0.02)
+        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.005, 0.05, 0.01, 3)
         self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
         jitter_layout.addWidget(self.jitter_amplitude_slider)
         

@@ -454,7 +454,9 @@ class StrokeMapper:
         elif mode == StrokeMode.TEARDROP:
             # Teardrop shape (piriform):
             # x = a * (sin t - 0.5 * sin(2t)), y = -a * cos t, t in [-pi, pi] for full sweep
-            self.state.phase = (self.state.phase + phase_advance) % 1.0
+            # Use 1/4 of phase_advance for smoother, slower teardrop motion
+            teardrop_advance = phase_advance * 0.25
+            self.state.phase = (self.state.phase + teardrop_advance) % 1.0
             t = (self.state.phase - 0.5) * 2 * np.pi  # t in [-pi, pi]
             # Use minimum radius like other modes to ensure motion even at low intensity
             min_radius = 0.2
