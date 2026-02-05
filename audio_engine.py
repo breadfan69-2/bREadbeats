@@ -44,6 +44,8 @@ class AudioEngine:
         self.beat_times.clear()
         self.beat_position_in_measure = 0
         self.is_downbeat = False
+        self.beat_stability = 0.0
+        self.stable_tempo = 0.0
     """
     Engine 1: The Ears
     Captures system audio and detects beats in real-time.
@@ -87,6 +89,12 @@ class AudioEngine:
         self.predicted_next_beat: float = 0.0  # Predicted next beat time
         self.beat_position_in_measure: int = 0 # For downbeat tracking (1, 2, 3, 4...)
         self.tempo_timeout_ms: float = 2000.0  # Reset tempo tracking after this many ms of silence
+        
+        # Beat stability filtering (TISMIR PLP-inspired)
+        # Only commit BPM display when recent intervals have low variance
+        self.stable_tempo: float = 0.0         # Last stable BPM (only updates when CV is low)
+        self.beat_stability: float = 0.0       # 0.0 = chaotic, 1.0 = perfectly stable
+        self.stability_threshold: float = 0.15 # Max coefficient of variation to consider "stable"
         
         # Downbeat detection (energy-based)
         self.beat_energies: list[float] = []   # Track intensity of beats
@@ -436,6 +444,23 @@ class AudioEngine:
                 else:
                     self.smoothed_tempo = new_tempo
                 
+                # Beat stability metric (TISMIR PLP-inspired)
+                # Coefficient of variation of recent intervals: low = stable tempo
+                if len(self.beat_intervals) >= 3:
+                    intervals_arr = np.array(self.beat_intervals)
+                    cv = np.std(intervals_arr) / np.mean(intervals_arr) if np.mean(intervals_arr) > 0 else 1.0
+                    # Convert CV to a 0-1 stability score (0 = chaotic, 1 = perfect)
+                    self.beat_stability = max(0.0, 1.0 - (cv / self.stability_threshold))
+                    
+                    # Only commit to stable_tempo when stability is high enough
+                    if cv < self.stability_threshold:
+                        self.stable_tempo = self.smoothed_tempo
+                        print(f"[Tempo] Stable BPM committed: {self.stable_tempo:.1f} (CV={cv:.3f}, stability={self.beat_stability:.2f})")
+                    else:
+                        print(f"[Tempo] BPM unstable: {self.smoothed_tempo:.1f} (CV={cv:.3f}, stability={self.beat_stability:.2f})")
+                else:
+                    self.beat_stability = 0.0
+                
                 # Update last known tempo
                 self.last_known_tempo = self.smoothed_tempo
                 
@@ -460,13 +485,18 @@ class AudioEngine:
         
     def get_tempo_info(self) -> dict:
         """Get current tempo information for UI display"""
+        # Use stable_tempo for display if available, otherwise fall back to smoothed
+        display_bpm = self.stable_tempo if self.stable_tempo > 0 else self.smoothed_tempo
         return {
-            'bpm': self.smoothed_tempo,
+            'bpm': display_bpm,
+            'raw_bpm': self.smoothed_tempo,
+            'stable_bpm': self.stable_tempo,
             'beat_position': self.beat_position_in_measure,
             'is_downbeat': self.is_downbeat,
             'predicted_next_beat': self.predicted_next_beat,
             'interval_count': len(self.beat_intervals),
-            'confidence': min(1.0, len(self.beat_intervals) / 4.0)  # Confidence grows with more beats
+            'confidence': min(1.0, len(self.beat_intervals) / 4.0),  # Confidence grows with more beats
+            'stability': self.beat_stability  # 0.0 = chaotic, 1.0 = perfectly stable
         }
             
     def _estimate_frequency(self, spectrum: np.ndarray) -> float:
