@@ -46,6 +46,7 @@ class StrokeConfig:
     flux_threshold: float = 0.03      # Threshold to distinguish low vs high flux
     # Low flux (<threshold): only full strokes on downbeats
     # High flux (>=threshold): full strokes on every beat
+    flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
     # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
     phase_advance: float = 0.25
@@ -79,10 +80,8 @@ class AudioConfig:
     channels: int = 2
     # Device 1 = Stereo Mix (MME) - should capture after linking to LOGITECH SPEAKERS
     device_index: int | None = 1
-    # Audio gain/amplification removed - not in original working config
-    gain: float = 1.0  # Changed from 100x back to 1x (no amplification)
-    # Audio gain/amplification removed - not in original working config
-    gain: float = 1.0  # Changed from 100x back to 1x (no amplification)
+    # Audio gain/amplification
+    gain: float = 1.0
 
 @dataclass
 class Config:

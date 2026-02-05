@@ -42,11 +42,12 @@ class StrokeMapper:
     Alpha and beta range from -1 to 1, with (0,0) at center.
     """
     
-    def __init__(self, config: Config, send_callback: Callable[[TCodeCommand], None] = None, get_volume: Callable[[], float] = None):
+    def __init__(self, config: Config, send_callback: Callable[[TCodeCommand], None] = None, get_volume: Callable[[], float] = None, audio_engine=None):
         self.config = config
         self.state = StrokeState()
         self.send_callback = send_callback  # Callback to send commands directly
         self.get_volume = get_volume if get_volume is not None else (lambda: 1.0)
+        self.audio_engine = audio_engine
         
         # Mode-specific state
         self.figure8_phase = 0.0
@@ -88,7 +89,7 @@ class StrokeMapper:
         quiet_flux_thresh = cfg.flux_threshold * 0.03  # Lowered even more
         quiet_energy_thresh = beat_cfg.peak_floor * 0.3  # Lowered even more
         fade_duration = 2.0  # seconds to fade out
-        # If both flux and energy are very low, treat as truly silent
+        silence_reset_threshold = 0.40  # seconds (400ms) - reset beat/downbeat detection on silence
         is_truly_silent = (event.spectral_flux < quiet_flux_thresh and event.peak_energy < quiet_energy_thresh)
         if is_truly_silent:
             if self._fade_intensity > 0.0:
@@ -97,6 +98,9 @@ class StrokeMapper:
                     self._last_quiet_time = now
                 elapsed = now - self._last_quiet_time
                 self._fade_intensity = max(0.0, 1.0 - (elapsed / fade_duration))
+                # If silence persists for more than 250ms, reset tempo/downbeat
+                if self.audio_engine and elapsed > silence_reset_threshold:
+                    self.audio_engine.reset_tempo_tracking()
             else:
                 self._fade_intensity = 0.0
             self._tcode_silence_volume_factor = 0.85  # Lower TCode volume by 15% on silence
@@ -124,6 +128,16 @@ class StrokeMapper:
             is_high_flux = event.spectral_flux >= cfg.flux_threshold
             is_downbeat = getattr(event, 'is_downbeat', False)
             
+            # Calculate flux factor for stroke scaling (0.5 to 1.5 range)
+            # Low flux = smaller strokes, high flux = larger strokes
+            flux_ratio = event.spectral_flux / max(cfg.flux_threshold, 0.001)
+            # Clamp ratio to reasonable range and map to 0.5-1.5
+            flux_ratio = np.clip(flux_ratio, 0.2, 3.0)
+            base_factor = 0.5 + (flux_ratio / 3.0)  # 0.53 to 1.5
+            # Apply scaling weight (0=no effect, 1=normal, 2=strong)
+            scaling_weight = cfg.flux_scaling_weight
+            self._flux_stroke_factor = 1.0 + (base_factor - 1.0) * scaling_weight
+            
             # DOWNBEAT: Always generate full stroke on downbeat
             if is_downbeat:
                 cmd = self._generate_downbeat_stroke(event)
@@ -134,7 +148,7 @@ class StrokeMapper:
                     cmd.intensity *= self._fade_intensity
                 if hasattr(cmd, 'volume'):
                     cmd.volume *= self._fade_intensity * getattr(self, '_tcode_silence_volume_factor', 1.0)
-                print(f"[StrokeMapper] ⬇ DOWNBEAT -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} (full loop, flux={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f})")
+                print(f"[StrokeMapper] ⬇ DOWNBEAT -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} (flux_factor={self._flux_stroke_factor:.2f}, flux={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f})")
                 return cmd if self._fade_intensity > 0.01 else None
             
             # REGULAR BEAT:
@@ -151,7 +165,7 @@ class StrokeMapper:
                 cmd.intensity *= self._fade_intensity
             if hasattr(cmd, 'volume'):
                 cmd.volume *= self._fade_intensity * getattr(self, '_tcode_silence_volume_factor', 1.0)
-            print(f"[StrokeMapper] Beat (HIGH FLUX={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
+            print(f"[StrokeMapper] Beat (flux_factor={self._flux_stroke_factor:.2f}, HIGH FLUX={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
             return cmd if self._fade_intensity > 0.01 else None
             
         elif self.state.idle_time > 0.5:
@@ -202,14 +216,20 @@ class StrokeMapper:
         # Calculate stroke parameters
         intensity = event.intensity
         
-        # On downbeat, use full stroke amplitude
-        stroke_len = cfg.stroke_max  # Always full on downbeat
+        # Apply flux factor to scale stroke size (0.5-1.5 range)
+        flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
+        
+        # On downbeat, use full stroke amplitude scaled by flux
+        stroke_len = cfg.stroke_max * flux_factor
+        stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
         
         freq_factor = self._freq_to_factor(event.frequency)
         depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
         
-        # Radius for the arc - full radius on downbeat for emphasis
-        radius = 1.0  # Always full circle on downbeat
+        # Radius for the arc - scale by flux factor for more dynamic range
+        min_radius = 0.3
+        radius = min_radius + (1.0 - min_radius) * flux_factor
+        radius = max(min_radius, min(1.0, radius))
         
         # Apply axis weights
         alpha_weight = self.config.alpha_weight
@@ -273,16 +293,21 @@ class StrokeMapper:
         # Calculate stroke parameters
         intensity = event.intensity
         
-        stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * intensity * cfg.stroke_fullness
+        # Apply flux factor to scale stroke size (0.5-1.5 range)
+        flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
+        
+        base_stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * intensity * cfg.stroke_fullness
+        stroke_len = base_stroke_len * flux_factor
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
         
         freq_factor = self._freq_to_factor(event.frequency)
         depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
         
-        # Radius for the arc (based on intensity) - matching Breadbeats
+        # Radius for the arc (based on intensity and flux) - matching Breadbeats
         min_radius = 0.2
         max_radius = 1.0
-        radius = min_radius + (max_radius - min_radius) * intensity
+        base_radius = min_radius + (max_radius - min_radius) * intensity
+        radius = base_radius * flux_factor
         radius = max(min_radius, min(1.0, radius))
         
         # Apply axis weights
@@ -431,7 +456,10 @@ class StrokeMapper:
             # x = a * (sin t - 0.5 * sin(2t)), y = -a * cos t, t in [-pi, pi] for full sweep
             self.state.phase = (self.state.phase + phase_advance) % 1.0
             t = (self.state.phase - 0.5) * 2 * np.pi  # t in [-pi, pi]
-            a = stroke_len * depth * event.intensity
+            # Use minimum radius like other modes to ensure motion even at low intensity
+            min_radius = 0.2
+            a = min_radius + (stroke_len * depth - min_radius) * event.intensity
+            a = max(min_radius, min(1.0, a))
             x = a * (np.sin(t) - 0.5 * np.sin(2 * t))
             y = -a * np.cos(t)
             # Rotate so the teardrop points up
@@ -446,21 +474,38 @@ class StrokeMapper:
             beta = np.clip(beta, -1.0, 1.0)
             
         elif mode == StrokeMode.USER:
-            # USER mode: ellipse always fits within unit circle
+            # USER mode: axis weights control flux vs peak response
+            # alpha_weight: 0 = flux-driven, 1 = balanced, 2 = peak-driven
+            # beta_weight: same behavior for beta axis
             self.state.phase = (self.state.phase + phase_advance) % 1.0
             angle = self.state.phase * 2 * np.pi
-            freq_factor = self._freq_to_factor(event.frequency)
-            aspect = 0.5 + freq_factor  # 0.5 to 1.5, as in beta
-            # Compute unnormalized radii
-            a = stroke_len * depth * alpha_weight
-            b = stroke_len * depth * aspect * beta_weight
-            # Normalize so ellipse fits in unit circle
-            norm = max(abs(a), abs(b), 1e-6)
-            if norm > 1.0:
-                a /= norm
-                b /= norm
-            alpha = np.cos(angle) * a
-            beta = np.sin(angle) * b
+            
+            # Normalize flux and peak to 0-1 range for blending
+            # Flux threshold from config gives us a reference point
+            flux_ref = max(0.001, self.config.stroke.flux_threshold * 3)
+            flux_norm = np.clip(event.spectral_flux / flux_ref, 0, 1)
+            peak_norm = np.clip(event.peak_energy, 0, 1)
+            
+            # Calculate blend factors based on weights (0=flux, 1=balanced, 2=peak)
+            alpha_blend = alpha_weight / 2.0  # 0-1 range
+            beta_blend = beta_weight / 2.0   # 0-1 range
+            
+            # Mix flux and peak for each axis
+            alpha_response = flux_norm * (1 - alpha_blend) + peak_norm * alpha_blend
+            beta_response = flux_norm * (1 - beta_blend) + peak_norm * beta_blend
+            
+            # Calculate radii for smooth elliptical motion
+            min_radius = 0.2
+            alpha_radius = min_radius + (stroke_len * depth - min_radius) * alpha_response
+            beta_radius = min_radius + (stroke_len * depth - min_radius) * beta_response
+            
+            # Generate smooth ellipse with different axis radii
+            alpha = np.cos(angle) * alpha_radius
+            beta = np.sin(angle) * beta_radius
+            
+            # Clamp to [-1, 1]
+            alpha = np.clip(alpha, -1.0, 1.0)
+            beta = np.clip(beta, -1.0, 1.0)
             
         else:
             # Fallback - simple continuous circle trace
@@ -584,27 +629,27 @@ class StrokeMapper:
             base_alpha = alpha
             base_beta = beta
         
-        # Jitter: small random movement around the creep position
-        # Amplitude controls the range of movement (circle size)
-        jitter_range = jitter_cfg.amplitude
+        # Jitter: sinusoidal micro-circles around the creep position
+        # Advance jitter angle smoothly based on intensity (higher = faster circles)
+        # Scale by update interval for consistent speed regardless of frame rate
+        jitter_speed = jitter_cfg.intensity * 0.15  # Slower, smoother circles
+        self.state.jitter_angle += jitter_speed
+        if self.state.jitter_angle >= 2 * np.pi:
+            self.state.jitter_angle -= 2 * np.pi
         
-        # Generate random target nearby creep position
-        alpha_target = base_alpha + np.random.uniform(-jitter_range, jitter_range)
-        beta_target = base_beta + np.random.uniform(-jitter_range, jitter_range)
+        # Amplitude controls the size of micro-circles
+        jitter_r = jitter_cfg.amplitude
+        
+        # Add sinusoidal micro-circle to base position
+        alpha_target = base_alpha + np.cos(self.state.jitter_angle) * jitter_r
+        beta_target = base_beta + np.sin(self.state.jitter_angle) * jitter_r
         
         # Clamp to valid range
         alpha_target = np.clip(alpha_target, -1.0, 1.0)
         beta_target = np.clip(beta_target, -1.0, 1.0)
         
-        # Intensity controls jitter speed (how fast to move - inversely related to duration)
-        # High intensity = short duration = fast vibration
-        # Low intensity = long duration = slow vibration
-        # intensity: 0-3, map to duration: 200ms to 20ms (faster = higher intensity)
-        base_duration = 200  # ms at intensity=0
-        if jitter_cfg.intensity > 0:
-            duration_ms = max(20, int(base_duration / (1.0 + jitter_cfg.intensity * 5)))
-        else:
-            duration_ms = base_duration
+        # Duration based on update rate (smooth motion)
+        duration_ms = 17  # Match update throttle for smooth circles
         
         # Update state and timing
         self.state.alpha = alpha_target
