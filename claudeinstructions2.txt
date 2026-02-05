@@ -1,0 +1,7 @@
+please build standalone exe,
+
+---  check that buildspec file is correct and has icons for windows explorer AND GUI window/windows taskbar,
+
+--be sure buildspec includes .json instructions for presets if necessary, and saves user config breadbeats.json and breadbeats.ini in same folder as exe is run from.
+
+--- exe filename is "bREadbeats".   spec should not include console build but i want console for this build only
