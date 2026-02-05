@@ -371,12 +371,17 @@ class PositionCanvas(FigureCanvas):
         self.position_scatter = self.ax.scatter([], [], c='#00ffff', s=80, zorder=5)
 
     def update_position(self, alpha: float, beta: float):
+        # Alpha = vertical (y-axis): 1.0 = top, -1.0 = bottom
+        # Beta = horizontal (x-axis): 1.0 = right, -1.0 = left
         # Apply rotation if available
         angle_deg = self.get_rotation() if self.get_rotation else 0.0
         angle_rad = np.deg2rad(angle_deg)
         cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-        x_rot = alpha * cos_a - beta * sin_a
-        y_rot = alpha * sin_a + beta * cos_a
+        # Map: x = beta (horizontal), y = alpha (vertical), then rotate
+        x_base = beta
+        y_base = alpha
+        x_rot = x_base * cos_a - y_base * sin_a
+        y_rot = x_base * sin_a + y_base * cos_a
         self.trail_x.append(x_rot)
         self.trail_y.append(y_rot)
         if len(self.trail_x) > self.max_trail:
@@ -409,7 +414,31 @@ class PresetButton(QPushButton):
     def __init__(self, label: str):
         super().__init__(label)
         self.setMinimumWidth(40)
-        self.setStyleSheet("background-color: #424242;")
+        self.has_preset = False
+        self.is_active = False
+        self._update_style()
+    
+    def set_has_preset(self, has: bool):
+        """Mark this button as having a saved preset"""
+        self.has_preset = has
+        self._update_style()
+    
+    def set_active(self, active: bool):
+        """Mark this button as the currently loaded preset"""
+        self.is_active = active
+        self._update_style()
+    
+    def _update_style(self):
+        """Update button appearance based on state"""
+        if self.is_active:
+            # Currently loaded preset - bright green border
+            self.setStyleSheet("background-color: #4a6b4a; border: 2px solid #00ff00; font-weight: bold;")
+        elif self.has_preset:
+            # Has saved preset - subtle blue
+            self.setStyleSheet("background-color: #4a5a6a; font-weight: bold;")
+        else:
+            # Empty slot - dark default
+            self.setStyleSheet("background-color: #424242;")
     
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -473,7 +502,7 @@ class BREadbeatsWindow(QMainWindow):
         super().__init__()
         
         self.setWindowTitle("bREadbeats")
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(900, 750)
         self.setStyleSheet(self._get_stylesheet())
         
         # Set window icon (appears in taskbar and title bar)
@@ -850,6 +879,7 @@ class BREadbeatsWindow(QMainWindow):
             self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
             self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
             self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
+            self.flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
             self.phase_advance_slider.setValue(self.config.stroke.phase_advance)
             
             # Jitter/Creep tab
@@ -914,7 +944,8 @@ class BREadbeatsWindow(QMainWindow):
         device_layout.addWidget(QLabel("Audio Device:"))
         self.device_combo = QComboBox()
         self._populate_audio_devices()
-        self.device_combo.setMinimumWidth(300)
+        self.device_combo.setMinimumWidth(350)
+        self.device_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         device_layout.addWidget(self.device_combo)
         
         # Info label showing available devices count
@@ -959,10 +990,16 @@ class BREadbeatsWindow(QMainWindow):
         self.play_btn.setFixedSize(100, 40)
         btn_layout.addWidget(self.play_btn)
         
-        # Beat indicator
+        # Volume slider (0.0 - 1.0)
+        self.volume_slider = SliderWithLabel("Volume", 0.0, 1.0, 1.0, decimals=2)
+        self.volume_slider.setFixedWidth(220)
+        btn_layout.addWidget(self.volume_slider)
+
+        # Beat indicator (closer to BPM display)
         self.beat_indicator = QLabel("●")
         self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
         self.beat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.beat_indicator.setFixedWidth(30)
         btn_layout.addWidget(self.beat_indicator)
         
         # Beat indicator timer for visual feedback duration
@@ -970,20 +1007,12 @@ class BREadbeatsWindow(QMainWindow):
         self.beat_timer.setSingleShot(True)
         self.beat_timer.timeout.connect(self._turn_off_beat_indicator)
         self.beat_indicator_min_duration = 100  # ms
-        
-        # Volume slider (0.0 - 1.0)
-        self.volume_slider = SliderWithLabel("Volume", 0.0, 1.0, 1.0, decimals=2)
-        self.volume_slider.setFixedWidth(220)
-        btn_layout.addWidget(self.volume_slider)
 
-        # Add spacing between volume and BPM
-        btn_layout.addSpacing(20)
-
-        # BPM display
+        # BPM display (right next to beat indicator)
         self.bpm_label = QLabel("BPM: --")
         self.bpm_label.setStyleSheet("color: #0a0; font-size: 14px; font-weight: bold;")
-        self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.bpm_label.setFixedWidth(90)
+        self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.bpm_label.setMinimumWidth(160)
         btn_layout.addWidget(self.bpm_label)
 
         btn_layout.addStretch()
@@ -1362,6 +1391,7 @@ class BREadbeatsWindow(QMainWindow):
             'minimum_depth': self.min_depth_slider.value(),
             'freq_depth_factor': self.freq_depth_slider.value(),
             'flux_threshold': self.flux_threshold_slider.value(),
+            'flux_scaling_weight': self.flux_scaling_slider.value(),
             'phase_advance': self.phase_advance_slider.value(),
 
             # Jitter / Creep Tab
@@ -1383,7 +1413,13 @@ class BREadbeatsWindow(QMainWindow):
             'freq_weight': self.freq_weight_slider.value(),
         }
         self.custom_beat_presets[str(idx)] = preset_data
-        self.preset_buttons[idx].setStyleSheet("background-color: #e75480; font-weight: bold;")  # Steel pink for saved preset
+        # Mark this button as having a preset and make it active
+        self.preset_buttons[idx].set_has_preset(True)
+        self.preset_buttons[idx].set_active(True)
+        # Deactivate other preset buttons
+        for i, btn in enumerate(self.preset_buttons):
+            if i != idx:
+                btn.set_active(False)
         self._save_presets_to_disk()
         print(f"[Config] Saved preset {idx+1} with all settings")
     
@@ -1412,6 +1448,8 @@ class BREadbeatsWindow(QMainWindow):
             self.min_depth_slider.setValue(preset_data['minimum_depth'])
             self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
             self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
+            if 'flux_scaling_weight' in preset_data:
+                self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
             if 'phase_advance' in preset_data:
                 self.phase_advance_slider.setValue(preset_data['phase_advance'])
             # Jitter / Creep Tab
@@ -1438,6 +1476,11 @@ class BREadbeatsWindow(QMainWindow):
 
             # --- Sync config object with UI (especially enum) ---
             self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)
+            
+            # Mark this preset as active, deactivate others
+            for i, btn in enumerate(self.preset_buttons):
+                btn.set_active(i == idx)
+            
             print(f"[Config] Loaded preset {idx+1} with all settings")
         else:
             print(f"[Config] Preset {idx+1} not saved yet")
@@ -1473,11 +1516,11 @@ class BREadbeatsWindow(QMainWindow):
             if presets_file.exists():
                 with open(presets_file, 'r') as f:
                     self.custom_beat_presets = json.load(f)
-                # Highlight any saved presets
+                # Mark buttons that have saved presets
                 for idx in self.custom_beat_presets.keys():
                     idx_int = int(idx)
                     if idx_int < len(self.preset_buttons):
-                        self.preset_buttons[idx_int].setStyleSheet("background-color: #5d5f5f; font-weight: bold;")
+                        self.preset_buttons[idx_int].set_has_preset(True)
                 print(f"[Presets] Loaded {len(self.custom_beat_presets)} presets from {presets_file}")
             else:
                 self.custom_beat_presets = {}
@@ -1532,6 +1575,11 @@ class BREadbeatsWindow(QMainWindow):
         self.flux_threshold_slider = SliderWithLabel("Flux Threshold", 0.001, 0.2, 0.03, 4)
         self.flux_threshold_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_threshold', v))
         layout.addWidget(self.flux_threshold_slider)
+        
+        # Flux scaling weight (how much flux affects stroke size)
+        self.flux_scaling_slider = SliderWithLabel("Flux Scaling (size)", 0.0, 2.0, 1.0, 2)
+        self.flux_scaling_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_scaling_weight', v))
+        layout.addWidget(self.flux_scaling_slider)
 
         # Phase Advance slider (controls per-beat phase increment)
         layout.addWidget(QLabel(""))  # Spacing
@@ -1648,7 +1696,7 @@ class BREadbeatsWindow(QMainWindow):
         self.is_sending = checked
         if checked:
             # Re-instantiate StrokeMapper with current config (for live mode switching)
-            self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value())
+            self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value(), audio_engine=self.audio_engine)
         if self.network_engine:
             self.network_engine.set_sending_enabled(checked)
         self.play_btn.setText("⏸ Pause" if checked else "▶ Play")
@@ -1663,21 +1711,21 @@ class BREadbeatsWindow(QMainWindow):
     
     def _start_engines(self):
         """Initialize and start all engines"""
-        self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value())
-        
         # Set selected audio device
         combo_idx = self.device_combo.currentIndex()
         if combo_idx >= 0 and combo_idx in self.audio_device_map:
             self.config.audio.device_index = self.audio_device_map[combo_idx]
             print(f"[Main] Using audio device index: {self.config.audio.device_index}")
-        
+
         self.audio_engine = AudioEngine(self.config, self._audio_callback)
         self.audio_engine.start()
-        
+
+        self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value(), audio_engine=self.audio_engine)
+
         if self.network_engine is None:
             self.network_engine = NetworkEngine(self.config, self._network_status_callback)
             self.network_engine.start()
-        
+
         self.is_running = True
     
     def _send_command_direct(self, cmd: TCodeCommand):
@@ -1735,7 +1783,10 @@ class BREadbeatsWindow(QMainWindow):
         if self.stroke_mapper and self.is_sending:
             cmd = self.stroke_mapper.process_beat(event)
             if cmd and self.network_engine:
-                cmd.volume = self.volume_slider.value()
+                # Apply volume slider value, then apply silence factor if present
+                base_volume = self.volume_slider.value()
+                silence_factor = getattr(self.stroke_mapper, '_tcode_silence_volume_factor', 1.0)
+                cmd.volume = base_volume * silence_factor
                 # Use the actual dominant frequency
                 dom_freq = event.frequency if hasattr(event, 'frequency') else 0.0
                 # Map dominant frequency to TCode output range
@@ -1797,6 +1848,11 @@ class BREadbeatsWindow(QMainWindow):
                         bpm_display += " (stabilizing...)"
                     if hasattr(self, 'bpm_label') and self.bpm_label is not None:
                         self.bpm_label.setText(bpm_display)
+        # Show reset in GUI and console if tempo was reset
+        if hasattr(event, 'tempo_reset') and event.tempo_reset:
+            if hasattr(self, 'bpm_label') and self.bpm_label is not None:
+                self.bpm_label.setText("BPM: -- [reset]")
+            print("[GUI] Beat counter/tempo reset due to silence.")
     
     def _turn_off_beat_indicator(self):
         """Turn off beat indicator after minimum duration"""

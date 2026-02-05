@@ -1,0 +1,21 @@
+Hi expensive claude.  
+
+You helped me start writing this program, but you're too expensive, so i used cheap claude to help get it running the way i want.  its mostly done but i want you to go over it a final time.
+
+----------------------------------------------
+First, please look through the WHOLE codebase and check for errors, missing guards, and unnecessary code fragments.  I mistakedly let GPT do a lot of work in here.
+
+----------------------------------------------------
+
+[jitter]  function still looks jerky.  it should be smooth tiny sinuisoidal circles.   remember we are using all 4 quadrants of x/y axis with limits at 1.0/-1.0
+
+----------------------------------------------------
+
+i think we have the a/b (x/y) axis mixed up.  alpha is the vertical axis, with value [1.0] at the maximum top and [-1.0] at bottom.  beta is horizontal axis, with value [1.0] at far right and [-1.0] at far left.   please make the [position]matplotlib visualizer is displayed accurately.
+
+------------------------------------------------------
+
+check [save presets] logic.  currently, buttons are grey when presets are loaded in them, (always loaded with default presets so this is kind of redundant) and turn pink when a preset is new saved.   can we do this in a more user friendly way?
+
+please complete these instructions, stop and ask any questions you need for clarification.
+

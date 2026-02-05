@@ -33,9 +33,17 @@ class BeatEvent:
     peak_energy: float       # Current peak energy value
     is_downbeat: bool = False # True if this is a downbeat (strong beat, beat 1)
     bpm: float = 0.0          # Current tempo in beats per minute
+    tempo_reset: bool = False # True if tempo/beat counter was reset
 
 
 class AudioEngine:
+    def reset_tempo_tracking(self):
+        """Public method to reset tempo and downbeat tracking immediately."""
+        self.last_known_tempo = self.smoothed_tempo
+        self.beat_intervals.clear()
+        self.beat_times.clear()
+        self.beat_position_in_measure = 0
+        self.is_downbeat = False
     """
     Engine 1: The Ears
     Captures system audio and detects beats in real-time.
@@ -217,6 +225,7 @@ class AudioEngine:
         current_time = time.time()
         time_since_last_beat = (current_time - self.last_beat_time) * 1000 if self.last_beat_time > 0 else 0
         
+        tempo_reset_flag = False
         if time_since_last_beat > self.tempo_timeout_ms and len(self.beat_intervals) > 0:
             # Timeout reached - reset tempo tracking but preserve last known tempo
             print(f"[Tempo] No beats for {time_since_last_beat:.0f}ms - resetting tempo tracker (keeping BPM={self.smoothed_tempo:.1f})")
@@ -225,6 +234,7 @@ class AudioEngine:
             self.beat_times.clear()
             self.beat_position_in_measure = 0
             self.is_downbeat = False
+            tempo_reset_flag = True
         
         # Detect beat based on mode (using band energy)
         is_beat = self._detect_beat(band_energy, spectral_flux)
@@ -244,7 +254,8 @@ class AudioEngine:
             spectral_flux=spectral_flux,
             peak_energy=band_energy,
             is_downbeat=self.is_downbeat if is_beat else False,  # Only downbeat if it's an actual beat
-            bpm=current_bpm
+            bpm=current_bpm,
+            tempo_reset=tempo_reset_flag
         )
         
         # Notify callback
