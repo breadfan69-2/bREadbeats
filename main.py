@@ -873,6 +873,7 @@ class BREadbeatsWindow(QMainWindow):
             self.rise_sens_slider.setValue(self.config.beat.rise_sensitivity)
             self.flux_mult_slider.setValue(self.config.beat.flux_multiplier)
             self.audio_gain_slider.setValue(self.config.audio.gain)
+            self.silence_reset_slider.setValue(self.config.beat.silence_reset_ms)
             self.freq_low_slider.setValue(self.config.beat.freq_low)
             self.freq_high_slider.setValue(self.config.beat.freq_high)
             self._on_freq_band_change()  # Update spectrum overlay
@@ -910,7 +911,7 @@ class BREadbeatsWindow(QMainWindow):
         
     def _create_connection_panel(self) -> QGroupBox:
         """Connection settings panel"""
-        group = QGroupBox("Connection to restim")
+        group = QGroupBox("TCP Connection")
         layout = QGridLayout(group)
         
         # Host/Port
@@ -922,6 +923,7 @@ class BREadbeatsWindow(QMainWindow):
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(self.config.connection.port)
+        self.port_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)  # Remove scroll/arrows
         layout.addWidget(self.port_spin, 0, 3)
         
         # Status
@@ -929,8 +931,8 @@ class BREadbeatsWindow(QMainWindow):
         self.status_label.setStyleSheet("color: #f55;")
         layout.addWidget(self.status_label, 1, 0, 1, 2)
         
-        # Connect/Test buttons
-        self.connect_btn = QPushButton("Connect")
+        # Reset/Test buttons
+        self.connect_btn = QPushButton("Reset")
         self.connect_btn.clicked.connect(self._on_connect)
         layout.addWidget(self.connect_btn, 1, 2)
         
@@ -1356,6 +1358,11 @@ class BREadbeatsWindow(QMainWindow):
         self.audio_gain_slider.valueChanged.connect(lambda v: setattr(self.config.audio, 'gain', v))
         layout.addWidget(self.audio_gain_slider)
         
+        # Silence reset threshold: how long silence before resetting beat tracking
+        self.silence_reset_slider = SliderWithLabel("Silence Reset (ms)", 100, 1000, 400, 0)
+        self.silence_reset_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'silence_reset_ms', int(v)))
+        layout.addWidget(self.silence_reset_slider)
+        
         layout.addStretch()
         return widget
     
@@ -1389,6 +1396,7 @@ class BREadbeatsWindow(QMainWindow):
             'rise_sensitivity': self.rise_sens_slider.value(),
             'flux_multiplier': self.flux_mult_slider.value(),
             'audio_gain': self.audio_gain_slider.value(),
+            'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
 
             # Stroke Settings Tab
@@ -1447,6 +1455,8 @@ class BREadbeatsWindow(QMainWindow):
             self.rise_sens_slider.setValue(preset_data['rise_sensitivity'])
             self.flux_mult_slider.setValue(preset_data['flux_multiplier'])
             self.audio_gain_slider.setValue(preset_data['audio_gain'])
+            if 'silence_reset_ms' in preset_data:
+                self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
             self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
             # Stroke Settings Tab
             self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
@@ -1820,8 +1830,8 @@ class BREadbeatsWindow(QMainWindow):
                 cmd.pulse_freq = p0_val
                 # Update Pulse Freq display
                 if hasattr(self, 'pulse_freq_label'):
-                    display_freq = p0_val * 2  # Multiply by 2 for display
-                    self.pulse_freq_label.setText(f"Pulse: {display_freq}")
+                    display_freq = p0_val / 67  # Convert TCode to approx Hz (1.5-150hz range)
+                    self.pulse_freq_label.setText(f"Pulse: {display_freq:.0f}hz")
                 print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} P0={p0_val:04d}")
                 self.network_engine.send_command(cmd)
         elif event.is_beat and not self.is_sending:

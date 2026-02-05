@@ -89,7 +89,7 @@ class StrokeMapper:
         quiet_flux_thresh = cfg.flux_threshold * 0.03  # Lowered even more
         quiet_energy_thresh = beat_cfg.peak_floor * 0.3  # Lowered even more
         fade_duration = 2.0  # seconds to fade out
-        silence_reset_threshold = 0.150  # seconds (150ms) - reset beat/downbeat detection on silence
+        silence_reset_threshold = beat_cfg.silence_reset_ms / 1000.0  # Convert ms to seconds
         is_truly_silent = (event.spectral_flux < quiet_flux_thresh and event.peak_energy < quiet_energy_thresh)
         if is_truly_silent:
             if self._fade_intensity > 0.0:
