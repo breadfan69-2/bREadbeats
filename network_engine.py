@@ -83,6 +83,7 @@ class NetworkEngine:
         self.socket: Optional[socket.socket] = None
         self.connected = False
         self.running = False
+        self._user_disconnected = False  # True when user explicitly clicked disconnect
         
         # Command queue (thread-safe)
         self.cmd_queue: queue.Queue[TCodeCommand] = queue.Queue()
@@ -161,6 +162,16 @@ class NetworkEngine:
         self._notify_status("Disconnected", False)
         print("[NetworkEngine] Disconnected")
         
+    def user_disconnect(self):
+        """User explicitly disconnected - do NOT auto-reconnect"""
+        self._user_disconnected = True
+        self.disconnect()
+    
+    def user_connect(self):
+        """User explicitly clicked connect - clear disconnect flag and connect"""
+        self._user_disconnected = False
+        self.connect()
+    
     def send_command(self, cmd: TCodeCommand):
         """Queue a command to send"""
         if self.running:
@@ -216,15 +227,15 @@ class NetworkEngine:
         reconnect_timer = 0
         
         while self.running:
-            # Handle reconnection (only if we were connected before and lost connection)
+            # Handle reconnection (only if not user-disconnected and we were connected before)
             if not self.connected and self.config.connection.auto_connect and self.socket is None:
-                if reconnect_timer <= 0:
-                    # Only auto-reconnect if we've been disconnected, not on initial start
-                    if hasattr(self, '_was_connected') and self._was_connected:
-                        self.connect()
-                    reconnect_timer = self.config.connection.reconnect_delay_ms / 1000.0
-                else:
-                    reconnect_timer -= 0.1
+                if not self._user_disconnected:
+                    if reconnect_timer <= 0:
+                        if hasattr(self, '_was_connected') and self._was_connected:
+                            self.connect()
+                        reconnect_timer = self.config.connection.reconnect_delay_ms / 1000.0
+                    else:
+                        reconnect_timer -= 0.1
                     
             # Process command queue
             try:

@@ -180,9 +180,12 @@ class SpectrumCanvas(FigureCanvas):
         self.ax.clear()
         self.ax.set_xlim(-0.5, self.num_bars - 0.5)
         self.ax.set_ylim(0, 1.1)
-        self.ax.set_xlabel('Frequency', fontsize=8, color='#999')
+        self.ax.set_xlabel('')
         self.ax.set_ylabel('Amplitude', fontsize=8, color='#999')
-        self.ax.tick_params(colors='#aaa', labelsize=7)
+        self.ax.tick_params(axis='x', colors='#aaa', labelsize=7, which='both', length=0)
+        self.ax.tick_params(axis='y', colors='#aaa', labelsize=7)
+        self.ax.set_xticklabels([])
+        self.ax.grid(axis='y', color='#444', alpha=0.3, linewidth=0.5)
         self.ax.spines['bottom'].set_color('#555')
         self.ax.spines['left'].set_color('#555')
         self.ax.spines['top'].set_visible(False)
@@ -517,7 +520,7 @@ class BREadbeatsWindow(QMainWindow):
         super().__init__()
         
         self.setWindowTitle("bREadbeats")
-        self.setMinimumSize(950, 850)
+        self.setMinimumSize(1000, 850)
         self.setStyleSheet(self._get_stylesheet())
         
         # Set window icon (appears in taskbar and title bar)
@@ -584,6 +587,9 @@ class BREadbeatsWindow(QMainWindow):
         # State
         self.is_running = False
         self.is_sending = False
+        
+        # Auto-connect TCP on startup
+        self._auto_connect_tcp()
         
     def _get_stylesheet(self) -> str:
         """Restim-Coyote3 darkmode theme with #3d3d3d background"""
@@ -1016,6 +1022,7 @@ class BREadbeatsWindow(QMainWindow):
         # Volume slider (0.0 - 1.0)
         self.volume_slider = SliderWithLabel("Volume", 0.0, 1.0, 1.0, decimals=2)
         self.volume_slider.setFixedWidth(220)
+        self.volume_slider.setContentsMargins(0, 0, 0, 0)
         btn_layout.addWidget(self.volume_slider)
 
         # Pulse Freq display (shows sent TCode value x2)
@@ -1051,10 +1058,11 @@ class BREadbeatsWindow(QMainWindow):
         return group
     
     def _populate_audio_devices(self):
-        """Populate audio device dropdown"""
+        """Populate audio device dropdown - WASAPI devices only (deduplicated)"""
         import sounddevice as sd
         devices = sd.query_devices()
         hostapis = sd.query_hostapis()
+        
         # Find WASAPI host API index
         wasapi_idx = None
         for idx, api in enumerate(hostapis):
@@ -1069,26 +1077,39 @@ class BREadbeatsWindow(QMainWindow):
         loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
         loopback_idx = None
         combo_idx = 0
+        seen_names = set()  # For deduplication
         
-        # Add all input devices
-        for i, dev in enumerate(devices):
-            if dev['max_input_channels'] > 0:
-                name = f"[{i}] {dev['name']}"
-                self.device_combo.addItem(name)
-                self.audio_device_map[combo_idx] = i
-                self.audio_device_is_loopback[combo_idx] = False
-                
-                # Find loopback device for default selection
-                if loopback_idx is None and any(keyword in dev['name'].lower() for keyword in loopback_keywords):
-                    loopback_idx = combo_idx
-                
-                combo_idx += 1
-        
-        # Add WASAPI output devices as loopback sources
         if wasapi_idx is not None:
+            # Add WASAPI input devices (microphones) - deduplicated by name
+            for i, dev in enumerate(devices):
+                if dev['hostapi'] == wasapi_idx and dev['max_input_channels'] > 0:
+                    # Normalize name for dedup
+                    clean_name = dev['name'].strip()
+                    if clean_name in seen_names:
+                        continue
+                    seen_names.add(clean_name)
+                    
+                    name = f"{clean_name} (Input)"
+                    self.device_combo.addItem(name)
+                    self.audio_device_map[combo_idx] = i
+                    self.audio_device_is_loopback[combo_idx] = False
+                    
+                    # Find loopback device for default selection
+                    if loopback_idx is None and any(keyword in dev['name'].lower() for keyword in loopback_keywords):
+                        loopback_idx = combo_idx
+                    
+                    combo_idx += 1
+            
+            # Add WASAPI output devices as loopback sources - deduplicated by name
+            seen_output_names = set()
             for i, dev in enumerate(devices):
                 if dev['hostapi'] == wasapi_idx and dev['max_output_channels'] > 0:
-                    name = f"[{i}] {dev['name']} [WASAPI Loopback]"
+                    clean_name = dev['name'].strip()
+                    if clean_name in seen_output_names:
+                        continue
+                    seen_output_names.add(clean_name)
+                    
+                    name = f"{clean_name} [WASAPI Loopback]"
                     self.device_combo.addItem(name)
                     self.audio_device_map[combo_idx] = i
                     self.audio_device_is_loopback[combo_idx] = True
@@ -1097,6 +1118,20 @@ class BREadbeatsWindow(QMainWindow):
                     if loopback_idx is None:
                         loopback_idx = combo_idx
                     
+                    combo_idx += 1
+        else:
+            # Fallback: no WASAPI found, show all input devices deduplicated
+            for i, dev in enumerate(devices):
+                if dev['max_input_channels'] > 0:
+                    clean_name = dev['name'].strip()
+                    if clean_name in seen_names:
+                        continue
+                    seen_names.add(clean_name)
+                    
+                    name = f"{clean_name}"
+                    self.device_combo.addItem(name)
+                    self.audio_device_map[combo_idx] = i
+                    self.audio_device_is_loopback[combo_idx] = False
                     combo_idx += 1
         
         # Pre-select Stereo Mix/loopback if available, otherwise first device
@@ -1234,15 +1269,11 @@ class BREadbeatsWindow(QMainWindow):
         self.position_canvas = PositionCanvas(self, size=2, get_rotation=lambda: self.position_rotation_slider.value())
         layout.addWidget(self.position_canvas)
 
-        # Position labels
-        pos_layout = QHBoxLayout()
+        # Position labels (hidden but still tracked internally)
         self.alpha_label = QLabel("α: 0.00")
-        self.alpha_label.setStyleSheet("color: #0af;")
+        self.alpha_label.setVisible(False)
         self.beta_label = QLabel("β: 0.00")
-        self.beta_label.setStyleSheet("color: #0fa;")
-        pos_layout.addWidget(self.alpha_label)
-        pos_layout.addWidget(self.beta_label)
-        layout.addLayout(pos_layout)
+        self.beta_label.setVisible(False)
 
         return group
     
@@ -1286,9 +1317,10 @@ class BREadbeatsWindow(QMainWindow):
         freq_layout.addWidget(self.pulse_freq_low_slider)
         freq_layout.addWidget(self.pulse_freq_high_slider)
 
-        # TCode output range sliders (as percentage 0-100%)
-        self.tcode_freq_min_slider = SliderWithLabel("Sent Freq Min (%)", 0, 100, 20, 0)
-        self.tcode_freq_max_slider = SliderWithLabel("Sent Freq Max (%)", 0, 100, 70, 0)
+        # TCode output range sliders (in Hz, same scale as Pulse display: Hz = TCode/67)
+        # TCode range 0-9999 maps to ~0-150Hz via /67
+        self.tcode_freq_min_slider = SliderWithLabel("Sent Freq Min (Hz)", 0, 150, 30, 0)
+        self.tcode_freq_max_slider = SliderWithLabel("Sent Freq Max (Hz)", 0, 150, 105, 0)
         freq_layout.addWidget(self.tcode_freq_min_slider)
         freq_layout.addWidget(self.tcode_freq_max_slider)
 
@@ -1399,7 +1431,24 @@ class BREadbeatsWindow(QMainWindow):
         self.spectrum_canvas.set_frequency_band(low / max_freq, high / max_freq)
     
     def _save_freq_preset(self, idx: int):
-        """Save ALL settings from all 4 tabs to custom preset"""
+        """Save ALL settings from all 4 tabs to custom preset, with overwrite confirmation"""
+        from PyQt6.QtWidgets import QMessageBox
+        
+        # Check if this slot already has a preset
+        key = str(idx)
+        if key in self.custom_beat_presets:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("WARNING - OVERWRITE PRESET")
+            msg_box.setText(f"Preset {idx+1} already exists.\nAre you sure you want to overwrite it?")
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            msg_box.button(QMessageBox.StandardButton.Ok).setText("Confirm")
+            msg_box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            result = msg_box.exec()
+            if result != QMessageBox.StandardButton.Ok:
+                print(f"[Config] Preset {idx+1} overwrite cancelled")
+                return
+
         preset_data = {
             # Beat Detection Tab
             'freq_low': self.freq_low_slider.value(),
@@ -1651,7 +1700,7 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_enabled.stateChanged.connect(lambda s: setattr(self.config.jitter, 'enabled', s == 2))
         jitter_layout.addWidget(self.jitter_enabled)
         
-        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.005, 0.05, 0.01, 3)
+        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.05, 0.2, 0.1, 3)
         self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
         jitter_layout.addWidget(self.jitter_amplitude_slider)
         
@@ -1700,19 +1749,26 @@ class BREadbeatsWindow(QMainWindow):
         return widget
     
     # Event handlers
+    def _auto_connect_tcp(self):
+        """Auto-connect TCP on program startup"""
+        self.config.connection.host = self.host_edit.text()
+        self.config.connection.port = self.port_spin.value()
+        self.network_engine = NetworkEngine(self.config, self._network_status_callback)
+        self.network_engine.start()
+        print("[Main] Auto-connecting TCP on startup")
+
     def _on_connect(self):
-        """Handle connect button"""
+        """Handle connect/disconnect button"""
         if self.network_engine is None:
             self.config.connection.host = self.host_edit.text()
             self.config.connection.port = self.port_spin.value()
-            
             self.network_engine = NetworkEngine(self.config, self._network_status_callback)
             self.network_engine.start()
         else:
             if self.network_engine.connected:
-                self.network_engine.disconnect()
+                self.network_engine.user_disconnect()
             else:
-                self.network_engine.connect()
+                self.network_engine.user_connect()
     
     def _on_test(self):
         """Send test pattern"""
@@ -1769,6 +1825,8 @@ class BREadbeatsWindow(QMainWindow):
 
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value(), audio_engine=self.audio_engine)
 
+        # Network engine is already started on program launch via _auto_connect_tcp
+        # Only create if somehow missing
         if self.network_engine is None:
             self.network_engine = NetworkEngine(self.config, self._network_status_callback)
             self.network_engine.start()
@@ -1836,9 +1894,12 @@ class BREadbeatsWindow(QMainWindow):
                 cmd.volume = base_volume * silence_factor
                 # Use the actual dominant frequency
                 dom_freq = event.frequency if hasattr(event, 'frequency') else 0.0
-                # Map dominant frequency to TCode output range (percentage-based)
-                tcode_min_pct = self.tcode_freq_min_slider.value() / 100.0  # 0-100% -> 0.0-1.0
-                tcode_max_pct = self.tcode_freq_max_slider.value() / 100.0
+                # Map dominant frequency to TCode output range (Hz-based, matching Pulse display)
+                # Sent Freq sliders are in Hz (0-150), convert to TCode 0-9999 via *67
+                tcode_min_val = int(self.tcode_freq_min_slider.value() * 67)
+                tcode_max_val = int(self.tcode_freq_max_slider.value() * 67)
+                tcode_min_val = max(0, min(9999, tcode_min_val))
+                tcode_max_val = max(0, min(9999, tcode_max_val))
                 # Normalize dom_freq within selected input range
                 in_low = self.pulse_freq_low_slider.value()
                 in_high = self.pulse_freq_high_slider.value()
@@ -1850,9 +1911,7 @@ class BREadbeatsWindow(QMainWindow):
                 # Blend: norm + freq_weight * intensity, clamped to [0,1]
                 norm_biased = norm + freq_weight * intensity * (1.0 - norm)
                 norm_biased = max(0.0, min(1.0, norm_biased))
-                # Map to TCode output range (0-9999 based on percentage)
-                tcode_min_val = int(tcode_min_pct * 9999)
-                tcode_max_val = int(tcode_max_pct * 9999)
+                # Map to TCode output range
                 p0_val = int(tcode_min_val + norm_biased * (tcode_max_val - tcode_min_val))
                 p0_val = max(0, min(9999, p0_val))
                 cmd.pulse_freq = p0_val
@@ -1886,15 +1945,18 @@ class BREadbeatsWindow(QMainWindow):
                     confidence = tempo_info['confidence']
                     beat_pos = tempo_info['beat_position']
                     is_downbeat = tempo_info.get('is_downbeat', False)
-                    # Format BPM display
+                    stability = tempo_info.get('stability', 0.0)
+                    # Format BPM display - use stable BPM when available
                     bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
                     # Add beat position indicator (1/2/3/4 and ⬇ for downbeat)
                     if beat_pos > 0:
                         downbeat_marker = " ⬇" if is_downbeat else ""
                         bpm_display += f" [{beat_pos}{downbeat_marker}]"
-                    # Add confidence indicator
+                    # Add confidence/stability indicator
                     if confidence < 0.5:
                         bpm_display += " (stabilizing...)"
+                    elif stability < 0.5:
+                        bpm_display += " (~)"  # Unstable - BPM is approximate
                     if hasattr(self, 'bpm_label') and self.bpm_label is not None:
                         self.bpm_label.setText(bpm_display)
         # Show reset in GUI and console if tempo was reset

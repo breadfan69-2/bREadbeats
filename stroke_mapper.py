@@ -384,7 +384,11 @@ class StrokeMapper:
             step_ms = step_durations[i]  # Each step has its own duration
             
             if self.send_callback:
-                cmd = TCodeCommand(alpha, beta, step_ms, self.get_volume())
+                # Apply silence volume factor and fade intensity to arc commands
+                silence_factor = getattr(self, '_tcode_silence_volume_factor', 1.0)
+                fade = getattr(self, '_fade_intensity', 1.0)
+                volume = self.get_volume() * silence_factor * fade
+                cmd = TCodeCommand(alpha, beta, step_ms, volume)
                 self.send_callback(cmd)
                 self.state.alpha = alpha
                 self.state.beta = beta
@@ -407,7 +411,10 @@ class StrokeMapper:
     def _send_return_stroke(self, duration_ms: int, alpha: float, beta: float):
         """Send the return stroke to opposite position (called by timer)"""
         if self.send_callback:
-            cmd = TCodeCommand(alpha, beta, duration_ms, self.get_volume())
+            silence_factor = getattr(self, '_tcode_silence_volume_factor', 1.0)
+            fade = getattr(self, '_fade_intensity', 1.0)
+            volume = self.get_volume() * silence_factor * fade
+            cmd = TCodeCommand(alpha, beta, duration_ms, volume)
             print(f"[StrokeMapper] RETURN stroke a={alpha:.2f} b={beta:.2f} dur={duration_ms}ms")
             self.send_callback(cmd)
             self.state.alpha = alpha
@@ -555,7 +562,10 @@ class StrokeMapper:
                 self.state.alpha = alpha_target
                 self.state.beta = beta_target
                 self.state.last_stroke_time = now
-                return TCodeCommand(alpha_target, beta_target, 17, self.get_volume())
+                silence_factor = getattr(self, '_tcode_silence_volume_factor', 1.0)
+                fade = getattr(self, '_fade_intensity', 1.0)
+                volume = self.get_volume() * silence_factor * fade
+                return TCodeCommand(alpha_target, beta_target, 17, volume)
             else:
                 self.spiral_reset_active = False
                 self.state.alpha = 0.0
@@ -658,7 +668,12 @@ class StrokeMapper:
         self.state.beta = beta_target
         self.state.last_stroke_time = now
         
-        return TCodeCommand(alpha_target, beta_target, duration_ms, self.get_volume())
+        # Apply silence volume factor and fade intensity
+        silence_factor = getattr(self, '_tcode_silence_volume_factor', 1.0)
+        fade = getattr(self, '_fade_intensity', 1.0)
+        volume = self.get_volume() * silence_factor * fade
+        
+        return TCodeCommand(alpha_target, beta_target, duration_ms, volume)
     
     def _freq_to_factor(self, freq: float) -> float:
         """Convert frequency to a 0-1 factor (bass=0, treble=1)"""
