@@ -85,8 +85,8 @@ class StrokeMapper:
         if not hasattr(self, '_last_quiet_time'):
             self._last_quiet_time = 0.0
         # Thresholds for true silence
-        quiet_flux_thresh = cfg.flux_threshold * 0.1  # Lowered even further
-        quiet_energy_thresh = beat_cfg.peak_floor * 0.7  # Lowered even further
+        quiet_flux_thresh = cfg.flux_threshold * 0.03  # Lowered even more
+        quiet_energy_thresh = beat_cfg.peak_floor * 0.3  # Lowered even more
         fade_duration = 2.0  # seconds to fade out
         # If both flux and energy are very low, treat as truly silent
         is_truly_silent = (event.spectral_flux < quiet_flux_thresh and event.peak_energy < quiet_energy_thresh)
@@ -99,7 +99,9 @@ class StrokeMapper:
                 self._fade_intensity = max(0.0, 1.0 - (elapsed / fade_duration))
             else:
                 self._fade_intensity = 0.0
+            self._tcode_silence_volume_factor = 0.85  # Lower TCode volume by 15% on silence
         else:
+            self._tcode_silence_volume_factor = 1.0
             self._fade_intensity = min(1.0, self._fade_intensity + 0.1)
             self._last_quiet_time = 0.0
         
@@ -131,7 +133,7 @@ class StrokeMapper:
                 if hasattr(cmd, 'intensity'):
                     cmd.intensity *= self._fade_intensity
                 if hasattr(cmd, 'volume'):
-                    cmd.volume *= self._fade_intensity
+                    cmd.volume *= self._fade_intensity * getattr(self, '_tcode_silence_volume_factor', 1.0)
                 print(f"[StrokeMapper] ⬇ DOWNBEAT -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} (full loop, flux={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f})")
                 return cmd if self._fade_intensity > 0.01 else None
             
@@ -148,7 +150,7 @@ class StrokeMapper:
             if hasattr(cmd, 'intensity'):
                 cmd.intensity *= self._fade_intensity
             if hasattr(cmd, 'volume'):
-                cmd.volume *= self._fade_intensity
+                cmd.volume *= self._fade_intensity * getattr(self, '_tcode_silence_volume_factor', 1.0)
             print(f"[StrokeMapper] Beat (HIGH FLUX={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
             return cmd if self._fade_intensity > 0.01 else None
             
@@ -159,7 +161,7 @@ class StrokeMapper:
                 if hasattr(cmd, 'intensity'):
                     cmd.intensity *= self._fade_intensity
                 if hasattr(cmd, 'volume'):
-                    cmd.volume *= self._fade_intensity
+                    cmd.volume *= self._fade_intensity * getattr(self, '_tcode_silence_volume_factor', 1.0)
                 if cmd is not None:
                     print(f"[StrokeMapper] Idle -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} jitter={self.config.jitter.enabled} creep={self.config.creep.enabled} fade={self._fade_intensity:.2f}")
                 else:

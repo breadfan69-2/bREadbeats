@@ -1211,8 +1211,8 @@ class BREadbeatsWindow(QMainWindow):
         freq_layout.addWidget(self.pulse_freq_high_slider)
 
         # TCode output range sliders
-        self.tcode_freq_min_slider = SliderWithLabel("TCode Min (Hz)", 1000, 9999, 1000, 0)
-        self.tcode_freq_max_slider = SliderWithLabel("TCode Max (Hz)", 1000, 9999, 9999, 0)
+        self.tcode_freq_min_slider = SliderWithLabel("TCode Min (Hz)", 1000, 9999, 2000, 0)
+        self.tcode_freq_max_slider = SliderWithLabel("TCode Max (Hz)", 1000, 9999, 7000, 0)
         freq_layout.addWidget(self.tcode_freq_min_slider)
         freq_layout.addWidget(self.tcode_freq_max_slider)
 
@@ -1352,7 +1352,7 @@ class BREadbeatsWindow(QMainWindow):
             'flux_multiplier': self.flux_mult_slider.value(),
             'audio_gain': self.audio_gain_slider.value(),
             'detection_type': self.detection_type_combo.currentIndex(),
-            
+
             # Stroke Settings Tab
             'stroke_mode': self.mode_combo.currentIndex(),
             'stroke_min': self.stroke_min_slider.value(),
@@ -1363,20 +1363,28 @@ class BREadbeatsWindow(QMainWindow):
             'freq_depth_factor': self.freq_depth_slider.value(),
             'flux_threshold': self.flux_threshold_slider.value(),
             'phase_advance': self.phase_advance_slider.value(),
-            
+
             # Jitter / Creep Tab
             'jitter_enabled': self.jitter_enabled.isChecked(),
             'jitter_amplitude': self.jitter_amplitude_slider.value(),
             'jitter_intensity': self.jitter_intensity_slider.value(),
             'creep_enabled': self.creep_enabled.isChecked(),
             'creep_speed': self.creep_speed_slider.value(),
-            
+
             # Axis Weights Tab
             'alpha_weight': self.alpha_weight_slider.value(),
             'beta_weight': self.beta_weight_slider.value(),
+
+            # Other Tab
+            'pulse_freq_low': self.pulse_freq_low_slider.value(),
+            'pulse_freq_high': self.pulse_freq_high_slider.value(),
+            'tcode_freq_min': self.tcode_freq_min_slider.value(),
+            'tcode_freq_max': self.tcode_freq_max_slider.value(),
+            'freq_weight': self.freq_weight_slider.value(),
         }
         self.custom_beat_presets[str(idx)] = preset_data
         self.preset_buttons[idx].setStyleSheet("background-color: #e75480; font-weight: bold;")  # Steel pink for saved preset
+        self._save_presets_to_disk()
         print(f"[Config] Saved preset {idx+1} with all settings")
     
     def _load_freq_preset(self, idx: int):
@@ -1415,6 +1423,19 @@ class BREadbeatsWindow(QMainWindow):
             # Axis Weights Tab
             self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
             self.beta_weight_slider.setValue(preset_data['beta_weight'])
+
+            # Other Tab
+            if 'pulse_freq_low' in preset_data:
+                self.pulse_freq_low_slider.setValue(preset_data['pulse_freq_low'])
+            if 'pulse_freq_high' in preset_data:
+                self.pulse_freq_high_slider.setValue(preset_data['pulse_freq_high'])
+            if 'tcode_freq_min' in preset_data:
+                self.tcode_freq_min_slider.setValue(preset_data['tcode_freq_min'])
+            if 'tcode_freq_max' in preset_data:
+                self.tcode_freq_max_slider.setValue(preset_data['tcode_freq_max'])
+            if 'freq_weight' in preset_data:
+                self.freq_weight_slider.setValue(preset_data['freq_weight'])
+
             # --- Sync config object with UI (especially enum) ---
             self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)
             print(f"[Config] Loaded preset {idx+1} with all settings")
