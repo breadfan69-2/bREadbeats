@@ -409,6 +409,7 @@ class PresetButton(QPushButton):
     def __init__(self, label: str):
         super().__init__(label)
         self.setMinimumWidth(40)
+        self.setStyleSheet("background-color: #424242;")
     
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1252,11 +1253,15 @@ class BREadbeatsWindow(QMainWindow):
         freq_layout = QVBoxLayout(freq_group)
         
         # Full range up to ~20kHz (Nyquist for 44100 Hz)
-        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, 1000, 20, 0)
+
+        # Get sample rate (default to 44100 if not available yet)
+        sr = getattr(self.config.audio, 'sample_rate', 44100)
+        nyquist = sr // 2
+        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, nyquist, 20, 0)
         self.freq_low_slider.valueChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_low_slider)
 
-        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, 1000, 200, 0)
+        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, nyquist, min(200, nyquist), 0)
         self.freq_high_slider.valueChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_high_slider)
         
@@ -1370,8 +1375,8 @@ class BREadbeatsWindow(QMainWindow):
             'alpha_weight': self.alpha_weight_slider.value(),
             'beta_weight': self.beta_weight_slider.value(),
         }
-        self.custom_beat_presets[idx] = preset_data
-        self.preset_buttons[idx].setStyleSheet("background-color: #5d5f5f; font-weight: bold;")  # Highlight saved preset
+        self.custom_beat_presets[str(idx)] = preset_data
+        self.preset_buttons[idx].setStyleSheet("background-color: #e75480; font-weight: bold;")  # Steel pink for saved preset
         print(f"[Config] Saved preset {idx+1} with all settings")
     
     def _load_freq_preset(self, idx: int):

@@ -85,8 +85,8 @@ class StrokeMapper:
         if not hasattr(self, '_last_quiet_time'):
             self._last_quiet_time = 0.0
         # Thresholds for true silence
-        quiet_flux_thresh = cfg.flux_threshold * 0.5
-        quiet_energy_thresh = beat_cfg.peak_floor * 1.5
+        quiet_flux_thresh = cfg.flux_threshold * 0.1  # Lowered even further
+        quiet_energy_thresh = beat_cfg.peak_floor * 0.7  # Lowered even further
         fade_duration = 2.0  # seconds to fade out
         # If both flux and energy are very low, treat as truly silent
         is_truly_silent = (event.spectral_flux < quiet_flux_thresh and event.peak_energy < quiet_energy_thresh)
