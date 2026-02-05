@@ -199,10 +199,10 @@ class StrokeMapper:
         cfg = self.config.stroke
         now = time.time()
         
-        # Cancel any pending arc thread
+        # Cancel any pending arc thread (non-blocking to avoid lag)
         if hasattr(self, '_arc_thread') and self._arc_thread and self._arc_thread.is_alive():
             self._stop_arc = True
-            self._arc_thread.join(timeout=0.1)
+            # Don't join — arc thread checks _stop_arc and exits on its own
         
         # On downbeat, use extended duration (estimate ~4 beats for measure)
         # Use last beat interval * 4 for the measure length
@@ -280,10 +280,10 @@ class StrokeMapper:
         cfg = self.config.stroke
         now = time.time()
         
-        # Cancel any pending arc thread
+        # Cancel any pending arc thread (non-blocking to avoid lag)
         if hasattr(self, '_arc_thread') and self._arc_thread and self._arc_thread.is_alive():
             self._stop_arc = True
-            self._arc_thread.join(timeout=0.1)
+            # Don't join — arc thread checks _stop_arc and exits on its own
         
         # Calculate beat interval for duration (doubled for slower arc)
         beat_interval_ms = (now - self.state.last_beat_time) * 1000 if self.state.last_beat_time > 0 else cfg.min_interval_ms
@@ -620,8 +620,10 @@ class StrokeMapper:
                     if self.state.creep_angle >= 2 * np.pi:
                         self.state.creep_angle -= 2 * np.pi
                 
-                # Position on outer edge of circle (radius close to 1.0 for maximum extent)
-                creep_radius = 0.98
+                # Position on circle - pull inward by jitter amplitude so
+                # micro-circles don't get clipped at the ±1.0 boundary
+                jitter_r = jitter_cfg.amplitude if jitter_cfg.enabled else 0.0
+                creep_radius = max(0.1, 0.98 - jitter_r)
                 base_alpha = np.sin(self.state.creep_angle) * creep_radius
                 base_beta = np.cos(self.state.creep_angle) * creep_radius
             else:

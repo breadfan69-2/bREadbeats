@@ -1700,7 +1700,7 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_enabled.stateChanged.connect(lambda s: setattr(self.config.jitter, 'enabled', s == 2))
         jitter_layout.addWidget(self.jitter_enabled)
         
-        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.05, 0.2, 0.1, 3)
+        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.01, 0.2, 0.1, 3)
         self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
         jitter_layout.addWidget(self.jitter_amplitude_slider)
         
