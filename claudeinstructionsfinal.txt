@@ -3,28 +3,103 @@ Hi expensive claude.
 You helped me start writing this program, but you're too expensive, so i used cheap claude to help get it running the way i want.  its mostly done but i want you to go over it a final time.
 
 ----------------------------------------------
-First, please look through the WHOLE codebase and check for errors, missing guards, and unnecessary code fragments.  I mistakedly let GPT do a lot of work in here.  Check against original 5-6 commits and make sure [strokemode1] has not changed one single bit.  [strokemode2] and [strokemode3] have improvements that are to be kept.   [strokemode4] should be as originally implemented but with the functioning flux/peak sliders added.
--------------------------------------------------------
--can we make a pop-up dialogue when rightclicking preset buttons to save, a double check warning before saving and overwriting?  [WARNING - OVERWRITE PRESET]  and buttons for "confirm" and "cancel"?
+First, please look through the WHOLE codebase and 
+and check for errors, missing guards, and unnecessary code fragments.  I mistakedly let GPT do a lot of work in here.  
 
--------------------------------------------
+--------------------------------------------------------
+RE: JITTER
+-circle size range lower limit is now not low enough.  
+  lower limit can be 0.01/
+-not making proper circular motions any more, check 1-2 commits back for different motion maths for creep.   it is currently smooth semi-circles...that's good, but it needs to be full circles.   It does NOT have to stay on the edge, it can follow downbeat or creep depth.
 
+---------------------------------------------
 
--it looks like our autoconnect to TCP logic doesn't happen until pressing [start] for audio monitoring.  This is confusing to the user.  We should auto connect when the program starts.
 
 ---------------------
 
--the beat detector display jumps around a lot.  is our beat pickup really that inconsistent?  can we do any better on the logic?  read these references and lets talk about what could possibly be better, if anything:  https://github.com/mjhydri/BeatNet
+there is a gap between the volume slider and its label in the "control" box. move the label closer.
+
+are we properly lowering sent volume over tcp when {silencedetected}?  if we are, it should show in the display.  the slider however does not need to move.
+here's a console snippet when volume was expected to be lowered due to [truly silent]
+```
+[Main] Sending cmd (direct): a=-0.73 b=0.53 v=1.00
+[Main] Sending cmd (direct): a=-0.67 b=0.61 v=1.00
+[Main] Sending cmd (direct): a=-0.61 b=0.67 v=1.00
+[Audio] raw_rms=0.000349 full_spectrum=0.006090 band_energy=0.001610 flux=0.0004 peak_env=0.542562
+[Main] Sending cmd (direct): a=-0.53 b=0.73 v=1.00
+[Main] Sending cmd (direct): a=-0.45 b=0.79 v=1.00
+[Main] Sending cmd (direct): a=-0.37 b=0.83 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.82)
+[Main] Sending cmd (direct): a=-0.28 b=0.86 v=1.00
+[Main] Sending cmd (direct): a=-0.19 b=0.89 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.81)
+[Main] Sending cmd (direct): a=-0.09 b=0.90 v=1.00
+[Main] Sending cmd (direct): a=0.00 b=0.91 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.79)
+[Main] Sending cmd (direct): a=0.09 b=0.90 v=1.00
+[Main] Sending cmd (direct): a=0.19 b=0.89 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.79)
+[Main] Sending cmd (direct): a=0.28 b=0.86 v=1.00
+[Main] Sending cmd (direct): a=0.37 b=0.83 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.77)
+[Main] Sending cmd (direct): a=0.45 b=0.79 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.77)
+[Main] Sending cmd (direct): a=0.53 b=0.73 v=1.00
+[Main] Sending cmd (direct): a=0.61 b=0.67 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.75)
+[Main] Sending cmd (direct): a=0.67 b=0.61 v=1.00
+[Main] Sending cmd (direct): a=0.73 b=0.53 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.74)
+[Main] Sending cmd (direct): a=0.79 b=0.45 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.74)
+[Main] Sending cmd (direct): a=0.83 b=0.37 v=1.00
+[Main] Sending cmd (direct): a=0.86 b=0.28 v=1.00
+[Main] Sending cmd (direct): a=0.89 b=0.19 v=1.00
+[StrokeMapper] Idle suppressed (truly silent, fade=0.72)
+[Main] Sending cmd (direct): a=0.90 b=0.09 v=1.00
+[StrokeMapper] ARC complete (60 points)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.71)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.70)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.69)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.68)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.67)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.66)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.65)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.64)
+[Audio] raw_rms=0.000318 full_spectrum=0.005488 band_energy=0.001623 flux=0.0004 peak_env=0.065963
+[StrokeMapper] Idle suppressed (truly silent, fade=0.62)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.61)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.60)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.60)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.58)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.57)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.56)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.55)
+[StrokeMapper] Idle suppressed (truly silent, fade=0.54)
+```
+You might have already fixed this, i'm not sure. 
+---------------------------------
+RE:BEAT DETECTION/DOWNBEATS
+
+-the beat detection seems slightly more stable, but its lagging now.  are we queing something?  the downbeats are all "behind".   make sure nothing is ever qued and all events/parameters are sent live.
+
+i think we already implemented one strategy from these refs, what was the next one to implement?  https://github.com/mjhydri/BeatNet
 https://transactions.ismir.net/articles/10.5334/tismir.189
 https://stackoverflow.com/questions/57384448/detecting-beat-energy-with-librosa-finding-the-first-beat-of-each-bar
 https://www.cs.cmu.edu/~music/cmp/theses/che-yuan_liang_thesis.pdf
 https://biff.ai/a-rundown-of-open-source-beat-detection-models/
 
+let's discuss any improvements you find in the above references before implementing any changes to the beat detection.
 
 
+-----------------------------------------------
+read
+--------------------------------------------------------
  
  Make sure window launch size is adjusted if necessary to not squash/distort any UI elements that we have changed.
 
+-----------------------------------------------------------
+You have been doing an AMAZING job with this project, it's like having a professional developer sitting next to me!   Continue to use care for your code edits.  Your 3x credits are worth it for how good you are!
 
 please complete these instructions, stop and ask any questions you need for clarification.
 
