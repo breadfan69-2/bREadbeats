@@ -53,6 +53,13 @@ class StrokeMapper:
         self.random_arc_start = 0.0
         self.random_arc_end = np.pi
         self._return_timer: Optional[threading.Timer] = None
+        # Spiral mode persistent phase
+        self.spiral_beat_index = 0
+        self.spiral_revolutions = 3  # Number of revolutions for full spiral (configurable)
+        # Spiral return smoothing state
+        self.spiral_reset_active = False
+        self.spiral_reset_start_time = 0.0
+        self.spiral_reset_from = (0.0, 0.0)
         
         # Beat factoring for fast tempos
         self.max_strokes_per_sec = 4.5  # Maximum strokes per second
@@ -108,6 +115,7 @@ class StrokeMapper:
             # Check minimum interval for beats only (jitter bypasses this)
             time_since_stroke = (now - self.state.last_stroke_time) * 1000
             if time_since_stroke < cfg.min_interval_ms:
+                print(f"[StrokeMapper] Skipping stroke: min_interval_ms not met ({time_since_stroke:.1f} < {cfg.min_interval_ms})")
                 return None
             
             # Check if flux is high or low
@@ -255,9 +263,10 @@ class StrokeMapper:
             self._stop_arc = True
             self._arc_thread.join(timeout=0.1)
         
-        # Calculate beat interval for duration
+        # Calculate beat interval for duration (doubled for slower arc)
         beat_interval_ms = (now - self.state.last_beat_time) * 1000 if self.state.last_beat_time > 0 else cfg.min_interval_ms
         beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+        beat_interval_ms *= 2  # Double the arc duration
         
         # Calculate stroke parameters
         intensity = event.intensity
@@ -278,18 +287,41 @@ class StrokeMapper:
         alpha_weight = self.config.alpha_weight
         beta_weight = self.config.beta_weight
         
-        # Generate arc: Use _get_stroke_target for each point in the arc
-        n_points = max(8, int(beat_interval_ms / 10))
-        arc_phases = np.linspace(0, 1, n_points, endpoint=False)
-        alpha_arc = np.zeros(n_points)
-        beta_arc = np.zeros(n_points)
-        for i, phase in enumerate(arc_phases):
-            prev_phase = self.state.phase
-            self.state.phase = phase
-            alpha, beta = self._get_stroke_target(stroke_len, depth, event)
-            alpha_arc[i] = alpha
-            beta_arc[i] = beta
-            self.state.phase = prev_phase
+        # Spiral mode: animate from previous crest to next, full spiral in N beats
+        if self.config.stroke.mode == StrokeMode.SPIRAL:
+            N = self.spiral_revolutions
+            prev_index = getattr(self, 'spiral_beat_index', 0)
+            next_index = prev_index + 1
+            theta_prev = (prev_index / N) * (2 * np.pi * N)
+            theta_next = (next_index / N) * (2 * np.pi * N)
+            n_points = max(8, int(beat_interval_ms / 10))
+            thetas = np.linspace(theta_prev, theta_next, n_points)
+            alpha_arc = np.zeros(n_points)
+            beta_arc = np.zeros(n_points)
+            for i, theta in enumerate(thetas):
+                # Spiral radius logic as before, but theta sweeps from prev to next crest
+                margin = 0.1
+                b = (1.0 - margin) / (2 * np.pi * N)
+                r = b * theta * stroke_len * depth * intensity
+                a = r * np.cos(theta) * alpha_weight
+                b_ = r * np.sin(theta) * beta_weight
+                alpha_arc[i] = np.clip(a, -1.0, 1.0)
+                beta_arc[i] = np.clip(b_, -1.0, 1.0)
+            # Update persistent index
+            self.spiral_beat_index = next_index % N
+        else:
+            # Default: full arc per beat
+            n_points = max(8, int(beat_interval_ms / 10))
+            arc_phases = np.linspace(0, 1, n_points, endpoint=False)
+            alpha_arc = np.zeros(n_points)
+            beta_arc = np.zeros(n_points)
+            for i, phase in enumerate(arc_phases):
+                prev_phase = self.state.phase
+                self.state.phase = phase
+                alpha, beta = self._get_stroke_target(stroke_len, depth, event)
+                alpha_arc[i] = alpha
+                beta_arc[i] = beta
+                self.state.phase = prev_phase
         # Calculate step durations with proper remainder distribution
         base_step = beat_interval_ms // n_points
         remainder = beat_interval_ms % n_points
@@ -334,10 +366,16 @@ class StrokeMapper:
             time.sleep(step_ms / 1000.0)
         
         print(f"[StrokeMapper] ARC complete ({n_points} points)")
-        
-        # Initiate smooth creep reset to (0, -1) after arc completes
-        self.state.creep_reset_active = True
-        self.state.creep_reset_start_time = time.time()
+        # Initiate smooth return after arc completes
+        if self.config.stroke.mode == StrokeMode.SPIRAL:
+            # Spiral-specific return: smoothly interpolate from last crest to center
+            self.spiral_reset_active = True
+            self.spiral_reset_start_time = time.time()
+            self.spiral_reset_from = (self.state.alpha, self.state.beta)
+        else:
+            # Default: smooth creep reset to (0, -1)
+            self.state.creep_reset_active = True
+            self.state.creep_reset_start_time = time.time()
     
     def _send_return_stroke(self, duration_ms: int, alpha: float, beta: float):
         """Send the return stroke to opposite position (called by timer)"""
@@ -369,16 +407,17 @@ class StrokeMapper:
             beta = np.cos(angle) * radius * beta_weight
 
         elif mode == StrokeMode.SPIRAL:
-            # Symmetric, centered Archimedean spiral: r = b * theta, theta in [-theta_max, +theta_max]
+            # Spiral: Use stroke_min, stroke_max, fullness, min_depth, freq_depth, intensity for strong slider effect
             self.state.phase = (self.state.phase + phase_advance) % 1.0
             revolutions = 2  # Number of spiral turns (adjustable)
             theta_max = revolutions * 2 * np.pi
             theta = (self.state.phase - 0.5) * 2 * theta_max  # theta in [-theta_max, +theta_max]
-            # Scale b so that at theta_max, r nearly reaches 1.0 (with margin)
-            margin = 0.1
-            b = (1.0 - margin) / theta_max
-            # Spiral radius modulated by stroke_len, depth, and intensity
-            r = b * theta * stroke_len * depth * event.intensity
+            min_radius = 0.3
+            # Use same radius logic as circle, but modulate with |theta/theta_max| for spiral effect
+            base_radius = min_radius + (stroke_len * depth - min_radius) * event.intensity
+            base_radius = max(min_radius, min(1.0, base_radius))
+            spiral_factor = abs(theta) / theta_max  # 0 at center, 1 at ends
+            r = base_radius * spiral_factor
             alpha = r * np.cos(theta) * alpha_weight
             beta = r * np.sin(theta) * beta_weight
             # Clamp to [-1,1]
@@ -405,31 +444,21 @@ class StrokeMapper:
             beta = np.clip(beta, -1.0, 1.0)
             
         elif mode == StrokeMode.USER:
-            # User-controlled mode with axis weight sliders controlling flux/peak biasing
+            # USER mode: ellipse always fits within unit circle
             self.state.phase = (self.state.phase + phase_advance) % 1.0
             angle = self.state.phase * 2 * np.pi
-            print(f"[DEBUG] MODE4 (USER): angle={angle:.2f}, alpha_radius={{alpha_radius if 'alpha_radius' in locals() else 'N/A'}}, beta_radius={{beta_radius if 'beta_radius' in locals() else 'N/A'}}, alpha={{np.sin(angle) * alpha_radius if 'alpha_radius' in locals() else 'N/A'}}, beta={{np.cos(angle) * beta_radius if 'beta_radius' in locals() else 'N/A'}}")
-            
-            # Get flux and peak values (normalized 0-1)
-            flux = min(1.0, event.spectral_flux * 10)  # Scale flux to roughly 0-1
-            peak = event.peak_energy
-            
-            # Calculate blend factors (0=flux, 1=peak) from axis weights
-            # weight=0 → 100% flux, weight=1 → 50/50, weight=2 → 100% peak
-            alpha_blend = alpha_weight / 2.0  # 0-1 range
-            beta_blend = beta_weight / 2.0    # 0-1 range
-            
-            # Blend flux and peak for each axis radius
-            alpha_response = flux * (1.0 - alpha_blend) + peak * alpha_blend
-            beta_response = flux * (1.0 - beta_blend) + peak * beta_blend
-            
-            # Base radius with response-based scaling
-            min_radius = 0.2
-            alpha_radius = min_radius + (stroke_len * depth - min_radius) * alpha_response
-            beta_radius = min_radius + (stroke_len * depth - min_radius) * beta_response
-            
-            alpha = np.sin(angle) * alpha_radius
-            beta = np.cos(angle) * beta_radius
+            freq_factor = self._freq_to_factor(event.frequency)
+            aspect = 0.5 + freq_factor  # 0.5 to 1.5, as in beta
+            # Compute unnormalized radii
+            a = stroke_len * depth * alpha_weight
+            b = stroke_len * depth * aspect * beta_weight
+            # Normalize so ellipse fits in unit circle
+            norm = max(abs(a), abs(b), 1e-6)
+            if norm > 1.0:
+                a /= norm
+                b /= norm
+            alpha = np.cos(angle) * a
+            beta = np.sin(angle) * b
             
         else:
             # Fallback - simple continuous circle trace
@@ -462,26 +491,51 @@ class StrokeMapper:
         
         alpha, beta = self.state.alpha, self.state.beta
         
-        # Handle smooth creep reset after beat stroke
-        if self.state.creep_reset_active:
+        # Handle smooth spiral return after spiral arc
+        if self.spiral_reset_active:
+            reset_duration_ms = 500  # Smooth return over 500ms
+            elapsed_ms = (now - self.spiral_reset_start_time) * 1000
+            if elapsed_ms < reset_duration_ms:
+                progress = elapsed_ms / reset_duration_ms
+                eased_progress = 1.0 - (1.0 - progress) ** 2
+                # Interpolate from last spiral crest to center (0,0)
+                from_alpha, from_beta = self.spiral_reset_from
+                to_alpha, to_beta = 0.0, 0.0
+                alpha_target = from_alpha * (1.0 - eased_progress) + to_alpha * eased_progress
+                beta_target = from_beta * (1.0 - eased_progress) + to_beta * eased_progress
+                self.state.alpha = alpha_target
+                self.state.beta = beta_target
+                self.state.last_stroke_time = now
+                return TCodeCommand(alpha_target, beta_target, 17, self.get_volume())
+            else:
+                self.spiral_reset_active = False
+                self.state.alpha = 0.0
+                self.state.beta = 0.0
+                print(f"[StrokeMapper] Spiral reset complete, now at (0, 0)")
+        # Handle smooth creep reset after beat stroke (non-spiral)
+        elif self.state.creep_reset_active:
             reset_duration_ms = 500  # Smooth return over 500ms
             elapsed_ms = (now - self.state.creep_reset_start_time) * 1000
-            
+            # Defensive: ensure creep_angle is a valid float
+            try:
+                current_angle = float(self.state.creep_angle)
+            except Exception as e:
+                print(f"[StrokeMapper] Warning: creep_angle invalid ({self.state.creep_angle}), resetting to 0.0. Error: {e}")
+                current_angle = 0.0
+                self.state.creep_angle = 0.0
             if elapsed_ms < reset_duration_ms:
-                # Smoothly interpolate creep_angle from current value back to 0
                 progress = elapsed_ms / reset_duration_ms
-                # Ease-out: decelerate the motion smoothly
                 eased_progress = 1.0 - (1.0 - progress) ** 2
-                
-                current_angle = self.state.creep_angle
-                # Normalize to -π to π for shortest path
-                if current_angle > np.pi:
+                # Defensive: clamp current_angle to [-2π, 2π]
+                if not np.isfinite(current_angle):
+                    current_angle = 0.0
+                elif current_angle > np.pi:
                     current_angle = current_angle - 2 * np.pi
-                
+                elif current_angle < -np.pi:
+                    current_angle = current_angle + 2 * np.pi
                 target_angle = 0.0
                 self.state.creep_angle = current_angle * (1.0 - eased_progress) + target_angle * eased_progress
             else:
-                # Reset complete
                 self.state.creep_angle = 0.0
                 self.state.creep_reset_active = False
                 print(f"[StrokeMapper] Creep reset complete, now at (0, -1)")

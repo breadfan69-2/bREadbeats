@@ -336,85 +336,67 @@ class SpectrumCanvas(FigureCanvas):
 class PositionCanvas(FigureCanvas):
     """Alpha/Beta position visualizer - circular display"""
     
-    def __init__(self, parent=None, size=2):
+    def __init__(self, parent=None, size=2, get_rotation=None):
         plt.style.use('dark_background')
-        
         self.fig = Figure(figsize=(size, size), facecolor='#2d2d2d')
         self.ax = self.fig.add_subplot(111, aspect='equal')
         self.ax.set_facecolor('#232323')
-        
         super().__init__(self.fig)
         self.setParent(parent)
-        
-        # Position history for trail
         self.trail_x = []
         self.trail_y = []
         self.max_trail = 50
-        
-        # Store line and scatter objects for efficient updates
         self.trail_lines = []
         self.position_scatter = None
-        
+        self.get_rotation = get_rotation  # function to get rotation angle in degrees
         self.setup_plot()
-        
+
     def setup_plot(self):
-        """Initialize the position plot"""
+        """Initialize the position plot (clean, no grid/labels)"""
         self.ax.clear()
         self.ax.set_xlim(-1.2, 1.2)
         self.ax.set_ylim(-1.2, 1.2)
-        
-        # Draw reference circle
         theta = np.linspace(0, 2*np.pi, 100)
         self.ax.plot(np.cos(theta), np.sin(theta), color='#666666', alpha=0.5, linewidth=1)
-        
-        # Draw axes
         self.ax.axhline(y=0, color='#555555', linewidth=0.5)
         self.ax.axvline(x=0, color='#555555', linewidth=0.5)
-        
-        # Labels
-        self.ax.set_xlabel('Alpha', fontsize=8, color='#aaa')
-        self.ax.set_ylabel('Beta', fontsize=8, color='#aaa')
-        self.ax.tick_params(colors='#999', labelsize=6)
-        
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.set_xlabel("")
+        self.ax.set_ylabel("")
+        self.ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
         for spine in self.ax.spines.values():
             spine.set_visible(False)
-            
         self.fig.tight_layout(pad=0.3)
-        
-        # Initialize scatter plot for current position
         self.position_scatter = self.ax.scatter([], [], c='#00ffff', s=80, zorder=5)
-        
+
     def update_position(self, alpha: float, beta: float):
-        """Update current position without clearing axes"""
-        # Add to trail
-        self.trail_x.append(alpha)
-        self.trail_y.append(beta)
+        # Apply rotation if available
+        angle_deg = self.get_rotation() if self.get_rotation else 0.0
+        angle_rad = np.deg2rad(angle_deg)
+        cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
+        x_rot = alpha * cos_a - beta * sin_a
+        y_rot = alpha * sin_a + beta * cos_a
+        self.trail_x.append(x_rot)
+        self.trail_y.append(y_rot)
         if len(self.trail_x) > self.max_trail:
             self.trail_x.pop(0)
             self.trail_y.pop(0)
-        
         try:
-            # Remove old trail lines if we have more than max_trail points
             while len(self.trail_lines) > self.max_trail - 1:
                 line = self.trail_lines.pop(0)
                 line.remove()
-            
-            # Add new trail line segment
             if len(self.trail_x) > 1:
                 i = len(self.trail_x)
                 alpha_val = i / len(self.trail_x)
-                line, = self.ax.plot([self.trail_x[-2], self.trail_x[-1]], 
-                                     [self.trail_y[-2], self.trail_y[-1]], 
+                line, = self.ax.plot([self.trail_x[-2], self.trail_x[-1]],
+                                     [self.trail_y[-2], self.trail_y[-1]],
                                      color='#00aaff', alpha=alpha_val * 0.5, linewidth=1)
                 self.trail_lines.append(line)
-            
-            # Update current position scatter
             if self.position_scatter:
-                self.position_scatter.set_offsets([[alpha, beta]])
-            
+                self.position_scatter.set_offsets([[x_rot, y_rot]])
             self.draw_idle()
-        except Exception as e:
-            # Silently ignore matplotlib rendering errors
+        except Exception:
             pass
 
 
@@ -1161,13 +1143,37 @@ class BREadbeatsWindow(QMainWindow):
         return group
     
     def _create_position_panel(self) -> QGroupBox:
-        """Alpha/Beta position display"""
+        """Alpha/Beta position display with rotation slider"""
         group = QGroupBox("Position (α/β)")
         layout = QVBoxLayout(group)
-        
-        self.position_canvas = PositionCanvas(self, size=2)
+
+        # Rotation slider (-180 to 180, default -180)
+        rot_layout = QHBoxLayout()
+        rot_label = QLabel("Rotation (°):")
+        rot_label.setStyleSheet("color: #aaa;")
+        self.position_rotation_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_rotation_slider.setMinimum(-180)
+        self.position_rotation_slider.setMaximum(180)
+        self.position_rotation_slider.setValue(-180)
+        self.position_rotation_slider.setFixedWidth(180)
+        self.position_rotation_slider.setSingleStep(1)
+        self.position_rotation_slider.setPageStep(10)
+        self.position_rotation_slider.setTickInterval(30)
+        self.position_rotation_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.position_rotation_slider.valueChanged.connect(lambda _: self.position_canvas.setup_plot())
+        self.position_rotation_value = QLabel("-180°")
+        self.position_rotation_value.setStyleSheet("color: #0af;")
+        self.position_rotation_slider.valueChanged.connect(
+            lambda v: self.position_rotation_value.setText(f"{v}°"))
+        rot_layout.addWidget(rot_label)
+        rot_layout.addWidget(self.position_rotation_slider)
+        rot_layout.addWidget(self.position_rotation_value)
+        layout.addLayout(rot_layout)
+
+        # Provide a function to get the current rotation value
+        self.position_canvas = PositionCanvas(self, size=2, get_rotation=lambda: self.position_rotation_slider.value())
         layout.addWidget(self.position_canvas)
-        
+
         # Position labels
         pos_layout = QHBoxLayout()
         self.alpha_label = QLabel("α: 0.00")
@@ -1177,7 +1183,7 @@ class BREadbeatsWindow(QMainWindow):
         pos_layout.addWidget(self.alpha_label)
         pos_layout.addWidget(self.beta_label)
         layout.addLayout(pos_layout)
-        
+
         return group
     
     def _create_settings_tabs(self) -> QTabWidget:
