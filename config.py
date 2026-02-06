@@ -95,14 +95,18 @@ class AudioConfig:
     sample_rate: int = 44100
     buffer_size: int = 1024
     channels: int = 2
-    # Device 1 = Stereo Mix (MME) - should capture after linking to LOGITECH SPEAKERS
-    device_index: int | None = 1
+    # Device index - None means use system default
+    device_index: int | None = None
     # Audio gain/amplification
     gain: float = 1.0
     # FFT optimization settings
     fft_size: int = 1024              # FFT size (512, 1024, 2048) - smaller = faster, less resolution
     spectrum_skip_frames: int = 2     # Skip N frames between spectrum updates (1=no skip, 2=every other)
     is_loopback: bool = True          # True for WASAPI loopback, False for regular input
+    # Performance options
+    visualizer_enabled: bool = True   # Enable/disable spectrum visualizer (saves CPU)
+    highpass_filter_hz: int = 30      # High-pass filter cutoff (0=disabled, 30=filter sub-bass noise)
+    use_butterworth: bool = True      # Use Butterworth bandpass for beat detection
 
 @dataclass
 class Config:

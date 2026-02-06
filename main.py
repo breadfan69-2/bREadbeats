@@ -23,6 +23,11 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QPalette, QColor
 from typing import Optional
 
+# PyQtGraph for high-performance real-time plotting
+import pyqtgraph as pg
+pg.setConfigOptions(antialias=False, useOpenGL=False)  # Disable for compatibility
+
+# Keep matplotlib imports for fallback (unused but avoids import errors)
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
@@ -140,172 +145,64 @@ class SignalBridge(QObject):
     status_changed = pyqtSignal(str, bool)
 
 
-class SpectrumCanvas(FigureCanvas):
-    """Spectrum visualizer with interactive frequency band and peak/flux indicators"""
+class SpectrumCanvas(pg.PlotWidget):
+    """Spectrum visualizer using PyQtGraph - high performance"""
     
     def __init__(self, parent=None, width=8, height=3):
+        super().__init__(parent)
+        
         # Dark theme matching restim-coyote3
-        plt.style.use('dark_background')
+        self.setBackground('#232323')
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+        self.showGrid(x=False, y=True, alpha=0.3)
         
-        self.fig = Figure(figsize=(width, height), facecolor='#2d2d2d')
-        self.ax = self.fig.add_subplot(111)
-        self.ax.set_facecolor('#232323')
+        # Set fixed axis ranges (no dynamic ranging)
+        self.setYRange(0, 1.0, padding=0)
+        self.setXRange(0, 64, padding=0)
+        self.getAxis('left').setLabel('Amplitude', color='#999999')
+        self.getAxis('bottom').setStyle(showValues=False)
         
-        super().__init__(self.fig)
-        self.setParent(parent)
-        
-        # Pre-create bar plot for efficiency
+        # Number of bars
         self.num_bars = 64
-        self.x = np.arange(self.num_bars)
-        self.bars = None
-        self.band_overlay = None  # Frequency band selection overlay
+        
+        # Bar graph for spectrum
+        self.bar_item = pg.BarGraphItem(x=np.arange(self.num_bars), height=np.zeros(self.num_bars),
+                                        width=0.8, brush='#00aaff', pen=None)
+        self.addItem(self.bar_item)
+        
+        # Frequency band overlay (LinearRegionItem for interactive dragging)
         self.band_low = 0.0
-        self.band_high = 0.1  # Default bass range
+        self.band_high = 0.1
+        low_bar = int(self.band_low * self.num_bars)
+        high_bar = int(self.band_high * self.num_bars)
+        self.band_region = pg.LinearRegionItem(values=(low_bar, high_bar), 
+                                                brush=pg.mkBrush('#55555580'),
+                                                pen=pg.mkPen('#888888', width=1),
+                                                movable=True)
+        self.band_region.sigRegionChanged.connect(self._on_region_changed)
+        self.addItem(self.band_region)
         
         # Peak and flux indicator lines
-        self.peak_line = None
-        self.flux_line = None
-        self.peak_value = 0.0
-        self.flux_value = 0.0
+        self.peak_line = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#ff6644', width=2, style=Qt.PenStyle.DashLine))
+        self.flux_line = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#44ff66', width=2, style=Qt.PenStyle.DotLine))
+        self.addItem(self.peak_line)
+        self.addItem(self.flux_line)
         
-        # Interactive band dragging state
-        self.drag_mode = None  # 'left', 'right', or 'move'
-        self.drag_start_x = None
-        self.band_width = None
-        
-        # Reference to main window for slider updates
+        # Reference to parent window for slider updates
         self.parent_window = parent
         
-        # Mouse event handlers
-        self.mpl_connect('button_press_event', self._on_press)
-        self.mpl_connect('button_release_event', self._on_release)
-        self.mpl_connect('motion_notify_event', self._on_motion)
+        # Pre-allocate arrays for bar heights and colors
+        self._heights = np.zeros(self.num_bars)
+        self._brushes = [pg.mkBrush('#00aaff')] * self.num_bars
         
-        self.setup_plot()
+    def _on_region_changed(self):
+        """Handle interactive band dragging"""
+        region = self.band_region.getRegion()
+        self.band_low = max(0, region[0] / self.num_bars)
+        self.band_high = min(1, region[1] / self.num_bars)
         
-    def setup_plot(self):
-        """Initialize the spectrum plot"""
-        self.ax.clear()
-        self.ax.set_xlim(-0.5, self.num_bars - 0.5)
-        self.ax.set_ylim(0, 1.1)
-        self.ax.set_xlabel('')
-        self.ax.set_ylabel('Amplitude', fontsize=8, color='#999')
-        self.ax.tick_params(axis='x', colors='#aaa', labelsize=7, which='both', length=0)
-        self.ax.tick_params(axis='y', colors='#aaa', labelsize=7)
-        self.ax.set_xticklabels([])
-        self.ax.grid(axis='y', color='#444', alpha=0.3, linewidth=0.5)
-        self.ax.spines['bottom'].set_color('#555')
-        self.ax.spines['left'].set_color('#555')
-        self.ax.spines['top'].set_visible(False)
-        self.ax.spines['right'].set_visible(False)
-        
-        # Create initial bars (blue for unselected range)
-        self.bars = self.ax.bar(self.x, np.zeros(self.num_bars), 
-                                 color='#6688ff', alpha=0.8, width=0.8)
-        
-        # Create frequency band overlay (grey thin bar at top, no border)
-        from matplotlib.patches import Rectangle
-        low_bar = int(self.band_low * self.num_bars)
-        high_bar = int(self.band_high * self.num_bars)
-        self.band_overlay = Rectangle((low_bar - 0.5, 0.9), high_bar - low_bar + 1, 0.2,
-                                        facecolor='#555555', alpha=0.5, edgecolor='none')
-        self.ax.add_patch(self.band_overlay)
-        
-        # Create peak and flux threshold indicator lines
-        self.peak_line = self.ax.axhline(y=0.0, color='#ff6644', linestyle='--', linewidth=1.5, alpha=0.6, label='Peak')
-        self.flux_line = self.ax.axhline(y=0.0, color='#44ff66', linestyle=':', linewidth=1.5, alpha=0.6, label='Flux')
-        self.ax.legend(loc='upper right', fontsize=7, framealpha=0.7)
-        
-        self.fig.tight_layout(pad=0.5)
-    
-    def set_frequency_band(self, low_norm: float, high_norm: float):
-        """Update frequency band overlay position (normalized 0-1)"""
-        self.band_low = low_norm
-        self.band_high = high_norm
-        
-        if self.band_overlay:
-            low_bar = int(low_norm * self.num_bars)
-            high_bar = int(high_norm * self.num_bars)
-            width = max(1, high_bar - low_bar + 1)
-            self.band_overlay.set_x(low_bar - 0.5)
-            self.band_overlay.set_width(width)
-    
-    def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Update peak and flux indicator lines"""
-        self.peak_value = np.clip(peak_value, 0, 1.1)
-        self.flux_value = np.clip(flux_value, 0, 1.1)
-        
-        if self.peak_line:
-            self.peak_line.set_ydata([self.peak_value, self.peak_value])
-        if self.flux_line:
-            self.flux_line.set_ydata([self.flux_value, self.flux_value])
-        
-    def _on_press(self, event):
-        """Handle mouse press for interactive band adjustment"""
-        if event.inaxes != self.ax or event.xdata is None:
-            return
-        
-        low_bar = int(self.band_low * self.num_bars)
-        high_bar = int(self.band_high * self.num_bars)
-        x = event.xdata
-        
-        # Check if clicking on left edge (within 0.5 bars)
-        if abs(x - low_bar) < 0.5:
-            self.drag_mode = 'left'
-            self.drag_start_x = x
-        # Check if clicking on right edge (within 0.5 bars)
-        elif abs(x - high_bar) < 0.5:
-            self.drag_mode = 'right'
-            self.drag_start_x = x
-        # Check if clicking inside band (move entire band)
-        elif low_bar <= x <= high_bar:
-            self.drag_mode = 'move'
-            self.drag_start_x = x
-            self.band_width = high_bar - low_bar
-    
-    def _on_release(self, event):
-        """Handle mouse release"""
-        self.drag_mode = None
-        self.drag_start_x = None
-        self.band_width = None
-    
-    def _on_motion(self, event):
-        """Handle mouse motion for dragging band"""
-        if self.drag_mode is None or event.xdata is None:
-            return
-        
-        x = event.xdata
-        dx = x - self.drag_start_x
-        
-        # Only process if there's meaningful movement (at least 0.1 bar width)
-        if abs(dx) < 0.1:
-            return
-        
-        low_bar = int(self.band_low * self.num_bars)
-        high_bar = int(self.band_high * self.num_bars)
-        
-        if self.drag_mode == 'left':
-            # Dragging left edge - don't cross right edge
-            new_low = max(0, min(high_bar - 1, low_bar + dx))
-            self.band_low = new_low / self.num_bars
-            
-        elif self.drag_mode == 'right':
-            # Dragging right edge - don't cross left edge
-            new_high = min(self.num_bars - 1, max(low_bar + 1, high_bar + dx))
-            self.band_high = new_high / self.num_bars
-            
-        elif self.drag_mode == 'move':
-            # Moving entire band - keep width constant
-            if self.band_width is not None:
-                new_low = max(0, min(self.num_bars - self.band_width - 1, low_bar + int(dx)))
-                new_high = new_low + self.band_width
-                self.band_low = new_low / self.num_bars
-                self.band_high = min(1.0, new_high / self.num_bars)
-        
-        # Update overlay
-        self.set_frequency_band(self.band_low, self.band_high)
-        
-        # Update sliders in parent window if available
+        # Update sliders in parent window
         if self.parent_window and hasattr(self.parent_window, 'freq_low_slider') and hasattr(self.parent_window, 'audio_engine'):
             sr = self.parent_window.audio_engine.config.audio.sample_rate if self.parent_window.audio_engine else 44100
             low_hz = self.band_low * sr / 2
@@ -313,13 +210,41 @@ class SpectrumCanvas(FigureCanvas):
             self.parent_window.freq_low_slider.setValue(int(low_hz))
             self.parent_window.freq_high_slider.setValue(int(high_hz))
         
-        # Update drag start for next incremental motion
-        self.drag_start_x = x
-        self.draw_idle()
+        # Update bar colors
+        self._update_bar_colors()
+    
+    def _update_bar_colors(self):
+        """Update bar colors based on frequency band selection"""
+        low_bar = int(self.band_low * self.num_bars)
+        high_bar = int(self.band_high * self.num_bars)
+        
+        brushes = []
+        for i in range(self.num_bars):
+            if low_bar <= i <= high_bar:
+                brushes.append(pg.mkBrush('#00ffaa'))  # Cyan-green for selected
+            else:
+                brushes.append(pg.mkBrush('#00aaff'))  # Blue for unselected
+        
+        self.bar_item.setOpts(brushes=brushes)
+    
+    def set_frequency_band(self, low_norm: float, high_norm: float):
+        """Update frequency band overlay position (normalized 0-1)"""
+        self.band_low = low_norm
+        self.band_high = high_norm
+        
+        low_bar = int(low_norm * self.num_bars)
+        high_bar = int(high_norm * self.num_bars)
+        self.band_region.setRegion((low_bar, high_bar))
+        self._update_bar_colors()
+    
+    def set_peak_and_flux(self, peak_value: float, flux_value: float):
+        """Update peak and flux indicator lines"""
+        self.peak_line.setPos(np.clip(peak_value, 0, 1.0))
+        self.flux_line.setPos(np.clip(flux_value, 0, 1.0))
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
-        """Update with new spectrum data - efficient bar update"""
-        if spectrum is None or len(spectrum) == 0 or self.bars is None:
+        """Update with new spectrum data - high performance"""
+        if spectrum is None or len(spectrum) == 0:
             return
             
         # Downsample to bar count
@@ -329,106 +254,85 @@ class SpectrumCanvas(FigureCanvas):
         elif len(spectrum) < self.num_bars:
             spectrum = np.pad(spectrum, (0, self.num_bars - len(spectrum)))
         
-        # Normalize
+        # Normalize to fixed 0-1 range (no dynamic ranging)
         max_val = np.max(spectrum) if np.max(spectrum) > 0 else 1
         spectrum = np.clip(spectrum / max_val, 0, 1)
         
+        # Update bar heights
+        self.bar_item.setOpts(height=spectrum)
+        
         # Update peak and flux indicators if provided
         if peak_energy is not None and spectral_flux is not None:
-            # Normalize to 0-1 range for visualization
             peak_norm = np.clip(peak_energy / max(1.0, max_val), 0, 1)
-            flux_norm = np.clip(spectral_flux / 10.0, 0, 1)  # Flux typically 0-10 range
+            flux_norm = np.clip(spectral_flux / 10.0, 0, 1)
             self.set_peak_and_flux(peak_norm, flux_norm)
-        
-        # Update bar heights and colors
-        low_bar = int(self.band_low * self.num_bars)
-        high_bar = int(self.band_high * self.num_bars)
-        
-        try:
-            for i, (bar, h) in enumerate(zip(self.bars, spectrum)):
-                bar.set_height(h)
-                # Highlight bars in the selected frequency band
-                if low_bar <= i <= high_bar:
-                    bar.set_color('#00ffaa')  # Cyan-green for selected band
-                else:
-                    bar.set_color('#00aaff')  # Blue for unselected
-            
-            self.draw_idle()
-        except Exception:
-            # Silently ignore matplotlib rendering errors
-            pass
 
 
-class PositionCanvas(FigureCanvas):
-    """Alpha/Beta position visualizer - circular display"""
+class PositionCanvas(pg.PlotWidget):
+    """Alpha/Beta position visualizer using PyQtGraph - circular display"""
     
     def __init__(self, parent=None, size=2, get_rotation=None):
-        plt.style.use('dark_background')
-        self.fig = Figure(figsize=(size, size), facecolor='#2d2d2d')
-        self.ax = self.fig.add_subplot(111, aspect='equal')
-        self.ax.set_facecolor('#232323')
-        super().__init__(self.fig)
-        self.setParent(parent)
+        super().__init__(parent)
+        
+        # Dark theme
+        self.setBackground('#232323')
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+        self.setAspectLocked(True)
+        
+        # Fixed axis ranges
+        self.setXRange(-1.2, 1.2, padding=0)
+        self.setYRange(-1.2, 1.2, padding=0)
+        self.hideAxis('left')
+        self.hideAxis('bottom')
+        
+        # Draw unit circle
+        theta = np.linspace(0, 2*np.pi, 100)
+        circle_x = np.cos(theta)
+        circle_y = np.sin(theta)
+        self.addItem(pg.PlotCurveItem(circle_x, circle_y, pen=pg.mkPen('#666666', width=1)))
+        
+        # Draw crosshairs
+        self.addItem(pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#555555', width=0.5)))
+        self.addItem(pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#555555', width=0.5)))
+        
+        # Trail storage
         self.trail_x = []
         self.trail_y = []
         self.max_trail = 50
-        self.trail_lines = []
-        self.position_scatter = None
-        self.get_rotation = get_rotation  # function to get rotation angle in degrees
-        self.setup_plot()
-
-    def setup_plot(self):
-        """Initialize the position plot (clean, no grid/labels)"""
-        self.ax.clear()
-        self.ax.set_xlim(-1.2, 1.2)
-        self.ax.set_ylim(-1.2, 1.2)
-        theta = np.linspace(0, 2*np.pi, 100)
-        self.ax.plot(np.cos(theta), np.sin(theta), color='#666666', alpha=0.5, linewidth=1)
-        self.ax.axhline(y=0, color='#555555', linewidth=0.5)
-        self.ax.axvline(x=0, color='#555555', linewidth=0.5)
-        self.ax.set_xticks([])
-        self.ax.set_yticks([])
-        self.ax.set_xlabel("")
-        self.ax.set_ylabel("")
-        self.ax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
-        for spine in self.ax.spines.values():
-            spine.set_visible(False)
-        self.fig.tight_layout(pad=0.3)
-        self.position_scatter = self.ax.scatter([], [], c='#00ffff', s=80, zorder=5)
+        self.trail_curve = pg.PlotCurveItem(pen=pg.mkPen('#00aaff', width=1))
+        self.addItem(self.trail_curve)
+        
+        # Current position marker
+        self.position_scatter = pg.ScatterPlotItem(size=12, brush=pg.mkBrush('#00ffff'), pen=None)
+        self.addItem(self.position_scatter)
+        
+        self.get_rotation = get_rotation
 
     def update_position(self, alpha: float, beta: float):
         # Alpha = vertical (y-axis): 1.0 = top, -1.0 = bottom
         # Beta = horizontal (x-axis): 1.0 = LEFT, -1.0 = right (matches restim orientation)
-        # Apply rotation if available
         angle_deg = self.get_rotation() if self.get_rotation else 0.0
         angle_rad = np.deg2rad(angle_deg)
         cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-        # Map: x = -beta (negated to match restim), y = alpha (vertical), then rotate
-        x_base = -beta  # Negated to match restim (positive beta = left)
+        
+        x_base = -beta  # Negated to match restim
         y_base = alpha
         x_rot = x_base * cos_a - y_base * sin_a
         y_rot = x_base * sin_a + y_base * cos_a
+        
         self.trail_x.append(x_rot)
         self.trail_y.append(y_rot)
         if len(self.trail_x) > self.max_trail:
             self.trail_x.pop(0)
             self.trail_y.pop(0)
-        try:
-            while len(self.trail_lines) > self.max_trail - 1:
-                line = self.trail_lines.pop(0)
-                line.remove()
-            if len(self.trail_x) > 1:
-                i = len(self.trail_x)
-                alpha_val = i / len(self.trail_x)
-                line, = self.ax.plot([self.trail_x[-2], self.trail_x[-1]],
-                                     [self.trail_y[-2], self.trail_y[-1]],
-                                     color='#00aaff', alpha=alpha_val * 0.5, linewidth=1)
-                self.trail_lines.append(line)
-            if self.position_scatter:
-                self.position_scatter.set_offsets([[x_rot, y_rot]])
-            self.draw_idle()
-        except Exception:
-            pass
+        
+        # Update trail curve
+        if len(self.trail_x) > 1:
+            self.trail_curve.setData(self.trail_x, self.trail_y)
+        
+        # Update position marker
+        self.position_scatter.setData([x_rot], [y_rot])
 
 
 class PresetButton(QPushButton):
@@ -1100,11 +1004,13 @@ class BREadbeatsWindow(QMainWindow):
         devices = sd.query_devices()
         hostapis = sd.query_hostapis()
         
-        # Find WASAPI host API index
+        # Find WASAPI host API index and default output device
         wasapi_idx = None
+        default_output_idx = None
         for idx, api in enumerate(hostapis):
             if 'WASAPI' in api['name']:
                 wasapi_idx = idx
+                default_output_idx = api.get('default_output_device', None)
                 break
         
         self.device_combo.clear()
@@ -1113,6 +1019,7 @@ class BREadbeatsWindow(QMainWindow):
         
         loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
         loopback_idx = None
+        default_output_combo_idx = None  # Track where default output appears
         combo_idx = 0
         seen_names = set()  # For deduplication
         
@@ -1146,12 +1053,19 @@ class BREadbeatsWindow(QMainWindow):
                         continue
                     seen_output_names.add(clean_name)
                     
-                    name = f"{clean_name} [WASAPI Loopback]"
+                    # Mark if this is the system default output device
+                    is_default = (i == default_output_idx)
+                    prefix = "★ " if is_default else ""
+                    name = f"{prefix}{clean_name} [WASAPI Loopback]"
                     self.device_combo.addItem(name)
                     self.audio_device_map[combo_idx] = i
                     self.audio_device_is_loopback[combo_idx] = True
                     
-                    # Prefer WASAPI loopback for default
+                    # Track default output device's combo index
+                    if is_default:
+                        default_output_combo_idx = combo_idx
+                    
+                    # Fallback: first WASAPI loopback if no default found
                     if loopback_idx is None:
                         loopback_idx = combo_idx
                     
@@ -1171,8 +1085,11 @@ class BREadbeatsWindow(QMainWindow):
                     self.audio_device_is_loopback[combo_idx] = False
                     combo_idx += 1
         
-        # Pre-select Stereo Mix/loopback if available, otherwise first device
-        if loopback_idx is not None:
+        # Pre-select: prefer system default output loopback > stereo mix/loopback > first device
+        if default_output_combo_idx is not None:
+            self.device_combo.setCurrentIndex(default_output_combo_idx)
+            print(f"[Main] Auto-selected system default output device for loopback")
+        elif loopback_idx is not None:
             self.device_combo.setCurrentIndex(loopback_idx)
         elif combo_idx > 0:
             self.device_combo.setCurrentIndex(0)
@@ -1409,9 +1326,49 @@ class BREadbeatsWindow(QMainWindow):
         skip_layout.addStretch()
         perf_layout.addLayout(skip_layout)
         
+        # Visualizer enable/disable checkbox
+        self.visualizer_checkbox = QCheckBox("Enable Spectrum Visualizer (uses CPU)")
+        self.visualizer_checkbox.setChecked(getattr(self.config.audio, 'visualizer_enabled', True))
+        self.visualizer_checkbox.stateChanged.connect(self._on_visualizer_toggle)
+        perf_layout.addWidget(self.visualizer_checkbox)
+        
+        # Butterworth filter checkbox
+        self.butterworth_checkbox = QCheckBox("Use Butterworth bandpass filter (better bass isolation)")
+        self.butterworth_checkbox.setChecked(getattr(self.config.audio, 'use_butterworth', True))
+        self.butterworth_checkbox.stateChanged.connect(self._on_butterworth_toggle)
+        perf_layout.addWidget(self.butterworth_checkbox)
+        
+        # High-pass filter cutoff slider
+        self.highpass_slider = SliderWithLabel("High-Pass Filter (Hz)", 0, 60, 
+                                                getattr(self.config.audio, 'highpass_filter_hz', 30), 0)
+        self.highpass_slider.valueChanged.connect(self._on_highpass_change)
+        perf_layout.addWidget(self.highpass_slider)
+        
         layout.addWidget(perf_group)
         layout.addStretch()
         return widget
+    
+    def _on_visualizer_toggle(self, state: int):
+        """Toggle spectrum visualizer on/off"""
+        enabled = state == 2  # Qt.Checked = 2
+        self.config.audio.visualizer_enabled = enabled
+        if self.audio_engine:
+            self.audio_engine._visualizer_enabled = enabled
+        # Hide/show spectrum canvas
+        if hasattr(self, 'spectrum_canvas') and self.spectrum_canvas:
+            self.spectrum_canvas.setVisible(enabled)
+        print(f"[Config] Visualizer {'enabled' if enabled else 'disabled'}")
+    
+    def _on_butterworth_toggle(self, state: int):
+        """Toggle Butterworth filter (requires restart)"""
+        enabled = state == 2
+        self.config.audio.use_butterworth = enabled
+        print(f"[Config] Butterworth filter {'enabled' if enabled else 'disabled'} (restart required)")
+    
+    def _on_highpass_change(self, value: float):
+        """Update high-pass filter cutoff (requires restart)"""
+        self.config.audio.highpass_filter_hz = int(value)
+        print(f"[Config] High-pass filter set to {int(value)} Hz (restart required)")
     
     def _on_fft_size_change(self, index: int):
         """Update FFT size setting (requires restart to take effect)"""

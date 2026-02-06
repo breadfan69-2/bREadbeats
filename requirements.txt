@@ -8,9 +8,11 @@ PyQt6>=6.5.0
 numpy>=1.24.0
 pyaudiowpatch>=0.2.12
 sounddevice>=0.4.6
+scipy>=1.10.0              # For Butterworth bandpass filter
 
 # Visualization
 matplotlib>=3.7.0
+pyqtgraph>=0.13.0           # High-performance plotting (replaces matplotlib for real-time)
 
 # Windows audio (WASAPI) support
 comtypes>=1.2.0

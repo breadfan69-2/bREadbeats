@@ -12,6 +12,14 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 import time
 
+# Scipy for Butterworth bandpass filter
+try:
+    from scipy.signal import butter, sosfilt
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+    print("[AudioEngine] Warning: scipy not found, using FFT-based frequency filtering")
+
 try:
     import aubio
     HAS_AUBIO = True
@@ -119,6 +127,46 @@ class AudioEngine:
         self.downbeat_position: int = 0        # Which position (0-3) is the downbeat
         self.downbeat_confidence: float = 0.0  # How confident we are in downbeat placement
         
+        # Butterworth filter state (initialized in start() when sample rate is known)
+        self._butter_sos = None                # Filter coefficients (second-order sections)
+        self._butter_zi = None                 # Filter state for continuity between frames
+        self._use_butterworth = getattr(config.audio, 'use_butterworth', True)
+        self._highpass_hz = getattr(config.audio, 'highpass_filter_hz', 30)
+        
+        # Visualizer toggle
+        self._visualizer_enabled = getattr(config.audio, 'visualizer_enabled', True)
+        
+    def _init_butterworth_filter(self):
+        """Initialize Butterworth bandpass filter for bass detection"""
+        if not HAS_SCIPY or not self._use_butterworth:
+            return
+            
+        sr = self.config.audio.sample_rate
+        nyquist = sr / 2
+        
+        # Get frequency band from beat detection config
+        low_freq = max(self._highpass_hz, self.config.beat.freq_low)  # At least highpass cutoff
+        high_freq = min(self.config.beat.freq_high, nyquist * 0.95)   # Stay below Nyquist
+        
+        # Normalize frequencies (0-1 where 1 = Nyquist)
+        low_norm = low_freq / nyquist
+        high_norm = high_freq / nyquist
+        
+        # Clamp to valid range
+        low_norm = max(0.001, min(0.99, low_norm))
+        high_norm = max(low_norm + 0.01, min(0.999, high_norm))
+        
+        try:
+            # 4th order Butterworth bandpass filter
+            self._butter_sos = butter(4, [low_norm, high_norm], btype='band', output='sos')
+            # Initialize filter state for smooth continuous filtering
+            from scipy.signal import sosfilt_zi
+            self._butter_zi = sosfilt_zi(self._butter_sos)
+            print(f"[AudioEngine] Butterworth bandpass filter initialized: {low_freq:.0f}-{high_freq:.0f} Hz")
+        except Exception as e:
+            print(f"[AudioEngine] Failed to initialize Butterworth filter: {e}")
+            self._butter_sos = None
+        
     def start(self):
         """Start audio capture and beat detection"""
         if self.running:
@@ -156,6 +204,9 @@ class AudioEngine:
             else:
                 # Regular input mode (microphone)
                 self._start_input_capture(device_index)
+            
+            # Initialize Butterworth filter now that sample rate is known
+            self._init_butterworth_filter()
                 
         except Exception as e:
             print(f"[AudioEngine] Failed to start: {e}")
@@ -265,32 +316,48 @@ class AudioEngine:
         else:
             mono = indata[:, 0]
         
+        # Apply Butterworth bandpass filter for beat detection (if available)
+        if self._butter_sos is not None and self._butter_zi is not None:
+            # Filter with state preservation for continuity
+            filtered_mono, self._butter_zi = sosfilt(self._butter_sos, mono, zi=self._butter_zi * mono[0])
+            beat_mono = filtered_mono.astype(np.float32)
+        else:
+            beat_mono = mono
+        
         # Frame skip optimization - only update spectrum visualization every N frames
         self._frame_counter += 1
-        update_spectrum = (self._frame_counter % self._spectrum_skip_frames == 0)
+        update_spectrum_viz = (self._frame_counter % self._spectrum_skip_frames == 0) and self._visualizer_enabled
         
         # Pre-allocate Hanning window on first use (or if size changed)
         if self._hanning_window is None or len(self._hanning_window) != len(mono):
             self._hanning_window = np.hanning(len(mono)).astype(np.float32)
         
-        # Compute FFT with pre-allocated window
+        # Always compute FFT for frequency estimation (needed for dominant freq detection)
         windowed = mono * self._hanning_window
         spectrum = np.abs(np.fft.rfft(windowed))
         
-        # Store full spectrum for visualization (only on scheduled frames)
-        if update_spectrum:
+        # Store full spectrum for visualization (only on scheduled frames, if enabled)
+        if update_spectrum_viz:
             with self.spectrum_lock:
                 self.spectrum_data = spectrum.copy()
         
-        # Filter spectrum to selected frequency band for beat detection
-        band_spectrum = self._filter_frequency_band(spectrum)
+        # For beat detection: use Butterworth filtered signal if available, else FFT band filter
+        if self._butter_sos is not None:
+            # Use time-domain energy from Butterworth filtered signal
+            band_energy = np.sqrt(np.mean(beat_mono ** 2))
+            # Still compute spectral flux from filtered signal's spectrum
+            beat_windowed = beat_mono * self._hanning_window
+            beat_spectrum = np.abs(np.fft.rfft(beat_windowed))
+            spectral_flux = self._compute_spectral_flux(beat_spectrum)
+        else:
+            # Fallback: FFT-based frequency band filtering (spectrum already computed above)
+            band_spectrum = self._filter_frequency_band(spectrum)
+            band_spectrum = band_spectrum * self.config.audio.gain
+            band_energy = np.sqrt(np.mean(band_spectrum ** 2)) if len(band_spectrum) > 0 else 0
+            spectral_flux = self._compute_spectral_flux(band_spectrum)
         
-        # Apply audio gain amplification (for weak devices like Stereo Mix)
-        band_spectrum = band_spectrum * self.config.audio.gain
-        
-        # Compute beat detection metrics on filtered band
-        band_energy = np.sqrt(np.mean(band_spectrum ** 2)) if len(band_spectrum) > 0 else 0
-        spectral_flux = self._compute_spectral_flux(band_spectrum)
+        # Apply audio gain amplification
+        band_energy = band_energy * self.config.audio.gain
         
         # Debug: print every 20 frames to see levels
         if not hasattr(self, '_debug_counter'):
