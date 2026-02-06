@@ -74,6 +74,15 @@ class ConnectionConfig:
     reconnect_delay_ms: int = 3000
 
 @dataclass
+class PulseFreqConfig:
+    """Pulse frequency mapping settings (Other tab)"""
+    monitor_freq_min: float = 20.0    # Min frequency to monitor (Hz)
+    monitor_freq_max: float = 200.0   # Max frequency to monitor (Hz)
+    tcode_freq_min: float = 30.0      # Min sent frequency (Hz, converted to TCode)
+    tcode_freq_max: float = 105.0     # Max sent frequency (Hz, converted to TCode)
+    freq_weight: float = 1.0          # Frequency weight blend
+
+@dataclass
 class AudioConfig:
     """Audio capture settings"""
     sample_rate: int = 44100
@@ -93,10 +102,12 @@ class Config:
     creep: CreepConfig = field(default_factory=CreepConfig)
     connection: ConnectionConfig = field(default_factory=ConnectionConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
+    pulse_freq: PulseFreqConfig = field(default_factory=PulseFreqConfig)
     
     # Global
     alpha_weight: float = 1.0         # Per-axis mix for alpha
     beta_weight: float = 1.0          # Per-axis mix for beta
+    volume: float = 1.0               # Output volume (0.0-1.0)
 
 
 # Default config instance

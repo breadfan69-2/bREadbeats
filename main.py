@@ -110,11 +110,18 @@ def load_config() -> Config:
                     if hasattr(config.audio, key):
                         setattr(config.audio, key, value)
             
+            if 'pulse_freq' in data:
+                for key, value in data['pulse_freq'].items():
+                    if hasattr(config.pulse_freq, key):
+                        setattr(config.pulse_freq, key, value)
+            
             # Top-level values
             if 'alpha_weight' in data:
                 config.alpha_weight = data['alpha_weight']
             if 'beta_weight' in data:
                 config.beta_weight = data['beta_weight']
+            if 'volume' in data:
+                config.volume = data['volume']
             
             print(f"[Config] Loaded from {config_file}")
             return config
@@ -901,6 +908,7 @@ class BREadbeatsWindow(QMainWindow):
             
             # Stroke settings tab
             self.mode_combo.setCurrentIndex(self.config.stroke.mode - 1)
+            self._on_mode_change(self.config.stroke.mode - 1)  # Apply axis weight limits for this mode
             self.stroke_min_slider.setValue(self.config.stroke.stroke_min)
             self.stroke_max_slider.setValue(self.config.stroke.stroke_max)
             self.min_interval_slider.setValue(self.config.stroke.min_interval_ms)
@@ -925,6 +933,16 @@ class BREadbeatsWindow(QMainWindow):
             # Connection settings
             self.host_edit.setText(self.config.connection.host)
             self.port_spin.setValue(self.config.connection.port)
+            
+            # Other tab (pulse freq settings)
+            self.pulse_freq_low_slider.setValue(self.config.pulse_freq.monitor_freq_min)
+            self.pulse_freq_high_slider.setValue(self.config.pulse_freq.monitor_freq_max)
+            self.tcode_freq_min_slider.setValue(self.config.pulse_freq.tcode_freq_min)
+            self.tcode_freq_max_slider.setValue(self.config.pulse_freq.tcode_freq_max)
+            self.freq_weight_slider.setValue(self.config.pulse_freq.freq_weight)
+            
+            # Volume
+            self.volume_slider.setValue(self.config.volume)
             
             print("[UI] Loaded all settings from config")
         except AttributeError as e:
@@ -1023,9 +1041,10 @@ class BREadbeatsWindow(QMainWindow):
         self.play_btn.setFixedSize(100, 40)
         btn_layout.addWidget(self.play_btn, 0, 1)
         
-        # Volume slider (0.0 - 1.0)
-        self.volume_slider = SliderWithLabel("Volume", 0.0, 1.0, 1.0, decimals=2)
-        self.volume_slider.setMinimumWidth(180)
+        # Volume slider (0.0 - 1.0) - uses compact label for control panel
+        self.volume_slider = SliderWithLabel("Vol", 0.0, 1.0, 1.0, decimals=2)
+        self.volume_slider.label.setFixedWidth(30)  # Compact label for controls box
+        self.volume_slider.setFixedWidth(180)
         self.volume_slider.setContentsMargins(0, 0, 0, 0)
         btn_layout.addWidget(self.volume_slider, 0, 2, 1, 2)
 
@@ -1053,7 +1072,7 @@ class BREadbeatsWindow(QMainWindow):
         self.bpm_label = QLabel("BPM: --")
         self.bpm_label.setStyleSheet("color: #0a0; font-size: 14px; font-weight: bold;")
         self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.bpm_label.setMinimumWidth(120)
+        self.bpm_label.setFixedWidth(180)  # Fixed width to prevent layout jumping when text changes
         btn_layout.addWidget(self.bpm_label, 0, 6)
 
         btn_layout.setColumnStretch(7, 1)  # Allow last column to stretch
@@ -1529,6 +1548,7 @@ class BREadbeatsWindow(QMainWindow):
             self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
             # Stroke Settings Tab
             self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
+            self._on_mode_change(preset_data['stroke_mode'])  # Apply axis weight limits for this mode
             self.stroke_min_slider.setValue(preset_data['stroke_min'])
             self.stroke_max_slider.setValue(preset_data['stroke_max'])
             self.min_interval_slider.setValue(preset_data['min_interval_ms'])
@@ -1815,8 +1835,29 @@ class BREadbeatsWindow(QMainWindow):
         self.config.beat.detection_type = BeatDetectionType(index + 1)
     
     def _on_mode_change(self, index: int):
-        """Change stroke mode"""
+        """Change stroke mode and adjust axis weight slider limits"""
         self.config.stroke.mode = StrokeMode(index + 1)
+        
+        # Modes 1-3: limit axis weights to 1.25 max
+        # Mode 4 (USER): keep full 0-2 range for peak/flux balance control
+        if index < 3:  # Modes 1, 2, 3 (Circle, Spiral, Teardrop)
+            new_max = 1.25
+            # Clamp current values if they exceed new max
+            if self.alpha_weight_slider.value() > new_max:
+                self.alpha_weight_slider.setValue(new_max)
+            if self.beta_weight_slider.value() > new_max:
+                self.beta_weight_slider.setValue(new_max)
+            # Update slider max (need to update the internal slider)
+            self.alpha_weight_slider.slider.setMaximum(int(new_max * self.alpha_weight_slider.multiplier))
+            self.beta_weight_slider.slider.setMaximum(int(new_max * self.beta_weight_slider.multiplier))
+            self.alpha_weight_slider.max_val = new_max
+            self.beta_weight_slider.max_val = new_max
+        else:  # Mode 4 (USER)
+            new_max = 2.0
+            self.alpha_weight_slider.slider.setMaximum(int(new_max * self.alpha_weight_slider.multiplier))
+            self.beta_weight_slider.slider.setMaximum(int(new_max * self.beta_weight_slider.multiplier))
+            self.alpha_weight_slider.max_val = new_max
+            self.beta_weight_slider.max_val = new_max
     
     def _start_engines(self):
         """Initialize and start all engines"""
@@ -2013,8 +2054,15 @@ class BREadbeatsWindow(QMainWindow):
         if self.network_engine:
             self.network_engine.stop()
 
-        # Save phase advance from slider before closing
+        # Save all settings from sliders to config before closing
         self.config.stroke.phase_advance = self.phase_advance_slider.value()
+        self.config.pulse_freq.monitor_freq_min = self.pulse_freq_low_slider.value()
+        self.config.pulse_freq.monitor_freq_max = self.pulse_freq_high_slider.value()
+        self.config.pulse_freq.tcode_freq_min = self.tcode_freq_min_slider.value()
+        self.config.pulse_freq.tcode_freq_max = self.tcode_freq_max_slider.value()
+        self.config.pulse_freq.freq_weight = self.freq_weight_slider.value()
+        self.config.volume = self.volume_slider.value()
+        
         # Save config before closing
         save_config(self.config)
 
