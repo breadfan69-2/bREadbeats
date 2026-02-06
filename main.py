@@ -172,7 +172,7 @@ class SpectrumCanvas(pg.PlotWidget):
         self.img_item = pg.ImageItem()
         self.addItem(self.img_item)
         
-        # Colormap: dark -> blue -> cyan -> green -> yellow -> red (like Audacity spectrogram)
+        # Colormap: black -> blue -> cyan -> green -> yellow -> orange -> dark purple (no white)
         colors = [
             (0, 0, 0),        # Black (silence)
             (0, 0, 80),       # Dark blue
@@ -181,10 +181,9 @@ class SpectrumCanvas(pg.PlotWidget):
             (0, 200, 50),     # Green
             (200, 200, 0),    # Yellow
             (255, 100, 0),    # Orange
-            (255, 0, 0),      # Red (loud)
-            (255, 255, 255),  # White (very loud)
+            (40, 0, 40),      # Dark purple (highest amplitude)
         ]
-        positions = [0.0, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 1.0]
+        positions = [0.0, 0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0]
         self.colormap = pg.ColorMap(positions, colors)
         lut = self.colormap.getLookupTable(0.0, 1.0, 256)
         self.img_item.setLookupTable(lut)
@@ -194,26 +193,27 @@ class SpectrumCanvas(pg.PlotWidget):
         self.setYRange(0, self.history_len, padding=0)
         
         # 3 Frequency band indicators (vertical regions spanning full height)
+        # Bold grey borders for visibility against colorful spectrogram
         # Band 1: Beat Detection (red) - semi-transparent
         self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
-                                              brush=pg.mkBrush(255, 50, 50, 50),
-                                              pen=pg.mkPen('#ff4444', width=1),
+                                              brush=pg.mkBrush(255, 50, 50, 60),
+                                              pen=pg.mkPen('#888888', width=2),
                                               movable=True)
         self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
         self.addItem(self.beat_band)
         
         # Band 2: Stroke Depth (green)
         self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
-                                               brush=pg.mkBrush(50, 255, 50, 40),
-                                               pen=pg.mkPen('#44ff44', width=1),
+                                               brush=pg.mkBrush(50, 255, 50, 50),
+                                               pen=pg.mkPen('#888888', width=2),
                                                movable=True)
         self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
         self.addItem(self.depth_band)
         
         # Band 3: P0 TCode (blue)
         self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
-                                            brush=pg.mkBrush(50, 100, 255, 40),
-                                            pen=pg.mkPen('#4488ff', width=1),
+                                            brush=pg.mkBrush(50, 100, 255, 50),
+                                            pen=pg.mkPen('#888888', width=2),
                                             movable=True)
         self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
         self.addItem(self.p0_band)
@@ -327,6 +327,8 @@ class SpectrumCanvas(pg.PlotWidget):
         # Update image - transpose so X=freq, Y=time (new at bottom)
         # PyQtGraph ImageItem: first axis = X (horizontal), second axis = Y (vertical)
         self.img_item.setImage(self.waterfall_data.T, autoLevels=False, levels=(0, 1))
+        # Position image to fill the view exactly (must be after setImage)
+        self.img_item.setRect(0, 0, self.num_bins, self.history_len)
 
 
 class PositionCanvas(pg.PlotWidget):
@@ -1251,7 +1253,7 @@ class BREadbeatsWindow(QMainWindow):
     
     def _create_spectrum_panel(self) -> QGroupBox:
         """Spectrum visualizer panel"""
-        group = QGroupBox("Spectrum Analyzer")
+        group = QGroupBox("Frequency Selection")
         layout = QVBoxLayout(group)
         
         self.spectrum_canvas = SpectrumCanvas(self, width=8, height=3)
@@ -1334,8 +1336,9 @@ class BREadbeatsWindow(QMainWindow):
         freq_group = QGroupBox("Pulse Frequency Controls")
         freq_layout = QVBoxLayout(freq_group)
 
-        self.pulse_freq_low_slider = SliderWithLabel("Monitor Freq Min (Hz)", 20, 1000, 20, 0)
-        self.pulse_freq_high_slider = SliderWithLabel("Monitor Freq Max (Hz)", 20, 1000, 200, 0)
+        nyquist = 22050  # Matches sample rate / 2
+        self.pulse_freq_low_slider = SliderWithLabel("Monitor Freq Min (Hz)", 40, nyquist, 40, 0)
+        self.pulse_freq_high_slider = SliderWithLabel("Monitor Freq Max (Hz)", 40, nyquist, 4000, 0)
         self.pulse_freq_low_slider.valueChanged.connect(self._on_p0_band_change)
         self.pulse_freq_high_slider.valueChanged.connect(self._on_p0_band_change)
         freq_layout.addWidget(self.pulse_freq_low_slider)
@@ -1485,11 +1488,11 @@ class BREadbeatsWindow(QMainWindow):
         # Get sample rate (default to 44100 if not available yet)
         sr = getattr(self.config.audio, 'sample_rate', 44100)
         nyquist = sr // 2
-        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 20, nyquist, 20, 0)
+        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 40, nyquist, 40, 0)
         self.freq_low_slider.valueChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_low_slider)
 
-        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 20, nyquist, min(200, nyquist), 0)
+        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 40, nyquist, min(4000, nyquist), 0)
         self.freq_high_slider.valueChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_high_slider)
         
@@ -1899,11 +1902,11 @@ class BREadbeatsWindow(QMainWindow):
         # Frequency range for stroke depth (bass = deeper strokes)
         sr = getattr(self.config.audio, 'sample_rate', 44100)
         nyquist = sr // 2
-        self.depth_freq_low_slider = SliderWithLabel("Depth Freq Low (Hz)", 20, nyquist, 20, 0)
+        self.depth_freq_low_slider = SliderWithLabel("Depth Freq Low (Hz)", 40, nyquist, 40, 0)
         self.depth_freq_low_slider.valueChanged.connect(self._on_depth_band_change)
         layout.addWidget(self.depth_freq_low_slider)
         
-        self.depth_freq_high_slider = SliderWithLabel("Depth Freq High (Hz)", 20, nyquist, 200, 0)
+        self.depth_freq_high_slider = SliderWithLabel("Depth Freq High (Hz)", 40, nyquist, 4000, 0)
         self.depth_freq_high_slider.valueChanged.connect(self._on_depth_band_change)
         layout.addWidget(self.depth_freq_high_slider)
         
