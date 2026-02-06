@@ -562,6 +562,11 @@ class BREadbeatsWindow(QMainWindow):
         # Command queue
         self.cmd_queue = queue.Queue()
         
+        # Initialize engines to None early (before UI setup needs to check them)
+        self.audio_engine = None
+        self.network_engine = None
+        self.stroke_mapper = None
+        
         # Setup UI
         self._setup_ui()
         
@@ -570,11 +575,6 @@ class BREadbeatsWindow(QMainWindow):
         
         # Load presets from disk
         self._load_presets_from_disk()
-        
-        # Initialize engines (but don't start yet)
-        self.audio_engine = None
-        self.network_engine = None
-        self.stroke_mapper = None
         
         # Connect signals
         self.signals.beat_detected.connect(self._on_beat)
@@ -906,6 +906,15 @@ class BREadbeatsWindow(QMainWindow):
             self.freq_high_slider.setValue(self.config.beat.freq_high)
             self._on_freq_band_change()  # Update spectrum overlay
             
+            # Tempo tracking settings
+            self.tempo_tracking_checkbox.setChecked(self.config.beat.tempo_tracking_enabled)
+            self._on_tempo_tracking_toggle(2 if self.config.beat.tempo_tracking_enabled else 0)
+            beats_to_index = {4: 0, 3: 1, 6: 2}
+            self.time_sig_combo.setCurrentIndex(beats_to_index.get(self.config.beat.beats_per_measure, 0))
+            self.stability_threshold_slider.setValue(self.config.beat.stability_threshold)
+            self.tempo_timeout_slider.setValue(self.config.beat.tempo_timeout_ms)
+            self.phase_snap_slider.setValue(self.config.beat.phase_snap_weight)
+            
             # Stroke settings tab
             self.mode_combo.setCurrentIndex(self.config.stroke.mode - 1)
             self._on_mode_change(self.config.stroke.mode - 1)  # Apply axis weight limits for this mode
@@ -998,13 +1007,6 @@ class BREadbeatsWindow(QMainWindow):
         self.device_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         device_layout.addWidget(self.device_combo, 0, 1, 1, 3)
         
-        # Info label showing available devices count
-        import sounddevice as sd
-        available_count = len([d for d in sd.query_devices() if d['max_input_channels'] > 0])
-        self.device_info_label = QLabel(f"({available_count} devices)")
-        self.device_info_label.setStyleSheet("color: gray; font-size: 9pt;")
-        device_layout.addWidget(self.device_info_label, 0, 4)
-        
         # Quick presets for common devices (second row)
         self.preset_mic_btn = QPushButton("🎤 Mic (Reactive)")
         self.preset_mic_btn.setFixedWidth(130)
@@ -1055,27 +1057,39 @@ class BREadbeatsWindow(QMainWindow):
         self.pulse_freq_label.setFixedWidth(80)
         btn_layout.addWidget(self.pulse_freq_label, 0, 4)
 
-        # Beat indicator (closer to BPM display)
+        # Beat indicator (lights up on any beat)
         self.beat_indicator = QLabel("●")
         self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
         self.beat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.beat_indicator.setFixedWidth(30)
         btn_layout.addWidget(self.beat_indicator, 0, 5)
         
+        # Downbeat indicator (lights up on downbeat/beat 1)
+        self.downbeat_indicator = QLabel("●")
+        self.downbeat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+        self.downbeat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.downbeat_indicator.setFixedWidth(30)
+        btn_layout.addWidget(self.downbeat_indicator, 0, 6)
+        
         # Beat indicator timer for visual feedback duration
         self.beat_timer = QTimer()
         self.beat_timer.setSingleShot(True)
         self.beat_timer.timeout.connect(self._turn_off_beat_indicator)
         self.beat_indicator_min_duration = 100  # ms
+        
+        # Downbeat indicator timer
+        self.downbeat_timer = QTimer()
+        self.downbeat_timer.setSingleShot(True)
+        self.downbeat_timer.timeout.connect(self._turn_off_downbeat_indicator)
 
-        # BPM display (right next to beat indicator)
+        # BPM display (right next to indicators)
         self.bpm_label = QLabel("BPM: --")
         self.bpm_label.setStyleSheet("color: #0a0; font-size: 14px; font-weight: bold;")
         self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.bpm_label.setFixedWidth(180)  # Fixed width to prevent layout jumping when text changes
-        btn_layout.addWidget(self.bpm_label, 0, 6)
+        self.bpm_label.setFixedWidth(120)  # Fixed width to prevent layout jumping when text changes
+        btn_layout.addWidget(self.bpm_label, 0, 7)
 
-        btn_layout.setColumnStretch(7, 1)  # Allow last column to stretch
+        btn_layout.setColumnStretch(8, 1)  # Allow last column to stretch
         layout.addLayout(btn_layout)
 
         return group
@@ -1306,7 +1320,7 @@ class BREadbeatsWindow(QMainWindow):
         tabs.addTab(self._create_beat_detection_tab(), "Beat Detection")
         tabs.addTab(self._create_stroke_settings_tab(), "Stroke Settings")
         tabs.addTab(self._create_jitter_creep_tab(), "Jitter / Creep")
-        tabs.addTab(self._create_axis_weights_tab(), "Axis Weights")
+        tabs.addTab(self._create_tempo_tracking_tab(), "Tempo Tracking")
         tabs.addTab(self._create_other_tab(), "Other")
         return tabs
     
@@ -1427,11 +1441,6 @@ class BREadbeatsWindow(QMainWindow):
         self.audio_gain_slider.valueChanged.connect(lambda v: setattr(self.config.audio, 'gain', v))
         layout.addWidget(self.audio_gain_slider)
         
-        # Silence reset threshold: how long silence before resetting beat tracking
-        self.silence_reset_slider = SliderWithLabel("Silence Reset (ms)", 100, 1000, 400, 0)
-        self.silence_reset_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'silence_reset_ms', int(v)))
-        layout.addWidget(self.silence_reset_slider)
-        
         layout.addStretch()
         return widget
     
@@ -1452,6 +1461,56 @@ class BREadbeatsWindow(QMainWindow):
         sr = self.config.audio.sample_rate
         max_freq = sr / 2
         self.spectrum_canvas.set_frequency_band(low / max_freq, high / max_freq)
+    
+    def _on_tempo_tracking_toggle(self, state):
+        """Enable/disable tempo tracking"""
+        enabled = state == 2  # Qt.CheckState.Checked
+        self.config.beat.tempo_tracking_enabled = enabled
+        if self.audio_engine:
+            self.audio_engine.tempo_tracking_enabled = enabled
+            if not enabled:
+                # Reset tempo state when disabled
+                self.audio_engine.smoothed_tempo = 0.0
+                self.audio_engine.stable_tempo = 0.0
+                self.audio_engine.beat_intervals.clear()
+                self.audio_engine.beat_times.clear()
+        # Enable/disable related controls
+        self.time_sig_combo.setEnabled(enabled)
+        self.stability_threshold_slider.setEnabled(enabled)
+        self.tempo_timeout_slider.setEnabled(enabled)
+        self.phase_snap_slider.setEnabled(enabled)
+        print(f"[Config] Tempo tracking {'enabled' if enabled else 'disabled'}")
+    
+    def _on_time_sig_change(self, index: int):
+        """Update time signature (beats per measure)"""
+        beats_map = {0: 4, 1: 3, 2: 6}  # 4/4, 3/4, 6/8
+        self.config.beat.beats_per_measure = beats_map.get(index, 4)
+        # Update audio engine if running
+        if self.audio_engine:
+            self.audio_engine.beats_per_measure = self.config.beat.beats_per_measure
+            # Reset measure tracking arrays to new size
+            self.audio_engine.measure_energy_accum = [0.0] * self.config.beat.beats_per_measure
+            self.audio_engine.measure_beat_counts = [0] * self.config.beat.beats_per_measure
+            self.audio_engine.beat_position_in_measure = 0
+        print(f"[Config] Time signature changed to {self.config.beat.beats_per_measure} beats/measure")
+    
+    def _on_stability_threshold_change(self, value: float):
+        """Update stability threshold in config and audio engine"""
+        self.config.beat.stability_threshold = value
+        if self.audio_engine:
+            self.audio_engine.stability_threshold = value
+    
+    def _on_tempo_timeout_change(self, value: float):
+        """Update tempo timeout in config and audio engine"""
+        self.config.beat.tempo_timeout_ms = int(value)
+        if self.audio_engine:
+            self.audio_engine.tempo_timeout_ms = value
+    
+    def _on_phase_snap_change(self, value: float):
+        """Update phase snap weight in config and audio engine"""
+        self.config.beat.phase_snap_weight = value
+        if self.audio_engine:
+            self.audio_engine.phase_snap_weight = value
     
     def _save_freq_preset(self, idx: int):
         """Save ALL settings from all 4 tabs to custom preset, with overwrite confirmation"""
@@ -1486,6 +1545,13 @@ class BREadbeatsWindow(QMainWindow):
             'audio_gain': self.audio_gain_slider.value(),
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
+            
+            # Tempo Tracking (Beat Detection Tab)
+            'tempo_tracking_enabled': self.tempo_tracking_checkbox.isChecked(),
+            'time_sig_index': self.time_sig_combo.currentIndex(),
+            'stability_threshold': self.stability_threshold_slider.value(),
+            'tempo_timeout_ms': int(self.tempo_timeout_slider.value()),
+            'phase_snap_weight': self.phase_snap_slider.value(),
 
             # Stroke Settings Tab
             'stroke_mode': self.mode_combo.currentIndex(),
@@ -1546,6 +1612,24 @@ class BREadbeatsWindow(QMainWindow):
             if 'silence_reset_ms' in preset_data:
                 self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
             self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
+            
+            # Tempo Tracking settings
+            if 'tempo_tracking_enabled' in preset_data:
+                self.tempo_tracking_checkbox.setChecked(preset_data['tempo_tracking_enabled'])
+                self._on_tempo_tracking_toggle(2 if preset_data['tempo_tracking_enabled'] else 0)
+            if 'time_sig_index' in preset_data:
+                self.time_sig_combo.setCurrentIndex(preset_data['time_sig_index'])
+                self._on_time_sig_change(preset_data['time_sig_index'])
+            if 'stability_threshold' in preset_data:
+                self.stability_threshold_slider.setValue(preset_data['stability_threshold'])
+                self._on_stability_threshold_change(preset_data['stability_threshold'])
+            if 'tempo_timeout_ms' in preset_data:
+                self.tempo_timeout_slider.setValue(preset_data['tempo_timeout_ms'])
+                self._on_tempo_timeout_change(preset_data['tempo_timeout_ms'])
+            if 'phase_snap_weight' in preset_data:
+                self.phase_snap_slider.setValue(preset_data['phase_snap_weight'])
+                self._on_phase_snap_change(preset_data['phase_snap_weight'])
+            
             # Stroke Settings Tab
             self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
             self._on_mode_change(preset_data['stroke_mode'])  # Apply axis weight limits for this mode
@@ -1691,23 +1775,21 @@ class BREadbeatsWindow(QMainWindow):
         self.freq_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'freq_depth_factor', v))
         layout.addWidget(self.freq_depth_slider)
         
-        # Spectral flux threshold for stroke control
-        layout.addWidget(QLabel(""))  # Spacing
-        layout.addWidget(QLabel("Spectral Flux Control (Low flux→downbeats only, High flux→every beat)"))
-        self.flux_threshold_slider = SliderWithLabel("Flux Threshold", 0.001, 0.2, 0.03, 4)
-        self.flux_threshold_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_threshold', v))
-        layout.addWidget(self.flux_threshold_slider)
+        # Axis Weights section
+        axis_group = QGroupBox("Axis Weights")
+        axis_layout = QVBoxLayout(axis_group)
+        axis_layout.addWidget(QLabel("Modes 1-3: Scales axis amplitude (0=off, 1=normal, 2=double)"))
+        axis_layout.addWidget(QLabel("Mode 4 (User): Controls flux/peak response (0=flux, 1=balanced, 2=peak)"))
         
-        # Flux scaling weight (how much flux affects stroke size)
-        self.flux_scaling_slider = SliderWithLabel("Flux Scaling (size)", 0.0, 2.0, 1.0, 2)
-        self.flux_scaling_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_scaling_weight', v))
-        layout.addWidget(self.flux_scaling_slider)
-
-        # Phase Advance slider (controls per-beat phase increment)
-        layout.addWidget(QLabel(""))  # Spacing
-        self.phase_advance_slider = SliderWithLabel("Phase Advance (0=downbeats, 1=all beats)", 0.0, 1.0, self.config.stroke.phase_advance, 2)
-        self.phase_advance_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'phase_advance', v))
-        layout.addWidget(self.phase_advance_slider)
+        self.alpha_weight_slider = SliderWithLabel("Alpha Weight", 0.0, 2.0, 1.0)
+        self.alpha_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'alpha_weight', v))
+        axis_layout.addWidget(self.alpha_weight_slider)
+        
+        self.beta_weight_slider = SliderWithLabel("Beta Weight", 0.0, 2.0, 1.0)
+        self.beta_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'beta_weight', v))
+        axis_layout.addWidget(self.beta_weight_slider)
+        
+        layout.addWidget(axis_group)
         
         layout.addStretch()
         return widget
@@ -1754,22 +1836,65 @@ class BREadbeatsWindow(QMainWindow):
         layout.addStretch()
         return widget
     
-    def _create_axis_weights_tab(self) -> QWidget:
-        """Axis weight settings"""
+    def _create_tempo_tracking_tab(self) -> QWidget:
+        """Tempo tracking and rhythm settings"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
-        layout.addWidget(QLabel("Modes 1-3: Scales axis amplitude (0=off, 1=normal, 2=double)"))
-        layout.addWidget(QLabel("Mode 4 (User): Controls flux/peak response (0=flux, 1=balanced, 2=peak)"))
-        layout.addWidget(QLabel(""))
+        # Enable/disable checkbox
+        self.tempo_tracking_checkbox = QCheckBox("Enable Tempo Tracking")
+        self.tempo_tracking_checkbox.setChecked(True)
+        self.tempo_tracking_checkbox.stateChanged.connect(self._on_tempo_tracking_toggle)
+        layout.addWidget(self.tempo_tracking_checkbox)
         
-        self.alpha_weight_slider = SliderWithLabel("Alpha Weight", 0.0, 2.0, 1.0)
-        self.alpha_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'alpha_weight', v))
-        layout.addWidget(self.alpha_weight_slider)
+        # Time signature dropdown
+        sig_layout = QHBoxLayout()
+        sig_layout.addWidget(QLabel("Time Signature:"))
+        self.time_sig_combo = QComboBox()
+        self.time_sig_combo.addItems(["4/4 (4 beats)", "3/4 (3 beats)", "6/8 (6 beats)"])
+        self.time_sig_combo.currentIndexChanged.connect(self._on_time_sig_change)
+        sig_layout.addWidget(self.time_sig_combo)
+        sig_layout.addStretch()
+        layout.addLayout(sig_layout)
         
-        self.beta_weight_slider = SliderWithLabel("Beta Weight", 0.0, 2.0, 1.0)
-        self.beta_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'beta_weight', v))
-        layout.addWidget(self.beta_weight_slider)
+        # Stability threshold: lower = stricter (requires more consistent intervals before locking BPM)
+        self.stability_threshold_slider = SliderWithLabel("Stability Threshold", 0.05, 0.4, 0.15, 2)
+        self.stability_threshold_slider.valueChanged.connect(self._on_stability_threshold_change)
+        layout.addWidget(self.stability_threshold_slider)
+        
+        # Tempo timeout: how long no beats before resetting tempo tracking
+        self.tempo_timeout_slider = SliderWithLabel("Tempo Timeout (ms)", 500, 5000, 2000, 0)
+        self.tempo_timeout_slider.valueChanged.connect(self._on_tempo_timeout_change)
+        layout.addWidget(self.tempo_timeout_slider)
+        
+        # Phase snap: how much to nudge detected beats toward predicted time
+        self.phase_snap_slider = SliderWithLabel("Phase Snap", 0.0, 0.8, 0.3, 2)
+        self.phase_snap_slider.valueChanged.connect(self._on_phase_snap_change)
+        layout.addWidget(self.phase_snap_slider)
+        
+        # Silence reset threshold (moved from Beat Detection)
+        self.silence_reset_slider = SliderWithLabel("Silence Reset (ms)", 100, 3000, 400, 0)
+        self.silence_reset_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'silence_reset_ms', int(v)))
+        layout.addWidget(self.silence_reset_slider)
+        
+        # Spectral flux control group (moved from Stroke Settings)
+        flux_group = QGroupBox("Spectral Flux Control")
+        flux_layout = QVBoxLayout(flux_group)
+        flux_layout.addWidget(QLabel("Low flux→downbeats only, High flux→every beat"))
+        
+        self.flux_threshold_slider = SliderWithLabel("Flux Threshold", 0.001, 0.2, 0.03, 4)
+        self.flux_threshold_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_threshold', v))
+        flux_layout.addWidget(self.flux_threshold_slider)
+        
+        self.flux_scaling_slider = SliderWithLabel("Flux Scaling (size)", 0.0, 2.0, 1.0, 2)
+        self.flux_scaling_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_scaling_weight', v))
+        flux_layout.addWidget(self.flux_scaling_slider)
+        
+        self.phase_advance_slider = SliderWithLabel("Phase Advance (0=downbeats, 1=all)", 0.0, 1.0, self.config.stroke.phase_advance, 2)
+        self.phase_advance_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'phase_advance', v))
+        flux_layout.addWidget(self.phase_advance_slider)
+        
+        layout.addWidget(flux_group)
         
         layout.addStretch()
         return widget
@@ -1818,6 +1943,7 @@ class BREadbeatsWindow(QMainWindow):
             self.start_btn.setText("▶ Start")
             self.play_btn.setEnabled(False)
             self.play_btn.setChecked(False)
+            self.play_btn.setText("▶ Play")  # Reset play button text
             self.is_sending = False
     
     def _on_play_pause(self, checked: bool):
@@ -1861,11 +1987,13 @@ class BREadbeatsWindow(QMainWindow):
     
     def _start_engines(self):
         """Initialize and start all engines"""
-        # Set selected audio device
+        # Set selected audio device and loopback mode
         combo_idx = self.device_combo.currentIndex()
         if combo_idx >= 0 and combo_idx in self.audio_device_map:
             self.config.audio.device_index = self.audio_device_map[combo_idx]
-            print(f"[Main] Using audio device index: {self.config.audio.device_index}")
+            self.config.audio.is_loopback = self.audio_device_is_loopback.get(combo_idx, False)
+            is_loopback = "loopback" if self.config.audio.is_loopback else "input"
+            print(f"[Main] Using audio device index: {self.config.audio.device_index} ({is_loopback})")
 
         self.audio_engine = AudioEngine(self.config, self._audio_callback)
         self.audio_engine.start()
@@ -1953,10 +2081,11 @@ class BREadbeatsWindow(QMainWindow):
                 norm = (dom_freq - in_low) / max(1, in_high - in_low)
                 norm = max(0.0, min(1.0, norm))
                 # Bias by movement speed (stroke intensity)
+                # freq_weight: 1.0 = pure frequency, 0.0 = max intensity boost
                 freq_weight = self.freq_weight_slider.value()  # 0.0–1.0
                 intensity = getattr(event, 'intensity', 1.0)
-                # Blend: norm + freq_weight * intensity, clamped to [0,1]
-                norm_biased = norm + freq_weight * intensity * (1.0 - norm)
+                # Blend: norm + (1-freq_weight) * intensity boost
+                norm_biased = norm + (1.0 - freq_weight) * intensity * (1.0 - norm)
                 norm_biased = max(0.0, min(1.0, norm_biased))
                 # Map to TCode output range
                 p0_val = int(tcode_min_val + norm_biased * (tcode_max_val - tcode_min_val))
@@ -1978,7 +2107,7 @@ class BREadbeatsWindow(QMainWindow):
     def _on_beat(self, event: BeatEvent):
         """Handle beat event in GUI thread"""
         if event.is_beat:
-            # Light up the beat indicator
+            # Light up the beat indicator (green for any beat)
             if hasattr(self, 'beat_indicator') and self.beat_indicator is not None:
                 self.beat_indicator.setStyleSheet("color: #0f0; font-size: 24px;")
             # Reset timer to keep it lit for minimum duration
@@ -1990,31 +2119,39 @@ class BREadbeatsWindow(QMainWindow):
                 tempo_info = self.audio_engine.get_tempo_info()
                 if tempo_info['bpm'] > 0:
                     confidence = tempo_info['confidence']
-                    beat_pos = tempo_info['beat_position']
                     is_downbeat = tempo_info.get('is_downbeat', False)
                     stability = tempo_info.get('stability', 0.0)
-                    # Format BPM display - use stable BPM when available
+                    
+                    # Light up downbeat indicator (cyan/blue for downbeat)
+                    if is_downbeat:
+                        if hasattr(self, 'downbeat_indicator') and self.downbeat_indicator is not None:
+                            self.downbeat_indicator.setStyleSheet("color: #0ff; font-size: 24px;")
+                        if hasattr(self, 'downbeat_timer') and self.downbeat_timer is not None:
+                            self.downbeat_timer.stop()
+                            self.downbeat_timer.start(self.beat_indicator_min_duration)
+                    
+                    # Format BPM display - simple, no beat position counter
                     bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
-                    # Add beat position indicator (1/2/3/4 and ⬇ for downbeat)
-                    if beat_pos > 0:
-                        downbeat_marker = " ⬇" if is_downbeat else ""
-                        bpm_display += f" [{beat_pos}{downbeat_marker}]"
                     # Add confidence/stability indicator
                     if confidence < 0.5:
-                        bpm_display += " (stabilizing...)"
+                        bpm_display += " (~)"
                     elif stability < 0.5:
-                        bpm_display += " (~)"  # Unstable - BPM is approximate
+                        bpm_display += " (~)"
                     if hasattr(self, 'bpm_label') and self.bpm_label is not None:
                         self.bpm_label.setText(bpm_display)
         # Show reset in GUI and console if tempo was reset
         if hasattr(event, 'tempo_reset') and event.tempo_reset:
             if hasattr(self, 'bpm_label') and self.bpm_label is not None:
-                self.bpm_label.setText("BPM: -- [silent]")
+                self.bpm_label.setText("BPM: ---")
             print("[GUI] Beat counter/tempo reset due to silence.")
     
     def _turn_off_beat_indicator(self):
         """Turn off beat indicator after minimum duration"""
         self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+    
+    def _turn_off_downbeat_indicator(self):
+        """Turn off downbeat indicator after minimum duration"""
+        self.downbeat_indicator.setStyleSheet("color: #333; font-size: 24px;")
     
     def _on_spectrum(self, spectrum: np.ndarray):
         """Queue spectrum for throttled update"""
@@ -2062,6 +2199,14 @@ class BREadbeatsWindow(QMainWindow):
         self.config.pulse_freq.tcode_freq_max = self.tcode_freq_max_slider.value()
         self.config.pulse_freq.freq_weight = self.freq_weight_slider.value()
         self.config.volume = self.volume_slider.value()
+        
+        # Save tempo tracking settings
+        self.config.beat.tempo_tracking_enabled = self.tempo_tracking_checkbox.isChecked()
+        beats_map = {0: 4, 1: 3, 2: 6}
+        self.config.beat.beats_per_measure = beats_map.get(self.time_sig_combo.currentIndex(), 4)
+        self.config.beat.stability_threshold = self.stability_threshold_slider.value()
+        self.config.beat.tempo_timeout_ms = int(self.tempo_timeout_slider.value())
+        self.config.beat.phase_snap_weight = self.phase_snap_slider.value()
         
         # Save config before closing
         save_config(self.config)

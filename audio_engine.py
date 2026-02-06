@@ -89,24 +89,28 @@ class AudioEngine:
         self.last_known_tempo: float = 0.0     # Preserved tempo during silence
         self.tempo_history: list[float] = []   # For visualization
         self.last_beat_time: float = 0.0       # For calculating intervals
-        self.beat_times: list[float] = []      # Last 10 beat times for stability
+        self.beat_times: list[float] = []      # Last 16 beat times for stability
         self.predicted_next_beat: float = 0.0  # Predicted next beat time
         self.beat_position_in_measure: int = 0 # For downbeat tracking (1, 2, 3, 4...)
-        self.tempo_timeout_ms: float = 2000.0  # Reset tempo tracking after this many ms of silence
+        
+        # These are now read from config (with fallback defaults)
+        self.tempo_tracking_enabled: bool = config.beat.tempo_tracking_enabled if hasattr(config.beat, 'tempo_tracking_enabled') else True
+        self.tempo_timeout_ms: float = config.beat.tempo_timeout_ms if hasattr(config.beat, 'tempo_timeout_ms') else 2000.0
+        self.stability_threshold: float = config.beat.stability_threshold if hasattr(config.beat, 'stability_threshold') else 0.15
+        self.beats_per_measure: int = config.beat.beats_per_measure if hasattr(config.beat, 'beats_per_measure') else 4
+        self.phase_snap_weight: float = config.beat.phase_snap_weight if hasattr(config.beat, 'phase_snap_weight') else 0.3
         
         # Beat stability filtering (TISMIR PLP-inspired)
         # Only commit BPM display when recent intervals have low variance
         self.stable_tempo: float = 0.0         # Last stable BPM (only updates when CV is low)
         self.beat_stability: float = 0.0       # 0.0 = chaotic, 1.0 = perfectly stable
-        self.stability_threshold: float = 0.15 # Max coefficient of variation to consider "stable"
         
         # Downbeat detection (energy-based, StackOverflow/librosa-inspired)
         # Accumulate energy at each measure position to find the strongest = beat 1
         self.beat_energies: list[float] = []   # Track intensity of beats
         self.is_downbeat: bool = False         # True if this beat is a downbeat (strong beat)
-        self.beats_per_measure: int = 4        # 4/4 time assumption
-        self.measure_energy_accum: list[float] = [0.0] * 4  # Accumulated energy per position
-        self.measure_beat_counts: list[int] = [0] * 4       # How many beats at each position
+        self.measure_energy_accum: list[float] = [0.0] * self.beats_per_measure  # Accumulated energy per position
+        self.measure_beat_counts: list[int] = [0] * self.beats_per_measure       # How many beats at each position
         self.downbeat_position: int = 0        # Which position (0-3) is the downbeat
         self.downbeat_confidence: float = 0.0  # How confident we are in downbeat placement
         
@@ -136,45 +140,97 @@ class AudioEngine:
         # Initialize PyAudio
         self.pyaudio = pyaudio.PyAudio()
         
+        # Check if we should use loopback or regular input
+        use_loopback = getattr(self.config.audio, 'is_loopback', True)
+        device_index = getattr(self.config.audio, 'device_index', None)
+        
         try:
-            # Get default WASAPI loopback device
-            wasapi_info = self.pyaudio.get_host_api_info_by_type(pyaudio.paWASAPI)
-            default_speakers = self.pyaudio.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-            
-            # Check if it's already a loopback device, otherwise find the loopback version
-            if not default_speakers["isLoopbackDevice"]:
-                for loopback in self.pyaudio.get_loopback_device_info_generator():
-                    if default_speakers["name"] in loopback["name"]:
-                        default_speakers = loopback
-                        break
-            
-            print(f"[AudioEngine] Using WASAPI loopback: {default_speakers['name']}")
-            print(f"[AudioEngine] Channels: {default_speakers['maxInputChannels']}, SR: {int(default_speakers['defaultSampleRate'])}Hz")
-            
-            # Update config with actual sample rate
-            self.config.audio.sample_rate = int(default_speakers['defaultSampleRate'])
-            self.config.audio.channels = default_speakers['maxInputChannels']
-            
-            # Open stream
-            self.stream = self.pyaudio.open(
-                format=pyaudio.paFloat32,
-                channels=self.config.audio.channels,
-                rate=self.config.audio.sample_rate,
-                frames_per_buffer=self.config.audio.buffer_size,
-                input=True,
-                input_device_index=default_speakers["index"],
-                stream_callback=self._audio_callback_pyaudio
-            )
-            
-            self.stream.start_stream()
-            print("[AudioEngine] WASAPI loopback capture started successfully!")
-            
+            if use_loopback:
+                # WASAPI loopback mode (system audio capture)
+                self._start_loopback_capture(device_index)
+            else:
+                # Regular input mode (microphone)
+                self._start_input_capture(device_index)
+                
         except Exception as e:
             print(f"[AudioEngine] Failed to start: {e}")
             self.running = False
             if self.pyaudio:
                 self.pyaudio.terminate()
                 self.pyaudio = None
+    
+    def _start_loopback_capture(self, device_index=None):
+        """Start WASAPI loopback capture (system audio)"""
+        wasapi_info = self.pyaudio.get_host_api_info_by_type(pyaudio.paWASAPI)
+        
+        if device_index is not None:
+            # Use specified device - find its loopback version
+            device_info = self.pyaudio.get_device_info_by_index(device_index)
+            if not device_info.get("isLoopbackDevice", False):
+                # Find the loopback version of this output device
+                for loopback in self.pyaudio.get_loopback_device_info_generator():
+                    if device_info["name"] in loopback["name"]:
+                        device_info = loopback
+                        break
+        else:
+            # Use default output device's loopback
+            device_info = self.pyaudio.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            if not device_info.get("isLoopbackDevice", False):
+                for loopback in self.pyaudio.get_loopback_device_info_generator():
+                    if device_info["name"] in loopback["name"]:
+                        device_info = loopback
+                        break
+        
+        print(f"[AudioEngine] Using WASAPI loopback: {device_info['name']}")
+        print(f"[AudioEngine] Channels: {device_info['maxInputChannels']}, SR: {int(device_info['defaultSampleRate'])}Hz")
+        
+        # Update config with actual sample rate
+        self.config.audio.sample_rate = int(device_info['defaultSampleRate'])
+        self.config.audio.channels = device_info['maxInputChannels']
+        
+        # Open stream
+        self.stream = self.pyaudio.open(
+            format=pyaudio.paFloat32,
+            channels=self.config.audio.channels,
+            rate=self.config.audio.sample_rate,
+            frames_per_buffer=self.config.audio.buffer_size,
+            input=True,
+            input_device_index=device_info["index"],
+            stream_callback=self._audio_callback_pyaudio
+        )
+        
+        self.stream.start_stream()
+        print("[AudioEngine] WASAPI loopback capture started successfully!")
+    
+    def _start_input_capture(self, device_index):
+        """Start regular input capture (microphone)"""
+        if device_index is None:
+            # Find default input device
+            wasapi_info = self.pyaudio.get_host_api_info_by_type(pyaudio.paWASAPI)
+            device_index = wasapi_info.get("defaultInputDevice", 0)
+        
+        device_info = self.pyaudio.get_device_info_by_index(device_index)
+        
+        print(f"[AudioEngine] Using input device: {device_info['name']}")
+        print(f"[AudioEngine] Channels: {device_info['maxInputChannels']}, SR: {int(device_info['defaultSampleRate'])}Hz")
+        
+        # Update config with actual sample rate
+        self.config.audio.sample_rate = int(device_info['defaultSampleRate'])
+        self.config.audio.channels = min(device_info['maxInputChannels'], 2)  # Use up to 2 channels
+        
+        # Open stream
+        self.stream = self.pyaudio.open(
+            format=pyaudio.paFloat32,
+            channels=self.config.audio.channels,
+            rate=self.config.audio.sample_rate,
+            frames_per_buffer=self.config.audio.buffer_size,
+            input=True,
+            input_device_index=device_index,
+            stream_callback=self._audio_callback_pyaudio
+        )
+        
+        self.stream.start_stream()
+        print("[AudioEngine] Input capture started successfully!")
 
         
     def stop(self):
@@ -393,6 +449,10 @@ class AudioEngine:
     
     def _update_tempo_tracking(self, current_time: float, energy: float = 0.0):
         """Update tempo estimate with beat-based interval tracking (madmom-inspired)"""
+        # Skip if tempo tracking is disabled
+        if not self.tempo_tracking_enabled:
+            return
+            
         # Calculate interval from last beat
         if self.last_beat_time > 0:
             interval = current_time - self.last_beat_time
@@ -432,11 +492,22 @@ class AudioEngine:
                     if interval < (0.5 * avg_interval) or interval > (2.0 * avg_interval):
                         print(f"[Tempo] Outlier interval rejected: {interval:.3f}s (avg: {avg_interval:.3f}s)")
                         return
+                
+                # Phase snap: if we have a stable tempo, nudge detected interval toward predicted
+                # This helps lock onto tempo even with slightly off-beat detections
+                if self.smoothed_tempo > 0 and self.phase_snap_weight > 0 and self.beat_stability > 0.3:
+                    predicted_interval = 60.0 / self.smoothed_tempo
+                    # Only snap if the detection is reasonably close (within 20% of predicted)
+                    if abs(interval - predicted_interval) / predicted_interval < 0.2:
+                        old_interval = interval
+                        interval = interval * (1 - self.phase_snap_weight) + predicted_interval * self.phase_snap_weight
+                        print(f"[Tempo] Phase snap: {old_interval:.3f}s -> {interval:.3f}s (predicted: {predicted_interval:.3f}s)")
+                
                 # Add to interval history
                 self.beat_intervals.append(interval)
                 self.beat_times.append(current_time)
-                # Keep only last 12 intervals (provides smooth averaging over ~1 minute)
-                if len(self.beat_intervals) > 12:
+                # Keep only last 16 intervals (provides smooth averaging over ~1 minute)
+                if len(self.beat_intervals) > 16:
                     self.beat_intervals.pop(0)
                     self.beat_times.pop(0)
                 # Calculate smoothed tempo using weighted average

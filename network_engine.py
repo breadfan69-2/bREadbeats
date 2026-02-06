@@ -143,7 +143,11 @@ class NetworkEngine:
             return True
             
         except Exception as e:
-            self._notify_status(f"Connection failed: {e}", False)
+            # Truncate error message for cleaner display
+            err_str = str(e)
+            if len(err_str) > 40:
+                err_str = err_str[:40] + "..."
+            self._notify_status(f"Connection failed: {err_str}", False)
             print(f"[NetworkEngine] Connection failed: {e}")
             self.socket = None
             self.connected = False
