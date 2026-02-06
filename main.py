@@ -186,11 +186,11 @@ class SpectrumCanvas(pg.PlotWidget):
         positions = [0.0, 0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0]
         self.colormap = pg.ColorMap(positions, colors)
         lut = self.colormap.getLookupTable(0.0, 1.0, 256)
-        self.img_item.setLookupTable(lut)
+        self.img_item.setLookupTable(lut)  # type: ignore
         
         # Set view range: X = freq bins, Y = time samples
-        self.setXRange(0, self.num_bins, padding=0)
-        self.setYRange(0, self.history_len, padding=0)
+        self.setXRange(0, self.num_bins)
+        self.setYRange(0, self.history_len)
         
         # 3 Frequency band indicators (vertical regions spanning full height)
         # Bold grey borders for visibility against colorful spectrogram
@@ -238,8 +238,8 @@ class SpectrumCanvas(pg.PlotWidget):
         if self._updating:
             return
         region = self.beat_band.getRegion()
-        low_hz = self._bin_to_hz(region[0])
-        high_hz = self._bin_to_hz(region[1])
+        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
+        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
         if self.parent_window and hasattr(self.parent_window, 'freq_low_slider'):
             self._updating = True
             self.parent_window.freq_low_slider.setValue(int(low_hz))
@@ -251,8 +251,8 @@ class SpectrumCanvas(pg.PlotWidget):
         if self._updating:
             return
         region = self.depth_band.getRegion()
-        low_hz = self._bin_to_hz(region[0])
-        high_hz = self._bin_to_hz(region[1])
+        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
+        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
         if self.parent_window and hasattr(self.parent_window, 'depth_freq_low_slider'):
             self._updating = True
             self.parent_window.depth_freq_low_slider.setValue(int(low_hz))
@@ -264,8 +264,8 @@ class SpectrumCanvas(pg.PlotWidget):
         if self._updating:
             return
         region = self.p0_band.getRegion()
-        low_hz = self._bin_to_hz(region[0])
-        high_hz = self._bin_to_hz(region[1])
+        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
+        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
         if self.parent_window and hasattr(self.parent_window, 'pulse_freq_low_slider'):
             self._updating = True
             self.parent_window.pulse_freq_low_slider.setValue(int(low_hz))
@@ -344,8 +344,8 @@ class PositionCanvas(pg.PlotWidget):
         self.setAspectLocked(True)
         
         # Fixed axis ranges
-        self.setXRange(-1.2, 1.2, padding=0)
-        self.setYRange(-1.2, 1.2, padding=0)
+        self.setXRange(-1.2, 1.2)
+        self.setYRange(-1.2, 1.2)
         self.hideAxis('left')
         self.hideAxis('bottom')
         

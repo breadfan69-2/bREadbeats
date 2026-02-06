@@ -89,7 +89,7 @@ class WASAPILoopback:
             )
             
             # Get default audio endpoint (speakers/headphones)
-            device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)
+            device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)  # type: ignore
             
             # Activate audio client
             audio_client = device.Activate(
