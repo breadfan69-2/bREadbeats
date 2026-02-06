@@ -11,8 +11,8 @@ binaries = []
 # Hidden imports - all libraries that might not be auto-detected
 hiddenimports = [
     'sounddevice', 'aubio', 'pyaudiowpatch', 'numpy', 'matplotlib',
-    'PyQt6', 'dateutil', 'six', 'fonttools', 'comtypes',
-    'pillow', 'cycler', 'kiwisolver', 'contourpy',
+    'PyQt6', 'dateutil', 'six', 'fonttools', 'comtypes', 'pillow',
+    'cycler', 'kiwisolver', 'contourpy',
     'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets',
     'matplotlib.backends.backend_qtagg',
     'queue', 'threading', 'json', 'pathlib'
