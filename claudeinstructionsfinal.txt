@@ -1,25 +1,28 @@
-Hi expensive claude.  
+Hi expensive claude!
 
-You helped me start writing this program, but you're too expensive, so i used cheap claude to help get it running the way i want.  its mostly done but i want you to go over it a final time.
-
+You helped me start writing this program, you did the GUI layout, but you're too expensive to use for all the little tweaks, so i used cheaper claude to help get it running the way i want.  its mostly done but i want you to go over it again.
 ----------------------------------------------
 First, please look through the WHOLE codebase and 
-and check for errors, missing guards, and unnecessary code fragments.  I mistakedly let GPT do a lot of work in here.  
-
+and check for errors, missing guards, and unnecessary code fragments.  I mistakedly let GPT do a lot of work in here.
+------------------------------------------------
+RE:STROKEMODES  
+Check the {strokemodes}against earlier commits (go back at least 3-5 commits): they seem easy to get borked.  
+we also should reduce the maximum of the [axis weights] sliders for stroke modes 1-3.  make the maximum weight 1.25.
+do not change the special function of {axis weights} sliders for [strokemode4], it must retain its peak/flux balance properties.
 --------------------------------------------------------
-
 ---------------------------------------------
 
 
 ---------------------
+RE:GUI [CONTROLS] BOX
 
-there is a gap between the volume slider and its label in the "control" box. move the label closer.
+the volume slider is not displaying properly.  and make sure it reflects volume change sent in tcode.
 
-
+-ALSO, the whole top row ([tcp connection][controls])of the GUI is jumping around becasue of the beattracker display updating and changing size.  can you fix that?
 ---------------------------------
 RE:BEAT DETECTION/DOWNBEATS
 
--the beat detection seems slightly more stable now with the 2 techniques added in the last 2 commits.   are there any parameters for the new techniques that we should add adjust sliders for? 
+-the beat detection seems slightly more stable now with the 2 techniques added in previous commits.   are there any parameters for the new techniques that we should add 'adjust' sliders for? 
 
 there was a 3rd addition you suggested...#3 — Comb filter tempo smoothing (medium effort)
 From the madmom/TISMIR approach — replace the weighted-average interval method with a resonating comb filter that's more robust to missed/extra beats. Better tempo lock.
@@ -37,8 +40,15 @@ https://www.cs.cmu.edu/~music/cmp/theses/che-yuan_liang_thesis.pdf
 https://biff.ai/a-rundown-of-open-source-beat-detection-models/
 
 let's discuss any improvements you find in the above references before implementing any changes to the beat detection.
+-----------------------------------------------------
+RE: EXE BUILD
+there were some issues with missing hidden imports, etc, make sure these are all correct to build standalone exe.
 
-
+------------------------------------------------------
+RE: CONFIG FILE
+	are we saving ALL parameters?  it looks like [presets] has a lot more parameters saved than config.  double check all available slider parameters and make sure we've got all of them.
+---------------------------------------------
+Finally, are there any tweaks we can make to "lighten" the cpu load this program creates?  Anyway to pass some of the load to gpu instead of cpu?   I understand removing a lot of the debugging logging is an option, but not ready for that yet.  Again, discuss any possible changes before implementing.   
 -----------------------------------------------
-YOU ARE ROCKING THIS PROJECT!
+your persistence and extreme care are the only reason this project is turning out this well, thank you!
 
