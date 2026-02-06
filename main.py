@@ -969,48 +969,51 @@ class BREadbeatsWindow(QMainWindow):
         group = QGroupBox("Controls")
         layout = QVBoxLayout(group)
         
-        # Audio device selector
-        device_layout = QHBoxLayout()
-        device_layout.addWidget(QLabel("Audio Device:"))
+        # Audio device selector (first row)
+        device_layout = QGridLayout()
+        device_layout.setSpacing(5)
+        
+        device_layout.addWidget(QLabel("Audio Device:"), 0, 0)
         self.device_combo = QComboBox()
         self._populate_audio_devices()
-        self.device_combo.setMinimumWidth(350)
+        self.device_combo.setMinimumWidth(300)
         self.device_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        device_layout.addWidget(self.device_combo)
+        device_layout.addWidget(self.device_combo, 0, 1, 1, 3)
         
         # Info label showing available devices count
         import sounddevice as sd
         available_count = len([d for d in sd.query_devices() if d['max_input_channels'] > 0])
-        self.device_info_label = QLabel(f"({available_count} devices available)")
+        self.device_info_label = QLabel(f"({available_count} devices)")
         self.device_info_label.setStyleSheet("color: gray; font-size: 9pt;")
-        device_layout.addWidget(self.device_info_label)
+        device_layout.addWidget(self.device_info_label, 0, 4)
         
-        # Quick presets for common devices
+        # Quick presets for common devices (second row)
         self.preset_mic_btn = QPushButton("🎤 Mic (Reactive)")
-        self.preset_mic_btn.setFixedWidth(140)
+        self.preset_mic_btn.setFixedWidth(130)
         self.preset_mic_btn.clicked.connect(self._set_device_preset_mic)
-        device_layout.addWidget(self.preset_mic_btn)
+        device_layout.addWidget(self.preset_mic_btn, 1, 1)
         
         self.preset_loopback_btn = QPushButton("🔊 System Audio")
-        self.preset_loopback_btn.setFixedWidth(140)
+        self.preset_loopback_btn.setFixedWidth(130)
         self.preset_loopback_btn.clicked.connect(self._set_device_preset_loopback)
-        device_layout.addWidget(self.preset_loopback_btn)
+        device_layout.addWidget(self.preset_loopback_btn, 1, 2)
         
         # Connect device changes to update button states
         self.device_combo.currentIndexChanged.connect(self._update_preset_button_states)
         
-        device_layout.addStretch()
+        device_layout.setColumnStretch(3, 1)
         layout.addLayout(device_layout)
         
-        # Buttons row
-        btn_layout = QHBoxLayout()
+        # Controls row - split into two rows for better layout
+        btn_layout = QGridLayout()
+        btn_layout.setSpacing(8)
         
         # Start/Stop audio capture
         self.start_btn = QPushButton("▶ Start")
         self.start_btn.setCheckable(True)
         self.start_btn.clicked.connect(self._on_start_stop)
         self.start_btn.setFixedSize(100, 40)
-        btn_layout.addWidget(self.start_btn)
+        btn_layout.addWidget(self.start_btn, 0, 0)
         
         # Play/Pause sending
         self.play_btn = QPushButton("▶ Play")
@@ -1018,27 +1021,27 @@ class BREadbeatsWindow(QMainWindow):
         self.play_btn.clicked.connect(self._on_play_pause)
         self.play_btn.setEnabled(False)
         self.play_btn.setFixedSize(100, 40)
-        btn_layout.addWidget(self.play_btn)
+        btn_layout.addWidget(self.play_btn, 0, 1)
         
         # Volume slider (0.0 - 1.0)
         self.volume_slider = SliderWithLabel("Volume", 0.0, 1.0, 1.0, decimals=2)
-        self.volume_slider.setFixedWidth(220)
+        self.volume_slider.setMinimumWidth(180)
         self.volume_slider.setContentsMargins(0, 0, 0, 0)
-        btn_layout.addWidget(self.volume_slider)
+        btn_layout.addWidget(self.volume_slider, 0, 2, 1, 2)
 
         # Pulse Freq display (shows sent TCode value x2)
         self.pulse_freq_label = QLabel("Pulse: --")
         self.pulse_freq_label.setStyleSheet("color: #f80; font-size: 12px; font-weight: bold;")
         self.pulse_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.pulse_freq_label.setFixedWidth(80)
-        btn_layout.addWidget(self.pulse_freq_label)
+        btn_layout.addWidget(self.pulse_freq_label, 0, 4)
 
         # Beat indicator (closer to BPM display)
         self.beat_indicator = QLabel("●")
         self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
         self.beat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.beat_indicator.setFixedWidth(30)
-        btn_layout.addWidget(self.beat_indicator)
+        btn_layout.addWidget(self.beat_indicator, 0, 5)
         
         # Beat indicator timer for visual feedback duration
         self.beat_timer = QTimer()
@@ -1050,10 +1053,10 @@ class BREadbeatsWindow(QMainWindow):
         self.bpm_label = QLabel("BPM: --")
         self.bpm_label.setStyleSheet("color: #0a0; font-size: 14px; font-weight: bold;")
         self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.bpm_label.setMinimumWidth(160)
-        btn_layout.addWidget(self.bpm_label)
+        self.bpm_label.setMinimumWidth(120)
+        btn_layout.addWidget(self.bpm_label, 0, 6)
 
-        btn_layout.addStretch()
+        btn_layout.setColumnStretch(7, 1)  # Allow last column to stretch
         layout.addLayout(btn_layout)
 
         return group
@@ -1443,7 +1446,9 @@ class BREadbeatsWindow(QMainWindow):
             msg_box.setText(f"Preset {idx+1} already exists.\nAre you sure you want to overwrite it?")
             msg_box.setIcon(QMessageBox.Icon.Warning)
             msg_box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-            msg_box.button(QMessageBox.StandardButton.Ok).setText("Confirm")
+            ok_button = msg_box.button(QMessageBox.StandardButton.Ok)
+            if ok_button:
+                ok_button.setText("Confirm")
             msg_box.setDefaultButton(QMessageBox.StandardButton.Cancel)
             result = msg_box.exec()
             if result != QMessageBox.StandardButton.Ok:

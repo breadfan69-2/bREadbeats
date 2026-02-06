@@ -3,8 +3,8 @@ WASAPI Loopback Recording
 Based on: https://learn.microsoft.com/en-us/windows/win32/coreaudio/loopback-recording
 """
 
-import comtypes
-from comtypes import GUID, CLSCTX_ALL
+import comtypes  # type: ignore
+from comtypes import GUID, CLSCTX_ALL  # type: ignore
 from ctypes import POINTER, cast, c_float, c_int32, Structure, c_uint32, c_void_p
 from ctypes.wintypes import DWORD, BOOL, WORD, BYTE
 import numpy as np
@@ -52,17 +52,17 @@ class WASAPILoopback:
         self.thread = None
         
         # Initialize COM
-        import comtypes
+        import comtypes  # type: ignore
         comtypes.CoInitialize()
         
         # Get device enumerator
         try:
-            from comtypes.gen import MMDeviceAPILib as MMDeviceAPI
+            from comtypes.gen import MMDeviceAPILib as MMDeviceAPI  # type: ignore
         except ImportError:
             # Generate type library
-            import comtypes.client
+            import comtypes.client  # type: ignore
             comtypes.client.GetModule('mmdevapi.tlb')
-            from comtypes.gen import MMDeviceAPILib as MMDeviceAPI
+            from comtypes.gen import MMDeviceAPILib as MMDeviceAPI  # type: ignore
         
         self.MMDeviceAPI = MMDeviceAPI
         
