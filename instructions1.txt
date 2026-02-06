@@ -1,4 +1,11 @@
+I REALLY want the waterfall plot if its not too much trouble!   But we need to get the frequency wiring correct first!  Does it sound right that we have 3 things we are reading audio frequency for?  
 
+1. [frequency band monitored for beat detection]
+2. [frequency band monitored for stroke depth]
+3. [frequency band monitored for P0 tcode command]
+
+
+lets get this all wired up properly and then get on to the new waterfall visualizer with 3 "indicators"!
 
 
 

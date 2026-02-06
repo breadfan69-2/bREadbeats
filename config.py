@@ -49,6 +49,9 @@ class StrokeConfig:
     stroke_fullness: float = 0.7      # How much params affect stroke length
     minimum_depth: float = 0.0        # Lower limit of stroke (absolute bottom)
     freq_depth_factor: float = 0.3    # How much frequency affects depth
+    # Frequency band for stroke depth calculation (bass = deeper strokes)
+    depth_freq_low: float = 20.0      # Low frequency = deepest strokes (Hz)
+    depth_freq_high: float = 200.0    # High frequency = shallowest strokes (Hz)
     
     # Spectral flux-based stroke control
     flux_threshold: float = 0.03      # Threshold to distinguish low vs high flux
@@ -87,7 +90,7 @@ class PulseFreqConfig:
     monitor_freq_max: float = 200.0   # Max frequency to monitor (Hz)
     tcode_freq_min: float = 30.0      # Min sent frequency (Hz, converted to TCode)
     tcode_freq_max: float = 105.0     # Max sent frequency (Hz, converted to TCode)
-    freq_weight: float = 1.0          # Frequency weight blend
+    freq_weight: float = 1.0          # How much frequency affects P0 (0=none, 1=full)
 
 @dataclass
 class AudioConfig:

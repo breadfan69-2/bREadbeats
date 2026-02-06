@@ -828,6 +828,8 @@ class BREadbeatsWindow(QMainWindow):
             self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
             self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
             self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
+            self.depth_freq_low_slider.setValue(int(self.config.stroke.depth_freq_low))
+            self.depth_freq_high_slider.setValue(int(self.config.stroke.depth_freq_high))
             self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
             self.flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
             self.phase_advance_slider.setValue(self.config.stroke.phase_advance)
@@ -1568,6 +1570,8 @@ class BREadbeatsWindow(QMainWindow):
             'stroke_fullness': self.fullness_slider.value(),
             'minimum_depth': self.min_depth_slider.value(),
             'freq_depth_factor': self.freq_depth_slider.value(),
+            'depth_freq_low': self.depth_freq_low_slider.value(),
+            'depth_freq_high': self.depth_freq_high_slider.value(),
             'flux_threshold': self.flux_threshold_slider.value(),
             'flux_scaling_weight': self.flux_scaling_slider.value(),
             'phase_advance': self.phase_advance_slider.value(),
@@ -1646,6 +1650,10 @@ class BREadbeatsWindow(QMainWindow):
             self.fullness_slider.setValue(preset_data['stroke_fullness'])
             self.min_depth_slider.setValue(preset_data['minimum_depth'])
             self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
+            if 'depth_freq_low' in preset_data:
+                self.depth_freq_low_slider.setValue(preset_data['depth_freq_low'])
+            if 'depth_freq_high' in preset_data:
+                self.depth_freq_high_slider.setValue(preset_data['depth_freq_high'])
             self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
             if 'flux_scaling_weight' in preset_data:
                 self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
@@ -1781,6 +1789,17 @@ class BREadbeatsWindow(QMainWindow):
         self.freq_depth_slider = SliderWithLabel("Freq Depth Factor", 0.0, 1.0, 0.3)
         self.freq_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'freq_depth_factor', v))
         layout.addWidget(self.freq_depth_slider)
+        
+        # Frequency range for stroke depth (bass = deeper strokes)
+        sr = getattr(self.config.audio, 'sample_rate', 44100)
+        nyquist = sr // 2
+        self.depth_freq_low_slider = SliderWithLabel("Depth Freq Low (Hz)", 20, nyquist, 20, 0)
+        self.depth_freq_low_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'depth_freq_low', float(v)))
+        layout.addWidget(self.depth_freq_low_slider)
+        
+        self.depth_freq_high_slider = SliderWithLabel("Depth Freq High (Hz)", 20, nyquist, 200, 0)
+        self.depth_freq_high_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'depth_freq_high', float(v)))
+        layout.addWidget(self.depth_freq_high_slider)
         
         # Axis Weights section
         axis_group = QGroupBox("Axis Weights")
@@ -2087,15 +2106,12 @@ class BREadbeatsWindow(QMainWindow):
                 in_high = self.pulse_freq_high_slider.value()
                 norm = (dom_freq - in_low) / max(1, in_high - in_low)
                 norm = max(0.0, min(1.0, norm))
-                # Bias by movement speed (stroke intensity)
-                # freq_weight: 1.0 = pure frequency, 0.0 = max intensity boost
+                # freq_weight: 1.0 = full frequency tracking, 0.0 = no frequency influence (uses midpoint)
                 freq_weight = self.freq_weight_slider.value()  # 0.0–1.0
-                intensity = getattr(event, 'intensity', 1.0)
-                # Blend: norm + (1-freq_weight) * intensity boost
-                norm_biased = norm + (1.0 - freq_weight) * intensity * (1.0 - norm)
-                norm_biased = max(0.0, min(1.0, norm_biased))
+                # Blend between midpoint (0.5) and actual normalized frequency
+                norm_weighted = 0.5 + (norm - 0.5) * freq_weight
                 # Map to TCode output range
-                p0_val = int(tcode_min_val + norm_biased * (tcode_max_val - tcode_min_val))
+                p0_val = int(tcode_min_val + norm_weighted * (tcode_max_val - tcode_min_val))
                 p0_val = max(0, min(9999, p0_val))
                 cmd.pulse_freq = p0_val
                 # Update Pulse Freq display
