@@ -31,6 +31,13 @@ class BeatDetectionConfig:
     freq_low: float = 20.0            # Low cutoff frequency (Hz)
     freq_high: float = 200.0          # High cutoff frequency (Hz) - bass range default
     silence_reset_ms: int = 400       # How long silence before resetting beat tracking (ms)
+    
+    # Tempo tracking parameters
+    tempo_tracking_enabled: bool = True  # Enable/disable tempo & downbeat tracking
+    stability_threshold: float = 0.15    # Max CV to consider tempo "stable" (lower = stricter)
+    tempo_timeout_ms: int = 2000         # How long no beats before resetting tempo tracking (ms)
+    beats_per_measure: int = 4           # Time signature: 4 = 4/4, 3 = 3/4, 6 = 6/8
+    phase_snap_weight: float = 0.3       # How much to snap detected beats toward predicted time (0=off, 1=full)
 
 @dataclass
 class StrokeConfig:

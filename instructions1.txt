@@ -1,0 +1,8 @@
+change [jitter][circle size] slider (min/max) to (0.05/0.15)
+and [jitter][circle speed] slider (min/max) to (3.00/10)
+can we make these values weighted by [detected frequency]?  we can add a slider.   tell me about wiring!
+
+after testing these changes we will commit and push, and then proceed to the cpu load reductions, and discuss the software-basics wiki.
+again, couldnt do this without you! keep making my project awesome!
+
+
