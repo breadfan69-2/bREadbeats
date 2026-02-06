@@ -678,16 +678,20 @@ class StrokeMapper:
         return TCodeCommand(alpha_target, beta_target, duration_ms, volume)
     
     def _freq_to_factor(self, freq: float) -> float:
-        """Convert frequency to a 0-1 factor (bass=0, treble=1)"""
-        # Map roughly: 20Hz-200Hz = bass, 200Hz-2000Hz = mid, 2000Hz+ = treble
-        if freq < 20:
+        """Convert frequency to a 0-1 factor using config's depth frequency range.
+        Lower frequencies (bass) → 0 → deeper strokes
+        Higher frequencies → 1 → shallower strokes
+        """
+        cfg = self.config.stroke
+        low = cfg.depth_freq_low
+        high = cfg.depth_freq_high
+        
+        if freq <= low:
             return 0.0
-        elif freq < 200:
-            return (freq - 20) / 180 * 0.33
-        elif freq < 2000:
-            return 0.33 + (freq - 200) / 1800 * 0.34
+        elif freq >= high:
+            return 1.0
         else:
-            return min(1.0, 0.67 + (freq - 2000) / 8000 * 0.33)
+            return (freq - low) / (high - low)
     
     def get_current_position(self) -> Tuple[float, float]:
         """Get current alpha/beta position for visualization"""
