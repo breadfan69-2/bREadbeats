@@ -1342,7 +1342,7 @@ class BREadbeatsWindow(QMainWindow):
         return group
 
     def _create_other_tab(self) -> QWidget:
-        """Other tab for dominant frequency to TCode P0xxxx"""
+        """Other tab for dominant frequency to TCode P0xxxx and performance settings"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -1374,8 +1374,58 @@ class BREadbeatsWindow(QMainWindow):
         freq_layout.addLayout(freq_display_layout)
 
         layout.addWidget(freq_group)
+        
+        # Performance settings group
+        perf_group = QGroupBox("Performance (requires restart)")
+        perf_layout = QVBoxLayout(perf_group)
+        
+        # FFT Size dropdown
+        fft_layout = QHBoxLayout()
+        fft_layout.addWidget(QLabel("FFT Size:"))
+        self.fft_size_combo = QComboBox()
+        self.fft_size_combo.addItems(["512 (fast, low res)", "1024 (balanced)", "2048 (slow, high res)"])
+        # Set current based on config
+        fft_sizes = [512, 1024, 2048]
+        current_fft = getattr(self.config.audio, 'fft_size', 1024)
+        if current_fft in fft_sizes:
+            self.fft_size_combo.setCurrentIndex(fft_sizes.index(current_fft))
+        else:
+            self.fft_size_combo.setCurrentIndex(1)  # Default to 1024
+        self.fft_size_combo.currentIndexChanged.connect(self._on_fft_size_change)
+        fft_layout.addWidget(self.fft_size_combo)
+        fft_layout.addStretch()
+        perf_layout.addLayout(fft_layout)
+        
+        # Spectrum update rate dropdown
+        skip_layout = QHBoxLayout()
+        skip_layout.addWidget(QLabel("Spectrum Updates:"))
+        self.spectrum_skip_combo = QComboBox()
+        self.spectrum_skip_combo.addItems(["Every frame (smooth)", "Every 2 frames (fast)", "Every 4 frames (faster)"])
+        current_skip = getattr(self.config.audio, 'spectrum_skip_frames', 2)
+        skip_map = {1: 0, 2: 1, 4: 2}
+        self.spectrum_skip_combo.setCurrentIndex(skip_map.get(current_skip, 1))
+        self.spectrum_skip_combo.currentIndexChanged.connect(self._on_spectrum_skip_change)
+        skip_layout.addWidget(self.spectrum_skip_combo)
+        skip_layout.addStretch()
+        perf_layout.addLayout(skip_layout)
+        
+        layout.addWidget(perf_group)
         layout.addStretch()
         return widget
+    
+    def _on_fft_size_change(self, index: int):
+        """Update FFT size setting (requires restart to take effect)"""
+        fft_sizes = [512, 1024, 2048]
+        self.config.audio.fft_size = fft_sizes[index]
+        print(f"[Config] FFT size changed to {fft_sizes[index]} (restart required)")
+    
+    def _on_spectrum_skip_change(self, index: int):
+        """Update spectrum skip frames (takes effect immediately if engine running)"""
+        skip_values = [1, 2, 4]
+        self.config.audio.spectrum_skip_frames = skip_values[index]
+        if self.audio_engine:
+            self.audio_engine._spectrum_skip_frames = skip_values[index]
+        print(f"[Config] Spectrum skip frames changed to {skip_values[index]}")
     
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings"""
