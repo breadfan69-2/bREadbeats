@@ -146,7 +146,7 @@ class SignalBridge(QObject):
 
 
 class SpectrumCanvas(pg.PlotWidget):
-    """Spectrum visualizer using PyQtGraph - high performance"""
+    """Waterfall spectrogram visualizer using PyQtGraph ImageItem - scrolling history"""
     
     def __init__(self, parent=None, width=8, height=3):
         super().__init__(parent)
@@ -155,117 +155,178 @@ class SpectrumCanvas(pg.PlotWidget):
         self.setBackground('#232323')
         self.setMouseEnabled(x=False, y=False)
         self.setMenuEnabled(False)
-        self.showGrid(x=False, y=True, alpha=0.3)
+        # No gridlines
+        self.showGrid(x=False, y=False, alpha=0)
+        self.hideAxis('left')
+        self.hideAxis('bottom')
         
-        # Set fixed axis ranges (no dynamic ranging)
-        self.setYRange(0, 1.0, padding=0)
-        self.setXRange(0, 64, padding=0)
-        self.getAxis('left').setLabel('Amplitude', color='#999999')
-        self.getAxis('bottom').setStyle(showValues=False)
+        # Waterfall dimensions
+        # For waterfall: X = frequency (horizontal), Y = time (vertical, scrolls up)
+        self.num_bins = 256  # Frequency bins (horizontal)
+        self.history_len = 100  # Time history (vertical)
         
-        # Number of bars
-        self.num_bars = 64
+        # Waterfall data buffer (time x freq) - new data goes at bottom, scrolls up
+        self.waterfall_data = np.zeros((self.history_len, self.num_bins), dtype=np.float32)
         
-        # Bar graph for spectrum
-        self.bar_item = pg.BarGraphItem(x=np.arange(self.num_bars), height=np.zeros(self.num_bars),
-                                        width=0.8, brush='#00aaff', pen=None)
-        self.addItem(self.bar_item)
+        # Create ImageItem for waterfall display
+        self.img_item = pg.ImageItem()
+        self.addItem(self.img_item)
         
-        # Frequency band overlay (LinearRegionItem for interactive dragging)
-        self.band_low = 0.0
-        self.band_high = 0.1
-        low_bar = int(self.band_low * self.num_bars)
-        high_bar = int(self.band_high * self.num_bars)
-        self.band_region = pg.LinearRegionItem(values=(low_bar, high_bar), 
-                                                brush=pg.mkBrush('#55555580'),
-                                                pen=pg.mkPen('#888888', width=1),
-                                                movable=True)
-        self.band_region.sigRegionChanged.connect(self._on_region_changed)
-        self.addItem(self.band_region)
+        # Colormap: dark -> blue -> cyan -> green -> yellow -> red (like Audacity spectrogram)
+        colors = [
+            (0, 0, 0),        # Black (silence)
+            (0, 0, 80),       # Dark blue
+            (0, 50, 150),     # Blue
+            (0, 150, 150),    # Cyan
+            (0, 200, 50),     # Green
+            (200, 200, 0),    # Yellow
+            (255, 100, 0),    # Orange
+            (255, 0, 0),      # Red (loud)
+            (255, 255, 255),  # White (very loud)
+        ]
+        positions = [0.0, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 1.0]
+        self.colormap = pg.ColorMap(positions, colors)
+        lut = self.colormap.getLookupTable(0.0, 1.0, 256)
+        self.img_item.setLookupTable(lut)
         
-        # Peak and flux indicator lines
-        self.peak_line = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#ff6644', width=2, style=Qt.PenStyle.DashLine))
-        self.flux_line = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#44ff66', width=2, style=Qt.PenStyle.DotLine))
-        self.addItem(self.peak_line)
-        self.addItem(self.flux_line)
+        # Set view range: X = freq bins, Y = time samples
+        self.setXRange(0, self.num_bins, padding=0)
+        self.setYRange(0, self.history_len, padding=0)
+        
+        # 3 Frequency band indicators (vertical regions spanning full height)
+        # Band 1: Beat Detection (red) - semi-transparent
+        self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+                                              brush=pg.mkBrush(255, 50, 50, 50),
+                                              pen=pg.mkPen('#ff4444', width=1),
+                                              movable=True)
+        self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
+        self.addItem(self.beat_band)
+        
+        # Band 2: Stroke Depth (green)
+        self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+                                               brush=pg.mkBrush(50, 255, 50, 40),
+                                               pen=pg.mkPen('#44ff44', width=1),
+                                               movable=True)
+        self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
+        self.addItem(self.depth_band)
+        
+        # Band 3: P0 TCode (blue)
+        self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+                                            brush=pg.mkBrush(50, 100, 255, 40),
+                                            pen=pg.mkPen('#4488ff', width=1),
+                                            movable=True)
+        self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
+        self.addItem(self.p0_band)
         
         # Reference to parent window for slider updates
         self.parent_window = parent
+        self.sample_rate = 44100  # Will be updated
+        self._updating = False  # Prevent recursion when setting bands
         
-        # Pre-allocate arrays for bar heights and colors
-        self._heights = np.zeros(self.num_bars)
-        self._brushes = [pg.mkBrush('#00aaff')] * self.num_bars
+    def _hz_to_bin(self, hz: float) -> float:
+        """Convert Hz to bin index (0 to num_bins)"""
+        nyquist = self.sample_rate / 2
+        return (hz / nyquist) * self.num_bins
+    
+    def _bin_to_hz(self, bin_idx: float) -> float:
+        """Convert bin index to Hz"""
+        nyquist = self.sample_rate / 2
+        return (bin_idx / self.num_bins) * nyquist
         
-    def _on_region_changed(self):
-        """Handle interactive band dragging"""
-        region = self.band_region.getRegion()
-        self.band_low = max(0, region[0] / self.num_bars)
-        self.band_high = min(1, region[1] / self.num_bars)
-        
-        # Update sliders in parent window
-        if self.parent_window and hasattr(self.parent_window, 'freq_low_slider') and hasattr(self.parent_window, 'audio_engine'):
-            sr = self.parent_window.audio_engine.config.audio.sample_rate if self.parent_window.audio_engine else 44100
-            low_hz = self.band_low * sr / 2
-            high_hz = self.band_high * sr / 2
+    def _on_beat_band_changed(self):
+        """Handle beat detection band dragging"""
+        if self._updating:
+            return
+        region = self.beat_band.getRegion()
+        low_hz = self._bin_to_hz(region[0])
+        high_hz = self._bin_to_hz(region[1])
+        if self.parent_window and hasattr(self.parent_window, 'freq_low_slider'):
+            self._updating = True
             self.parent_window.freq_low_slider.setValue(int(low_hz))
             self.parent_window.freq_high_slider.setValue(int(high_hz))
-        
-        # Update bar colors
-        self._update_bar_colors()
+            self._updating = False
     
-    def _update_bar_colors(self):
-        """Update bar colors based on frequency band selection"""
-        low_bar = int(self.band_low * self.num_bars)
-        high_bar = int(self.band_high * self.num_bars)
-        
-        brushes = []
-        for i in range(self.num_bars):
-            if low_bar <= i <= high_bar:
-                brushes.append(pg.mkBrush('#00ffaa'))  # Cyan-green for selected
-            else:
-                brushes.append(pg.mkBrush('#00aaff'))  # Blue for unselected
-        
-        self.bar_item.setOpts(brushes=brushes)
+    def _on_depth_band_changed(self):
+        """Handle stroke depth band dragging"""
+        if self._updating:
+            return
+        region = self.depth_band.getRegion()
+        low_hz = self._bin_to_hz(region[0])
+        high_hz = self._bin_to_hz(region[1])
+        if self.parent_window and hasattr(self.parent_window, 'depth_freq_low_slider'):
+            self._updating = True
+            self.parent_window.depth_freq_low_slider.setValue(int(low_hz))
+            self.parent_window.depth_freq_high_slider.setValue(int(high_hz))
+            self._updating = False
+    
+    def _on_p0_band_changed(self):
+        """Handle P0 TCode band dragging"""
+        if self._updating:
+            return
+        region = self.p0_band.getRegion()
+        low_hz = self._bin_to_hz(region[0])
+        high_hz = self._bin_to_hz(region[1])
+        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_low_slider'):
+            self._updating = True
+            self.parent_window.pulse_freq_low_slider.setValue(int(low_hz))
+            self.parent_window.pulse_freq_high_slider.setValue(int(high_hz))
+            self._updating = False
+    
+    def set_sample_rate(self, sr: int):
+        """Update sample rate for frequency calculations"""
+        self.sample_rate = sr
     
     def set_frequency_band(self, low_norm: float, high_norm: float):
-        """Update frequency band overlay position (normalized 0-1)"""
-        self.band_low = low_norm
-        self.band_high = high_norm
-        
-        low_bar = int(low_norm * self.num_bars)
-        high_bar = int(high_norm * self.num_bars)
-        self.band_region.setRegion((low_bar, high_bar))
-        self._update_bar_colors()
+        """Update beat detection band (normalized 0-1)"""
+        self._updating = True
+        low_bin = low_norm * self.num_bins
+        high_bin = high_norm * self.num_bins
+        self.beat_band.setRegion((low_bin, high_bin))
+        self._updating = False
+    
+    def set_depth_band(self, low_hz: float, high_hz: float):
+        """Update stroke depth band (in Hz)"""
+        self._updating = True
+        low_bin = self._hz_to_bin(low_hz)
+        high_bin = self._hz_to_bin(high_hz)
+        self.depth_band.setRegion((low_bin, high_bin))
+        self._updating = False
+    
+    def set_p0_band(self, low_hz: float, high_hz: float):
+        """Update P0 TCode band (in Hz)"""
+        self._updating = True
+        low_bin = self._hz_to_bin(low_hz)
+        high_bin = self._hz_to_bin(high_hz)
+        self.p0_band.setRegion((low_bin, high_bin))
+        self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Update peak and flux indicator lines"""
-        self.peak_line.setPos(np.clip(peak_value, 0, 1.0))
-        self.flux_line.setPos(np.clip(flux_value, 0, 1.0))
+        """Compatibility stub - waterfall doesn't use these lines"""
+        pass
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
-        """Update with new spectrum data - high performance"""
+        """Update waterfall with new spectrum data - scrolls upward"""
         if spectrum is None or len(spectrum) == 0:
             return
             
-        # Downsample to bar count
-        if len(spectrum) > self.num_bars:
-            factor = len(spectrum) // self.num_bars
-            spectrum = spectrum[:factor * self.num_bars].reshape(-1, factor).mean(axis=1)
-        elif len(spectrum) < self.num_bars:
-            spectrum = np.pad(spectrum, (0, self.num_bars - len(spectrum)))
+        # Resample to num_bins using interpolation
+        if len(spectrum) != self.num_bins:
+            x_old = np.linspace(0, 1, len(spectrum))
+            x_new = np.linspace(0, 1, self.num_bins)
+            spectrum = np.interp(x_new, x_old, spectrum)
         
-        # Normalize to fixed 0-1 range (no dynamic ranging)
-        max_val = np.max(spectrum) if np.max(spectrum) > 0 else 1
-        spectrum = np.clip(spectrum / max_val, 0, 1)
+        # Apply log scaling for better dynamic range visualization
+        spectrum = np.log10(spectrum + 1e-6)
+        # Normalize: typical range is -6 to 0 for normalized input, map to 0-1
+        spectrum = np.clip((spectrum + 4) / 4, 0, 1)
         
-        # Update bar heights
-        self.bar_item.setOpts(height=spectrum)
+        # Scroll waterfall up: shift all rows up by 1, put new data at bottom (row 0)
+        self.waterfall_data[1:, :] = self.waterfall_data[:-1, :]
+        self.waterfall_data[0, :] = spectrum
         
-        # Update peak and flux indicators if provided
-        if peak_energy is not None and spectral_flux is not None:
-            peak_norm = np.clip(peak_energy / max(1.0, max_val), 0, 1)
-            flux_norm = np.clip(spectral_flux / 10.0, 0, 1)
-            self.set_peak_and_flux(peak_norm, flux_norm)
+        # Update image - transpose so X=freq, Y=time (new at bottom)
+        # PyQtGraph ImageItem: first axis = X (horizontal), second axis = Y (vertical)
+        self.img_item.setImage(self.waterfall_data.T, autoLevels=False, levels=(0, 1))
 
 
 class PositionCanvas(pg.PlotWidget):
@@ -808,7 +869,10 @@ class BREadbeatsWindow(QMainWindow):
             self.silence_reset_slider.setValue(self.config.beat.silence_reset_ms)
             self.freq_low_slider.setValue(self.config.beat.freq_low)
             self.freq_high_slider.setValue(self.config.beat.freq_high)
-            self._on_freq_band_change()  # Update spectrum overlay
+            
+            # Set spectrum canvas sample rate and update all 3 frequency bands
+            self.spectrum_canvas.set_sample_rate(self.config.audio.sample_rate)
+            self._on_freq_band_change()  # Update beat detection band (red)
             
             # Tempo tracking settings
             self.tempo_tracking_checkbox.setChecked(self.config.beat.tempo_tracking_enabled)
@@ -830,6 +894,7 @@ class BREadbeatsWindow(QMainWindow):
             self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
             self.depth_freq_low_slider.setValue(int(self.config.stroke.depth_freq_low))
             self.depth_freq_high_slider.setValue(int(self.config.stroke.depth_freq_high))
+            self._on_depth_band_change()  # Update stroke depth band (green)
             self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
             self.flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
             self.phase_advance_slider.setValue(self.config.stroke.phase_advance)
@@ -852,6 +917,7 @@ class BREadbeatsWindow(QMainWindow):
             # Other tab (pulse freq settings)
             self.pulse_freq_low_slider.setValue(self.config.pulse_freq.monitor_freq_min)
             self.pulse_freq_high_slider.setValue(self.config.pulse_freq.monitor_freq_max)
+            self._on_p0_band_change()  # Update P0 TCode band (blue)
             self.tcode_freq_min_slider.setValue(self.config.pulse_freq.tcode_freq_min)
             self.tcode_freq_max_slider.setValue(self.config.pulse_freq.tcode_freq_max)
             self.freq_weight_slider.setValue(self.config.pulse_freq.freq_weight)
@@ -1270,6 +1336,8 @@ class BREadbeatsWindow(QMainWindow):
 
         self.pulse_freq_low_slider = SliderWithLabel("Monitor Freq Min (Hz)", 20, 1000, 20, 0)
         self.pulse_freq_high_slider = SliderWithLabel("Monitor Freq Max (Hz)", 20, 1000, 200, 0)
+        self.pulse_freq_low_slider.valueChanged.connect(self._on_p0_band_change)
+        self.pulse_freq_high_slider.valueChanged.connect(self._on_p0_band_change)
         freq_layout.addWidget(self.pulse_freq_low_slider)
         freq_layout.addWidget(self.pulse_freq_high_slider)
 
@@ -1302,9 +1370,15 @@ class BREadbeatsWindow(QMainWindow):
         fft_layout = QHBoxLayout()
         fft_layout.addWidget(QLabel("FFT Size:"))
         self.fft_size_combo = QComboBox()
-        self.fft_size_combo.addItems(["512 (fast, low res)", "1024 (balanced)", "2048 (slow, high res)"])
+        self.fft_size_combo.addItems([
+            "512 (fast, ~86Hz/bin)",
+            "1024 (balanced, ~43Hz/bin)",
+            "2048 (good bass, ~21Hz/bin)",
+            "4096 (great bass, ~11Hz/bin)",
+            "8192 (best bass, ~5Hz/bin)"
+        ])
         # Set current based on config
-        fft_sizes = [512, 1024, 2048]
+        fft_sizes = [512, 1024, 2048, 4096, 8192]
         current_fft = getattr(self.config.audio, 'fft_size', 1024)
         if current_fft in fft_sizes:
             self.fft_size_combo.setCurrentIndex(fft_sizes.index(current_fft))
@@ -1374,7 +1448,7 @@ class BREadbeatsWindow(QMainWindow):
     
     def _on_fft_size_change(self, index: int):
         """Update FFT size setting (requires restart to take effect)"""
-        fft_sizes = [512, 1024, 2048]
+        fft_sizes = [512, 1024, 2048, 4096, 8192]
         self.config.audio.fft_size = fft_sizes[index]
         print(f"[Config] FFT size changed to {fft_sizes[index]} (restart required)")
     
@@ -1470,6 +1544,38 @@ class BREadbeatsWindow(QMainWindow):
         sr = self.config.audio.sample_rate
         max_freq = sr / 2
         self.spectrum_canvas.set_frequency_band(low / max_freq, high / max_freq)
+    
+    def _on_depth_band_change(self, _=None):
+        """Update stroke depth frequency band in config and spectrum overlay"""
+        low = self.depth_freq_low_slider.value()
+        high = self.depth_freq_high_slider.value()
+        
+        # Ensure low < high
+        if low >= high:
+            high = low + 20
+            self.depth_freq_high_slider.setValue(high)
+        
+        self.config.stroke.depth_freq_low = float(low)
+        self.config.stroke.depth_freq_high = float(high)
+        
+        # Update spectrum overlay (green band)
+        self.spectrum_canvas.set_depth_band(low, high)
+    
+    def _on_p0_band_change(self, _=None):
+        """Update P0 TCode frequency band in config and spectrum overlay"""
+        low = self.pulse_freq_low_slider.value()
+        high = self.pulse_freq_high_slider.value()
+        
+        # Ensure low < high
+        if low >= high:
+            high = low + 20
+            self.pulse_freq_high_slider.setValue(high)
+        
+        self.config.pulse_freq.monitor_freq_min = float(low)
+        self.config.pulse_freq.monitor_freq_max = float(high)
+        
+        # Update spectrum overlay (blue band)
+        self.spectrum_canvas.set_p0_band(low, high)
     
     def _on_tempo_tracking_toggle(self, state):
         """Enable/disable tempo tracking"""
@@ -1794,11 +1900,11 @@ class BREadbeatsWindow(QMainWindow):
         sr = getattr(self.config.audio, 'sample_rate', 44100)
         nyquist = sr // 2
         self.depth_freq_low_slider = SliderWithLabel("Depth Freq Low (Hz)", 20, nyquist, 20, 0)
-        self.depth_freq_low_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'depth_freq_low', float(v)))
+        self.depth_freq_low_slider.valueChanged.connect(self._on_depth_band_change)
         layout.addWidget(self.depth_freq_low_slider)
         
         self.depth_freq_high_slider = SliderWithLabel("Depth Freq High (Hz)", 20, nyquist, 200, 0)
-        self.depth_freq_high_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'depth_freq_high', float(v)))
+        self.depth_freq_high_slider.valueChanged.connect(self._on_depth_band_change)
         layout.addWidget(self.depth_freq_high_slider)
         
         # Axis Weights section
