@@ -78,9 +78,14 @@ class AudioEngine:
         self.spectrum_data: Optional[np.ndarray] = None
         self.spectrum_lock = threading.Lock()
         
-        # FFT settings
-        self.fft_size = 2048
-        self.hop_size = 512
+        # FFT settings (from config with fallback)
+        self.fft_size = getattr(config.audio, 'fft_size', 1024)
+        self.hop_size = self.fft_size // 4  # Typical hop = 25% of FFT size
+        
+        # Pre-allocated arrays for FFT optimization
+        self._hanning_window: Optional[np.ndarray] = None  # Will be created on first use
+        self._frame_counter = 0  # For spectrum skip optimization
+        self._spectrum_skip_frames = getattr(config.audio, 'spectrum_skip_frames', 2)
         
         # Tempo tracking (based on madmom resonating comb filter concept)
         # Keep recent beat intervals for smooth tempo estimation
@@ -259,13 +264,23 @@ class AudioEngine:
             mono = np.mean(indata, axis=1)
         else:
             mono = indata[:, 0]
-            
-        # Compute FFT for spectrum
-        spectrum = np.abs(np.fft.rfft(mono * np.hanning(len(mono))))
         
-        # Store full spectrum for visualization
-        with self.spectrum_lock:
-            self.spectrum_data = spectrum.copy()
+        # Frame skip optimization - only update spectrum visualization every N frames
+        self._frame_counter += 1
+        update_spectrum = (self._frame_counter % self._spectrum_skip_frames == 0)
+        
+        # Pre-allocate Hanning window on first use (or if size changed)
+        if self._hanning_window is None or len(self._hanning_window) != len(mono):
+            self._hanning_window = np.hanning(len(mono)).astype(np.float32)
+        
+        # Compute FFT with pre-allocated window
+        windowed = mono * self._hanning_window
+        spectrum = np.abs(np.fft.rfft(windowed))
+        
+        # Store full spectrum for visualization (only on scheduled frames)
+        if update_spectrum:
+            with self.spectrum_lock:
+                self.spectrum_data = spectrum.copy()
         
         # Filter spectrum to selected frequency band for beat detection
         band_spectrum = self._filter_frequency_band(spectrum)

@@ -99,6 +99,10 @@ class AudioConfig:
     device_index: int | None = 1
     # Audio gain/amplification
     gain: float = 1.0
+    # FFT optimization settings
+    fft_size: int = 1024              # FFT size (512, 1024, 2048) - smaller = faster, less resolution
+    spectrum_skip_frames: int = 2     # Skip N frames between spectrum updates (1=no skip, 2=every other)
+    is_loopback: bool = True          # True for WASAPI loopback, False for regular input
 
 @dataclass
 class Config:
