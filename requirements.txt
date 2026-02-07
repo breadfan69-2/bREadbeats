@@ -13,6 +13,8 @@ scipy>=1.10.0              # For Butterworth bandpass filter
 # Visualization
 matplotlib>=3.7.0
 pyqtgraph>=0.13.0           # High-performance plotting (replaces matplotlib for real-time)
+moderngl>=5.8.0             # GPU-accelerated shader visualizations
+moderngl-window>=2.4.0      # Windowing for moderngl
 
 # Windows audio (WASAPI) support
 comtypes>=1.2.0

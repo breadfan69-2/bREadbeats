@@ -344,6 +344,12 @@ class SpectrumCanvas(pg.PlotWidget):
         """Update waterfall with new spectrum data - scrolls upward with rainbow frequency colors"""
         if spectrum is None or len(spectrum) == 0:
             return
+        
+        # Cut off at 18kHz to avoid showing ultrasonic frequencies
+        cutoff_hz = 18000
+        nyquist = self.sample_rate / 2
+        cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
+        spectrum = spectrum[:cutoff_idx]
             
         # Resample to num_bins using interpolation
         if len(spectrum) != self.num_bins:
@@ -584,6 +590,12 @@ class MountainRangeCanvas(pg.PlotWidget):
         """Update mountain range with new spectrum data"""
         if spectrum is None or len(spectrum) == 0:
             return
+        
+        # Cut off at 18kHz to avoid showing ultrasonic frequencies
+        cutoff_hz = 18000
+        nyquist = self.sample_rate / 2
+        cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
+        spectrum = spectrum[:cutoff_idx]
             
         # Resample to num_bins
         if len(spectrum) != self.num_bins:
@@ -815,6 +827,12 @@ class BarGraphCanvas(pg.PlotWidget):
         """Update bars with new spectrum data"""
         if spectrum is None or len(spectrum) == 0:
             return
+        
+        # Cut off at 18kHz to avoid showing ultrasonic frequencies
+        cutoff_hz = 18000
+        nyquist = self.sample_rate / 2
+        cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
+        spectrum = spectrum[:cutoff_idx]
             
         # Resample to num_bars
         if len(spectrum) != self.num_bars:
@@ -831,6 +849,259 @@ class BarGraphCanvas(pg.PlotWidget):
         
         # Update bar heights
         self.bar_item.setOpts(height=self._smooth_heights)
+
+
+class PhosphorCanvas(pg.PlotWidget):
+    """Digital Phosphor FFT visualizer - persistence display with decay"""
+    
+    def __init__(self, parent=None, width=8, height=3):
+        super().__init__(parent)
+        
+        # Dark theme
+        self.setBackground('#0a0a12')
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+        self.showGrid(x=False, y=False, alpha=0)
+        self.hideAxis('left')
+        self.hideAxis('bottom')
+        
+        # Phosphor dimensions
+        self.num_bins = 256  # Frequency bins (X axis)
+        self.num_mag_levels = 100  # Magnitude levels (Y axis)
+        
+        # Hitmap for phosphor persistence (mag_levels x freq_bins)
+        self.hitmap = np.zeros((self.num_mag_levels, self.num_bins), dtype=np.float32)
+        
+        # Create ImageItem for phosphor display
+        self.img_item = pg.ImageItem()
+        self.addItem(self.img_item)
+        
+        # Colormap: plasma-like (black -> purple -> orange -> yellow)
+        colors = [
+            (0, 0, 0),        # Black (no hits)
+            (20, 0, 40),      # Dark purple
+            (80, 0, 100),     # Purple
+            (150, 30, 80),    # Magenta
+            (200, 80, 30),    # Orange
+            (255, 180, 0),    # Yellow-orange
+            (255, 255, 100),  # Bright yellow (hottest)
+        ]
+        positions = [0.0, 0.1, 0.25, 0.4, 0.6, 0.8, 1.0]
+        self.colormap = pg.ColorMap(positions, colors)
+        lut = self.colormap.getLookupTable(0.0, 1.0, 256)
+        self.img_item.setLookupTable(lut)
+        
+        # Set view range
+        self.setXRange(0, self.num_bins)
+        self.setYRange(0, self.num_mag_levels)
+        
+        # Decay factor: lower = longer persistence
+        self.decay = 0.92
+        
+        # 3 Frequency band indicators
+        self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+                                              brush=pg.mkBrush(255, 50, 50, 40),
+                                              pen=pg.mkPen('#FF3232', width=1),
+                                              movable=True)
+        self.beat_band.setBounds([0, self.num_bins])
+        self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
+        self.addItem(self.beat_band)
+        
+        self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+                                               brush=pg.mkBrush(50, 255, 50, 35),
+                                               pen=pg.mkPen('#32FF32', width=1),
+                                               movable=True)
+        self.depth_band.setBounds([0, self.num_bins])
+        self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
+        self.addItem(self.depth_band)
+        
+        self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+                                            brush=pg.mkBrush(50, 100, 255, 35),
+                                            pen=pg.mkPen('#3264FF', width=1),
+                                            movable=True)
+        self.p0_band.setBounds([0, self.num_bins])
+        self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
+        self.addItem(self.p0_band)
+        
+        # Labels
+        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 0))
+        self.beat_label.setPos(5, self.num_mag_levels - 5)
+        self.addItem(self.beat_label)
+        
+        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 0))
+        self.depth_label.setPos(5, self.num_mag_levels - 15)
+        self.addItem(self.depth_label)
+        
+        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 0))
+        self.pulse_label.setPos(5, self.num_mag_levels - 25)
+        self.addItem(self.pulse_label)
+        
+        self.parent_window = parent
+        self.sample_rate = 44100
+        self._updating = False
+        
+    def _hz_to_bin(self, hz: float) -> float:
+        nyquist = self.sample_rate / 2
+        return (hz / nyquist) * self.num_bins
+    
+    def _bin_to_hz(self, bin_idx: float) -> float:
+        nyquist = self.sample_rate / 2
+        return (bin_idx / self.num_bins) * nyquist
+        
+    def _on_beat_band_changed(self):
+        if self._updating:
+            return
+        region = self.beat_band.getRegion()
+        low_hz = self._bin_to_hz(float(region[0]))
+        high_hz = self._bin_to_hz(float(region[1]))
+        if self.parent_window and hasattr(self.parent_window, 'freq_low_slider'):
+            self._updating = True
+            self.parent_window.freq_low_slider.setValue(int(low_hz))
+            self.parent_window.freq_high_slider.setValue(int(high_hz))
+            self._updating = False
+        center_bin = (region[0] + region[1]) / 2
+        self.beat_label.setPos(center_bin, self.num_mag_levels - 5)
+    
+    def _on_depth_band_changed(self):
+        if self._updating:
+            return
+        region = self.depth_band.getRegion()
+        low_hz = self._bin_to_hz(float(region[0]))
+        high_hz = self._bin_to_hz(float(region[1]))
+        if self.parent_window and hasattr(self.parent_window, 'depth_freq_low_slider'):
+            self._updating = True
+            self.parent_window.depth_freq_low_slider.setValue(int(low_hz))
+            self.parent_window.depth_freq_high_slider.setValue(int(high_hz))
+            self._updating = False
+        center_bin = (region[0] + region[1]) / 2
+        self.depth_label.setPos(center_bin, self.num_mag_levels - 15)
+    
+    def _on_p0_band_changed(self):
+        if self._updating:
+            return
+        region = self.p0_band.getRegion()
+        low_hz = self._bin_to_hz(float(region[0]))
+        high_hz = self._bin_to_hz(float(region[1]))
+        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_low_slider'):
+            self._updating = True
+            self.parent_window.pulse_freq_low_slider.setValue(int(low_hz))
+            self.parent_window.pulse_freq_high_slider.setValue(int(high_hz))
+            self._updating = False
+        center_bin = (region[0] + region[1]) / 2
+        self.pulse_label.setPos(center_bin, self.num_mag_levels - 25)
+    
+    def set_sample_rate(self, sr: int):
+        self.sample_rate = sr
+    
+    def set_frequency_band(self, low_norm: float, high_norm: float):
+        self._updating = True
+        low_bin = low_norm * self.num_bins
+        high_bin = high_norm * self.num_bins
+        self.beat_band.setRegion((low_bin, high_bin))
+        center_bin = (low_bin + high_bin) / 2
+        self.beat_label.setPos(center_bin, self.num_mag_levels - 5)
+        self._updating = False
+    
+    def set_depth_band(self, low_hz: float, high_hz: float):
+        self._updating = True
+        low_bin = self._hz_to_bin(low_hz)
+        high_bin = self._hz_to_bin(high_hz)
+        self.depth_band.setRegion((low_bin, high_bin))
+        center_bin = (low_bin + high_bin) / 2
+        self.depth_label.setPos(center_bin, self.num_mag_levels - 15)
+        self._updating = False
+    
+    def set_p0_band(self, low_hz: float, high_hz: float):
+        self._updating = True
+        low_bin = self._hz_to_bin(low_hz)
+        high_bin = self._hz_to_bin(high_hz)
+        self.p0_band.setRegion((low_bin, high_bin))
+        center_bin = (low_bin + high_bin) / 2
+        self.pulse_label.setPos(center_bin, self.num_mag_levels - 25)
+        self._updating = False
+    
+    def set_peak_and_flux(self, peak_value: float, flux_value: float):
+        pass
+        
+    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
+        """Update phosphor display with new spectrum - accumulate hits with decay"""
+        if spectrum is None or len(spectrum) == 0:
+            return
+        
+        # Cut off at 18kHz to avoid showing ultrasonic frequencies
+        cutoff_hz = 18000
+        nyquist = self.sample_rate / 2
+        cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
+        spectrum = spectrum[:cutoff_idx]
+            
+        # Resample to num_bins
+        if len(spectrum) != self.num_bins:
+            x_old = np.linspace(0, 1, len(spectrum))
+            x_new = np.linspace(0, 1, self.num_bins)
+            spectrum = np.interp(x_new, x_old, spectrum)
+        
+        # Apply log scaling and normalize to 0-1
+        spectrum = np.log10(spectrum + 1e-6)
+        spectrum = np.clip((spectrum + 4) / 4, 0, 1)
+        
+        # Apply decay to existing hitmap
+        self.hitmap *= self.decay
+        
+        # Add current spectrum to hitmap
+        # Each frequency bin adds a "hit" at its magnitude level
+        for freq_bin in range(self.num_bins):
+            mag_level = int(spectrum[freq_bin] * (self.num_mag_levels - 1))
+            mag_level = min(max(0, mag_level), self.num_mag_levels - 1)
+            self.hitmap[mag_level, freq_bin] += 0.5
+        
+        # Normalize for display
+        display_data = np.clip(self.hitmap, 0, 1)
+        
+        # Update image (transpose for correct orientation)
+        self.img_item.setImage(display_data.T, autoLevels=False, levels=(0, 1))
+        self.img_item.setRect(0, 0, self.num_bins, self.num_mag_levels)
+
+
+def launch_projectm():
+    """Attempt to launch projectM standalone application"""
+    import subprocess
+    import shutil
+    
+    # Common projectM executable paths
+    possible_paths = [
+        # Steam installation
+        r"C:\Program Files (x86)\Steam\steamapps\common\projectM Music Visualizer\projectM.exe",
+        r"C:\Program Files\Steam\steamapps\common\projectM Music Visualizer\projectM.exe",
+        # Standalone installation
+        r"C:\Program Files\projectM\projectM.exe",
+        r"C:\Program Files (x86)\projectM\projectM.exe",
+        # Check PATH
+        "projectM",
+        "projectm",
+    ]
+    
+    for path in possible_paths:
+        if path in ["projectM", "projectm"]:
+            # Try to find in PATH
+            if shutil.which(path):
+                try:
+                    subprocess.Popen([path], shell=False)
+                    print(f"[Visualizer] Launched projectM from PATH")
+                    return True
+                except:
+                    continue
+        else:
+            if os.path.exists(path):
+                try:
+                    subprocess.Popen([path], shell=False)
+                    print(f"[Visualizer] Launched projectM from {path}")
+                    return True
+                except Exception as e:
+                    print(f"[Visualizer] Failed to launch {path}: {e}")
+                    continue
+    
+    print("[Visualizer] projectM not found. Install from Steam or https://github.com/projectM-visualizer/projectm")
+    return False
 
 
 class PositionCanvas(pg.PlotWidget):
@@ -1760,34 +2031,57 @@ class BREadbeatsWindow(QMainWindow):
         group = QGroupBox("Frequency Selection")
         layout = QVBoxLayout(group)
         
-        # Visualizer type selector
+        # Visualizer type selector and fullscreen buttons
         vis_layout = QHBoxLayout()
         vis_layout.addWidget(QLabel("Visualizer:"))
         self.visualizer_type_combo = QComboBox()
-        self.visualizer_type_combo.addItems(["Waterfall", "Mountain Range", "Bar Graph"])
+        self.visualizer_type_combo.addItems(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor"])
         self.visualizer_type_combo.currentIndexChanged.connect(self._on_visualizer_type_change)
         vis_layout.addWidget(self.visualizer_type_combo)
         vis_layout.addStretch()
+        
+        # projectM launcher button
+        self.projectm_btn = QPushButton("projectM")
+        self.projectm_btn.setToolTip("Launch projectM music visualizer (if installed)")
+        self.projectm_btn.clicked.connect(self._on_launch_projectm)
+        self.projectm_btn.setMaximumWidth(70)
+        vis_layout.addWidget(self.projectm_btn)
+        
         layout.addLayout(vis_layout)
         
         # Create all visualizers (only one visible at a time)
         self.spectrum_canvas = SpectrumCanvas(self, width=8, height=3)
         self.mountain_canvas = MountainRangeCanvas(self, width=8, height=3)
         self.bar_canvas = BarGraphCanvas(self, width=8, height=3)
+        self.phosphor_canvas = PhosphorCanvas(self, width=8, height=3)
         self.mountain_canvas.setVisible(False)  # Start with waterfall
         self.bar_canvas.setVisible(False)
+        self.phosphor_canvas.setVisible(False)
         
         layout.addWidget(self.spectrum_canvas)
         layout.addWidget(self.mountain_canvas)
         layout.addWidget(self.bar_canvas)
+        layout.addWidget(self.phosphor_canvas)
         
         return group
     
+    def _on_launch_projectm(self):
+        """Launch projectM standalone application"""
+        if not launch_projectm():
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "projectM Not Found",
+                "projectM is not installed.\n\n"
+                "Install via Steam or download from:\n"
+                "https://github.com/projectM-visualizer/projectm"
+            )
+    
     def _on_visualizer_type_change(self, index: int):
-        """Switch between visualizer types: 0=Waterfall, 1=Mountain, 2=Bar"""
+        """Switch between visualizer types: 0=Waterfall, 1=Mountain, 2=Bar, 3=Phosphor"""
         self.spectrum_canvas.setVisible(index == 0)
         self.mountain_canvas.setVisible(index == 1)
         self.bar_canvas.setVisible(index == 2)
+        self.phosphor_canvas.setVisible(index == 3)
         
         # Sync the frequency bands to the newly visible visualizer
         if hasattr(self, 'freq_low_slider') and hasattr(self, 'freq_high_slider'):
@@ -1872,9 +2166,8 @@ class BREadbeatsWindow(QMainWindow):
         freq_group = QGroupBox("Pulse Frequency Controls - blue overlay on spectrum")
         freq_layout = QVBoxLayout(freq_group)
 
-        nyquist = 22050  # Matches sample rate / 2
-        self.pulse_freq_low_slider = SliderWithLabel("Monitor Freq Min (Hz)", 30, 20000, 30, 0)
-        self.pulse_freq_high_slider = SliderWithLabel("Monitor Freq Max (Hz)", 30, 20000, 4000, 0)
+        self.pulse_freq_low_slider = SliderWithLabel("Monitor Freq Min (Hz)", 30, 18000, 30, 0)
+        self.pulse_freq_high_slider = SliderWithLabel("Monitor Freq Max (Hz)", 30, 18000, 4000, 0)
         self.pulse_freq_low_slider.valueChanged.connect(self._on_p0_band_change)
         self.pulse_freq_high_slider.valueChanged.connect(self._on_p0_band_change)
         freq_layout.addWidget(self.pulse_freq_low_slider)
@@ -2024,11 +2317,11 @@ class BREadbeatsWindow(QMainWindow):
         # Get sample rate (default to 44100 if not available yet)
         sr = getattr(self.config.audio, 'sample_rate', 44100)
         nyquist = sr // 2
-        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 30, 20000, 30, 0)
+        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 30, 18000, 30, 0)
         self.freq_low_slider.valueChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_low_slider)
 
-        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 30, 20000, 4000, 0)
+        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 30, 18000, 4000, 0)
         self.freq_high_slider.valueChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_high_slider)
         
@@ -2087,6 +2380,8 @@ class BREadbeatsWindow(QMainWindow):
             self.mountain_canvas.set_frequency_band(low / max_freq, high / max_freq)
         if hasattr(self, 'bar_canvas'):
             self.bar_canvas.set_frequency_band(low / max_freq, high / max_freq)
+        if hasattr(self, 'phosphor_canvas'):
+            self.phosphor_canvas.set_frequency_band(low / max_freq, high / max_freq)
     
     def _on_depth_band_change(self, _=None):
         """Update stroke depth frequency band in config and spectrum overlay"""
@@ -2107,6 +2402,8 @@ class BREadbeatsWindow(QMainWindow):
             self.mountain_canvas.set_depth_band(low, high)
         if hasattr(self, 'bar_canvas'):
             self.bar_canvas.set_depth_band(low, high)
+        if hasattr(self, 'phosphor_canvas'):
+            self.phosphor_canvas.set_depth_band(low, high)
     
     def _on_p0_band_change(self, _=None):
         """Update P0 TCode frequency band in config and spectrum overlay"""
@@ -2127,6 +2424,8 @@ class BREadbeatsWindow(QMainWindow):
             self.mountain_canvas.set_p0_band(low, high)
         if hasattr(self, 'bar_canvas'):
             self.bar_canvas.set_p0_band(low, high)
+        if hasattr(self, 'phosphor_canvas'):
+            self.phosphor_canvas.set_p0_band(low, high)
     
     def _on_tempo_tracking_toggle(self, state):
         """Enable/disable tempo tracking"""
@@ -2451,11 +2750,11 @@ class BREadbeatsWindow(QMainWindow):
         depth_freq_group = QGroupBox("Depth Frequency Range (Hz) - green overlay on spectrum")
         depth_freq_layout = QVBoxLayout(depth_freq_group)
         
-        self.depth_freq_low_slider = SliderWithLabel("Depth Freq Low (Hz)", 30, 20000, 30, 0)
+        self.depth_freq_low_slider = SliderWithLabel("Depth Freq Low (Hz)", 30, 18000, 30, 0)
         self.depth_freq_low_slider.valueChanged.connect(self._on_depth_band_change)
         depth_freq_layout.addWidget(self.depth_freq_low_slider)
         
-        self.depth_freq_high_slider = SliderWithLabel("Depth Freq High (Hz)", 30, 20000, 4000, 0)
+        self.depth_freq_high_slider = SliderWithLabel("Depth Freq High (Hz)", 30, 18000, 4000, 0)
         self.depth_freq_high_slider.valueChanged.connect(self._on_depth_band_change)
         depth_freq_layout.addWidget(self.depth_freq_high_slider)
         
@@ -2856,12 +3155,16 @@ class BREadbeatsWindow(QMainWindow):
                     self.mountain_canvas.update_spectrum(spectrum, peak, flux)
                 if hasattr(self, 'bar_canvas') and self.bar_canvas is not None:
                     self.bar_canvas.update_spectrum(spectrum, peak, flux)
+                if hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None:
+                    self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
             else:
                 self.spectrum_canvas.update_spectrum(self._pending_spectrum)
                 if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None:
                     self.mountain_canvas.update_spectrum(self._pending_spectrum)
                 if hasattr(self, 'bar_canvas') and self.bar_canvas is not None:
                     self.bar_canvas.update_spectrum(self._pending_spectrum)
+                if hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None:
+                    self.phosphor_canvas.update_spectrum(self._pending_spectrum)
             self._pending_spectrum = None
     
     def _on_status_change(self, message: str, connected: bool):
