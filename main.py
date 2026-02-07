@@ -192,61 +192,61 @@ class SpectrumCanvas(pg.PlotWidget):
         self.setXRange(0, self.num_bins)
         self.setYRange(0, self.history_len)
         
-        # 3 Frequency band indicators (vertical regions with different heights)
-        # Band heights: beat = 100% (bottom), stroke = 66%, pulse = 33% (top)
-        # Bold grey borders for visibility against colorful spectrogram
+        # 4 Frequency band indicators (vertical regions with different heights)
+        # Heights staggered for visibility - labels placed at top of each band
+        # Band heights: beat=100% (full), stroke=50%, pulse=40%, carrier=33%
         
-        # Band 1: Beat Detection (red) - full height
+        # Band 1: Beat Detection (red) - full height (tallest)
         self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                               brush=pg.mkBrush(255, 50, 50, 60),
                                               pen=pg.mkPen('#888888', width=2),
-                                              movable=True)
+                                              movable=True, span=(0, 1.0))
         self.beat_band.setBounds([0, self.num_bins])
         self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
         self.addItem(self.beat_band)
         
-        # Band 2: Stroke Depth (green) - 66% height
+        # Band 2: Stroke Depth (green) - 50% height
         self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                                brush=pg.mkBrush(50, 255, 50, 50),
                                                pen=pg.mkPen('#888888', width=2),
-                                               movable=True)
+                                               movable=True, span=(0, 0.5))
         self.depth_band.setBounds([0, self.num_bins])
         self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
         self.addItem(self.depth_band)
         
-        # Band 3: Pulse/P0 TCode (blue) - 33% height
+        # Band 3: Pulse/P0 TCode (blue) - 40% height
         self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                             brush=pg.mkBrush(50, 100, 255, 50),
                                             pen=pg.mkPen('#888888', width=2),
-                                            movable=True)
+                                            movable=True, span=(0, 0.4))
         self.p0_band.setBounds([0, self.num_bins])
         self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
         self.addItem(self.p0_band)
         
-        # Band 4: Carrier/F0 TCode (cyan) - 25% height
+        # Band 4: Carrier/F0 TCode (cyan) - 33% height (shortest)
         self.f0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                             brush=pg.mkBrush(0, 200, 255, 50),
                                             pen=pg.mkPen('#888888', width=2),
-                                            movable=True)
+                                            movable=True, span=(0, 0.33))
         self.f0_band.setBounds([0, self.num_bins])
         self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
         self.addItem(self.f0_band)
         
-        # Add tiny labels for each band (positioned at top of visualizer)
+        # Labels positioned at top of each band (anchor at bottom-center so label sits above)
         self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
-        self.beat_label.setPos(5, self.history_len - 2)
+        self.beat_label.setPos(5, self.history_len * 0.97)
         self.addItem(self.beat_label)
         
         self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, self.history_len - 12)
+        self.depth_label.setPos(5, self.history_len * 0.50)
         self.addItem(self.depth_label)
         
         self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, self.history_len - 22)
+        self.pulse_label.setPos(5, self.history_len * 0.40)
         self.addItem(self.pulse_label)
         
         self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, self.history_len - 32)
+        self.carrier_label.setPos(5, self.history_len * 0.33)
         self.addItem(self.carrier_label)
         
         # Reference to parent window for slider updates
@@ -276,9 +276,9 @@ class SpectrumCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setLow(int(low_hz))
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
-        # Update label position to center of band
+        # Update label position to center of band (above the band)
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, self.history_len - 2)
+        self.beat_label.setPos(center_bin, self.history_len * 0.48)
     
     def _on_depth_band_changed(self):
         """Handle stroke depth band dragging"""
@@ -292,9 +292,9 @@ class SpectrumCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
-        # Update label position to center of band
+        # Update label position to center of band (above the band)
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, self.history_len - 12)
+        self.depth_label.setPos(center_bin, self.history_len * 0.58)
     
     def _on_p0_band_changed(self):
         """Handle P0 TCode band dragging"""
@@ -308,9 +308,9 @@ class SpectrumCanvas(pg.PlotWidget):
             self.parent_window.pulse_freq_range_slider.setLow(int(low_hz))
             self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
-        # Update label position to center of band
+        # Update label position to center of band (above the band)
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, self.history_len - 22)
+        self.pulse_label.setPos(center_bin, self.history_len * 0.65)
     
     def _on_f0_band_changed(self):
         """Handle F0 (carrier) band dragging"""
@@ -325,7 +325,7 @@ class SpectrumCanvas(pg.PlotWidget):
             self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, self.history_len - 32)
+        self.carrier_label.setPos(center_bin, self.history_len * 0.73)
     
     def set_sample_rate(self, sr: int):
         """Update sample rate for frequency calculations"""
@@ -337,9 +337,9 @@ class SpectrumCanvas(pg.PlotWidget):
         low_bin = low_norm * self.num_bins
         high_bin = high_norm * self.num_bins
         self.beat_band.setRegion((low_bin, high_bin))
-        # Update label position to center of band
+        # Update label position to center of band (above the band)
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, self.history_len - 2)
+        self.beat_label.setPos(center_bin, self.history_len * 0.48)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -348,9 +348,9 @@ class SpectrumCanvas(pg.PlotWidget):
         low_bin = self._hz_to_bin(low_hz)
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
-        # Update label position to center of band
+        # Update label position to center of band (above the band)
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, self.history_len - 12)
+        self.depth_label.setPos(center_bin, self.history_len * 0.58)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -359,9 +359,9 @@ class SpectrumCanvas(pg.PlotWidget):
         low_bin = self._hz_to_bin(low_hz)
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
-        # Update label position to center of band
+        # Update label position to center of band (above the band)
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, self.history_len - 22)
+        self.pulse_label.setPos(center_bin, self.history_len * 0.65)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -371,7 +371,7 @@ class SpectrumCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.f0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, self.history_len - 32)
+        self.carrier_label.setPos(center_bin, self.history_len * 0.73)
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
@@ -494,58 +494,58 @@ class MountainRangeCanvas(pg.PlotWidget):
         )
         self.addItem(self.peak_scatter)
         
-        # 3 Frequency band indicators (vertical regions)
-        # Band 1: Beat Detection (red)
+        # 4 Frequency band indicators (vertical regions with different heights)
+        # Band 1: Beat Detection (red) - full height (tallest)
         self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                               brush=pg.mkBrush(255, 50, 50, 40),
                                               pen=pg.mkPen('#FF3232', width=1),
-                                              movable=True)
+                                              movable=True, span=(0, 1.0))
         self.beat_band.setBounds([0, self.num_bins])
         self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
         self.addItem(self.beat_band)
         
-        # Band 2: Stroke Depth (green)
+        # Band 2: Stroke Depth (green) - 50% height
         self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                                brush=pg.mkBrush(50, 255, 50, 35),
                                                pen=pg.mkPen('#32FF32', width=1),
-                                               movable=True)
+                                               movable=True, span=(0, 0.5))
         self.depth_band.setBounds([0, self.num_bins])
         self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
         self.addItem(self.depth_band)
         
-        # Band 3: Pulse/P0 TCode (blue)
+        # Band 3: Pulse/P0 TCode (blue) - 40% height
         self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                             brush=pg.mkBrush(50, 100, 255, 35),
                                             pen=pg.mkPen('#3264FF', width=1),
-                                            movable=True)
+                                            movable=True, span=(0, 0.4))
         self.p0_band.setBounds([0, self.num_bins])
         self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
         self.addItem(self.p0_band)
         
-        # Band 4: Carrier/F0 TCode (cyan)
+        # Band 4: Carrier/F0 TCode (cyan) - 33% height (shortest)
         self.f0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                             brush=pg.mkBrush(0, 200, 255, 35),
                                             pen=pg.mkPen('#00C8FF', width=1),
-                                            movable=True)
+                                            movable=True, span=(0, 0.33))
         self.f0_band.setBounds([0, self.num_bins])
         self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
         self.addItem(self.f0_band)
         
-        # Labels for each band
-        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 0))
-        self.beat_label.setPos(5, 1.1)
+        # Labels positioned at top of each band
+        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
+        self.beat_label.setPos(5, 0.97)
         self.addItem(self.beat_label)
         
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 0))
-        self.depth_label.setPos(5, 1.0)
+        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
+        self.depth_label.setPos(5, 0.50)
         self.addItem(self.depth_label)
         
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 0))
-        self.pulse_label.setPos(5, 0.9)
+        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
+        self.pulse_label.setPos(5, 0.40)
         self.addItem(self.pulse_label)
         
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 0))
-        self.carrier_label.setPos(5, 0.8)
+        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
+        self.carrier_label.setPos(5, 0.33)
         self.addItem(self.carrier_label)
         
         # Reference to parent window
@@ -579,7 +579,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, 1.1)
+        self.beat_label.setPos(center_bin, 0.48)
     
     def _on_depth_band_changed(self):
         if self._updating:
@@ -593,7 +593,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, 1.0)
+        self.depth_label.setPos(center_bin, 0.58)
     
     def _on_p0_band_changed(self):
         if self._updating:
@@ -607,7 +607,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, 0.9)
+        self.pulse_label.setPos(center_bin, 0.65)
     
     def _on_f0_band_changed(self):
         if self._updating:
@@ -621,7 +621,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, 0.8)
+        self.carrier_label.setPos(center_bin, 0.73)
     
     def set_sample_rate(self, sr: int):
         self.sample_rate = sr
@@ -632,7 +632,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = high_norm * self.num_bins
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, 1.1)
+        self.beat_label.setPos(center_bin, 0.48)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -641,7 +641,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, 1.0)
+        self.depth_label.setPos(center_bin, 0.58)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -650,7 +650,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, 0.9)
+        self.pulse_label.setPos(center_bin, 0.65)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -659,7 +659,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.f0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, 0.8)
+        self.carrier_label.setPos(center_bin, 0.73)
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
@@ -778,58 +778,58 @@ class BarGraphCanvas(pg.PlotWidget):
                                          width=0.8, brushes=self.bar_colors)
         self.addItem(self.bar_item)
         
-        # 3 Frequency band indicators (vertical regions)
-        # Band 1: Beat Detection (red)
+        # 4 Frequency band indicators (vertical regions with different heights)
+        # Band 1: Beat Detection (red) - full height (tallest)
         self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                               brush=pg.mkBrush(255, 50, 50, 40),
                                               pen=pg.mkPen('#FF3232', width=1),
-                                              movable=True)
+                                              movable=True, span=(0, 1.0))
         self.beat_band.setBounds([0, self.num_bars])
         self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
         self.addItem(self.beat_band)
         
-        # Band 2: Stroke Depth (green)
+        # Band 2: Stroke Depth (green) - 50% height
         self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                                brush=pg.mkBrush(50, 255, 50, 35),
                                                pen=pg.mkPen('#32FF32', width=1),
-                                               movable=True)
+                                               movable=True, span=(0, 0.5))
         self.depth_band.setBounds([0, self.num_bars])
         self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
         self.addItem(self.depth_band)
         
-        # Band 3: Pulse/P0 TCode (blue)
+        # Band 3: Pulse/P0 TCode (blue) - 40% height
         self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                             brush=pg.mkBrush(50, 100, 255, 35),
                                             pen=pg.mkPen('#3264FF', width=1),
-                                            movable=True)
+                                            movable=True, span=(0, 0.4))
         self.p0_band.setBounds([0, self.num_bars])
         self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
         self.addItem(self.p0_band)
         
-        # Band 4: Carrier/F0 TCode (cyan)
+        # Band 4: Carrier/F0 TCode (cyan) - 33% height (shortest)
         self.f0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                             brush=pg.mkBrush(0, 200, 255, 35),
                                             pen=pg.mkPen('#00C8FF', width=1),
-                                            movable=True)
+                                            movable=True, span=(0, 0.33))
         self.f0_band.setBounds([0, self.num_bars])
         self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
         self.addItem(self.f0_band)
         
-        # Labels for each band
-        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 0))
-        self.beat_label.setPos(5, 1.1)
+        # Labels positioned at top of each band
+        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
+        self.beat_label.setPos(5, 0.97)
         self.addItem(self.beat_label)
         
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 0))
-        self.depth_label.setPos(5, 1.0)
+        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
+        self.depth_label.setPos(5, 0.50)
         self.addItem(self.depth_label)
         
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 0))
-        self.pulse_label.setPos(5, 0.9)
+        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
+        self.pulse_label.setPos(5, 0.40)
         self.addItem(self.pulse_label)
         
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 0))
-        self.carrier_label.setPos(5, 0.8)
+        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
+        self.carrier_label.setPos(5, 0.33)
         self.addItem(self.carrier_label)
         
         # Reference to parent window
@@ -863,7 +863,7 @@ class BarGraphCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, 1.1)
+        self.beat_label.setPos(center_bin, 0.58)
     
     def _on_depth_band_changed(self):
         if self._updating:
@@ -877,7 +877,7 @@ class BarGraphCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, 1.0)
+        self.depth_label.setPos(center_bin, 0.70)
     
     def _on_p0_band_changed(self):
         if self._updating:
@@ -891,7 +891,7 @@ class BarGraphCanvas(pg.PlotWidget):
             self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, 0.9)
+        self.pulse_label.setPos(center_bin, 0.78)
     
     def _on_f0_band_changed(self):
         if self._updating:
@@ -905,7 +905,7 @@ class BarGraphCanvas(pg.PlotWidget):
             self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, 0.8)
+        self.carrier_label.setPos(center_bin, 0.88)
     
     def set_sample_rate(self, sr: int):
         self.sample_rate = sr
@@ -916,7 +916,7 @@ class BarGraphCanvas(pg.PlotWidget):
         high_bin = high_norm * self.num_bars
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, 1.1)
+        self.beat_label.setPos(center_bin, 0.58)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -925,7 +925,7 @@ class BarGraphCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, 1.0)
+        self.depth_label.setPos(center_bin, 0.70)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -934,7 +934,7 @@ class BarGraphCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, 0.9)
+        self.pulse_label.setPos(center_bin, 0.78)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -943,7 +943,7 @@ class BarGraphCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.f0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, 0.8)
+        self.carrier_label.setPos(center_bin, 0.88)
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
@@ -1036,54 +1036,58 @@ class PhosphorCanvas(pg.PlotWidget):
         # Decay factor: lower = longer persistence
         self.decay = 0.92
         
-        # 3 Frequency band indicators
+        # 4 Frequency band indicators (vertical regions with different heights)
+        # Band 1: Beat Detection (red) - full height (tallest)
         self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                               brush=pg.mkBrush(255, 50, 50, 40),
                                               pen=pg.mkPen('#FF3232', width=1),
-                                              movable=True)
+                                              movable=True, span=(0, 1.0))
         self.beat_band.setBounds([0, self.num_bins])
         self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
         self.addItem(self.beat_band)
         
+        # Band 2: Stroke Depth (green) - 50% height
         self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                                brush=pg.mkBrush(50, 255, 50, 35),
                                                pen=pg.mkPen('#32FF32', width=1),
-                                               movable=True)
+                                               movable=True, span=(0, 0.5))
         self.depth_band.setBounds([0, self.num_bins])
         self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
         self.addItem(self.depth_band)
         
+        # Band 3: Pulse/P0 TCode (blue) - 40% height
         self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                             brush=pg.mkBrush(50, 100, 255, 35),
                                             pen=pg.mkPen('#3264FF', width=1),
-                                            movable=True)
+                                            movable=True, span=(0, 0.4))
         self.p0_band.setBounds([0, self.num_bins])
         self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
         self.addItem(self.p0_band)
         
+        # Band 4: Carrier/F0 TCode (cyan) - 33% height (shortest)
         self.f0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
                                             brush=pg.mkBrush(0, 200, 255, 35),
                                             pen=pg.mkPen('#00C8FF', width=1),
-                                            movable=True)
+                                            movable=True, span=(0, 0.33))
         self.f0_band.setBounds([0, self.num_bins])
         self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
         self.addItem(self.f0_band)
         
-        # Labels
-        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 0))
-        self.beat_label.setPos(5, self.num_mag_levels - 5)
+        # Labels positioned at top of each band
+        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
+        self.beat_label.setPos(5, self.num_mag_levels * 0.97)
         self.addItem(self.beat_label)
         
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 0))
-        self.depth_label.setPos(5, self.num_mag_levels - 15)
+        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
+        self.depth_label.setPos(5, self.num_mag_levels * 0.50)
         self.addItem(self.depth_label)
         
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 0))
-        self.pulse_label.setPos(5, self.num_mag_levels - 25)
+        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
+        self.pulse_label.setPos(5, self.num_mag_levels * 0.40)
         self.addItem(self.pulse_label)
         
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 0))
-        self.carrier_label.setPos(5, self.num_mag_levels - 35)
+        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
+        self.carrier_label.setPos(5, self.num_mag_levels * 0.33)
         self.addItem(self.carrier_label)
         
         self.parent_window = parent
@@ -1110,7 +1114,7 @@ class PhosphorCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, self.num_mag_levels - 5)
+        self.beat_label.setPos(center_bin, self.num_mag_levels * 0.48)
     
     def _on_depth_band_changed(self):
         if self._updating:
@@ -1124,7 +1128,7 @@ class PhosphorCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, self.num_mag_levels - 15)
+        self.depth_label.setPos(center_bin, self.num_mag_levels * 0.58)
     
     def _on_p0_band_changed(self):
         if self._updating:
@@ -1138,7 +1142,7 @@ class PhosphorCanvas(pg.PlotWidget):
             self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, self.num_mag_levels - 25)
+        self.pulse_label.setPos(center_bin, self.num_mag_levels * 0.65)
     
     def _on_f0_band_changed(self):
         if self._updating:
@@ -1152,7 +1156,7 @@ class PhosphorCanvas(pg.PlotWidget):
             self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, self.num_mag_levels - 35)
+        self.carrier_label.setPos(center_bin, self.num_mag_levels * 0.73)
     
     def set_sample_rate(self, sr: int):
         self.sample_rate = sr
@@ -1163,7 +1167,7 @@ class PhosphorCanvas(pg.PlotWidget):
         high_bin = high_norm * self.num_bins
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, self.num_mag_levels - 5)
+        self.beat_label.setPos(center_bin, self.num_mag_levels * 0.48)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -1172,7 +1176,7 @@ class PhosphorCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, self.num_mag_levels - 15)
+        self.depth_label.setPos(center_bin, self.num_mag_levels * 0.58)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -1181,7 +1185,7 @@ class PhosphorCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, self.num_mag_levels - 25)
+        self.pulse_label.setPos(center_bin, self.num_mag_levels * 0.65)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -1190,7 +1194,7 @@ class PhosphorCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.f0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, self.num_mag_levels - 35)
+        self.carrier_label.setPos(center_bin, self.num_mag_levels * 0.73)
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
@@ -1399,7 +1403,7 @@ class PresetButton(QPushButton):
 
 
 class RangeSlider(QWidget):
-    """A slider with two handles for selecting a range"""
+    """A slider with two handles for selecting a range - can grab middle to slide entire range"""
     
     rangeChanged = pyqtSignal(float, float)  # low, high
     
@@ -1411,10 +1415,12 @@ class RangeSlider(QWidget):
         self.decimals = decimals
         self._low = low_default
         self._high = high_default
-        self._dragging = None  # 'low', 'high', or None
+        self._dragging = None  # 'low', 'high', 'range', or None
+        self._drag_offset = 0  # Offset from click position to range start when dragging range
         self._handle_width = 12
         self.setMinimumHeight(24)
         self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         
     def low(self) -> float:
         return self._low
@@ -1482,15 +1488,20 @@ class RangeSlider(QWidget):
         # Determine which handle is closer
         dist_to_low = abs(pos - low_pos)
         dist_to_high = abs(pos - high_pos)
+        handle_threshold = self._handle_width * 1.5  # Generous touch area for handles
         
-        if dist_to_low < dist_to_high and dist_to_low < self._handle_width:
+        # Check if clicking on or very near a handle first
+        if dist_to_low < handle_threshold and dist_to_low <= dist_to_high:
             self._dragging = 'low'
-        elif dist_to_high < self._handle_width:
+        elif dist_to_high < handle_threshold:
             self._dragging = 'high'
-        elif dist_to_low < self._handle_width:
-            self._dragging = 'low'
+        # Check if clicking in the middle area (between handles) - grab entire range
+        elif low_pos < pos < high_pos:
+            self._dragging = 'range'
+            # Store offset from click to low value for smooth dragging
+            self._drag_offset = self._pos_to_val(pos) - self._low
         else:
-            # Click in middle - move closest handle
+            # Click outside range - move closest handle to that position
             if dist_to_low < dist_to_high:
                 self._dragging = 'low'
             else:
@@ -1517,6 +1528,29 @@ class RangeSlider(QWidget):
         elif self._dragging == 'high':
             if value > self._low:
                 self._high = min(self.max_val, value)
+        elif self._dragging == 'range':
+            # Move entire range while maintaining width
+            range_width = self._high - self._low
+            new_low = value - self._drag_offset
+            
+            # Round the new values
+            if self.decimals == 0:
+                new_low = round(new_low)
+            else:
+                new_low = round(new_low, self.decimals)
+            
+            new_high = new_low + range_width
+            
+            # Clamp to bounds
+            if new_low < self.min_val:
+                new_low = self.min_val
+                new_high = new_low + range_width
+            if new_high > self.max_val:
+                new_high = self.max_val
+                new_low = new_high - range_width
+            
+            self._low = new_low
+            self._high = new_high
         
         self.update()
         self.rangeChanged.emit(self._low, self._high)
@@ -1718,6 +1752,17 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_from: float = 0.0
         self._volume_ramp_to: float = 1.0
         self._volume_ramp_duration: float = 0.8  # 800ms
+        
+        # Auto beat detection adjustment state
+        self._auto_adjust_enabled: dict = {
+            'audio_amp': False,
+            'peak_floor': False,
+            'peak_decay': False,
+            'rise_sens': False
+        }
+        self._last_beat_time_for_auto: float = 0.0  # Track last beat for auto-adjust
+        self._auto_adjust_timer: Optional[QTimer] = None
+        self._auto_adjust_interval_ms: int = 100  # Check every 100ms
         
         # State
         self.is_running = False
@@ -2052,7 +2097,7 @@ class BREadbeatsWindow(QMainWindow):
         main_layout.addLayout(bottom_layout)
     
     def _create_menu_bar(self):
-        """Create menu bar with Performance and About options"""
+        """Create menu bar with Menu, Options, and Help"""
         menubar = self.menuBar()
         assert menubar is not None
         
@@ -2114,13 +2159,293 @@ class BREadbeatsWindow(QMainWindow):
         assert about_action is not None
         about_action.triggered.connect(self._on_about)
         
-        # Separator
-        main_menu.addSeparator()
+        # Help menu item
+        help_action = main_menu.addAction("Help")
+        assert help_action is not None
+        help_action.triggered.connect(self._on_help)
         
-        # Close action
-        close_action = main_menu.addAction("Close")
-        assert close_action is not None
-        close_action.triggered.connect(self.close)
+        # Options menu (separate top-level menu)
+        options_menu = menubar.addMenu("Options")
+        assert options_menu is not None
+        
+        # Audio Device option
+        audio_device_action = options_menu.addAction("Audio Device...")
+        assert audio_device_action is not None
+        audio_device_action.triggered.connect(self._on_options_audio_device)
+        
+        # Connection option
+        connection_action = options_menu.addAction("Connection...")
+        assert connection_action is not None
+        connection_action.triggered.connect(self._on_options_connection)
+    
+    def _on_options_audio_device(self):
+        """Show Audio Device selection dialog"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QHBoxLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Audio Device")
+        dialog.setMinimumWidth(400)
+        layout = QVBoxLayout(dialog)
+        
+        layout.addWidget(QLabel("Select Audio Device:"))
+        
+        # Create a combo box mirroring the main device_combo
+        device_combo = QComboBox()
+        device_combo.setMinimumWidth(350)
+        
+        # Copy items from main combo
+        for i in range(self.device_combo.count()):
+            device_combo.addItem(self.device_combo.itemText(i))
+        device_combo.setCurrentIndex(self.device_combo.currentIndex())
+        layout.addWidget(device_combo)
+        
+        # Quick preset buttons
+        preset_row = QHBoxLayout()
+        mic_btn = QPushButton("🎤 Mic (Reactive)")
+        mic_btn.clicked.connect(lambda: self._dialog_set_device_mic(device_combo))
+        preset_row.addWidget(mic_btn)
+        
+        loopback_btn = QPushButton("🔊 System Audio")
+        loopback_btn.clicked.connect(lambda: self._dialog_set_device_loopback(device_combo))
+        preset_row.addWidget(loopback_btn)
+        preset_row.addStretch()
+        layout.addLayout(preset_row)
+        
+        # OK/Cancel buttons
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Apply the selected device
+            self.device_combo.setCurrentIndex(device_combo.currentIndex())
+    
+    def _dialog_set_device_mic(self, combo: QComboBox):
+        """Set mic device in dialog combo"""
+        for i in range(combo.count()):
+            text = combo.itemText(i).lower()
+            if 'microphone' in text or 'mic' in text or 'input' in text:
+                if 'loopback' not in text and 'stereo mix' not in text:
+                    combo.setCurrentIndex(i)
+                    return
+    
+    def _dialog_set_device_loopback(self, combo: QComboBox):
+        """Set loopback/system audio device in dialog combo"""
+        for i in range(combo.count()):
+            text = combo.itemText(i).lower()
+            if 'loopback' in text or 'stereo mix' in text or 'wasapi' in text:
+                combo.setCurrentIndex(i)
+                return
+        # Fallback to speakers
+        for i in range(combo.count()):
+            text = combo.itemText(i).lower()
+            if 'speakers' in text or 'headphone' in text:
+                combo.setCurrentIndex(i)
+                return
+    
+    def _on_options_connection(self):
+        """Show Connection settings dialog"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QSpinBox, QPushButton, QHBoxLayout, QGridLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("TCP Connection")
+        dialog.setMinimumWidth(300)
+        layout = QVBoxLayout(dialog)
+        
+        # Host/Port grid
+        grid = QGridLayout()
+        grid.addWidget(QLabel("Host:"), 0, 0)
+        host_edit = QLineEdit(self.host_edit.text())
+        grid.addWidget(host_edit, 0, 1)
+        
+        grid.addWidget(QLabel("Port:"), 1, 0)
+        port_spin = QSpinBox()
+        port_spin.setRange(1, 65535)
+        port_spin.setValue(self.port_spin.value())
+        port_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        grid.addWidget(port_spin, 1, 1)
+        layout.addLayout(grid)
+        
+        # OK/Cancel buttons
+        btn_row = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Apply the settings
+            self.host_edit.setText(host_edit.text())
+            self.port_spin.setValue(port_spin.value())
+            # Reconnect if already connected
+            if hasattr(self, 'network_engine') and self.network_engine:
+                self._on_connect()
+    
+    def _on_help(self):
+        """Show Help/Troubleshooting dialog with reset buttons (non-modal)"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QScrollArea, QGroupBox, QPushButton, QHBoxLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Help - Troubleshooting")
+        dialog.setMinimumWidth(420)
+        dialog.setMinimumHeight(500)
+        # Make non-modal so user can interact with main window
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(8)
+        
+        # Scroll area for content
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(10)
+        
+        # === No motion? ===
+        group1 = QGroupBox("No motion?")
+        g1_layout = QVBoxLayout(group1)
+        g1_layout.setSpacing(4)
+        
+        # Audio device check with button
+        audio_box = QGroupBox()
+        audio_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
+        ab_layout = QVBoxLayout(audio_box)
+        ab_layout.setSpacing(2)
+        ab_layout.addWidget(QLabel("Check [Options]→[Audio Device] is your\ncurrent speakers or input with signal"))
+        audio_btn = QPushButton("Open Audio Device")
+        audio_btn.clicked.connect(lambda: self._on_options_audio_device())
+        ab_layout.addWidget(audio_btn)
+        g1_layout.addWidget(audio_box)
+        
+        g1_layout.addWidget(QLabel("• Check [Start] and [Play] are pressed"))
+        g1_layout.addWidget(QLabel("• Both BPM lights should blink with stable count"))
+        
+        # Beat detection with auto button
+        beat_box = QGroupBox()
+        beat_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
+        bb_layout = QVBoxLayout(beat_box)
+        bb_layout.setSpacing(2)
+        bb_layout.addWidget(QLabel("[Beat Detection] Raise sensitivity/amplification\nuntil you see blinking, or toggle auto:"))
+        auto_btn_row = QHBoxLayout()
+        auto_all_btn = QPushButton("Enable All Auto")
+        auto_all_btn.setToolTip("Enable auto-adjustment for all beat detection sliders")
+        auto_all_btn.clicked.connect(lambda: self._enable_all_auto_beat_detection(True))
+        auto_btn_row.addWidget(auto_all_btn)
+        auto_off_btn = QPushButton("Disable All Auto")
+        auto_off_btn.clicked.connect(lambda: self._enable_all_auto_beat_detection(False))
+        auto_btn_row.addWidget(auto_off_btn)
+        bb_layout.addLayout(auto_btn_row)
+        g1_layout.addWidget(beat_box)
+        
+        scroll_layout.addWidget(group1)
+        
+        # === Still no motion? ===
+        group2 = QGroupBox("Still no motion?")
+        g2_layout = QVBoxLayout(group2)
+        g2_layout.setSpacing(4)
+        
+        # Stroke min/max reset
+        stroke_box = QGroupBox()
+        stroke_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
+        sb_layout = QVBoxLayout(stroke_box)
+        sb_layout.setSpacing(2)
+        sb_layout.addWidget(QLabel("[Stroke Settings] Check stroke min/max:"))
+        stroke_reset_btn = QPushButton("Reset to 0-100%")
+        stroke_reset_btn.clicked.connect(lambda: (
+            self.stroke_range_slider.setLow(0.0),
+            self.stroke_range_slider.setHigh(1.0),
+            self._on_stroke_range_change(0.0, 1.0)
+        ))
+        sb_layout.addWidget(stroke_reset_btn)
+        g2_layout.addWidget(stroke_box)
+        
+        # Fullness reset
+        full_box = QGroupBox()
+        full_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
+        fb_layout = QVBoxLayout(full_box)
+        fb_layout.setSpacing(2)
+        fb_layout.addWidget(QLabel("[Stroke Settings] Check stroke fullness:"))
+        fullness_reset_btn = QPushButton("Reset to 100%")
+        fullness_reset_btn.clicked.connect(lambda: (
+            self.fullness_slider.setValue(1.0),
+            setattr(self.config.stroke, 'stroke_fullness', 1.0)
+        ))
+        fb_layout.addWidget(fullness_reset_btn)
+        g2_layout.addWidget(full_box)
+        
+        # Peak floor reset
+        floor_box = QGroupBox()
+        floor_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
+        flb_layout = QVBoxLayout(floor_box)
+        flb_layout.setSpacing(2)
+        flb_layout.addWidget(QLabel("[Beat Detection] Check peak floor:"))
+        floor_reset_btn = QPushButton("Reset to 0")
+        floor_reset_btn.clicked.connect(lambda: self.peak_floor_slider.setValue(0.0))
+        flb_layout.addWidget(floor_reset_btn)
+        g2_layout.addWidget(floor_box)
+        
+        g2_layout.addWidget(QLabel("If using stroke mode 1, 2, or 3:"))
+        
+        # Axis weights reset
+        axis_box = QGroupBox()
+        axis_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
+        axb_layout = QVBoxLayout(axis_box)
+        axb_layout.setSpacing(2)
+        axb_layout.addWidget(QLabel("[Effects/Axis] Check axis weights (0=no motion):"))
+        axis_reset_btn = QPushButton("Reset to 1.0")
+        axis_reset_btn.clicked.connect(lambda: (
+            self.alpha_weight_slider.setValue(1.0),
+            self.beta_weight_slider.setValue(1.0),
+            setattr(self.config, 'alpha_weight', 1.0),
+            setattr(self.config, 'beta_weight', 1.0)
+        ))
+        axb_layout.addWidget(axis_reset_btn)
+        g2_layout.addWidget(axis_box)
+        
+        scroll_layout.addWidget(group2)
+        
+        # === Too much motion? ===
+        group3 = QGroupBox("Too much motion?")
+        g3_layout = QVBoxLayout(group3)
+        g3_layout.setSpacing(4)
+        g3_layout.addWidget(QLabel("• [Beat Detection] Lower audio amplification,\n  sensitivity, flux multiplier"))
+        g3_layout.addWidget(QLabel("• [Effects/Axis] Lower axis weights"))
+        g3_layout.addWidget(QLabel("• [Tempo Tracking] Check spectral flux control"))
+        scroll_layout.addWidget(group3)
+        
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll)
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.close)
+        layout.addWidget(close_btn)
+        
+        dialog.show()  # Use show() instead of exec() for non-modal
+    
+    def _enable_all_auto_beat_detection(self, enable: bool):
+        """Enable or disable all auto-adjust checkboxes for beat detection"""
+        if hasattr(self, 'audio_gain_auto_cb'):
+            self.audio_gain_auto_cb.setChecked(enable)
+        if hasattr(self, 'peak_floor_auto_cb'):
+            self.peak_floor_auto_cb.setChecked(enable)
+        if hasattr(self, 'peak_decay_auto_cb'):
+            self.peak_decay_auto_cb.setChecked(enable)
+        if hasattr(self, 'rise_sens_auto_cb'):
+            self.rise_sens_auto_cb.setChecked(enable)
     
     def _on_load_presets(self):
         """Open file dialog to load a presets .json file"""
@@ -2198,6 +2523,11 @@ class BREadbeatsWindow(QMainWindow):
         """Show About dialog"""
         about_text = """bREadbeats v1.0
 Live Audio to Restim
+
+Inspired by:
+    digitalparkinglot's creations
+    edger477 (ideas from funscriptgenerator)
+    diglet48 (wouldn't be here without restim!)
 
 Bug reports/share your presets:
 bREadfan_69@hotmail.com"""
@@ -2288,73 +2618,60 @@ bREadfan_69@hotmail.com"""
             print(f"[UI] Warning: Could not apply all config values: {e}")
         
     def _create_connection_panel(self) -> QGroupBox:
-        """Connection settings panel"""
+        """Connection settings panel - simplified, host/port in Options menu"""
         group = QGroupBox("TCP Connection")
-        layout = QGridLayout(group)
+        layout = QHBoxLayout(group)  # Horizontal for compact layout
         
-        # Host/Port
-        layout.addWidget(QLabel("Host:"), 0, 0)
+        # Hidden Host/Port widgets (needed for functionality but now in Options menu)
         self.host_edit = QLineEdit(self.config.connection.host)
-        layout.addWidget(self.host_edit, 0, 1)
-        
-        layout.addWidget(QLabel("Port:"), 0, 2)
+        self.host_edit.setVisible(False)
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(self.config.connection.port)
-        self.port_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)  # Remove scroll/arrows
-        layout.addWidget(self.port_spin, 0, 3)
+        self.port_spin.setVisible(False)
         
         # Status
         self.status_label = QLabel("Disconnected")
         self.status_label.setStyleSheet("color: #f55;")
-        layout.addWidget(self.status_label, 1, 0, 1, 2)
+        layout.addWidget(self.status_label)
+        
+        layout.addStretch()
         
         # Reset/Test buttons
         self.connect_btn = QPushButton("Reset")
         self.connect_btn.clicked.connect(self._on_connect)
-        layout.addWidget(self.connect_btn, 1, 2)
+        layout.addWidget(self.connect_btn)
         
         self.test_btn = QPushButton("Test")
         self.test_btn.clicked.connect(self._on_test)
         self.test_btn.setEnabled(False)
-        layout.addWidget(self.test_btn, 1, 3)
+        layout.addWidget(self.test_btn)
         
         return group
     
     def _create_control_panel(self) -> QGroupBox:
-        """Main control buttons"""
+        """Main control buttons - audio device selection moved to Options menu"""
         group = QGroupBox("Controls")
         layout = QVBoxLayout(group)
         
-        # Audio device selector (first row)
-        device_layout = QGridLayout()
-        device_layout.setSpacing(5)
-        
-        device_layout.addWidget(QLabel("Audio Device:"), 0, 0)
+        # Hidden audio device widgets (needed for functionality but now in Options menu)
         self.device_combo = QComboBox()
         self._populate_audio_devices()
-        self.device_combo.setMinimumWidth(300)
-        self.device_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        device_layout.addWidget(self.device_combo, 0, 1, 1, 3)
+        self.device_combo.setVisible(False)
         
-        # Quick presets for common devices (second row)
+        # Hidden preset buttons (still functional via Options menu)
         self.preset_mic_btn = QPushButton("🎤 Mic (Reactive)")
-        self.preset_mic_btn.setFixedWidth(130)
+        self.preset_mic_btn.setVisible(False)
         self.preset_mic_btn.clicked.connect(self._set_device_preset_mic)
-        device_layout.addWidget(self.preset_mic_btn, 1, 1)
         
         self.preset_loopback_btn = QPushButton("🔊 System Audio")
-        self.preset_loopback_btn.setFixedWidth(130)
+        self.preset_loopback_btn.setVisible(False)
         self.preset_loopback_btn.clicked.connect(self._set_device_preset_loopback)
-        device_layout.addWidget(self.preset_loopback_btn, 1, 2)
         
         # Connect device changes to update button states
         self.device_combo.currentIndexChanged.connect(self._update_preset_button_states)
         
-        device_layout.setColumnStretch(3, 1)
-        layout.addLayout(device_layout)
-        
-        # Controls row - split into two rows for better layout
+        # Controls row - all on one row now
         btn_layout = QGridLayout()
         btn_layout.setSpacing(8)
         
@@ -2711,6 +3028,7 @@ bREadfan_69@hotmail.com"""
         layout.setContentsMargins(5, 5, 5, 5)
         
         self.custom_beat_presets = {}
+        self._revert_settings = None  # Stores settings before preset load for revert
         self.preset_buttons = []
         for i in range(5):
             btn = PresetButton(f"{i+1}")
@@ -2719,7 +3037,149 @@ bREadfan_69@hotmail.com"""
             self.preset_buttons.append(btn)
             layout.addWidget(btn)
         
+        # Revert button - restores settings from before last preset load
+        self.revert_btn = QPushButton("↩")  # Circular go-back arrow
+        self.revert_btn.setFixedWidth(52)  # Half width of preset buttons (104/2)
+        self.revert_btn.setToolTip("Revert to settings before last preset load")
+        self.revert_btn.clicked.connect(self._revert_preset)
+        self.revert_btn.setEnabled(False)  # Disabled until a preset is loaded
+        layout.addWidget(self.revert_btn)
+        
         return group
+    
+    def _capture_current_settings(self) -> dict:
+        """Capture all current UI settings for revert functionality"""
+        return {
+            # Beat Detection Tab
+            'freq_low': self.freq_range_slider.low(),
+            'freq_high': self.freq_range_slider.high(),
+            'sensitivity': self.sensitivity_slider.value(),
+            'peak_floor': self.peak_floor_slider.value(),
+            'peak_decay': self.peak_decay_slider.value(),
+            'rise_sensitivity': self.rise_sens_slider.value(),
+            'flux_multiplier': self.flux_mult_slider.value(),
+            'audio_gain': self.audio_gain_slider.value(),
+            'silence_reset_ms': int(self.silence_reset_slider.value()),
+            'detection_type': self.detection_type_combo.currentIndex(),
+            
+            # Tempo Tracking
+            'tempo_tracking_enabled': self.tempo_tracking_checkbox.isChecked(),
+            'time_sig_index': self.time_sig_combo.currentIndex(),
+            'stability_threshold': self.stability_threshold_slider.value(),
+            'tempo_timeout_ms': int(self.tempo_timeout_slider.value()),
+            'phase_snap_weight': self.phase_snap_slider.value(),
+
+            # Stroke Settings Tab
+            'stroke_mode': self.mode_combo.currentIndex(),
+            'stroke_min': self.stroke_range_slider.low(),
+            'stroke_max': self.stroke_range_slider.high(),
+            'min_interval_ms': int(self.min_interval_slider.value()),
+            'stroke_fullness': self.fullness_slider.value(),
+            'minimum_depth': self.min_depth_slider.value(),
+            'freq_depth_factor': self.freq_depth_slider.value(),
+            'depth_freq_low': self.depth_freq_range_slider.low(),
+            'depth_freq_high': self.depth_freq_range_slider.high(),
+            'flux_threshold': self.flux_threshold_slider.value(),
+            'flux_scaling_weight': self.flux_scaling_slider.value(),
+            'phase_advance': self.phase_advance_slider.value(),
+
+            # Jitter / Creep Tab
+            'jitter_enabled': self.jitter_enabled.isChecked(),
+            'jitter_amplitude': self.jitter_amplitude_slider.value(),
+            'jitter_intensity': self.jitter_intensity_slider.value(),
+            'creep_enabled': self.creep_enabled.isChecked(),
+            'creep_speed': self.creep_speed_slider.value(),
+
+            # Axis Weights Tab
+            'alpha_weight': self.alpha_weight_slider.value(),
+            'beta_weight': self.beta_weight_slider.value(),
+
+            # Pulse Freq Tab
+            'pulse_freq_low': self.pulse_freq_range_slider.low(),
+            'pulse_freq_high': self.pulse_freq_range_slider.high(),
+            'tcode_freq_min': self.tcode_freq_range_slider.low(),
+            'tcode_freq_max': self.tcode_freq_range_slider.high(),
+            'freq_weight': self.freq_weight_slider.value(),
+        }
+    
+    def _revert_preset(self):
+        """Revert to settings from before the last preset was loaded"""
+        if self._revert_settings is None:
+            return
+        
+        # Restore all settings from _revert_settings (same logic as _load_freq_preset)
+        preset_data = self._revert_settings
+        from config import StrokeMode
+        
+        # Beat Detection Tab
+        self.freq_range_slider.setLow(preset_data['freq_low'])
+        self.freq_range_slider.setHigh(preset_data['freq_high'])
+        self.sensitivity_slider.setValue(preset_data['sensitivity'])
+        self.peak_floor_slider.setValue(preset_data['peak_floor'])
+        self.peak_decay_slider.setValue(preset_data['peak_decay'])
+        self.rise_sens_slider.setValue(preset_data['rise_sensitivity'])
+        self.flux_mult_slider.setValue(preset_data['flux_multiplier'])
+        self.audio_gain_slider.setValue(preset_data['audio_gain'])
+        self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
+        self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
+        
+        # Tempo Tracking
+        self.tempo_tracking_checkbox.setChecked(preset_data['tempo_tracking_enabled'])
+        self._on_tempo_tracking_toggle(2 if preset_data['tempo_tracking_enabled'] else 0)
+        self.time_sig_combo.setCurrentIndex(preset_data['time_sig_index'])
+        self._on_time_sig_change(preset_data['time_sig_index'])
+        self.stability_threshold_slider.setValue(preset_data['stability_threshold'])
+        self._on_stability_threshold_change(preset_data['stability_threshold'])
+        self.tempo_timeout_slider.setValue(preset_data['tempo_timeout_ms'])
+        self._on_tempo_timeout_change(preset_data['tempo_timeout_ms'])
+        self.phase_snap_slider.setValue(preset_data['phase_snap_weight'])
+        self._on_phase_snap_change(preset_data['phase_snap_weight'])
+        
+        # Stroke Settings Tab
+        self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
+        self._on_mode_change(preset_data['stroke_mode'])
+        self.stroke_range_slider.setLow(preset_data['stroke_min'])
+        self.stroke_range_slider.setHigh(preset_data['stroke_max'])
+        self.min_interval_slider.setValue(preset_data['min_interval_ms'])
+        self.fullness_slider.setValue(preset_data['stroke_fullness'])
+        self.min_depth_slider.setValue(preset_data['minimum_depth'])
+        self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
+        self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
+        self.depth_freq_range_slider.setHigh(preset_data['depth_freq_high'])
+        self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
+        self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
+        self.phase_advance_slider.setValue(preset_data['phase_advance'])
+        
+        # Jitter / Creep Tab
+        self.jitter_enabled.setChecked(preset_data['jitter_enabled'])
+        self.jitter_amplitude_slider.setValue(preset_data['jitter_amplitude'])
+        self.jitter_intensity_slider.setValue(preset_data['jitter_intensity'])
+        self.creep_enabled.setChecked(preset_data['creep_enabled'])
+        self.creep_speed_slider.setValue(preset_data['creep_speed'])
+        
+        # Axis Weights Tab
+        self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
+        self.beta_weight_slider.setValue(preset_data['beta_weight'])
+        
+        # Pulse Freq Tab
+        self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
+        self.pulse_freq_range_slider.setHigh(preset_data['pulse_freq_high'])
+        self.tcode_freq_range_slider.setLow(preset_data['tcode_freq_min'])
+        self.tcode_freq_range_slider.setHigh(preset_data['tcode_freq_max'])
+        self.freq_weight_slider.setValue(preset_data['freq_weight'])
+        
+        # Sync config
+        self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)
+        
+        # Deactivate all preset buttons
+        for btn in self.preset_buttons:
+            btn.set_active(False)
+        
+        # Disable revert button (already reverted)
+        self.revert_btn.setEnabled(False)
+        self._revert_settings = None
+        
+        print("[Config] Reverted to previous settings")
 
     def _create_pulse_freq_tab(self) -> QWidget:
         """Pulse Frequency (P0 TCode) controls"""
@@ -2825,6 +3285,119 @@ bREadfan_69@hotmail.com"""
             self.audio_engine._spectrum_skip_frames = skip_values[index]
         print(f"[Config] Spectrum skip frames changed to {skip_values[index]}")
     
+    def _on_auto_toggle(self, param: str, state: int):
+        """Toggle auto-adjustment for a beat detection parameter"""
+        enabled = state == 2
+        self._auto_adjust_enabled[param] = enabled
+        print(f"[Auto] {param} auto-adjust {'enabled' if enabled else 'disabled'}")
+        
+        # Start/stop auto-adjust timer based on whether any auto is enabled
+        any_enabled = any(self._auto_adjust_enabled.values())
+        if any_enabled and self._auto_adjust_timer is None:
+            self._auto_adjust_timer = QTimer()
+            self._auto_adjust_timer.timeout.connect(self._auto_adjust_beat_detection)
+            self._auto_adjust_timer.start(self._auto_adjust_interval_ms)
+            print("[Auto] Started auto-adjust timer")
+        elif not any_enabled and self._auto_adjust_timer is not None:
+            self._auto_adjust_timer.stop()
+            self._auto_adjust_timer = None
+            print("[Auto] Stopped auto-adjust timer")
+    
+    def _auto_adjust_beat_detection(self):
+        """Auto-adjust beat detection parameters based on beat rate.
+        - No beats detected (but audio present): increase sensitivity
+        - Too many beats (>200 BPM or >1 beat/300ms): decrease sensitivity
+        """
+        # Only adjust when playing
+        if not self.is_sending or not self.is_running:
+            return
+        
+        # Get tempo info from audio engine
+        tempo_info = {'bpm': 0, 'confidence': 0}
+        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+            tempo_info = self.audio_engine.get_tempo_info()
+        
+        current_time = time.time()
+        time_since_beat = current_time - self._last_beat_time_for_auto
+        bpm = tempo_info.get('bpm', 0)
+        
+        # Check if we have audio (not silence) - use peak envelope from audio engine
+        has_audio = False
+        if self.audio_engine and hasattr(self.audio_engine, 'peak_envelope'):
+            has_audio = self.audio_engine.peak_envelope > 0.001  # Very low threshold for "audio present"
+        
+        # Determine adjustment direction
+        # Conditions for "need more sensitivity":
+        # - Audio present AND no beats for 750ms+ AND BPM is 0 or very low
+        need_more_sensitivity = has_audio and time_since_beat > 0.75 and bpm < 30
+        
+        # Conditions for "need less sensitivity":
+        # - BPM > 200 OR beats coming faster than 1 per 300ms (would be >200 BPM)
+        need_less_sensitivity = bpm > 200 or (time_since_beat < 0.3 and bpm > 180)
+        
+        # Adjustment rates per 100ms tick (instruction: 1.0/750ms for audio_amp)
+        # Since timer runs every 100ms, that's ~7.5 ticks per 750ms
+        # So per tick: 1.0/7.5 = ~0.133 for audio_amp
+        amp_rate = 0.133
+        floor_rate = 0.01  # Slower adjustment for floor (range 0-0.8)
+        decay_rate = 0.005  # Very slow for decay (range 0.5-0.999)
+        rise_rate = 0.02   # Moderate for rise sensitivity (range 0-1)
+        
+        if need_more_sensitivity:
+            # Audio Amplification: raise (more gain = more detected energy)
+            if self._auto_adjust_enabled.get('audio_amp', False):
+                current = self.audio_gain_slider.value()
+                new_val = min(10.0, current + amp_rate)
+                if new_val != current:
+                    self.audio_gain_slider.setValue(new_val)
+            
+            # Peak Floor: lower (allow quieter peaks to count)
+            if self._auto_adjust_enabled.get('peak_floor', False):
+                current = self.peak_floor_slider.value()
+                new_val = max(0.0, current - floor_rate)
+                if new_val != current:
+                    self.peak_floor_slider.setValue(new_val)
+            
+            # Peak Decay: lower (faster decay = more peaks above envelope)
+            if self._auto_adjust_enabled.get('peak_decay', False):
+                current = self.peak_decay_slider.value()
+                new_val = max(0.5, current - decay_rate)
+                if new_val != current:
+                    self.peak_decay_slider.setValue(new_val)
+            
+            # Rise Sensitivity: lower (less rise required = more sensitive)
+            if self._auto_adjust_enabled.get('rise_sens', False):
+                current = self.rise_sens_slider.value()
+                new_val = max(0.0, current - rise_rate)
+                if new_val != current:
+                    self.rise_sens_slider.setValue(new_val)
+                    
+        elif need_less_sensitivity:
+            # Reverse direction for all parameters
+            if self._auto_adjust_enabled.get('audio_amp', False):
+                current = self.audio_gain_slider.value()
+                new_val = max(0.1, current - amp_rate)
+                if new_val != current:
+                    self.audio_gain_slider.setValue(new_val)
+            
+            if self._auto_adjust_enabled.get('peak_floor', False):
+                current = self.peak_floor_slider.value()
+                new_val = min(0.8, current + floor_rate)
+                if new_val != current:
+                    self.peak_floor_slider.setValue(new_val)
+            
+            if self._auto_adjust_enabled.get('peak_decay', False):
+                current = self.peak_decay_slider.value()
+                new_val = min(0.999, current + decay_rate)
+                if new_val != current:
+                    self.peak_decay_slider.setValue(new_val)
+            
+            if self._auto_adjust_enabled.get('rise_sens', False):
+                current = self.rise_sens_slider.value()
+                new_val = min(1.0, current + rise_rate)
+                if new_val != current:
+                    self.rise_sens_slider.setValue(new_val)
+    
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings"""
         widget = QWidget()
@@ -2862,28 +3435,53 @@ bREadfan_69@hotmail.com"""
         self.sensitivity_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'sensitivity', v))
         layout.addWidget(self.sensitivity_slider)
         
-        # Peak floor: minimum energy to consider (0 = disabled)
+        # Peak floor: minimum energy to consider (0 = disabled) - with auto toggle
+        peak_floor_row = QHBoxLayout()
         self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.0, 0.8, 0.0, 2)
         self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
-        layout.addWidget(self.peak_floor_slider)
+        peak_floor_row.addWidget(self.peak_floor_slider, 1)
+        self.peak_floor_auto_cb = QCheckBox("auto")
+        self.peak_floor_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
+        self.peak_floor_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_floor', state))
+        peak_floor_row.addWidget(self.peak_floor_auto_cb)
+        layout.addLayout(peak_floor_row)
         
+        # Peak decay - with auto toggle
+        peak_decay_row = QHBoxLayout()
         self.peak_decay_slider = SliderWithLabel("Peak Decay", 0.5, 0.999, 0.9, 3)
         self.peak_decay_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_decay', v))
-        layout.addWidget(self.peak_decay_slider)
+        peak_decay_row.addWidget(self.peak_decay_slider, 1)
+        self.peak_decay_auto_cb = QCheckBox("auto")
+        self.peak_decay_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
+        self.peak_decay_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_decay', state))
+        peak_decay_row.addWidget(self.peak_decay_auto_cb)
+        layout.addLayout(peak_decay_row)
         
-        # Rise sensitivity: 0 = disabled, higher = require more rise
+        # Rise sensitivity: 0 = disabled, higher = require more rise - with auto toggle
+        rise_sens_row = QHBoxLayout()
         self.rise_sens_slider = SliderWithLabel("Rise Sensitivity", 0.0, 1.0, 0.0)
         self.rise_sens_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'rise_sensitivity', v))
-        layout.addWidget(self.rise_sens_slider)
+        rise_sens_row.addWidget(self.rise_sens_slider, 1)
+        self.rise_sens_auto_cb = QCheckBox("auto")
+        self.rise_sens_auto_cb.setToolTip("Auto-lower when no beats detected (more sensitive), raise when too many")
+        self.rise_sens_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('rise_sens', state))
+        rise_sens_row.addWidget(self.rise_sens_auto_cb)
+        layout.addLayout(rise_sens_row)
         
         self.flux_mult_slider = SliderWithLabel("Flux Multiplier", 0.1, 5.0, 1.0, 1)
         self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
         layout.addWidget(self.flux_mult_slider)
         
-        # Audio amplification/gain: boost weak signals (0.1=quiet, 10.0=loud)
+        # Audio amplification/gain: boost weak signals (0.1=quiet, 10.0=loud) - with auto toggle
+        audio_gain_row = QHBoxLayout()
         self.audio_gain_slider = SliderWithLabel("Audio Amplification", 0.1, 10.0, 5.0, 1)
         self.audio_gain_slider.valueChanged.connect(lambda v: setattr(self.config.audio, 'gain', v))
-        layout.addWidget(self.audio_gain_slider)
+        audio_gain_row.addWidget(self.audio_gain_slider, 1)
+        self.audio_gain_auto_cb = QCheckBox("auto")
+        self.audio_gain_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
+        self.audio_gain_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('audio_amp', state))
+        audio_gain_row.addWidget(self.audio_gain_auto_cb)
+        layout.addLayout(audio_gain_row)
         
         # Butterworth filter checkbox (requires restart)
         self.butterworth_checkbox = QCheckBox("Use Butterworth bandpass filter (better bass isolation)")
@@ -3151,6 +3749,10 @@ bREadfan_69@hotmail.com"""
         from config import StrokeMode
         key = str(idx)
         if key in self.custom_beat_presets:
+            # Capture current settings before loading for revert functionality
+            self._revert_settings = self._capture_current_settings()
+            self.revert_btn.setEnabled(True)
+            
             preset_data = self.custom_beat_presets[key]
             # Beat Detection Tab
             self.freq_range_slider.setLow(preset_data['freq_low'])
@@ -3787,6 +4389,9 @@ bREadfan_69@hotmail.com"""
     def _on_beat(self, event: BeatEvent):
         """Handle beat event in GUI thread"""
         if event.is_beat:
+            # Track beat time for auto-adjustment feature
+            self._last_beat_time_for_auto = time.time()
+            
             # Light up the beat indicator (green for any beat)
             if hasattr(self, 'beat_indicator') and self.beat_indicator is not None:
                 self.beat_indicator.setStyleSheet("color: #0f0; font-size: 24px;")
