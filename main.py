@@ -1800,15 +1800,15 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_consec_lock_sec: float = 5.0  # Seconds of continuous beats before full lock
         self._auto_consec_beat_start: float = 0.0  # When consecutive beats started
         self._auto_consec_locked: bool = False  # True = all hunting stopped
-        # Impact-based step sizes: (hunt_step, lock_time_sec, max_limit_when_hunting)
+        # Impact-based step sizes: (hunt_step, lock_time_ms, max_limit_when_hunting)
         # Oscillation amplitude is always 3/4 of step_size (computed in _adjust_single_param)
         self._auto_param_config: dict = {
-            'sensitivity': (0.008, 5.0, 1.0),     # 75% impact - small steps
-            'audio_amp': (0.04, 5.0, 1.0),        # 75% impact - LIMIT TO 1.0 when hunting
-            'flux_mult': (0.015, 5.0, 5.0),       # 40% impact
-            'rise_sens': (0.008, 5.0, 1.0),       # 30% impact
-            'peak_floor': (0.004, 5.0, 0.0),      # 15% impact
-            'peak_decay': (0.002, 5.0, 0.5),      # 10% impact
+            'sensitivity': (0.008, 5000.0, 1.0),     # 75% impact - small steps
+            'audio_amp': (0.04, 5000.0, 1.0),        # 75% impact - LIMIT TO 1.0 when hunting
+            'flux_mult': (0.015, 5000.0, 5.0),       # 40% impact
+            'rise_sens': (0.008, 5000.0, 1.0),       # 30% impact
+            'peak_floor': (0.004, 5000.0, 0.0),      # 15% impact
+            'peak_decay': (0.002, 5000.0, 0.5),      # 10% impact
         }
         
         # State
@@ -3384,7 +3384,7 @@ bREadfan_69@hotmail.com"""
             new_step = step if step is not None else cur_step
             new_lock = lock_time if lock_time is not None else cur_lock
             self._auto_param_config[param] = (new_step, new_lock, cur_max)
-            print(f"[Spinbox] ✓ {param} config: step={new_step:.3f}, lock={new_lock:.1f}s")
+            print(f"[Spinbox] ✓ {param} config: step={new_step:.3f}, lock={new_lock:.0f}ms")
         else:
             print(f"[Spinbox] ✗ {param} NOT in _auto_param_config!")
     
@@ -3484,10 +3484,10 @@ bREadfan_69@hotmail.com"""
             print(f"[Auto] audio_amp LOCKED (first beat at {bpm:.0f} BPM)")
         elif self._auto_param_state['audio_amp'] == 'LOCKED' and not has_beat:
             sens_is_hunting = self._auto_param_state['sensitivity'] == 'HUNTING'
-            lock_cfg = self._auto_param_config.get('audio_amp', (0, 5.0, 0))
-            min_lock_time = lock_cfg[1]
-            time_locked = current_time - self._auto_param_lock_time.get('audio_amp', 0)
-            if sens_is_hunting and no_beat_duration >= 1.5 and time_locked >= min_lock_time:
+            lock_cfg = self._auto_param_config.get('audio_amp', (0, 5000.0, 0))
+            min_lock_time_ms = lock_cfg[1]
+            time_locked_ms = (current_time - self._auto_param_lock_time.get('audio_amp', 0)) * 1000
+            if sens_is_hunting and no_beat_duration >= 1.5 and time_locked_ms >= min_lock_time_ms:
                 self._auto_param_state['audio_amp'] = 'HUNTING'
                 print(f"[Auto] audio_amp resumed HUNTING (sensitivity hunting + no beat for {no_beat_duration:.1f}s)")
         
@@ -3498,9 +3498,9 @@ bREadfan_69@hotmail.com"""
             print(f"[Auto] sensitivity LOCKED (tempo at {bpm:.0f} BPM)")
         # When downbeat found, reverse sensitivity to find minimum
         elif self._auto_param_state['sensitivity'] == 'LOCKED' and has_downbeat:
-            lock_cfg = self._auto_param_config.get('sensitivity', (0, 5.0, 0))
-            time_locked = current_time - self._auto_param_lock_time.get('sensitivity', 0)
-            if time_locked >= lock_cfg[1]:
+            lock_cfg = self._auto_param_config.get('sensitivity', (0, 5000.0, 0))
+            time_locked_ms = (current_time - self._auto_param_lock_time.get('sensitivity', 0)) * 1000
+            if time_locked_ms >= lock_cfg[1]:
                 self._auto_param_state['sensitivity'] = 'REVERSING'
                 print(f"[Auto] sensitivity REVERSING (downbeat conf={downbeat_conf:.2f})")
         # When downbeat lost during reversal, re-lock
@@ -3510,11 +3510,11 @@ bREadfan_69@hotmail.com"""
             print(f"[Auto] sensitivity re-LOCKED (downbeat lost)")
         # If sensitivity is locked but no tempo anymore, unlock after lock_time
         elif self._auto_param_state['sensitivity'] == 'LOCKED' and not has_tempo:
-            lock_cfg = self._auto_param_config.get('sensitivity', (0, 5.0, 0))
-            time_locked = current_time - self._auto_param_lock_time.get('sensitivity', 0)
-            if time_locked >= lock_cfg[1]:
+            lock_cfg = self._auto_param_config.get('sensitivity', (0, 5000.0, 0))
+            time_locked_ms = (current_time - self._auto_param_lock_time.get('sensitivity', 0)) * 1000
+            if time_locked_ms >= lock_cfg[1]:
                 self._auto_param_state['sensitivity'] = 'HUNTING'
-                print(f"[Auto] sensitivity resumed HUNTING (tempo lost after {time_locked:.1f}s locked)")
+                print(f"[Auto] sensitivity resumed HUNTING (tempo lost after {time_locked_ms:.0f}ms locked)")
         
         # peak_floor, peak_decay, rise_sens: hunt until downbeat, resume if lost (respecting lock time)
         for p in ['peak_floor', 'peak_decay', 'rise_sens']:
@@ -3523,11 +3523,11 @@ bREadfan_69@hotmail.com"""
                 self._auto_param_lock_time[p] = current_time
                 print(f"[Auto] {p} LOCKED (downbeat detected)")
             elif self._auto_param_state[p] == 'LOCKED' and not has_downbeat and has_tempo:
-                lock_cfg = self._auto_param_config.get(p, (0, 5.0, 0))
-                time_locked = current_time - self._auto_param_lock_time.get(p, 0)
-                if time_locked >= lock_cfg[1]:
+                lock_cfg = self._auto_param_config.get(p, (0, 5000.0, 0))
+                time_locked_ms = (current_time - self._auto_param_lock_time.get(p, 0)) * 1000
+                if time_locked_ms >= lock_cfg[1]:
                     self._auto_param_state[p] = 'HUNTING'
-                    print(f"[Auto] {p} resumed HUNTING (downbeat lost after {time_locked:.1f}s locked)")
+                    print(f"[Auto] {p} resumed HUNTING (downbeat lost after {time_locked_ms:.0f}ms locked)")
         
         # flux_mult: hunt until downbeat, lock permanently on 2nd detection
         if self._auto_param_state['flux_mult'] == 'HUNTING' and has_downbeat:
@@ -3538,11 +3538,11 @@ bREadfan_69@hotmail.com"""
             print(f"[Auto] flux_mult LOCKED{permanent} (count={self._auto_flux_lock_count})")
         elif self._auto_param_state['flux_mult'] == 'LOCKED' and not has_downbeat and has_tempo:
             if self._auto_flux_lock_count < 2:
-                lock_cfg = self._auto_param_config.get('flux_mult', (0, 5.0, 0))
-                time_locked = current_time - self._auto_param_lock_time.get('flux_mult', 0)
-                if time_locked >= lock_cfg[1]:
+                lock_cfg = self._auto_param_config.get('flux_mult', (0, 5000.0, 0))
+                time_locked_ms = (current_time - self._auto_param_lock_time.get('flux_mult', 0)) * 1000
+                if time_locked_ms >= lock_cfg[1]:
                     self._auto_param_state['flux_mult'] = 'HUNTING'
-                    print(f"[Auto] flux_mult resumed HUNTING (downbeat lost after {time_locked:.1f}s locked)")
+                    print(f"[Auto] flux_mult resumed HUNTING (downbeat lost after {time_locked_ms:.0f}ms locked)")
             # If >= 2, stay LOCKED permanently
         
         # === HANDLE TOO-FAST: reverse all non-locked params ===
@@ -3599,7 +3599,7 @@ bREadfan_69@hotmail.com"""
         if not config:
             return False
         
-        step_size, lock_time, hunt_max = config
+        step_size, lock_time_ms, hunt_max = config
         
         # Oscillation amplitude is always 3/4 of step size
         osc_amp = step_size * 0.75
@@ -3645,10 +3645,11 @@ bREadfan_69@hotmail.com"""
                 return True
         elif param == 'rise_sens':
             current = self.rise_sens_slider.value()
+            # Rise sensitivity inverted: lower = more tolerant, higher = stricter
             if raise_sensitivity:
-                new_val = current + step_size + osc_offset
+                new_val = current - step_size - osc_offset  # Lower (more tolerant)
             else:
-                new_val = current - step_size + osc_offset
+                new_val = current + step_size - osc_offset  # Raise (stricter)
             new_val = max(0.0, min(1.0, new_val))
             if abs(new_val - current) > 0.001:
                 self.rise_sens_slider.setValue(new_val)
@@ -3762,12 +3763,12 @@ bREadfan_69@hotmail.com"""
         self.sensitivity_step_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', step=v))
         sens_row.addWidget(self.sensitivity_step_spin)
         self.sensitivity_lock_spin = QDoubleSpinBox()
-        self.sensitivity_lock_spin.setRange(1.0, 30.0)
-        self.sensitivity_lock_spin.setSingleStep(0.5)
-        self.sensitivity_lock_spin.setDecimals(1)
-        self.sensitivity_lock_spin.setValue(5.0)
+        self.sensitivity_lock_spin.setRange(250.0, 5000.0)
+        self.sensitivity_lock_spin.setSingleStep(250.0)
+        self.sensitivity_lock_spin.setDecimals(0)
+        self.sensitivity_lock_spin.setValue(5000.0)
         self.sensitivity_lock_spin.setFixedWidth(75)
-        self.sensitivity_lock_spin.setToolTip("Lock time (seconds)")
+        self.sensitivity_lock_spin.setToolTip("Lock time (ms)")
         self.sensitivity_lock_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', lock_time=v))
         sens_row.addWidget(self.sensitivity_lock_spin)
         layout.addLayout(sens_row)
@@ -3791,12 +3792,12 @@ bREadfan_69@hotmail.com"""
         self.peak_floor_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', step=v))
         peak_floor_row.addWidget(self.peak_floor_step_spin)
         self.peak_floor_lock_spin = QDoubleSpinBox()
-        self.peak_floor_lock_spin.setRange(1.0, 30.0)
-        self.peak_floor_lock_spin.setSingleStep(0.5)
-        self.peak_floor_lock_spin.setDecimals(1)
-        self.peak_floor_lock_spin.setValue(5.0)
+        self.peak_floor_lock_spin.setRange(250.0, 5000.0)
+        self.peak_floor_lock_spin.setSingleStep(250.0)
+        self.peak_floor_lock_spin.setDecimals(0)
+        self.peak_floor_lock_spin.setValue(5000.0)
         self.peak_floor_lock_spin.setFixedWidth(75)
-        self.peak_floor_lock_spin.setToolTip("Lock time (seconds)")
+        self.peak_floor_lock_spin.setToolTip("Lock time (ms)")
         self.peak_floor_lock_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', lock_time=v))
         peak_floor_row.addWidget(self.peak_floor_lock_spin)
         layout.addLayout(peak_floor_row)
@@ -3820,12 +3821,12 @@ bREadfan_69@hotmail.com"""
         self.peak_decay_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', step=v))
         peak_decay_row.addWidget(self.peak_decay_step_spin)
         self.peak_decay_lock_spin = QDoubleSpinBox()
-        self.peak_decay_lock_spin.setRange(1.0, 30.0)
-        self.peak_decay_lock_spin.setSingleStep(0.5)
-        self.peak_decay_lock_spin.setDecimals(1)
-        self.peak_decay_lock_spin.setValue(5.0)
+        self.peak_decay_lock_spin.setRange(250.0, 5000.0)
+        self.peak_decay_lock_spin.setSingleStep(250.0)
+        self.peak_decay_lock_spin.setDecimals(0)
+        self.peak_decay_lock_spin.setValue(5000.0)
         self.peak_decay_lock_spin.setFixedWidth(75)
-        self.peak_decay_lock_spin.setToolTip("Lock time (seconds)")
+        self.peak_decay_lock_spin.setToolTip("Lock time (ms)")
         self.peak_decay_lock_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', lock_time=v))
         peak_decay_row.addWidget(self.peak_decay_lock_spin)
         layout.addLayout(peak_decay_row)
@@ -3849,12 +3850,12 @@ bREadfan_69@hotmail.com"""
         self.rise_sens_step_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', step=v))
         rise_sens_row.addWidget(self.rise_sens_step_spin)
         self.rise_sens_lock_spin = QDoubleSpinBox()
-        self.rise_sens_lock_spin.setRange(1.0, 30.0)
-        self.rise_sens_lock_spin.setSingleStep(0.5)
-        self.rise_sens_lock_spin.setDecimals(1)
-        self.rise_sens_lock_spin.setValue(5.0)
+        self.rise_sens_lock_spin.setRange(250.0, 5000.0)
+        self.rise_sens_lock_spin.setSingleStep(250.0)
+        self.rise_sens_lock_spin.setDecimals(0)
+        self.rise_sens_lock_spin.setValue(5000.0)
         self.rise_sens_lock_spin.setFixedWidth(75)
-        self.rise_sens_lock_spin.setToolTip("Lock time (seconds)")
+        self.rise_sens_lock_spin.setToolTip("Lock time (ms)")
         self.rise_sens_lock_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', lock_time=v))
         rise_sens_row.addWidget(self.rise_sens_lock_spin)
         layout.addLayout(rise_sens_row)
@@ -3878,12 +3879,12 @@ bREadfan_69@hotmail.com"""
         self.flux_mult_step_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', step=v))
         flux_mult_row.addWidget(self.flux_mult_step_spin)
         self.flux_mult_lock_spin = QDoubleSpinBox()
-        self.flux_mult_lock_spin.setRange(1.0, 30.0)
-        self.flux_mult_lock_spin.setSingleStep(0.5)
-        self.flux_mult_lock_spin.setDecimals(1)
-        self.flux_mult_lock_spin.setValue(5.0)
+        self.flux_mult_lock_spin.setRange(250.0, 5000.0)
+        self.flux_mult_lock_spin.setSingleStep(250.0)
+        self.flux_mult_lock_spin.setDecimals(0)
+        self.flux_mult_lock_spin.setValue(5000.0)
         self.flux_mult_lock_spin.setFixedWidth(75)
-        self.flux_mult_lock_spin.setToolTip("Lock time (seconds)")
+        self.flux_mult_lock_spin.setToolTip("Lock time (ms)")
         self.flux_mult_lock_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', lock_time=v))
         flux_mult_row.addWidget(self.flux_mult_lock_spin)
         layout.addLayout(flux_mult_row)
@@ -3907,12 +3908,12 @@ bREadfan_69@hotmail.com"""
         self.audio_amp_step_spin.valueChanged.connect(lambda v: self._update_param_config('audio_amp', step=v))
         audio_gain_row.addWidget(self.audio_amp_step_spin)
         self.audio_amp_lock_spin = QDoubleSpinBox()
-        self.audio_amp_lock_spin.setRange(1.0, 30.0)
-        self.audio_amp_lock_spin.setSingleStep(0.5)
-        self.audio_amp_lock_spin.setDecimals(1)
-        self.audio_amp_lock_spin.setValue(5.0)
+        self.audio_amp_lock_spin.setRange(250.0, 5000.0)
+        self.audio_amp_lock_spin.setSingleStep(250.0)
+        self.audio_amp_lock_spin.setDecimals(0)
+        self.audio_amp_lock_spin.setValue(5000.0)
         self.audio_amp_lock_spin.setFixedWidth(75)
-        self.audio_amp_lock_spin.setToolTip("Lock time (seconds)")
+        self.audio_amp_lock_spin.setToolTip("Lock time (ms)")
         self.audio_amp_lock_spin.valueChanged.connect(lambda v: self._update_param_config('audio_amp', lock_time=v))
         audio_gain_row.addWidget(self.audio_amp_lock_spin)
         layout.addLayout(audio_gain_row)
@@ -5008,7 +5009,7 @@ bREadfan_69@hotmail.com"""
         print("EXPERIMENTAL SPINBOX SHUTDOWN VALUES")
         print("="*70)
         
-        print("\nParameter        │ Step Size  │ Lock Time (s)")
+        print("\nParameter        │ Step Size  │ Lock Time (ms)")
         print("-" * 55)
         params = [
             ("sensitivity", self.sensitivity_step_spin, self.sensitivity_lock_spin),
@@ -5022,7 +5023,7 @@ bREadfan_69@hotmail.com"""
         for param_name, step_spin, lock_spin in params:
             step_val = step_spin.value()
             lock_val = lock_spin.value()
-            print(f"{param_name:16} │ {step_val:.3f}     │ {lock_val:.1f}")
+            print(f"{param_name:16} │ {step_val:.3f}     │ {lock_val:.0f}")
         
         print("-" * 55)
         consec_lock_val = self.auto_consec_lock_spin.value()
