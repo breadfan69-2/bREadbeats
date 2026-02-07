@@ -1,9 +1,12 @@
-the mountain range visualizer is better!   but i like the other 2 better....the new bar graph one is PERFECT.   If we could make that kind of color and flow on the waterfall, that would be really good too!
+i love the phosphor display!
+we need to give the visualizers more room in the window..its opening with visualizer a little bit vertically scrunched.   mabye move tabs down.
 
-mabye you can even find something prettier here, this one really looks ideal "spectrograph" :https://github.com/nickcercone/spectrogram
+please move the [axis weights]sliders to the [jitter/creep]tab, to help layout and make all tabs have same vertical requirement. rename [jitter/creep]tab -> [effects/axis controls]
+make sure to add any new modules/imports to breadbeats.spec and requirements
 
+rename "project M' button to 
 
+   Whip
+the Llama
 
-purely pretty, not very functional for our purpose, but perhaps could add as a nice visualizatoin only function, to be used after settings are all dialed in- https://github.com/projectM-visualizer/projectm
-
-check out those repos and see if we can add those types of visualizers too ok?   the "purely pretty" one we would want a fullscreen mode for ;-)
+with that exact formatting, 2 rows text, centered.  winamp throwback :-)
