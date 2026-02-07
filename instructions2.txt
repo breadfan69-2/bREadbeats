@@ -1,4 +1,4 @@
-the mountain range visualizer is better!   but i like the other 2 better....
+the mountain range visualizer is better!   but i like the other 2 better....the new bar graph one is PERFECT.   If we could make that kind of color and flow on the waterfall, that would be really good too!
 
 mabye you can even find something prettier here, this one really looks ideal "spectrograph" :https://github.com/nickcercone/spectrogram
 
