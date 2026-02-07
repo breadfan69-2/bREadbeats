@@ -193,11 +193,11 @@ class SpectrumCanvas(pg.PlotWidget):
         self.setYRange(0, self.history_len)
         
         # 4 Frequency band indicators (vertical regions with different heights)
-        # Heights staggered for visibility - labels placed at top of each band
-        # Band heights: beat=100% (full), stroke=50%, pulse=40%, carrier=33%
+        # Heights staggered for visibility - labels placed at top of each band to stack
+        # Band heights: beat=100%, stroke=92%, pulse=84%, carrier=76%
         
         # Band 1: Beat Detection (red) - full height (tallest)
-        self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        self.beat_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                               brush=pg.mkBrush(255, 50, 50, 60),
                                               pen=pg.mkPen('#888888', width=2),
                                               movable=True, span=(0, 1.0))
@@ -205,49 +205,50 @@ class SpectrumCanvas(pg.PlotWidget):
         self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
         self.addItem(self.beat_band)
         
-        # Band 2: Stroke Depth (green) - 50% height
-        self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 2: Stroke Depth (green) - 92% height
+        self.depth_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                                brush=pg.mkBrush(50, 255, 50, 50),
                                                pen=pg.mkPen('#888888', width=2),
-                                               movable=True, span=(0, 0.5))
+                                               movable=True, span=(0, 0.92))
         self.depth_band.setBounds([0, self.num_bins])
         self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
         self.addItem(self.depth_band)
         
-        # Band 3: Pulse/P0 TCode (blue) - 40% height
-        self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 3: Pulse/P0 TCode (blue) - 84% height
+        self.p0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                             brush=pg.mkBrush(50, 100, 255, 50),
                                             pen=pg.mkPen('#888888', width=2),
-                                            movable=True, span=(0, 0.4))
+                                            movable=True, span=(0, 0.84))
         self.p0_band.setBounds([0, self.num_bins])
         self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
         self.addItem(self.p0_band)
         
-        # Band 4: Carrier/F0 TCode (cyan) - 33% height (shortest)
-        self.f0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 4: Carrier/F0 TCode (cyan) - 76% height (shortest)
+        self.f0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                             brush=pg.mkBrush(0, 200, 255, 50),
                                             pen=pg.mkPen('#888888', width=2),
-                                            movable=True, span=(0, 0.33))
+                                            movable=True, span=(0, 0.76))
         self.f0_band.setBounds([0, self.num_bins])
         self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
         self.addItem(self.f0_band)
         
-        # Labels positioned at top of each band (anchor at bottom-center so label sits above)
+        # Labels placed at top of each respective band
+        # Each label sits just inside the upper limit of its own box
+        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
+        self.carrier_label.setPos(5, self.history_len * 0.73)
+        self.addItem(self.carrier_label)
+        
+        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
+        self.pulse_label.setPos(5, self.history_len * 0.81)
+        self.addItem(self.pulse_label)
+        
+        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
+        self.depth_label.setPos(5, self.history_len * 0.89)
+        self.addItem(self.depth_label)
+        
         self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
         self.beat_label.setPos(5, self.history_len * 0.97)
         self.addItem(self.beat_label)
-        
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, self.history_len * 0.50)
-        self.addItem(self.depth_label)
-        
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, self.history_len * 0.40)
-        self.addItem(self.pulse_label)
-        
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, self.history_len * 0.33)
-        self.addItem(self.carrier_label)
         
         # Reference to parent window for slider updates
         self.parent_window = parent
@@ -276,9 +277,9 @@ class SpectrumCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setLow(int(low_hz))
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
-        # Update label position to center of band (above the band)
+        # Update label position to center of band (stacked)
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, self.history_len * 0.48)
+        self.beat_label.setPos(center_bin, self.history_len * 0.97)
     
     def _on_depth_band_changed(self):
         """Handle stroke depth band dragging"""
@@ -292,9 +293,9 @@ class SpectrumCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
-        # Update label position to center of band (above the band)
+        # Update label position to center of band
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, self.history_len * 0.58)
+        self.depth_label.setPos(center_bin, self.history_len * 0.89)
     
     def _on_p0_band_changed(self):
         """Handle P0 TCode band dragging"""
@@ -310,7 +311,7 @@ class SpectrumCanvas(pg.PlotWidget):
             self._updating = False
         # Update label position to center of band (above the band)
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, self.history_len * 0.65)
+        self.pulse_label.setPos(center_bin, self.history_len * 0.81)
     
     def _on_f0_band_changed(self):
         """Handle F0 (carrier) band dragging"""
@@ -337,9 +338,9 @@ class SpectrumCanvas(pg.PlotWidget):
         low_bin = low_norm * self.num_bins
         high_bin = high_norm * self.num_bins
         self.beat_band.setRegion((low_bin, high_bin))
-        # Update label position to center of band (above the band)
+        # Update label position to center of band
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, self.history_len * 0.48)
+        self.beat_label.setPos(center_bin, self.history_len * 0.97)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -348,9 +349,9 @@ class SpectrumCanvas(pg.PlotWidget):
         low_bin = self._hz_to_bin(low_hz)
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
-        # Update label position to center of band (above the band)
+        # Update label position to center of band
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, self.history_len * 0.58)
+        self.depth_label.setPos(center_bin, self.history_len * 0.89)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -359,9 +360,9 @@ class SpectrumCanvas(pg.PlotWidget):
         low_bin = self._hz_to_bin(low_hz)
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
-        # Update label position to center of band (above the band)
+        # Update label position to center of band
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, self.history_len * 0.65)
+        self.pulse_label.setPos(center_bin, self.history_len * 0.81)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -495,8 +496,9 @@ class MountainRangeCanvas(pg.PlotWidget):
         self.addItem(self.peak_scatter)
         
         # 4 Frequency band indicators (vertical regions with different heights)
+        # Band heights: beat=100%, stroke=92%, pulse=84%, carrier=76%
         # Band 1: Beat Detection (red) - full height (tallest)
-        self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        self.beat_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                               brush=pg.mkBrush(255, 50, 50, 40),
                                               pen=pg.mkPen('#FF3232', width=1),
                                               movable=True, span=(0, 1.0))
@@ -504,49 +506,50 @@ class MountainRangeCanvas(pg.PlotWidget):
         self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
         self.addItem(self.beat_band)
         
-        # Band 2: Stroke Depth (green) - 50% height
-        self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 2: Stroke Depth (green) - 92% height
+        self.depth_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                                brush=pg.mkBrush(50, 255, 50, 35),
                                                pen=pg.mkPen('#32FF32', width=1),
-                                               movable=True, span=(0, 0.5))
+                                               movable=True, span=(0, 0.92))
         self.depth_band.setBounds([0, self.num_bins])
         self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
         self.addItem(self.depth_band)
         
-        # Band 3: Pulse/P0 TCode (blue) - 40% height
-        self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 3: Pulse/P0 TCode (blue) - 84% height
+        self.p0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                             brush=pg.mkBrush(50, 100, 255, 35),
                                             pen=pg.mkPen('#3264FF', width=1),
-                                            movable=True, span=(0, 0.4))
+                                            movable=True, span=(0, 0.84))
         self.p0_band.setBounds([0, self.num_bins])
         self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
         self.addItem(self.p0_band)
         
-        # Band 4: Carrier/F0 TCode (cyan) - 33% height (shortest)
-        self.f0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 4: Carrier/F0 TCode (cyan) - 76% height (shortest)
+        self.f0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                             brush=pg.mkBrush(0, 200, 255, 35),
                                             pen=pg.mkPen('#00C8FF', width=1),
-                                            movable=True, span=(0, 0.33))
+                                            movable=True, span=(0, 0.76))
         self.f0_band.setBounds([0, self.num_bins])
         self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
         self.addItem(self.f0_band)
         
-        # Labels positioned at top of each band
+        # Labels placed at top of each respective band
+        # Each label sits just inside the upper limit of its own box
+        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
+        self.carrier_label.setPos(5, 0.73)
+        self.addItem(self.carrier_label)
+        
+        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
+        self.pulse_label.setPos(5, 0.81)
+        self.addItem(self.pulse_label)
+        
+        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
+        self.depth_label.setPos(5, 0.89)
+        self.addItem(self.depth_label)
+        
         self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
         self.beat_label.setPos(5, 0.97)
         self.addItem(self.beat_label)
-        
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, 0.50)
-        self.addItem(self.depth_label)
-        
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, 0.40)
-        self.addItem(self.pulse_label)
-        
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, 0.33)
-        self.addItem(self.carrier_label)
         
         # Reference to parent window
         self.parent_window = parent
@@ -579,7 +582,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, 0.48)
+        self.beat_label.setPos(center_bin, 0.97)
     
     def _on_depth_band_changed(self):
         if self._updating:
@@ -593,7 +596,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, 0.58)
+        self.depth_label.setPos(center_bin, 0.89)
     
     def _on_p0_band_changed(self):
         if self._updating:
@@ -607,7 +610,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, 0.65)
+        self.pulse_label.setPos(center_bin, 0.81)
     
     def _on_f0_band_changed(self):
         if self._updating:
@@ -632,7 +635,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = high_norm * self.num_bins
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, 0.48)
+        self.beat_label.setPos(center_bin, 0.97)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -641,7 +644,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, 0.58)
+        self.depth_label.setPos(center_bin, 0.89)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -650,7 +653,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, 0.65)
+        self.pulse_label.setPos(center_bin, 0.81)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -779,8 +782,9 @@ class BarGraphCanvas(pg.PlotWidget):
         self.addItem(self.bar_item)
         
         # 4 Frequency band indicators (vertical regions with different heights)
+        # Band heights: beat=100%, stroke=92%, pulse=84%, carrier=76%
         # Band 1: Beat Detection (red) - full height (tallest)
-        self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        self.beat_band = pg.LinearRegionItem(values=(0, 32), orientation='vertical',
                                               brush=pg.mkBrush(255, 50, 50, 40),
                                               pen=pg.mkPen('#FF3232', width=1),
                                               movable=True, span=(0, 1.0))
@@ -788,49 +792,50 @@ class BarGraphCanvas(pg.PlotWidget):
         self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
         self.addItem(self.beat_band)
         
-        # Band 2: Stroke Depth (green) - 50% height
-        self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 2: Stroke Depth (green) - 92% height
+        self.depth_band = pg.LinearRegionItem(values=(0, 32), orientation='vertical',
                                                brush=pg.mkBrush(50, 255, 50, 35),
                                                pen=pg.mkPen('#32FF32', width=1),
-                                               movable=True, span=(0, 0.5))
+                                               movable=True, span=(0, 0.92))
         self.depth_band.setBounds([0, self.num_bars])
         self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
         self.addItem(self.depth_band)
         
-        # Band 3: Pulse/P0 TCode (blue) - 40% height
-        self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 3: Pulse/P0 TCode (blue) - 84% height
+        self.p0_band = pg.LinearRegionItem(values=(0, 32), orientation='vertical',
                                             brush=pg.mkBrush(50, 100, 255, 35),
                                             pen=pg.mkPen('#3264FF', width=1),
-                                            movable=True, span=(0, 0.4))
+                                            movable=True, span=(0, 0.84))
         self.p0_band.setBounds([0, self.num_bars])
         self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
         self.addItem(self.p0_band)
         
-        # Band 4: Carrier/F0 TCode (cyan) - 33% height (shortest)
-        self.f0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 4: Carrier/F0 TCode (cyan) - 76% height (shortest)
+        self.f0_band = pg.LinearRegionItem(values=(0, 32), orientation='vertical',
                                             brush=pg.mkBrush(0, 200, 255, 35),
                                             pen=pg.mkPen('#00C8FF', width=1),
-                                            movable=True, span=(0, 0.33))
+                                            movable=True, span=(0, 0.76))
         self.f0_band.setBounds([0, self.num_bars])
         self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
         self.addItem(self.f0_band)
         
-        # Labels positioned at top of each band
+        # Labels placed at top of each respective band
+        # Each label sits just inside the upper limit of its own box
+        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
+        self.carrier_label.setPos(5, 0.73)
+        self.addItem(self.carrier_label)
+        
+        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
+        self.pulse_label.setPos(5, 0.81)
+        self.addItem(self.pulse_label)
+        
+        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
+        self.depth_label.setPos(5, 0.89)
+        self.addItem(self.depth_label)
+        
         self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
         self.beat_label.setPos(5, 0.97)
         self.addItem(self.beat_label)
-        
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, 0.50)
-        self.addItem(self.depth_label)
-        
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, 0.40)
-        self.addItem(self.pulse_label)
-        
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, 0.33)
-        self.addItem(self.carrier_label)
         
         # Reference to parent window
         self.parent_window = parent
@@ -863,7 +868,7 @@ class BarGraphCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, 0.58)
+        self.beat_label.setPos(center_bin, 0.97)
     
     def _on_depth_band_changed(self):
         if self._updating:
@@ -877,7 +882,7 @@ class BarGraphCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, 0.70)
+        self.depth_label.setPos(center_bin, 0.89)
     
     def _on_p0_band_changed(self):
         if self._updating:
@@ -891,7 +896,7 @@ class BarGraphCanvas(pg.PlotWidget):
             self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, 0.78)
+        self.pulse_label.setPos(center_bin, 0.81)
     
     def _on_f0_band_changed(self):
         if self._updating:
@@ -905,7 +910,7 @@ class BarGraphCanvas(pg.PlotWidget):
             self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, 0.88)
+        self.carrier_label.setPos(center_bin, 0.73)
     
     def set_sample_rate(self, sr: int):
         self.sample_rate = sr
@@ -916,7 +921,7 @@ class BarGraphCanvas(pg.PlotWidget):
         high_bin = high_norm * self.num_bars
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, 0.58)
+        self.beat_label.setPos(center_bin, 0.97)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -925,7 +930,7 @@ class BarGraphCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, 0.70)
+        self.depth_label.setPos(center_bin, 0.89)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -934,7 +939,7 @@ class BarGraphCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, 0.78)
+        self.pulse_label.setPos(center_bin, 0.81)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -943,7 +948,7 @@ class BarGraphCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.f0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, 0.88)
+        self.carrier_label.setPos(center_bin, 0.73)
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
@@ -1037,8 +1042,9 @@ class PhosphorCanvas(pg.PlotWidget):
         self.decay = 0.92
         
         # 4 Frequency band indicators (vertical regions with different heights)
+        # Band heights: beat=100%, stroke=92%, pulse=84%, carrier=76%
         # Band 1: Beat Detection (red) - full height (tallest)
-        self.beat_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        self.beat_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                               brush=pg.mkBrush(255, 50, 50, 40),
                                               pen=pg.mkPen('#FF3232', width=1),
                                               movable=True, span=(0, 1.0))
@@ -1046,49 +1052,50 @@ class PhosphorCanvas(pg.PlotWidget):
         self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
         self.addItem(self.beat_band)
         
-        # Band 2: Stroke Depth (green) - 50% height
-        self.depth_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 2: Stroke Depth (green) - 92% height
+        self.depth_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                                brush=pg.mkBrush(50, 255, 50, 35),
                                                pen=pg.mkPen('#32FF32', width=1),
-                                               movable=True, span=(0, 0.5))
+                                               movable=True, span=(0, 0.92))
         self.depth_band.setBounds([0, self.num_bins])
         self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
         self.addItem(self.depth_band)
         
-        # Band 3: Pulse/P0 TCode (blue) - 40% height
-        self.p0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 3: Pulse/P0 TCode (blue) - 84% height
+        self.p0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                             brush=pg.mkBrush(50, 100, 255, 35),
                                             pen=pg.mkPen('#3264FF', width=1),
-                                            movable=True, span=(0, 0.4))
+                                            movable=True, span=(0, 0.84))
         self.p0_band.setBounds([0, self.num_bins])
         self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
         self.addItem(self.p0_band)
         
-        # Band 4: Carrier/F0 TCode (cyan) - 33% height (shortest)
-        self.f0_band = pg.LinearRegionItem(values=(0, 10), orientation='vertical',
+        # Band 4: Carrier/F0 TCode (cyan) - 76% height (shortest)
+        self.f0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
                                             brush=pg.mkBrush(0, 200, 255, 35),
                                             pen=pg.mkPen('#00C8FF', width=1),
-                                            movable=True, span=(0, 0.33))
+                                            movable=True, span=(0, 0.76))
         self.f0_band.setBounds([0, self.num_bins])
         self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
         self.addItem(self.f0_band)
         
-        # Labels positioned at top of each band
+        # Labels placed at top of each respective band
+        # Each label sits just inside the upper limit of its own box
+        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
+        self.carrier_label.setPos(5, self.num_mag_levels * 0.73)
+        self.addItem(self.carrier_label)
+        
+        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
+        self.pulse_label.setPos(5, self.num_mag_levels * 0.81)
+        self.addItem(self.pulse_label)
+        
+        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
+        self.depth_label.setPos(5, self.num_mag_levels * 0.89)
+        self.addItem(self.depth_label)
+        
         self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
         self.beat_label.setPos(5, self.num_mag_levels * 0.97)
         self.addItem(self.beat_label)
-        
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, self.num_mag_levels * 0.50)
-        self.addItem(self.depth_label)
-        
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, self.num_mag_levels * 0.40)
-        self.addItem(self.pulse_label)
-        
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, self.num_mag_levels * 0.33)
-        self.addItem(self.carrier_label)
         
         self.parent_window = parent
         self.sample_rate = 44100
@@ -1114,7 +1121,7 @@ class PhosphorCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, self.num_mag_levels * 0.48)
+        self.beat_label.setPos(center_bin, self.num_mag_levels * 0.97)
     
     def _on_depth_band_changed(self):
         if self._updating:
@@ -1128,7 +1135,7 @@ class PhosphorCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, self.num_mag_levels * 0.58)
+        self.depth_label.setPos(center_bin, self.num_mag_levels * 0.89)
     
     def _on_p0_band_changed(self):
         if self._updating:
@@ -1142,7 +1149,7 @@ class PhosphorCanvas(pg.PlotWidget):
             self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, self.num_mag_levels * 0.65)
+        self.pulse_label.setPos(center_bin, self.num_mag_levels * 0.81)
     
     def _on_f0_band_changed(self):
         if self._updating:
@@ -1167,7 +1174,7 @@ class PhosphorCanvas(pg.PlotWidget):
         high_bin = high_norm * self.num_bins
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, self.num_mag_levels * 0.48)
+        self.beat_label.setPos(center_bin, self.num_mag_levels * 0.97)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -1176,7 +1183,7 @@ class PhosphorCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, self.num_mag_levels * 0.58)
+        self.depth_label.setPos(center_bin, self.num_mag_levels * 0.89)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -1185,7 +1192,7 @@ class PhosphorCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, self.num_mag_levels * 0.65)
+        self.pulse_label.setPos(center_bin, self.num_mag_levels * 0.81)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -1758,11 +1765,51 @@ class BREadbeatsWindow(QMainWindow):
             'audio_amp': False,
             'peak_floor': False,
             'peak_decay': False,
-            'rise_sens': False
+            'rise_sens': False,
+            'sensitivity': False,
+            'flux_mult': False
         }
         self._last_beat_time_for_auto: float = 0.0  # Track last beat for auto-adjust
         self._auto_adjust_timer: Optional[QTimer] = None
-        self._auto_adjust_interval_ms: int = 100  # Check every 100ms
+        self._auto_adjust_interval_ms: int = 100  # Timer tick rate (just checks if cooldown elapsed)
+        self._auto_threshold_sec: float = 0.43  # Beat interval threshold in seconds (428ms = 140 BPM)
+        self._auto_upper_threshold_bpm: float = 160.0  # Upper BPM threshold - reverse adjustment above this
+        self._auto_cooldown_sec: float = 0.10  # Cooldown between parameter adjustments (seconds)
+        self._auto_param_index: int = 0  # Current position in the parameter cycle
+        self._auto_last_adjust_time: float = 0.0  # When we last adjusted a parameter
+        self._auto_param_order: list = ['sensitivity', 'audio_amp', 'flux_mult', 'rise_sens', 'peak_floor', 'peak_decay']  # Ordered by impact
+        # Per-parameter lock states: HUNTING, REVERSING, LOCKED
+        self._auto_param_state: dict = {
+            'audio_amp': 'HUNTING',
+            'peak_floor': 'HUNTING',
+            'peak_decay': 'HUNTING',
+            'rise_sens': 'HUNTING',
+            'sensitivity': 'HUNTING',
+            'flux_mult': 'HUNTING',
+        }
+        self._auto_flux_lock_count: int = 0  # Permanent lock after 2nd downbeat detection
+        self._auto_oscillation_phase: float = 0.0  # Phase for oscillation sine wave
+        self._auto_last_downbeat_conf: float = 0.0  # Last seen downbeat confidence
+        self._auto_downbeat_threshold: float = 0.3  # Low threshold - just needs some downbeats detected
+        self._auto_no_beat_since: float = 0.0  # Timestamp when beats were last lost (for 1500ms timer)
+        self._auto_param_lock_time: dict = {  # When each param was locked (timestamp)
+            'audio_amp': 0.0, 'peak_floor': 0.0, 'peak_decay': 0.0,
+            'rise_sens': 0.0, 'sensitivity': 0.0, 'flux_mult': 0.0,
+        }
+        # Consecutive-beat lock: stop ALL hunting after N seconds of continuous beats
+        self._auto_consec_lock_sec: float = 5.0  # Seconds of continuous beats before full lock
+        self._auto_consec_beat_start: float = 0.0  # When consecutive beats started
+        self._auto_consec_locked: bool = False  # True = all hunting stopped
+        # Impact-based step sizes: (hunt_step, lock_time_sec, max_limit_when_hunting)
+        # Oscillation amplitude is always 3/4 of step_size (computed in _adjust_single_param)
+        self._auto_param_config: dict = {
+            'sensitivity': (0.008, 5.0, 1.0),     # 75% impact - small steps
+            'audio_amp': (0.04, 5.0, 1.0),        # 75% impact - LIMIT TO 1.0 when hunting
+            'flux_mult': (0.015, 5.0, 5.0),       # 40% impact
+            'rise_sens': (0.008, 5.0, 1.0),       # 30% impact
+            'peak_floor': (0.004, 5.0, 0.0),      # 15% impact
+            'peak_decay': (0.002, 5.0, 0.5),      # 10% impact
+        }
         
         # State
         self.is_running = False
@@ -2446,6 +2493,16 @@ class BREadbeatsWindow(QMainWindow):
             self.peak_decay_auto_cb.setChecked(enable)
         if hasattr(self, 'rise_sens_auto_cb'):
             self.rise_sens_auto_cb.setChecked(enable)
+        if hasattr(self, 'sensitivity_auto_cb'):
+            self.sensitivity_auto_cb.setChecked(enable)
+        if hasattr(self, 'flux_mult_auto_cb'):
+            self.flux_mult_auto_cb.setChecked(enable)
+        # Update global auto-range checkbox state
+        if hasattr(self, 'global_auto_range_cb'):
+            # Block signals to prevent recursion
+            self.global_auto_range_cb.blockSignals(True)
+            self.global_auto_range_cb.setChecked(enable)
+            self.global_auto_range_cb.blockSignals(False)
     
     def _on_load_presets(self):
         """Open file dialog to load a presets .json file"""
@@ -3289,6 +3346,11 @@ bREadfan_69@hotmail.com"""
         """Toggle auto-adjustment for a beat detection parameter"""
         enabled = state == 2
         self._auto_adjust_enabled[param] = enabled
+        # Reset this param's lock state when re-enabled so it starts hunting fresh
+        if enabled:
+            self._auto_param_state[param] = 'HUNTING'
+            if param == 'flux_mult':
+                self._auto_flux_lock_count = 0
         print(f"[Auto] {param} auto-adjust {'enabled' if enabled else 'disabled'}")
         
         # Start/stop auto-adjust timer based on whether any auto is enabled
@@ -3303,107 +3365,322 @@ bREadfan_69@hotmail.com"""
             self._auto_adjust_timer = None
             print("[Auto] Stopped auto-adjust timer")
     
+    def _on_auto_threshold_change(self, value: float):
+        """Update auto-range threshold (beat interval in seconds)"""
+        self._auto_threshold_sec = value
+        bpm = 60.0 / value if value > 0 else 0
+        print(f"[Auto] Threshold changed to {value:.2f}s ({bpm:.0f} BPM)")
+    
+    def _on_auto_cooldown_change(self, value: float):
+        """Update cooldown between auto-adjust steps (seconds)"""
+        self._auto_cooldown_sec = value
+        print(f"[Auto] Cooldown changed to {value:.2f}s")
+    
+    def _update_param_config(self, param: str, step: Optional[float] = None, lock_time: Optional[float] = None):
+        """Update step size or lock time for an auto-adjust parameter from spinbox"""
+        print(f"[Spinbox] _update_param_config called: param={param}, step={step}, lock_time={lock_time}")
+        if param in self._auto_param_config:
+            cur_step, cur_lock, cur_max = self._auto_param_config[param]
+            new_step = step if step is not None else cur_step
+            new_lock = lock_time if lock_time is not None else cur_lock
+            self._auto_param_config[param] = (new_step, new_lock, cur_max)
+            print(f"[Spinbox] ✓ {param} config: step={new_step:.3f}, lock={new_lock:.1f}s")
+        else:
+            print(f"[Spinbox] ✗ {param} NOT in _auto_param_config!")
+    
     def _auto_adjust_beat_detection(self):
-        """Auto-adjust beat detection parameters based on beat rate.
-        - No beats detected (but audio present): increase sensitivity
-        - Too many beats (>200 BPM or >1 beat/300ms): decrease sensitivity
+        """Auto-adjust beat detection with per-parameter lock order.
+        
+        Lock Order:
+        - audio_amp: locks at first beat detection
+        - sensitivity: locks when tempo detected; reverses when downbeat found, re-locks when lost
+        - peak_floor/peak_decay/rise_sens: hunt until downbeat, lock. Resume if downbeat lost.
+        - flux_mult: hunt until downbeat, lock. Resume once if lost. Lock permanently on 2nd detection.
+        
+        Shorter steps with larger oscillations to sweep parameter space during hunting.
         """
-        # Only adjust when playing
-        if not self.is_sending or not self.is_running:
+        # Hunt as soon as audio stream is running (Start pressed), don't require Play
+        if not self.is_running:
             return
         
-        # Get tempo info from audio engine
+        current_time = time.time()
+        if current_time - self._auto_last_adjust_time < self._auto_cooldown_sec:
+            return
+        
+        # Get beat/tempo info
         tempo_info = {'bpm': 0, 'confidence': 0}
         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
             tempo_info = self.audio_engine.get_tempo_info()
-        
-        current_time = time.time()
-        time_since_beat = current_time - self._last_beat_time_for_auto
         bpm = tempo_info.get('bpm', 0)
         
-        # Check if we have audio (not silence) - use peak envelope from audio engine
+        # Downbeat confidence (lowered threshold)
+        downbeat_conf = 0.0
+        if self.audio_engine and hasattr(self.audio_engine, 'downbeat_confidence'):
+            downbeat_conf = self.audio_engine.downbeat_confidence
+        
+        # Audio presence check
         has_audio = False
         if self.audio_engine and hasattr(self.audio_engine, 'peak_envelope'):
-            has_audio = self.audio_engine.peak_envelope > 0.001  # Very low threshold for "audio present"
+            has_audio = self.audio_engine.peak_envelope > 0.001
         
-        # Determine adjustment direction
-        # Conditions for "need more sensitivity":
-        # - Audio present AND no beats for 750ms+ AND BPM is 0 or very low
-        need_more_sensitivity = has_audio and time_since_beat > 0.75 and bpm < 30
+        # Reset all param states during silence
+        if not has_audio:
+            any_changed = False
+            for p in self._auto_param_state:
+                if self._auto_param_state[p] != 'HUNTING':
+                    self._auto_param_state[p] = 'HUNTING'
+                    any_changed = True
+            if any_changed or self._auto_consec_locked:
+                self._auto_flux_lock_count = 0
+                self._auto_consec_locked = False
+                self._auto_consec_beat_start = 0.0
+                self._auto_no_beat_since = 0.0
+                for p in self._auto_param_lock_time:
+                    self._auto_param_lock_time[p] = 0.0
+                print(f"[Auto] Silence - all params reset to HUNTING")
+            return
         
-        # Conditions for "need less sensitivity":
-        # - BPM > 200 OR beats coming faster than 1 per 300ms (would be >200 BPM)
-        need_less_sensitivity = bpm > 200 or (time_since_beat < 0.3 and bpm > 180)
+        # Threshold BPM from spinbox
+        lower_threshold_bpm = 60.0 / self._auto_threshold_sec if self._auto_threshold_sec > 0 else 140
         
-        # Adjustment rates per 100ms tick (instruction: 1.0/750ms for audio_amp)
-        # Since timer runs every 100ms, that's ~7.5 ticks per 750ms
-        # So per tick: 1.0/7.5 = ~0.133 for audio_amp
-        amp_rate = 0.133
-        floor_rate = 0.01  # Slower adjustment for floor (range 0-0.8)
-        decay_rate = 0.005  # Very slow for decay (range 0.5-0.999)
-        rise_rate = 0.02   # Moderate for rise sensitivity (range 0-1)
+        # Detection flags (lowered thresholds per instructions)
+        has_beat = bpm > 0
+        has_tempo = bpm >= lower_threshold_bpm
+        has_downbeat = downbeat_conf >= self._auto_downbeat_threshold
+        too_fast = bpm >= self._auto_upper_threshold_bpm
         
-        if need_more_sensitivity:
-            # Audio Amplification: raise (more gain = more detected energy)
-            if self._auto_adjust_enabled.get('audio_amp', False):
-                current = self.audio_gain_slider.value()
-                new_val = min(10.0, current + amp_rate)
-                if new_val != current:
-                    self.audio_gain_slider.setValue(new_val)
-            
-            # Peak Floor: lower (allow quieter peaks to count)
-            if self._auto_adjust_enabled.get('peak_floor', False):
-                current = self.peak_floor_slider.value()
-                new_val = max(0.0, current - floor_rate)
-                if new_val != current:
-                    self.peak_floor_slider.setValue(new_val)
-            
-            # Peak Decay: lower (faster decay = more peaks above envelope)
-            if self._auto_adjust_enabled.get('peak_decay', False):
-                current = self.peak_decay_slider.value()
-                new_val = max(0.5, current - decay_rate)
-                if new_val != current:
-                    self.peak_decay_slider.setValue(new_val)
-            
-            # Rise Sensitivity: lower (less rise required = more sensitive)
-            if self._auto_adjust_enabled.get('rise_sens', False):
-                current = self.rise_sens_slider.value()
-                new_val = max(0.0, current - rise_rate)
-                if new_val != current:
-                    self.rise_sens_slider.setValue(new_val)
-                    
-        elif need_less_sensitivity:
-            # Reverse direction for all parameters
-            if self._auto_adjust_enabled.get('audio_amp', False):
-                current = self.audio_gain_slider.value()
-                new_val = max(0.1, current - amp_rate)
-                if new_val != current:
-                    self.audio_gain_slider.setValue(new_val)
-            
-            if self._auto_adjust_enabled.get('peak_floor', False):
-                current = self.peak_floor_slider.value()
-                new_val = min(0.8, current + floor_rate)
-                if new_val != current:
-                    self.peak_floor_slider.setValue(new_val)
-            
-            if self._auto_adjust_enabled.get('peak_decay', False):
-                current = self.peak_decay_slider.value()
-                new_val = min(0.999, current + decay_rate)
-                if new_val != current:
-                    self.peak_decay_slider.setValue(new_val)
-            
-            if self._auto_adjust_enabled.get('rise_sens', False):
-                current = self.rise_sens_slider.value()
-                new_val = min(1.0, current + rise_rate)
-                if new_val != current:
-                    self.rise_sens_slider.setValue(new_val)
+        # === CONSECUTIVE BEAT LOCK ===
+        if has_beat and has_tempo:
+            if self._auto_consec_beat_start == 0.0:
+                self._auto_consec_beat_start = current_time
+            elif not self._auto_consec_locked and (current_time - self._auto_consec_beat_start) >= self._auto_consec_lock_sec:
+                self._auto_consec_locked = True
+                for p in self._auto_param_state:
+                    if self._auto_param_state[p] != 'LOCKED':
+                        self._auto_param_state[p] = 'LOCKED'
+                print(f"[Auto] CONSECUTIVE LOCK - all params LOCKED after {self._auto_consec_lock_sec:.1f}s of continuous beats")
+        else:
+            self._auto_consec_beat_start = 0.0  # Reset timer if beat lost
+        
+        # If consecutive-locked, skip all adjustments until silence resets
+        if self._auto_consec_locked:
+            return
+        
+        # === PER-PARAMETER STATE TRANSITIONS ===
+        
+        # Track no-beat timer for audio_amp unlock
+        if has_beat:
+            self._auto_no_beat_since = 0.0  # Reset - we have beats
+        elif self._auto_no_beat_since == 0.0:
+            self._auto_no_beat_since = current_time  # Start the no-beat timer
+        
+        no_beat_duration = (current_time - self._auto_no_beat_since) if self._auto_no_beat_since > 0 else 0.0
+        
+        # audio_amp: lock at first beat detection
+        # Unlock ONLY if sensitivity is HUNTING AND no beat for 1500ms
+        if self._auto_param_state['audio_amp'] == 'HUNTING' and has_beat:
+            self._auto_param_state['audio_amp'] = 'LOCKED'
+            self._auto_param_lock_time['audio_amp'] = current_time
+            print(f"[Auto] audio_amp LOCKED (first beat at {bpm:.0f} BPM)")
+        elif self._auto_param_state['audio_amp'] == 'LOCKED' and not has_beat:
+            sens_is_hunting = self._auto_param_state['sensitivity'] == 'HUNTING'
+            lock_cfg = self._auto_param_config.get('audio_amp', (0, 5.0, 0))
+            min_lock_time = lock_cfg[1]
+            time_locked = current_time - self._auto_param_lock_time.get('audio_amp', 0)
+            if sens_is_hunting and no_beat_duration >= 1.5 and time_locked >= min_lock_time:
+                self._auto_param_state['audio_amp'] = 'HUNTING'
+                print(f"[Auto] audio_amp resumed HUNTING (sensitivity hunting + no beat for {no_beat_duration:.1f}s)")
+        
+        # sensitivity: lock when tempo detected
+        if self._auto_param_state['sensitivity'] == 'HUNTING' and has_tempo:
+            self._auto_param_state['sensitivity'] = 'LOCKED'
+            self._auto_param_lock_time['sensitivity'] = current_time
+            print(f"[Auto] sensitivity LOCKED (tempo at {bpm:.0f} BPM)")
+        # When downbeat found, reverse sensitivity to find minimum
+        elif self._auto_param_state['sensitivity'] == 'LOCKED' and has_downbeat:
+            lock_cfg = self._auto_param_config.get('sensitivity', (0, 5.0, 0))
+            time_locked = current_time - self._auto_param_lock_time.get('sensitivity', 0)
+            if time_locked >= lock_cfg[1]:
+                self._auto_param_state['sensitivity'] = 'REVERSING'
+                print(f"[Auto] sensitivity REVERSING (downbeat conf={downbeat_conf:.2f})")
+        # When downbeat lost during reversal, re-lock
+        elif self._auto_param_state['sensitivity'] == 'REVERSING' and not has_downbeat:
+            self._auto_param_state['sensitivity'] = 'LOCKED'
+            self._auto_param_lock_time['sensitivity'] = current_time
+            print(f"[Auto] sensitivity re-LOCKED (downbeat lost)")
+        # If sensitivity is locked but no tempo anymore, unlock after lock_time
+        elif self._auto_param_state['sensitivity'] == 'LOCKED' and not has_tempo:
+            lock_cfg = self._auto_param_config.get('sensitivity', (0, 5.0, 0))
+            time_locked = current_time - self._auto_param_lock_time.get('sensitivity', 0)
+            if time_locked >= lock_cfg[1]:
+                self._auto_param_state['sensitivity'] = 'HUNTING'
+                print(f"[Auto] sensitivity resumed HUNTING (tempo lost after {time_locked:.1f}s locked)")
+        
+        # peak_floor, peak_decay, rise_sens: hunt until downbeat, resume if lost (respecting lock time)
+        for p in ['peak_floor', 'peak_decay', 'rise_sens']:
+            if self._auto_param_state[p] == 'HUNTING' and has_downbeat:
+                self._auto_param_state[p] = 'LOCKED'
+                self._auto_param_lock_time[p] = current_time
+                print(f"[Auto] {p} LOCKED (downbeat detected)")
+            elif self._auto_param_state[p] == 'LOCKED' and not has_downbeat and has_tempo:
+                lock_cfg = self._auto_param_config.get(p, (0, 5.0, 0))
+                time_locked = current_time - self._auto_param_lock_time.get(p, 0)
+                if time_locked >= lock_cfg[1]:
+                    self._auto_param_state[p] = 'HUNTING'
+                    print(f"[Auto] {p} resumed HUNTING (downbeat lost after {time_locked:.1f}s locked)")
+        
+        # flux_mult: hunt until downbeat, lock permanently on 2nd detection
+        if self._auto_param_state['flux_mult'] == 'HUNTING' and has_downbeat:
+            self._auto_flux_lock_count += 1
+            self._auto_param_state['flux_mult'] = 'LOCKED'
+            self._auto_param_lock_time['flux_mult'] = current_time
+            permanent = " (PERMANENT)" if self._auto_flux_lock_count >= 2 else ""
+            print(f"[Auto] flux_mult LOCKED{permanent} (count={self._auto_flux_lock_count})")
+        elif self._auto_param_state['flux_mult'] == 'LOCKED' and not has_downbeat and has_tempo:
+            if self._auto_flux_lock_count < 2:
+                lock_cfg = self._auto_param_config.get('flux_mult', (0, 5.0, 0))
+                time_locked = current_time - self._auto_param_lock_time.get('flux_mult', 0)
+                if time_locked >= lock_cfg[1]:
+                    self._auto_param_state['flux_mult'] = 'HUNTING'
+                    print(f"[Auto] flux_mult resumed HUNTING (downbeat lost after {time_locked:.1f}s locked)")
+            # If >= 2, stay LOCKED permanently
+        
+        # === HANDLE TOO-FAST: reverse all non-locked params ===
+        if too_fast:
+            enabled_params = [p for p in self._auto_param_order if self._auto_adjust_enabled.get(p, False)]
+            huntable = [p for p in enabled_params if self._auto_param_state.get(p) in ('HUNTING', 'REVERSING')]
+            if huntable:
+                self._auto_param_index = self._auto_param_index % len(huntable)
+                param = huntable[self._auto_param_index]
+                adjusted = self._adjust_single_param(param, False, False)  # Lower sensitivity, no oscillation
+                if adjusted:
+                    self._auto_last_adjust_time = current_time
+                    print(f"[Auto] ↓ {param} (too fast {bpm:.0f} BPM)")
+                self._auto_param_index = (self._auto_param_index + 1) % len(huntable)
+            return
+        
+        # === ADJUST NEXT ENABLED NON-LOCKED PARAMETER ===
+        enabled_params = [p for p in self._auto_param_order if self._auto_adjust_enabled.get(p, False)]
+        if not enabled_params:
+            return
+        
+        adjustable = [p for p in enabled_params if self._auto_param_state.get(p) in ('HUNTING', 'REVERSING')]
+        if not adjustable:
+            return
+        
+        self._auto_param_index = self._auto_param_index % len(adjustable)
+        param = adjustable[self._auto_param_index]
+        
+        state = self._auto_param_state[param]
+        raise_sensitivity = (state == 'HUNTING')  # HUNTING=raise, REVERSING=lower
+        oscillate = (state == 'HUNTING')  # Only oscillate when hunting
+        
+        adjusted = self._adjust_single_param(param, raise_sensitivity, oscillate)
+        
+        if adjusted:
+            self._auto_last_adjust_time = current_time
+            direction = "↑" if raise_sensitivity else "↓"
+            print(f"[Auto] {direction} {param} ({state}, BPM={bpm:.0f}, db={downbeat_conf:.2f})")
+        
+        self._auto_param_index = (self._auto_param_index + 1) % len(adjustable)
+        self._auto_oscillation_phase += 0.3
+    
+    def _adjust_single_param(self, param: str, raise_sensitivity: bool, oscillate: bool = False) -> bool:
+        """Adjust a single beat detection parameter with impact-based step sizes.
+        
+        Args:
+            param: Parameter name
+            raise_sensitivity: True to increase sensitivity, False to decrease
+            oscillate: Add small oscillation on top of direction (for hunting mode)
+        
+        Returns True if a change was made.
+        """
+        config = self._auto_param_config.get(param)
+        if not config:
+            return False
+        
+        step_size, lock_time, hunt_max = config
+        
+        # Oscillation amplitude is always 3/4 of step size
+        osc_amp = step_size * 0.75
+        
+        # Calculate oscillation component (small sine wave)
+        osc_offset = 0.0
+        if oscillate:
+            osc_offset = np.sin(self._auto_oscillation_phase) * osc_amp
+        
+        if param == 'audio_amp':
+            current = self.audio_gain_slider.value()
+            # LIMIT TO 1.0 when hunting (auto-range shouldn't boost beyond unity)
+            max_val = hunt_max if raise_sensitivity else 10.0
+            if raise_sensitivity:
+                new_val = min(max_val, current + step_size + osc_offset)
+            else:
+                new_val = max(0.1, current - step_size + osc_offset)
+            new_val = max(0.1, min(10.0, new_val))
+            if abs(new_val - current) > 0.001:
+                self.audio_gain_slider.setValue(new_val)
+                return True
+        elif param == 'peak_floor':
+            current = self.peak_floor_slider.value()
+            # Lower floor = more sensitive (inverted)
+            if raise_sensitivity:
+                new_val = current - step_size - osc_offset  # Lower
+            else:
+                new_val = current + step_size - osc_offset  # Raise
+            new_val = max(0.0, min(0.8, new_val))
+            if abs(new_val - current) > 0.001:
+                self.peak_floor_slider.setValue(new_val)
+                return True
+        elif param == 'peak_decay':
+            current = self.peak_decay_slider.value()
+            # Lower decay = more sensitive (inverted)
+            if raise_sensitivity:
+                new_val = current - step_size - osc_offset  # Lower
+            else:
+                new_val = current + step_size - osc_offset  # Raise
+            new_val = max(0.5, min(0.999, new_val))
+            if abs(new_val - current) > 0.001:
+                self.peak_decay_slider.setValue(new_val)
+                return True
+        elif param == 'rise_sens':
+            current = self.rise_sens_slider.value()
+            if raise_sensitivity:
+                new_val = current + step_size + osc_offset
+            else:
+                new_val = current - step_size + osc_offset
+            new_val = max(0.0, min(1.0, new_val))
+            if abs(new_val - current) > 0.001:
+                self.rise_sens_slider.setValue(new_val)
+                return True
+        elif param == 'sensitivity':
+            current = self.sensitivity_slider.value()
+            if raise_sensitivity:
+                new_val = current + step_size + osc_offset
+            else:
+                new_val = current - step_size + osc_offset
+            new_val = max(0.0, min(1.0, new_val))
+            if abs(new_val - current) > 0.001:
+                self.sensitivity_slider.setValue(new_val)
+                return True
+        elif param == 'flux_mult':
+            current = self.flux_mult_slider.value()
+            if raise_sensitivity:
+                new_val = current + step_size + osc_offset
+            else:
+                new_val = current - step_size + osc_offset
+            new_val = max(0.1, min(5.0, new_val))
+            if abs(new_val - current) > 0.001:
+                self.flux_mult_slider.setValue(new_val)
+                return True
+        return False
     
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
-        # Detection type
+        # Detection type with global auto-range toggle and threshold
         type_layout = QHBoxLayout()
         type_layout.addWidget(QLabel("Detection Type:"))
         self.detection_type_combo = QComboBox()
@@ -3412,6 +3689,42 @@ bREadfan_69@hotmail.com"""
         self.detection_type_combo.currentIndexChanged.connect(self._on_detection_type_change)
         type_layout.addWidget(self.detection_type_combo)
         type_layout.addStretch()
+        self.global_auto_range_cb = QCheckBox("auto-range")
+        self.global_auto_range_cb.setToolTip("Toggle all auto-adjustment functions for beat detection")
+        self.global_auto_range_cb.stateChanged.connect(lambda state: self._enable_all_auto_beat_detection(state == 2))
+        type_layout.addWidget(self.global_auto_range_cb)
+        # Threshold spinbox for auto-range (in seconds, 100ms-2000ms)
+        self.auto_threshold_spin = QDoubleSpinBox()
+        self.auto_threshold_spin.setRange(0.10, 2.00)
+        self.auto_threshold_spin.setSingleStep(0.01)
+        self.auto_threshold_spin.setDecimals(2)
+        self.auto_threshold_spin.setValue(0.43)  # Default 428ms = 140 BPM
+        self.auto_threshold_spin.setFixedWidth(60)
+        self.auto_threshold_spin.setToolTip("Beat interval threshold (sec) - auto lowers sensitivity above this rate")
+        self.auto_threshold_spin.valueChanged.connect(self._on_auto_threshold_change)
+        type_layout.addWidget(self.auto_threshold_spin)
+        # Cooldown spinbox for auto-range (seconds between parameter adjustments)
+        type_layout.addWidget(QLabel("cd:"))
+        self.auto_cooldown_spin = QDoubleSpinBox()
+        self.auto_cooldown_spin.setRange(0.01, 5.00)
+        self.auto_cooldown_spin.setSingleStep(0.05)
+        self.auto_cooldown_spin.setDecimals(2)
+        self.auto_cooldown_spin.setValue(0.10)  # Default 100ms between adjustments
+        self.auto_cooldown_spin.setFixedWidth(60)
+        self.auto_cooldown_spin.setToolTip("Cooldown (sec) between auto-adjust steps - higher = more stable, lower = faster convergence")
+        self.auto_cooldown_spin.valueChanged.connect(self._on_auto_cooldown_change)
+        type_layout.addWidget(self.auto_cooldown_spin)
+        # Consecutive-beat full lock timer
+        type_layout.addWidget(QLabel("lock:"))
+        self.auto_consec_lock_spin = QDoubleSpinBox()
+        self.auto_consec_lock_spin.setRange(1.0, 30.0)
+        self.auto_consec_lock_spin.setSingleStep(0.5)
+        self.auto_consec_lock_spin.setDecimals(1)
+        self.auto_consec_lock_spin.setValue(5.0)
+        self.auto_consec_lock_spin.setFixedWidth(75)
+        self.auto_consec_lock_spin.setToolTip("Seconds of consecutive beats before ALL hunting stops (until silence)")
+        self.auto_consec_lock_spin.valueChanged.connect(lambda v: setattr(self, '_auto_consec_lock_sec', v))
+        type_layout.addWidget(self.auto_consec_lock_spin)
         layout.addLayout(type_layout)
         
         # Frequency band selection
@@ -3430,10 +3743,34 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(freq_group)
         
         # Sliders - with better defaults
-        # Sensitivity: higher = more beats detected (0.0=strict, 1.0=very sensitive)
+        # Sensitivity: higher = more beats detected (0.0=strict, 1.0=very sensitive) - with auto toggle
+        sens_row = QHBoxLayout()
         self.sensitivity_slider = SliderWithLabel("Sensitivity", 0.0, 1.0, 0.7)
         self.sensitivity_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'sensitivity', v))
-        layout.addWidget(self.sensitivity_slider)
+        sens_row.addWidget(self.sensitivity_slider, 1)
+        self.sensitivity_auto_cb = QCheckBox("auto")
+        self.sensitivity_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
+        self.sensitivity_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('sensitivity', state))
+        sens_row.addWidget(self.sensitivity_auto_cb)
+        self.sensitivity_step_spin = QDoubleSpinBox()
+        self.sensitivity_step_spin.setRange(0.001, 0.1)
+        self.sensitivity_step_spin.setSingleStep(0.001)
+        self.sensitivity_step_spin.setDecimals(3)
+        self.sensitivity_step_spin.setValue(0.008)
+        self.sensitivity_step_spin.setFixedWidth(75)
+        self.sensitivity_step_spin.setToolTip("Step size")
+        self.sensitivity_step_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', step=v))
+        sens_row.addWidget(self.sensitivity_step_spin)
+        self.sensitivity_lock_spin = QDoubleSpinBox()
+        self.sensitivity_lock_spin.setRange(1.0, 30.0)
+        self.sensitivity_lock_spin.setSingleStep(0.5)
+        self.sensitivity_lock_spin.setDecimals(1)
+        self.sensitivity_lock_spin.setValue(5.0)
+        self.sensitivity_lock_spin.setFixedWidth(75)
+        self.sensitivity_lock_spin.setToolTip("Lock time (seconds)")
+        self.sensitivity_lock_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', lock_time=v))
+        sens_row.addWidget(self.sensitivity_lock_spin)
+        layout.addLayout(sens_row)
         
         # Peak floor: minimum energy to consider (0 = disabled) - with auto toggle
         peak_floor_row = QHBoxLayout()
@@ -3444,6 +3781,24 @@ bREadfan_69@hotmail.com"""
         self.peak_floor_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
         self.peak_floor_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_floor', state))
         peak_floor_row.addWidget(self.peak_floor_auto_cb)
+        self.peak_floor_step_spin = QDoubleSpinBox()
+        self.peak_floor_step_spin.setRange(0.001, 0.1)
+        self.peak_floor_step_spin.setSingleStep(0.001)
+        self.peak_floor_step_spin.setDecimals(3)
+        self.peak_floor_step_spin.setValue(0.004)
+        self.peak_floor_step_spin.setFixedWidth(75)
+        self.peak_floor_step_spin.setToolTip("Step size")
+        self.peak_floor_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', step=v))
+        peak_floor_row.addWidget(self.peak_floor_step_spin)
+        self.peak_floor_lock_spin = QDoubleSpinBox()
+        self.peak_floor_lock_spin.setRange(1.0, 30.0)
+        self.peak_floor_lock_spin.setSingleStep(0.5)
+        self.peak_floor_lock_spin.setDecimals(1)
+        self.peak_floor_lock_spin.setValue(5.0)
+        self.peak_floor_lock_spin.setFixedWidth(75)
+        self.peak_floor_lock_spin.setToolTip("Lock time (seconds)")
+        self.peak_floor_lock_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', lock_time=v))
+        peak_floor_row.addWidget(self.peak_floor_lock_spin)
         layout.addLayout(peak_floor_row)
         
         # Peak decay - with auto toggle
@@ -3455,6 +3810,24 @@ bREadfan_69@hotmail.com"""
         self.peak_decay_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
         self.peak_decay_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_decay', state))
         peak_decay_row.addWidget(self.peak_decay_auto_cb)
+        self.peak_decay_step_spin = QDoubleSpinBox()
+        self.peak_decay_step_spin.setRange(0.001, 0.1)
+        self.peak_decay_step_spin.setSingleStep(0.001)
+        self.peak_decay_step_spin.setDecimals(3)
+        self.peak_decay_step_spin.setValue(0.002)
+        self.peak_decay_step_spin.setFixedWidth(75)
+        self.peak_decay_step_spin.setToolTip("Step size")
+        self.peak_decay_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', step=v))
+        peak_decay_row.addWidget(self.peak_decay_step_spin)
+        self.peak_decay_lock_spin = QDoubleSpinBox()
+        self.peak_decay_lock_spin.setRange(1.0, 30.0)
+        self.peak_decay_lock_spin.setSingleStep(0.5)
+        self.peak_decay_lock_spin.setDecimals(1)
+        self.peak_decay_lock_spin.setValue(5.0)
+        self.peak_decay_lock_spin.setFixedWidth(75)
+        self.peak_decay_lock_spin.setToolTip("Lock time (seconds)")
+        self.peak_decay_lock_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', lock_time=v))
+        peak_decay_row.addWidget(self.peak_decay_lock_spin)
         layout.addLayout(peak_decay_row)
         
         # Rise sensitivity: 0 = disabled, higher = require more rise - with auto toggle
@@ -3466,11 +3839,54 @@ bREadfan_69@hotmail.com"""
         self.rise_sens_auto_cb.setToolTip("Auto-lower when no beats detected (more sensitive), raise when too many")
         self.rise_sens_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('rise_sens', state))
         rise_sens_row.addWidget(self.rise_sens_auto_cb)
+        self.rise_sens_step_spin = QDoubleSpinBox()
+        self.rise_sens_step_spin.setRange(0.001, 0.1)
+        self.rise_sens_step_spin.setSingleStep(0.001)
+        self.rise_sens_step_spin.setDecimals(3)
+        self.rise_sens_step_spin.setValue(0.008)
+        self.rise_sens_step_spin.setFixedWidth(75)
+        self.rise_sens_step_spin.setToolTip("Step size")
+        self.rise_sens_step_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', step=v))
+        rise_sens_row.addWidget(self.rise_sens_step_spin)
+        self.rise_sens_lock_spin = QDoubleSpinBox()
+        self.rise_sens_lock_spin.setRange(1.0, 30.0)
+        self.rise_sens_lock_spin.setSingleStep(0.5)
+        self.rise_sens_lock_spin.setDecimals(1)
+        self.rise_sens_lock_spin.setValue(5.0)
+        self.rise_sens_lock_spin.setFixedWidth(75)
+        self.rise_sens_lock_spin.setToolTip("Lock time (seconds)")
+        self.rise_sens_lock_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', lock_time=v))
+        rise_sens_row.addWidget(self.rise_sens_lock_spin)
         layout.addLayout(rise_sens_row)
         
+        # Flux Multiplier - with auto toggle
+        flux_mult_row = QHBoxLayout()
         self.flux_mult_slider = SliderWithLabel("Flux Multiplier", 0.1, 5.0, 1.0, 1)
         self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
-        layout.addWidget(self.flux_mult_slider)
+        flux_mult_row.addWidget(self.flux_mult_slider, 1)
+        self.flux_mult_auto_cb = QCheckBox("auto")
+        self.flux_mult_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
+        self.flux_mult_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('flux_mult', state))
+        flux_mult_row.addWidget(self.flux_mult_auto_cb)
+        self.flux_mult_step_spin = QDoubleSpinBox()
+        self.flux_mult_step_spin.setRange(0.001, 0.5)
+        self.flux_mult_step_spin.setSingleStep(0.005)
+        self.flux_mult_step_spin.setDecimals(3)
+        self.flux_mult_step_spin.setValue(0.015)
+        self.flux_mult_step_spin.setFixedWidth(75)
+        self.flux_mult_step_spin.setToolTip("Step size")
+        self.flux_mult_step_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', step=v))
+        flux_mult_row.addWidget(self.flux_mult_step_spin)
+        self.flux_mult_lock_spin = QDoubleSpinBox()
+        self.flux_mult_lock_spin.setRange(1.0, 30.0)
+        self.flux_mult_lock_spin.setSingleStep(0.5)
+        self.flux_mult_lock_spin.setDecimals(1)
+        self.flux_mult_lock_spin.setValue(5.0)
+        self.flux_mult_lock_spin.setFixedWidth(75)
+        self.flux_mult_lock_spin.setToolTip("Lock time (seconds)")
+        self.flux_mult_lock_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', lock_time=v))
+        flux_mult_row.addWidget(self.flux_mult_lock_spin)
+        layout.addLayout(flux_mult_row)
         
         # Audio amplification/gain: boost weak signals (0.1=quiet, 10.0=loud) - with auto toggle
         audio_gain_row = QHBoxLayout()
@@ -3481,6 +3897,24 @@ bREadfan_69@hotmail.com"""
         self.audio_gain_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
         self.audio_gain_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('audio_amp', state))
         audio_gain_row.addWidget(self.audio_gain_auto_cb)
+        self.audio_amp_step_spin = QDoubleSpinBox()
+        self.audio_amp_step_spin.setRange(0.001, 0.5)
+        self.audio_amp_step_spin.setSingleStep(0.01)
+        self.audio_amp_step_spin.setDecimals(3)
+        self.audio_amp_step_spin.setValue(0.040)
+        self.audio_amp_step_spin.setFixedWidth(75)
+        self.audio_amp_step_spin.setToolTip("Step size")
+        self.audio_amp_step_spin.valueChanged.connect(lambda v: self._update_param_config('audio_amp', step=v))
+        audio_gain_row.addWidget(self.audio_amp_step_spin)
+        self.audio_amp_lock_spin = QDoubleSpinBox()
+        self.audio_amp_lock_spin.setRange(1.0, 30.0)
+        self.audio_amp_lock_spin.setSingleStep(0.5)
+        self.audio_amp_lock_spin.setDecimals(1)
+        self.audio_amp_lock_spin.setValue(5.0)
+        self.audio_amp_lock_spin.setFixedWidth(75)
+        self.audio_amp_lock_spin.setToolTip("Lock time (seconds)")
+        self.audio_amp_lock_spin.valueChanged.connect(lambda v: self._update_param_config('audio_amp', lock_time=v))
+        audio_gain_row.addWidget(self.audio_amp_lock_spin)
         layout.addLayout(audio_gain_row)
         
         # Butterworth filter checkbox (requires restart)
@@ -3720,6 +4154,17 @@ bREadfan_69@hotmail.com"""
             'tcode_freq_min': self.tcode_freq_range_slider.low(),
             'tcode_freq_max': self.tcode_freq_range_slider.high(),
             'freq_weight': self.freq_weight_slider.value(),
+
+            # Auto-adjust toggle states
+            'auto_audio_amp': self.audio_gain_auto_cb.isChecked(),
+            'auto_peak_floor': self.peak_floor_auto_cb.isChecked(),
+            'auto_peak_decay': self.peak_decay_auto_cb.isChecked(),
+            'auto_rise_sens': self.rise_sens_auto_cb.isChecked(),
+            'auto_sensitivity': self.sensitivity_auto_cb.isChecked(),
+            'auto_flux_mult': self.flux_mult_auto_cb.isChecked(),
+            'auto_global': self.global_auto_range_cb.isChecked(),
+            'auto_threshold_sec': self._auto_threshold_sec,
+            'auto_cooldown_sec': self._auto_cooldown_sec,
         }
         
         # Add custom name if provided
@@ -3823,6 +4268,28 @@ bREadfan_69@hotmail.com"""
                 self.tcode_freq_range_slider.setHigh(preset_data['tcode_freq_max'])
             if 'freq_weight' in preset_data:
                 self.freq_weight_slider.setValue(preset_data['freq_weight'])
+
+            # Auto-adjust toggle states
+            if 'auto_audio_amp' in preset_data:
+                self.audio_gain_auto_cb.setChecked(preset_data['auto_audio_amp'])
+            if 'auto_peak_floor' in preset_data:
+                self.peak_floor_auto_cb.setChecked(preset_data['auto_peak_floor'])
+            if 'auto_peak_decay' in preset_data:
+                self.peak_decay_auto_cb.setChecked(preset_data['auto_peak_decay'])
+            if 'auto_rise_sens' in preset_data:
+                self.rise_sens_auto_cb.setChecked(preset_data['auto_rise_sens'])
+            if 'auto_sensitivity' in preset_data:
+                self.sensitivity_auto_cb.setChecked(preset_data['auto_sensitivity'])
+            if 'auto_flux_mult' in preset_data:
+                self.flux_mult_auto_cb.setChecked(preset_data['auto_flux_mult'])
+            if 'auto_global' in preset_data:
+                self.global_auto_range_cb.blockSignals(True)
+                self.global_auto_range_cb.setChecked(preset_data['auto_global'])
+                self.global_auto_range_cb.blockSignals(False)
+            if 'auto_threshold_sec' in preset_data:
+                self.auto_threshold_spin.setValue(preset_data['auto_threshold_sec'])
+            if 'auto_cooldown_sec' in preset_data:
+                self.auto_cooldown_spin.setValue(preset_data['auto_cooldown_sec'])
 
             # --- Sync config object with UI (especially enum) ---
             self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)
@@ -4535,11 +5002,42 @@ bREadfan_69@hotmail.com"""
             if elapsed >= self._volume_ramp_duration:
                 self._volume_ramp_active = False
     
+    def _log_experimental_spinbox_shutdown_values(self):
+        """Log final experimental spinbox values at shutdown for documentation"""
+        print("\n" + "="*70)
+        print("EXPERIMENTAL SPINBOX SHUTDOWN VALUES")
+        print("="*70)
+        
+        print("\nParameter        │ Step Size  │ Lock Time (s)")
+        print("-" * 55)
+        params = [
+            ("sensitivity", self.sensitivity_step_spin, self.sensitivity_lock_spin),
+            ("peak_floor", self.peak_floor_step_spin, self.peak_floor_lock_spin),
+            ("peak_decay", self.peak_decay_step_spin, self.peak_decay_lock_spin),
+            ("rise_sens", self.rise_sens_step_spin, self.rise_sens_lock_spin),
+            ("flux_mult", self.flux_mult_step_spin, self.flux_mult_lock_spin),
+            ("audio_amp", self.audio_amp_step_spin, self.audio_amp_lock_spin),
+        ]
+        
+        for param_name, step_spin, lock_spin in params:
+            step_val = step_spin.value()
+            lock_val = lock_spin.value()
+            print(f"{param_name:16} │ {step_val:.3f}     │ {lock_val:.1f}")
+        
+        print("-" * 55)
+        consec_lock_val = self.auto_consec_lock_spin.value()
+        print(f"Consecutive-lock timer: {consec_lock_val:.1f} seconds")
+        print(f"Oscillation rule: 3/4 of step size (automatic)")
+        print("="*70 + "\n")
+
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
         self._stop_engines()
         if self.network_engine:
             self.network_engine.stop()
+
+        # Log experimental spinbox shutdown values
+        self._log_experimental_spinbox_shutdown_values()
 
         # Save all settings from sliders to config before closing
         self.config.stroke.phase_advance = self.phase_advance_slider.value()
