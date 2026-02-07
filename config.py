@@ -28,7 +28,7 @@ class BeatDetectionConfig:
     amplification: float = 1.0        # Audio amplification (slider 0-2)
     flux_multiplier: float = 1.0      # Weight of spectral flux
     # Frequency band selection (Hz)
-    freq_low: float = 20.0            # Low cutoff frequency (Hz)
+    freq_low: float = 30.0            # Low cutoff frequency (Hz)
     freq_high: float = 200.0          # High cutoff frequency (Hz) - bass range default
     silence_reset_ms: int = 400       # How long silence before resetting beat tracking (ms)
     
@@ -50,7 +50,7 @@ class StrokeConfig:
     minimum_depth: float = 0.0        # Lower limit of stroke (absolute bottom)
     freq_depth_factor: float = 0.3    # How much frequency affects depth
     # Frequency band for stroke depth calculation (bass = deeper strokes)
-    depth_freq_low: float = 20.0      # Low frequency = deepest strokes (Hz)
+    depth_freq_low: float = 30.0      # Low frequency = deepest strokes (Hz)
     depth_freq_high: float = 200.0    # High frequency = shallowest strokes (Hz)
     
     # Spectral flux-based stroke control
@@ -73,7 +73,7 @@ class JitterConfig:
 class CreepConfig:
     """Creep - very slow movement when idle"""
     enabled: bool = True
-    speed: float = 0.25               # Multiplier for creep rotation (0.0-1.0+) - 1.0 = 1/4 circle per beat
+    speed: float = 0.02               # Multiplier for creep rotation (0.0-0.1) - lower = slower drift
 
 @dataclass 
 class ConnectionConfig:
@@ -86,7 +86,7 @@ class ConnectionConfig:
 @dataclass
 class PulseFreqConfig:
     """Pulse frequency mapping settings (Other tab)"""
-    monitor_freq_min: float = 20.0    # Min frequency to monitor (Hz)
+    monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
     monitor_freq_max: float = 200.0   # Max frequency to monitor (Hz)
     tcode_freq_min: float = 30.0      # Min sent frequency (Hz, converted to TCode)
     tcode_freq_max: float = 105.0     # Max sent frequency (Hz, converted to TCode)

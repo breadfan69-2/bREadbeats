@@ -32,6 +32,11 @@ class StrokeState:
     beat_counter: int = 0        # For beat skipping on fast tempos
     creep_reset_start_time: float = 0.0  # When creep reset began
     creep_reset_active: bool = False     # Whether creep is resetting to 0
+    # Smooth arc return state
+    arc_return_active: bool = False      # Whether arc return is in progress
+    arc_return_start_time: float = 0.0   # When arc return began  
+    arc_return_from: tuple = (0.0, 0.0)  # Starting position (alpha, beta)
+    arc_return_to: tuple = (0.0, 0.0)    # Target position (alpha, beta)
 
 
 class StrokeMapper:
@@ -85,11 +90,22 @@ class StrokeMapper:
             self._fade_intensity = 1.0
         if not hasattr(self, '_last_quiet_time'):
             self._last_quiet_time = 0.0
+        # Volume restoration state
+        if not hasattr(self, '_volume_restore_start'):
+            self._volume_restore_start = 0.0
+        if not hasattr(self, '_previous_volume_factor'):
+            self._previous_volume_factor = 1.0
+        if not hasattr(self, '_tcode_silence_volume_factor'):
+            self._tcode_silence_volume_factor = 1.0
+            
         # Thresholds for true silence
         quiet_flux_thresh = cfg.flux_threshold * 0.03  # Lowered even more
         quiet_energy_thresh = beat_cfg.peak_floor * 0.3  # Lowered even more
         fade_duration = 2.0  # seconds to fade out
         silence_reset_threshold = beat_cfg.silence_reset_ms / 1000.0  # Convert ms to seconds
+        silence_volume_threshold = 3.0  # 3000ms before reducing volume by 15%
+        volume_restore_duration = 0.5  # 500ms to restore volume
+        
         is_truly_silent = (event.spectral_flux < quiet_flux_thresh and event.peak_energy < quiet_energy_thresh)
         if is_truly_silent:
             if self._fade_intensity > 0.0:
@@ -101,11 +117,29 @@ class StrokeMapper:
                 # If silence persists for more than 250ms, reset tempo/downbeat
                 if self.audio_engine and elapsed > silence_reset_threshold:
                     self.audio_engine.reset_tempo_tracking()
+                # Only reduce volume by 15% after 3000ms of continuous silence
+                if elapsed > silence_volume_threshold:
+                    self._tcode_silence_volume_factor = 0.85
             else:
                 self._fade_intensity = 0.0
-            self._tcode_silence_volume_factor = 0.85  # Lower TCode volume by 15% on silence
+                self._tcode_silence_volume_factor = 0.85  # Keep reduced during silence
         else:
-            self._tcode_silence_volume_factor = 1.0
+            # Restore volume smoothly over 500ms
+            if self._tcode_silence_volume_factor < 1.0:
+                if self._volume_restore_start == 0.0:
+                    self._volume_restore_start = now
+                    self._previous_volume_factor = self._tcode_silence_volume_factor
+                restore_elapsed = now - self._volume_restore_start
+                if restore_elapsed < volume_restore_duration:
+                    # Interpolate from previous to 1.0 over 500ms
+                    progress = restore_elapsed / volume_restore_duration
+                    self._tcode_silence_volume_factor = self._previous_volume_factor + (1.0 - self._previous_volume_factor) * progress
+                else:
+                    self._tcode_silence_volume_factor = 1.0
+                    self._volume_restore_start = 0.0
+            else:
+                self._tcode_silence_volume_factor = 1.0
+                self._volume_restore_start = 0.0
             self._fade_intensity = min(1.0, self._fade_intensity + 0.1)
             self._last_quiet_time = 0.0
         
@@ -397,16 +431,17 @@ class StrokeMapper:
             time.sleep(step_ms / 1000.0)
         
         print(f"[StrokeMapper] ARC complete ({n_points} points)")
-        # Initiate smooth return after arc completes
+        # Initiate smooth arc return after arc completes
+        # Use the new arc_return mechanism for all modes - creates a curved return path
+        self.state.arc_return_active = True
+        self.state.arc_return_start_time = time.time()
+        self.state.arc_return_from = (self.state.alpha, self.state.beta)
         if self.config.stroke.mode == StrokeMode.SPIRAL:
-            # Spiral-specific return: smoothly interpolate from last crest to center
-            self.spiral_reset_active = True
-            self.spiral_reset_start_time = time.time()
-            self.spiral_reset_from = (self.state.alpha, self.state.beta)
+            # Spiral returns to center (0, 0)
+            self.state.arc_return_to = (0.0, 0.0)
         else:
-            # Default: smooth creep reset to (0, -1)
-            self.state.creep_reset_active = True
-            self.state.creep_reset_start_time = time.time()
+            # Other modes return to bottom of circle (0, -0.5) for smooth beat entry
+            self.state.arc_return_to = (0.0, -0.5)
     
     def _send_return_stroke(self, duration_ms: int, alpha: float, beta: float):
         """Send the return stroke to opposite position (called by timer)"""
@@ -531,34 +566,65 @@ class StrokeMapper:
         return alpha, beta
     
     def _generate_idle_motion(self, event: Optional[BeatEvent]) -> Optional[TCodeCommand]:
-        """Generate jitter motion when idle - quick random movements to nearby targets"""
+        """Generate jitter/creep motion when idle - can work independently"""
         now = time.time()
         jitter_cfg = self.config.jitter
         creep_cfg = self.config.creep
         
-        # Update throttle for jitter frequency (17ms = ~60 updates/sec)
+        # Update throttle for update frequency (17ms = ~60 updates/sec)
         time_since_last = (now - self.state.last_stroke_time) * 1000
         if time_since_last < 17:
             return None
         
-        # Skip if jitter is disabled
-        if not jitter_cfg.enabled or jitter_cfg.amplitude <= 0:
+        # Check if either jitter OR creep is enabled (they work independently)
+        jitter_active = jitter_cfg.enabled and jitter_cfg.amplitude > 0
+        creep_active = creep_cfg.enabled and creep_cfg.speed > 0
+        
+        # Also continue if a return/reset animation is active
+        return_active = self.state.arc_return_active or self.spiral_reset_active or self.state.creep_reset_active
+        
+        # Skip only if nothing is enabled
+        if not jitter_active and not creep_active and not return_active:
             return None
         
         alpha, beta = self.state.alpha, self.state.beta
         
-        # Handle smooth spiral return after spiral arc
-        if self.spiral_reset_active:
-            reset_duration_ms = 500  # Smooth return over 500ms
-            elapsed_ms = (now - self.spiral_reset_start_time) * 1000
+        # Handle smooth arc return after beat stroke (unified for all modes)
+        if self.state.arc_return_active:
+            reset_duration_ms = 400  # Smooth arc return over 400ms
+            elapsed_ms = (now - self.state.arc_return_start_time) * 1000
             if elapsed_ms < reset_duration_ms:
                 progress = elapsed_ms / reset_duration_ms
+                # Ease-out curve for natural deceleration
                 eased_progress = 1.0 - (1.0 - progress) ** 2
-                # Interpolate from last spiral crest to center (0,0)
-                from_alpha, from_beta = self.spiral_reset_from
-                to_alpha, to_beta = 0.0, 0.0
-                alpha_target = from_alpha * (1.0 - eased_progress) + to_alpha * eased_progress
-                beta_target = from_beta * (1.0 - eased_progress) + to_beta * eased_progress
+                
+                # Get start and end positions
+                from_alpha, from_beta = self.state.arc_return_from
+                to_alpha, to_beta = self.state.arc_return_to
+                
+                # Calculate arc path using quadratic Bezier curve
+                # Control point creates a curved arc (perpendicular to line between start and end)
+                mid_alpha = (from_alpha + to_alpha) / 2
+                mid_beta = (from_beta + to_beta) / 2
+                # Perpendicular offset for arc curvature (creates outward bulge)
+                perp_alpha = -(to_beta - from_beta) * 0.3
+                perp_beta = (to_alpha - from_alpha) * 0.3
+                control_alpha = mid_alpha + perp_alpha
+                control_beta = mid_beta + perp_beta
+                
+                # Quadratic Bezier: B(t) = (1-t)²P0 + 2(1-t)tP1 + t²P2
+                t = eased_progress
+                t2 = t * t
+                mt = 1.0 - t
+                mt2 = mt * mt
+                
+                alpha_target = mt2 * from_alpha + 2 * mt * t * control_alpha + t2 * to_alpha
+                beta_target = mt2 * from_beta + 2 * mt * t * control_beta + t2 * to_beta
+                
+                # Clamp to valid range
+                alpha_target = np.clip(alpha_target, -1.0, 1.0)
+                beta_target = np.clip(beta_target, -1.0, 1.0)
+                
                 self.state.alpha = alpha_target
                 self.state.beta = beta_target
                 self.state.last_stroke_time = now
@@ -567,40 +633,50 @@ class StrokeMapper:
                 volume = self.get_volume() * silence_factor * fade
                 return TCodeCommand(alpha_target, beta_target, 17, volume)
             else:
-                self.spiral_reset_active = False
-                self.state.alpha = 0.0
-                self.state.beta = 0.0
-                print(f"[StrokeMapper] Spiral reset complete, now at (0, 0)")
-        # Handle smooth creep reset after beat stroke (non-spiral)
+                # Arc return complete
+                self.state.arc_return_active = False
+                to_alpha, to_beta = self.state.arc_return_to
+                self.state.alpha = to_alpha
+                self.state.beta = to_beta
+                # Also reset creep angle to match new position
+                self.state.creep_angle = np.arctan2(to_alpha, to_beta)
+                print(f"[StrokeMapper] Arc return complete, now at ({to_alpha:.2f}, {to_beta:.2f})")
+        
+        # Legacy: Handle smooth spiral return (kept for backward compatibility)
+        elif self.spiral_reset_active:
+            # Convert to new arc return
+            self.state.arc_return_active = True
+            self.state.arc_return_start_time = self.spiral_reset_start_time
+            self.state.arc_return_from = self.spiral_reset_from
+            self.state.arc_return_to = (0.0, 0.0)
+            self.spiral_reset_active = False
+        
+        # Legacy: Handle creep reset (kept for backward compatibility)
         elif self.state.creep_reset_active:
-            reset_duration_ms = 500  # Smooth return over 500ms
+            # Reset creep angle smoothly
+            reset_duration_ms = 400
             elapsed_ms = (now - self.state.creep_reset_start_time) * 1000
-            # Defensive: ensure creep_angle is a valid float
-            try:
-                current_angle = float(self.state.creep_angle)
-            except Exception as e:
-                print(f"[StrokeMapper] Warning: creep_angle invalid ({self.state.creep_angle}), resetting to 0.0. Error: {e}")
-                current_angle = 0.0
-                self.state.creep_angle = 0.0
             if elapsed_ms < reset_duration_ms:
                 progress = elapsed_ms / reset_duration_ms
                 eased_progress = 1.0 - (1.0 - progress) ** 2
-                # Defensive: clamp current_angle to [-2π, 2π]
-                if not np.isfinite(current_angle):
+                try:
+                    current_angle = float(self.state.creep_angle)
+                    if not np.isfinite(current_angle):
+                        current_angle = 0.0
+                except:
                     current_angle = 0.0
-                elif current_angle > np.pi:
-                    current_angle = current_angle - 2 * np.pi
-                elif current_angle < -np.pi:
-                    current_angle = current_angle + 2 * np.pi
-                target_angle = 0.0
-                self.state.creep_angle = current_angle * (1.0 - eased_progress) + target_angle * eased_progress
+                # Normalize angle
+                while current_angle > np.pi:
+                    current_angle -= 2 * np.pi
+                while current_angle < -np.pi:
+                    current_angle += 2 * np.pi
+                self.state.creep_angle = current_angle * (1.0 - eased_progress)
             else:
                 self.state.creep_angle = 0.0
                 self.state.creep_reset_active = False
-                print(f"[StrokeMapper] Creep reset complete, now at (0, -1)")
         
-        # Creep: slowly rotate around outer edge of circle
-        if creep_cfg.enabled and creep_cfg.speed > 0:
+        # Creep: slowly rotate around outer edge of circle (works independently of jitter)
+        if creep_active:
             # Tempo-synced creep: speed=1.0 moves 1/4 circle per beat
             # Lower speeds scale proportionally (e.g., 0.25 = 1/16 circle per beat)
             # At 60 updates/sec (17ms throttle), calculate increment per update
@@ -614,22 +690,22 @@ class StrokeMapper:
                 updates_per_beat = updates_per_sec / beats_per_sec
                 angle_increment = (np.pi / 2.0) / updates_per_beat * creep_cfg.speed
                 
-                # Only increment creep angle if reset is not active
-                if not self.state.creep_reset_active:
+                # Only increment creep angle if no return animation is active
+                if not self.state.creep_reset_active and not self.state.arc_return_active:
                     self.state.creep_angle += angle_increment
                     if self.state.creep_angle >= 2 * np.pi:
                         self.state.creep_angle -= 2 * np.pi
                 
                 # Position on circle - pull inward by jitter amplitude so
                 # micro-circles don't get clipped at the ±1.0 boundary
-                jitter_r = jitter_cfg.amplitude if jitter_cfg.enabled else 0.0
+                jitter_r = jitter_cfg.amplitude if jitter_active else 0.0
                 creep_radius = max(0.1, 0.98 - jitter_r)
                 base_alpha = np.sin(self.state.creep_angle) * creep_radius
                 base_beta = np.cos(self.state.creep_angle) * creep_radius
             else:
                 # No tempo detected: slowly oscillate toward center
                 # Use creep_angle as oscillation phase, 0.1 base radius
-                if not self.state.creep_reset_active:
+                if not self.state.creep_reset_active and not self.state.arc_return_active:
                     self.state.creep_angle += creep_cfg.speed * 0.02  # Slow oscillation
                     if self.state.creep_angle >= 2 * np.pi:
                         self.state.creep_angle -= 2 * np.pi
@@ -643,20 +719,25 @@ class StrokeMapper:
             base_alpha = alpha
             base_beta = beta
         
-        # Jitter: sinusoidal micro-circles around the creep position
-        # Advance jitter angle smoothly based on intensity (higher = faster circles)
-        # Scale by update interval for consistent speed regardless of frame rate
-        jitter_speed = jitter_cfg.intensity * 0.15  # Slower, smoother circles
-        self.state.jitter_angle += jitter_speed
-        if self.state.jitter_angle >= 2 * np.pi:
-            self.state.jitter_angle -= 2 * np.pi
-        
-        # Amplitude controls the size of micro-circles
-        jitter_r = jitter_cfg.amplitude
-        
-        # Add sinusoidal micro-circle to base position
-        alpha_target = base_alpha + np.cos(self.state.jitter_angle) * jitter_r
-        beta_target = base_beta + np.sin(self.state.jitter_angle) * jitter_r
+        # Jitter: sinusoidal micro-circles around the creep position (only if enabled)
+        if jitter_active:
+            # Advance jitter angle smoothly based on intensity (higher = faster circles)
+            # Scale by update interval for consistent speed regardless of frame rate
+            jitter_speed = jitter_cfg.intensity * 0.15  # Slower, smoother circles
+            self.state.jitter_angle += jitter_speed
+            if self.state.jitter_angle >= 2 * np.pi:
+                self.state.jitter_angle -= 2 * np.pi
+            
+            # Amplitude controls the size of micro-circles
+            jitter_r = jitter_cfg.amplitude
+            
+            # Add sinusoidal micro-circle to base position
+            alpha_target = base_alpha + np.cos(self.state.jitter_angle) * jitter_r
+            beta_target = base_beta + np.sin(self.state.jitter_angle) * jitter_r
+        else:
+            # No jitter - use base position directly
+            alpha_target = base_alpha
+            beta_target = base_beta
         
         # Clamp to valid range
         alpha_target = np.clip(alpha_target, -1.0, 1.0)
