@@ -90,21 +90,12 @@ class StrokeMapper:
             self._fade_intensity = 1.0
         if not hasattr(self, '_last_quiet_time'):
             self._last_quiet_time = 0.0
-        # Volume restoration state
-        if not hasattr(self, '_volume_restore_start'):
-            self._volume_restore_start = 0.0
-        if not hasattr(self, '_previous_volume_factor'):
-            self._previous_volume_factor = 1.0
-        if not hasattr(self, '_tcode_silence_volume_factor'):
-            self._tcode_silence_volume_factor = 1.0
             
         # Thresholds for true silence
         quiet_flux_thresh = cfg.flux_threshold * 0.03  # Lowered even more
         quiet_energy_thresh = beat_cfg.peak_floor * 0.3  # Lowered even more
         fade_duration = 2.0  # seconds to fade out
         silence_reset_threshold = beat_cfg.silence_reset_ms / 1000.0  # Convert ms to seconds
-        silence_volume_threshold = 1.5  # 1500ms before reducing volume by 15%
-        volume_restore_duration = 0.5  # 500ms to restore volume
         
         is_truly_silent = (event.spectral_flux < quiet_flux_thresh and event.peak_energy < quiet_energy_thresh)
         if is_truly_silent:
@@ -117,29 +108,9 @@ class StrokeMapper:
                 # If silence persists for more than 250ms, reset tempo/downbeat
                 if self.audio_engine and elapsed > silence_reset_threshold:
                     self.audio_engine.reset_tempo_tracking()
-                # Only reduce volume by 15% after 3000ms of continuous silence
-                if elapsed > silence_volume_threshold:
-                    self._tcode_silence_volume_factor = 0.85
             else:
                 self._fade_intensity = 0.0
-                self._tcode_silence_volume_factor = 0.85  # Keep reduced during silence
         else:
-            # Restore volume smoothly over 500ms
-            if self._tcode_silence_volume_factor < 1.0:
-                if self._volume_restore_start == 0.0:
-                    self._volume_restore_start = now
-                    self._previous_volume_factor = self._tcode_silence_volume_factor
-                restore_elapsed = now - self._volume_restore_start
-                if restore_elapsed < volume_restore_duration:
-                    # Interpolate from previous to 1.0 over 500ms
-                    progress = restore_elapsed / volume_restore_duration
-                    self._tcode_silence_volume_factor = self._previous_volume_factor + (1.0 - self._previous_volume_factor) * progress
-                else:
-                    self._tcode_silence_volume_factor = 1.0
-                    self._volume_restore_start = 0.0
-            else:
-                self._tcode_silence_volume_factor = 1.0
-                self._volume_restore_start = 0.0
             self._fade_intensity = min(1.0, self._fade_intensity + 0.1)
             self._last_quiet_time = 0.0
         
@@ -181,7 +152,7 @@ class StrokeMapper:
                 if hasattr(cmd, 'intensity'):
                     cmd.intensity *= self._fade_intensity
                 if hasattr(cmd, 'volume'):
-                    cmd.volume *= self._fade_intensity * getattr(self, '_tcode_silence_volume_factor', 1.0)
+                    cmd.volume *= self._fade_intensity
                 print(f"[StrokeMapper] ⬇ DOWNBEAT -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} (flux_factor={self._flux_stroke_factor:.2f}, flux={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f})")
                 return cmd if self._fade_intensity > 0.01 else None
             
@@ -198,7 +169,7 @@ class StrokeMapper:
             if hasattr(cmd, 'intensity'):
                 cmd.intensity *= self._fade_intensity
             if hasattr(cmd, 'volume'):
-                cmd.volume *= self._fade_intensity * getattr(self, '_tcode_silence_volume_factor', 1.0)
+                cmd.volume *= self._fade_intensity
             print(f"[StrokeMapper] Beat (flux_factor={self._flux_stroke_factor:.2f}, HIGH FLUX={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
             return cmd if self._fade_intensity > 0.01 else None
             
@@ -209,7 +180,7 @@ class StrokeMapper:
                 if hasattr(cmd, 'intensity'):
                     cmd.intensity *= self._fade_intensity
                 if hasattr(cmd, 'volume'):
-                    cmd.volume *= self._fade_intensity * getattr(self, '_tcode_silence_volume_factor', 1.0)
+                    cmd.volume *= self._fade_intensity
                 if cmd is not None:
                     print(f"[StrokeMapper] Idle -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} jitter={self.config.jitter.enabled} creep={self.config.creep.enabled} fade={self._fade_intensity:.2f}")
                 else:
@@ -282,7 +253,7 @@ class StrokeMapper:
             alpha_arc[i] = alpha
             beta_arc[i] = beta
             self.state.phase = prev_phase  # Restore phase
-        # Calculate step durations with proper remainder distribution
+        # Calculate step durations
         base_step = measure_duration_ms // n_points
         remainder = measure_duration_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
@@ -383,7 +354,7 @@ class StrokeMapper:
                 alpha_arc[i] = alpha
                 beta_arc[i] = beta
                 self.state.phase = prev_phase
-        # Calculate step durations with proper remainder distribution
+        # Calculate step durations
         base_step = beat_interval_ms // n_points
         remainder = beat_interval_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
@@ -418,10 +389,9 @@ class StrokeMapper:
             step_ms = step_durations[i]  # Each step has its own duration
             
             if self.send_callback:
-                # Apply silence volume factor and fade intensity to arc commands
-                silence_factor = getattr(self, '_tcode_silence_volume_factor', 1.0)
+                # Apply fade intensity to arc commands
                 fade = getattr(self, '_fade_intensity', 1.0)
-                volume = self.get_volume() * silence_factor * fade
+                volume = self.get_volume() * fade
                 cmd = TCodeCommand(alpha, beta, step_ms, volume)
                 self.send_callback(cmd)
                 self.state.alpha = alpha
@@ -446,9 +416,8 @@ class StrokeMapper:
     def _send_return_stroke(self, duration_ms: int, alpha: float, beta: float):
         """Send the return stroke to opposite position (called by timer)"""
         if self.send_callback:
-            silence_factor = getattr(self, '_tcode_silence_volume_factor', 1.0)
             fade = getattr(self, '_fade_intensity', 1.0)
-            volume = self.get_volume() * silence_factor * fade
+            volume = self.get_volume() * fade
             cmd = TCodeCommand(alpha, beta, duration_ms, volume)
             print(f"[StrokeMapper] RETURN stroke a={alpha:.2f} b={beta:.2f} dur={duration_ms}ms")
             self.send_callback(cmd)
@@ -629,9 +598,8 @@ class StrokeMapper:
                 self.state.alpha = alpha_target
                 self.state.beta = beta_target
                 self.state.last_stroke_time = now
-                silence_factor = getattr(self, '_tcode_silence_volume_factor', 1.0)
                 fade = getattr(self, '_fade_intensity', 1.0)
-                volume = self.get_volume() * silence_factor * fade
+                volume = self.get_volume() * fade
                 return TCodeCommand(alpha_target, beta_target, step_duration_ms, volume)
             else:
                 # Arc return complete
@@ -752,10 +720,9 @@ class StrokeMapper:
         self.state.beta = beta_target
         self.state.last_stroke_time = now
         
-        # Apply silence volume factor and fade intensity
-        silence_factor = getattr(self, '_tcode_silence_volume_factor', 1.0)
+        # Apply fade intensity
         fade = getattr(self, '_fade_intensity', 1.0)
-        volume = self.get_volume() * silence_factor * fade
+        volume = self.get_volume() * fade
         
         return TCodeCommand(alpha_target, beta_target, duration_ms, volume)
     
