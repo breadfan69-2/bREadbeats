@@ -1,25 +1,48 @@
-wow we are down to silly little UI tweaks!   hooray! 
-
-except:
-RE:STROKEMAPPING/RETURN FUNCTION  (take a good look at this code [re: strokemapper/creep/jitter/other effects] and previous commits involving strokemapping/jitter/creep/return, especially earlier ones.  I liked how it worked better a few days ago.)
--it seems like there are a lot of straight lines being drawn when setting up for the next beat.   is there a designated position for return?  there does not need to me, it just needs to smoothly go back to the beat, always continuing on a sinusoidal arc.  arc size can vary, but the motion needs to stay smooth and "loopy".   the "return" function may actually be causing more jumping/teleporting?  mabye we need to send a minimum duration with EVERY command?  say 200ms?  remember we also have to keep sending 100% live data, never que anything.
-
-RE:REMOVAL OF TEST EQUIPMENT [other]->[performance]
--we can remove the "enable spectrum visualizer" selection box and its wiring.  was for testing purposes.
--we can remove the "high pass filter" and all its wiring.
--keep the spectrum updates and FFT dropdowns, but move them next to each other instead of stacking.
--move [butterworth bandpass filter] checkbox and function to [beat detection] tab.
 
 
-RE:SPECTRUM VISUALIZERS AND RANGE
--lets change the range of all {audio frequency} selector sliders back to 21000hz.  and remove any clamping that may have been in place.  [beatdetection]-[low/high freq sliders],[strokesettings]-[depthfreq low/high]
--can we add a checkbox to hide visualizer range indicators ?  placement: bottom of window between visualizer dropdown and {whipthellama}button.
+RE: MENU BAR
+
+-on menu bar [menu], remove {close}, its redundant. 
+-on "about" popup, add new lines in middle:
+
+inspired by:    digitalparkinglot's creations
+		
+		edger477 (ideas from funscriptgenerator)
+		diglet48 (wouldn't be here without restim!)
 
 
-RE: VOLUME DROP ON [SILENCE]
--i don't see this happening.  i don't see it in restim, i don't see it in console, i don't see it on volume slider.  are we sending proper 4 digit tcode? (V0[xxxx]) with [0001-9999] range?  I feel like this function never got connected properly.  I see [silence] and [fade] in the console but i don't see volume changing anywhere.  if you don't recall, its supposed to be a 15% reduction after 1500ms of silence, and fade back up to previous setting when no longer silent over 500ms
+-i want to add a new line to the menu bar, {help}  opens a popup with common issues.  you can format this nicely for me:
 
-RE: ADDITIONAL TCODE CONTROLS  first, read this:  [https://github.com/multiaxis/TCode-Specification] | and check at [git/diglet48/restim] for proper tcode-restim tagging.
--add a new tcode axis, [FREQUENCY].   this will also be controlled by [audio_dominant_frequency] in the same manner as [pulse_frequency].   add a groupbox for identical controls on the [other] tab.
 
--for both [FREQUENCY] AND [PULSE_FREQUENCY]  add a new mode to be weighted by dot speed.  mode will be selected by a toggle placed in the groupbox with each function.  mode types=[hz](controlled by [dominant_frequency] / [speed](controlled by dot speed).  also a checkbox to invert commands for the selected mode.
+no motion?
+check [options][audio device] is your current speakers or an input/microphone with an incoming signal.
+check [start](starts audio stream detection and visualizer) and [play](starts motion generation) are pressed.
+[beat detection] tab -> raise sensitivity, raise audio amplification until you see blinking next to BPM meter.
+[beat detection] adjust frequency range
+
+
+still no motion?
+[stroke settings]
+check stroke min/max slider
+check stroke fullness slider
+
+if using strokemode 1,2,3 
+[effects/axis]
+if using strokemode 1,2,3 check axis weights sliders.  0 = no motion.
+
+
+too much motion?
+check [audio device] audio amplification, sensitivity, flux multiplier.
+check [effects/axis] axis weights sliders
+check [tempo tracking] Spectral flux control
+-------------------------------------------------------------------------------------------------------------------
+
+
+RE: TCP CONNECTION AND CONTROLS GROUPBOXES
+
+-can we make these take less vertical space?  let's move audio device selection and host/port input for TCP to a separate menu bar dropdown-"options"
+RE: PRESETS/SETTINGS SAVING
+
+i want to add "revert" button next to presets that when clicked will restore last settings before selecting a preset, in case user had a good setting and accidently loads a preset.  So when clicking a preset button, we need to store current settings and attach to "revert" button.  We can store those settings in the same as shutdown location, it is same function, (to prevent accidental loss of good settings) The button should have a circular "go back" type arrow, no text. It will have no function at program loading, or be useless, because its settings are already loaded at program loading.   Make sense?     It can be half the width of the preset buttons.  Place it in the same presets groupbox on the right side.  You may have to redraw 'presets" and "spectrum" groupboxes.  there is plenty of room to the right.
+--------------------------------------------------------------------------------------------------------------------
+is it possible to make the rangesliders grabbable in the middle, so the actual range can slide?  instead of having to move each tab independently?  in this behavior, the distance between the tabs should stay the same while both tabs travel in the same direction.
