@@ -93,6 +93,15 @@ class PulseFreqConfig:
     freq_weight: float = 1.0          # How much frequency affects P0 (0=none, 1=full)
 
 @dataclass
+class CarrierFreqConfig:
+    """Carrier frequency (F0 TCode) mapping settings"""
+    monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
+    monitor_freq_max: float = 200.0   # Max frequency to monitor (Hz)
+    tcode_freq_min: float = 30.0      # Min sent frequency (Hz, converted to TCode)
+    tcode_freq_max: float = 105.0     # Max sent frequency (Hz, converted to TCode)
+    freq_weight: float = 1.0          # How much frequency affects F0 (0=none, 1=full)
+
+@dataclass
 class AudioConfig:
     """Audio capture settings"""
     sample_rate: int = 44100
@@ -121,6 +130,7 @@ class Config:
     connection: ConnectionConfig = field(default_factory=ConnectionConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     pulse_freq: PulseFreqConfig = field(default_factory=PulseFreqConfig)
+    carrier_freq: CarrierFreqConfig = field(default_factory=CarrierFreqConfig)
     
     # Global
     alpha_weight: float = 1.0         # Per-axis mix for alpha

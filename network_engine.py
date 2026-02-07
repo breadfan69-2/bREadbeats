@@ -54,11 +54,11 @@ class TCodeCommand:
                 p0_val = getattr(self, 'pulse_freq', None)
                 if p0_val is not None:
                         cmd += f" P0{int(p0_val):04d}I{self.duration_ms}"
-                # Add any other tcode_tags if present
+                # Add any other tcode_tags if present (with interpolation time)
                 tcode_tags = getattr(self, 'tcode_tags', {})
                 for tag, val in tcode_tags.items():
                     if tag != 'P0':
-                        cmd += f" {tag}{int(val):04d}"
+                        cmd += f" {tag}{int(val):04d}I{self.duration_ms}"
                 cmd += "\n"
                 return cmd
 

@@ -17,10 +17,10 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QCheckBox,
     QSpinBox, QDoubleSpinBox, QLineEdit, QTabWidget, QFrame,
-    QGridLayout, QSizePolicy
+    QGridLayout, QSizePolicy, QMenuBar, QMenu, QMessageBox, QFileDialog
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
-from PyQt6.QtGui import QFont, QPalette, QColor
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRect
+from PyQt6.QtGui import QFont, QPalette, QColor, QPainter, QBrush, QPen
 from typing import Optional
 
 # PyQtGraph for high-performance real-time plotting
@@ -258,10 +258,10 @@ class SpectrumCanvas(pg.PlotWidget):
         region = self.beat_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
         high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'freq_range_slider'):
             self._updating = True
-            self.parent_window.freq_low_slider.setValue(int(low_hz))
-            self.parent_window.freq_high_slider.setValue(int(high_hz))
+            self.parent_window.freq_range_slider.setLow(int(low_hz))
+            self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         # Update label position to center of band
         center_bin = (region[0] + region[1]) / 2  # type: ignore
@@ -274,10 +274,10 @@ class SpectrumCanvas(pg.PlotWidget):
         region = self.depth_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
         high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'depth_freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'depth_freq_range_slider'):
             self._updating = True
-            self.parent_window.depth_freq_low_slider.setValue(int(low_hz))
-            self.parent_window.depth_freq_high_slider.setValue(int(high_hz))
+            self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
+            self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         # Update label position to center of band
         center_bin = (region[0] + region[1]) / 2  # type: ignore
@@ -290,10 +290,10 @@ class SpectrumCanvas(pg.PlotWidget):
         region = self.p0_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
         high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_range_slider'):
             self._updating = True
-            self.parent_window.pulse_freq_low_slider.setValue(int(low_hz))
-            self.parent_window.pulse_freq_high_slider.setValue(int(high_hz))
+            self.parent_window.pulse_freq_range_slider.setLow(int(low_hz))
+            self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         # Update label position to center of band
         center_bin = (region[0] + region[1]) / 2  # type: ignore
@@ -339,6 +339,15 @@ class SpectrumCanvas(pg.PlotWidget):
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
         """Compatibility stub - waterfall doesn't use these lines"""
         pass
+    
+    def set_indicators_visible(self, visible: bool):
+        """Show or hide all frequency band indicators and labels"""
+        self.beat_band.setVisible(visible)
+        self.depth_band.setVisible(visible)
+        self.p0_band.setVisible(visible)
+        self.beat_label.setVisible(visible)
+        self.depth_label.setVisible(visible)
+        self.pulse_label.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update waterfall with new spectrum data - scrolls upward with rainbow frequency colors"""
@@ -516,10 +525,10 @@ class MountainRangeCanvas(pg.PlotWidget):
         region = self.beat_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
         high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'freq_range_slider'):
             self._updating = True
-            self.parent_window.freq_low_slider.setValue(int(low_hz))
-            self.parent_window.freq_high_slider.setValue(int(high_hz))
+            self.parent_window.freq_range_slider.setLow(int(low_hz))
+            self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
         self.beat_label.setPos(center_bin, 1.1)
@@ -530,10 +539,10 @@ class MountainRangeCanvas(pg.PlotWidget):
         region = self.depth_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
         high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'depth_freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'depth_freq_range_slider'):
             self._updating = True
-            self.parent_window.depth_freq_low_slider.setValue(int(low_hz))
-            self.parent_window.depth_freq_high_slider.setValue(int(high_hz))
+            self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
+            self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
         self.depth_label.setPos(center_bin, 1.0)
@@ -544,10 +553,10 @@ class MountainRangeCanvas(pg.PlotWidget):
         region = self.p0_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
         high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_range_slider'):
             self._updating = True
-            self.parent_window.pulse_freq_low_slider.setValue(int(low_hz))
-            self.parent_window.pulse_freq_high_slider.setValue(int(high_hz))
+            self.parent_window.pulse_freq_range_slider.setLow(int(low_hz))
+            self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
         self.pulse_label.setPos(center_bin, 0.9)
@@ -585,6 +594,15 @@ class MountainRangeCanvas(pg.PlotWidget):
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
         """Not used in mountain view"""
         pass
+    
+    def set_indicators_visible(self, visible: bool):
+        """Show or hide all frequency band indicators and labels"""
+        self.beat_band.setVisible(visible)
+        self.depth_band.setVisible(visible)
+        self.p0_band.setVisible(visible)
+        self.beat_label.setVisible(visible)
+        self.depth_label.setVisible(visible)
+        self.pulse_label.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update mountain range with new spectrum data"""
@@ -753,10 +771,10 @@ class BarGraphCanvas(pg.PlotWidget):
         region = self.beat_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))
         high_hz = self._bin_to_hz(float(region[1]))
-        if self.parent_window and hasattr(self.parent_window, 'freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'freq_range_slider'):
             self._updating = True
-            self.parent_window.freq_low_slider.setValue(int(low_hz))
-            self.parent_window.freq_high_slider.setValue(int(high_hz))
+            self.parent_window.freq_range_slider.setLow(int(low_hz))
+            self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2
         self.beat_label.setPos(center_bin, 1.1)
@@ -767,10 +785,10 @@ class BarGraphCanvas(pg.PlotWidget):
         region = self.depth_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))
         high_hz = self._bin_to_hz(float(region[1]))
-        if self.parent_window and hasattr(self.parent_window, 'depth_freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'depth_freq_range_slider'):
             self._updating = True
-            self.parent_window.depth_freq_low_slider.setValue(int(low_hz))
-            self.parent_window.depth_freq_high_slider.setValue(int(high_hz))
+            self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
+            self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2
         self.depth_label.setPos(center_bin, 1.0)
@@ -781,10 +799,10 @@ class BarGraphCanvas(pg.PlotWidget):
         region = self.p0_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))
         high_hz = self._bin_to_hz(float(region[1]))
-        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_range_slider'):
             self._updating = True
-            self.parent_window.pulse_freq_low_slider.setValue(int(low_hz))
-            self.parent_window.pulse_freq_high_slider.setValue(int(high_hz))
+            self.parent_window.pulse_freq_range_slider.setLow(int(low_hz))
+            self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2
         self.pulse_label.setPos(center_bin, 0.9)
@@ -822,6 +840,15 @@ class BarGraphCanvas(pg.PlotWidget):
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
         """Not used in bar view"""
         pass
+    
+    def set_indicators_visible(self, visible: bool):
+        """Show or hide all frequency band indicators and labels"""
+        self.beat_band.setVisible(visible)
+        self.depth_band.setVisible(visible)
+        self.p0_band.setVisible(visible)
+        self.beat_label.setVisible(visible)
+        self.depth_label.setVisible(visible)
+        self.pulse_label.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update bars with new spectrum data"""
@@ -954,10 +981,10 @@ class PhosphorCanvas(pg.PlotWidget):
         region = self.beat_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))
         high_hz = self._bin_to_hz(float(region[1]))
-        if self.parent_window and hasattr(self.parent_window, 'freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'freq_range_slider'):
             self._updating = True
-            self.parent_window.freq_low_slider.setValue(int(low_hz))
-            self.parent_window.freq_high_slider.setValue(int(high_hz))
+            self.parent_window.freq_range_slider.setLow(int(low_hz))
+            self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2
         self.beat_label.setPos(center_bin, self.num_mag_levels - 5)
@@ -968,10 +995,10 @@ class PhosphorCanvas(pg.PlotWidget):
         region = self.depth_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))
         high_hz = self._bin_to_hz(float(region[1]))
-        if self.parent_window and hasattr(self.parent_window, 'depth_freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'depth_freq_range_slider'):
             self._updating = True
-            self.parent_window.depth_freq_low_slider.setValue(int(low_hz))
-            self.parent_window.depth_freq_high_slider.setValue(int(high_hz))
+            self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
+            self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2
         self.depth_label.setPos(center_bin, self.num_mag_levels - 15)
@@ -982,10 +1009,10 @@ class PhosphorCanvas(pg.PlotWidget):
         region = self.p0_band.getRegion()
         low_hz = self._bin_to_hz(float(region[0]))
         high_hz = self._bin_to_hz(float(region[1]))
-        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_low_slider'):
+        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_range_slider'):
             self._updating = True
-            self.parent_window.pulse_freq_low_slider.setValue(int(low_hz))
-            self.parent_window.pulse_freq_high_slider.setValue(int(high_hz))
+            self.parent_window.pulse_freq_range_slider.setLow(int(low_hz))
+            self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2
         self.pulse_label.setPos(center_bin, self.num_mag_levels - 25)
@@ -1022,6 +1049,15 @@ class PhosphorCanvas(pg.PlotWidget):
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
         pass
+    
+    def set_indicators_visible(self, visible: bool):
+        """Show or hide all frequency band indicators and labels"""
+        self.beat_band.setVisible(visible)
+        self.depth_band.setVisible(visible)
+        self.p0_band.setVisible(visible)
+        self.beat_label.setVisible(visible)
+        self.depth_label.setVisible(visible)
+        self.pulse_label.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update phosphor display with new spectrum - accumulate hits with decay"""
@@ -1212,6 +1248,179 @@ class PresetButton(QPushButton):
         elif event.button() == Qt.MouseButton.RightButton:
             self.right_clicked.emit()
         super().mousePressEvent(event)
+
+
+class RangeSlider(QWidget):
+    """A slider with two handles for selecting a range"""
+    
+    rangeChanged = pyqtSignal(float, float)  # low, high
+    
+    def __init__(self, min_val: float, max_val: float, low_default: float, 
+                 high_default: float, decimals: int = 0, parent=None):
+        super().__init__(parent)
+        self.min_val = min_val
+        self.max_val = max_val
+        self.decimals = decimals
+        self._low = low_default
+        self._high = high_default
+        self._dragging = None  # 'low', 'high', or None
+        self._handle_width = 12
+        self.setMinimumHeight(24)
+        self.setMouseTracking(True)
+        
+    def low(self) -> float:
+        return self._low
+    
+    def high(self) -> float:
+        return self._high
+    
+    def setLow(self, value: float):
+        self._low = max(self.min_val, min(value, self._high - 1))
+        self.update()
+        
+    def setHigh(self, value: float):
+        self._high = min(self.max_val, max(value, self._low + 1))
+        self.update()
+    
+    def _val_to_pos(self, value: float) -> int:
+        """Convert value to pixel position"""
+        ratio = (value - self.min_val) / (self.max_val - self.min_val)
+        return int(self._handle_width/2 + ratio * (self.width() - self._handle_width))
+    
+    def _pos_to_val(self, pos: int) -> float:
+        """Convert pixel position to value"""
+        ratio = (pos - self._handle_width/2) / (self.width() - self._handle_width)
+        ratio = max(0, min(1, ratio))
+        return self.min_val + ratio * (self.max_val - self.min_val)
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        h = self.height()
+        w = self.width()
+        track_y = h // 2 - 2
+        track_h = 4
+        
+        # Draw track background
+        painter.setBrush(QBrush(QColor(60, 60, 60)))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(0, track_y, w, track_h, 2, 2)
+        
+        # Draw selected range
+        low_pos = self._val_to_pos(self._low)
+        high_pos = self._val_to_pos(self._high)
+        painter.setBrush(QBrush(QColor(0, 170, 255)))
+        painter.drawRect(low_pos, track_y, high_pos - low_pos, track_h)
+        
+        # Draw handles
+        handle_h = 16
+        handle_y = h // 2 - handle_h // 2
+        
+        # Low handle
+        painter.setBrush(QBrush(QColor(200, 200, 200)))
+        painter.setPen(QPen(QColor(100, 100, 100)))
+        painter.drawRoundedRect(low_pos - self._handle_width//2, handle_y, 
+                                self._handle_width, handle_h, 3, 3)
+        
+        # High handle
+        painter.drawRoundedRect(high_pos - self._handle_width//2, handle_y,
+                                self._handle_width, handle_h, 3, 3)
+        
+    def mousePressEvent(self, event):
+        pos = event.position().x()
+        low_pos = self._val_to_pos(self._low)
+        high_pos = self._val_to_pos(self._high)
+        
+        # Determine which handle is closer
+        dist_to_low = abs(pos - low_pos)
+        dist_to_high = abs(pos - high_pos)
+        
+        if dist_to_low < dist_to_high and dist_to_low < self._handle_width:
+            self._dragging = 'low'
+        elif dist_to_high < self._handle_width:
+            self._dragging = 'high'
+        elif dist_to_low < self._handle_width:
+            self._dragging = 'low'
+        else:
+            # Click in middle - move closest handle
+            if dist_to_low < dist_to_high:
+                self._dragging = 'low'
+            else:
+                self._dragging = 'high'
+            self._update_from_pos(pos)
+        
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            self._update_from_pos(event.position().x())
+    
+    def mouseReleaseEvent(self, event):
+        self._dragging = None
+    
+    def _update_from_pos(self, pos: float):
+        value = self._pos_to_val(pos)
+        if self.decimals == 0:
+            value = round(value)
+        else:
+            value = round(value, self.decimals)
+            
+        if self._dragging == 'low':
+            if value < self._high:
+                self._low = max(self.min_val, value)
+        elif self._dragging == 'high':
+            if value > self._low:
+                self._high = min(self.max_val, value)
+        
+        self.update()
+        self.rangeChanged.emit(self._low, self._high)
+
+
+class RangeSliderWithLabel(QWidget):
+    """Range slider with label showing current range values"""
+    
+    rangeChanged = pyqtSignal(float, float)
+    
+    def __init__(self, name: str, min_val: float, max_val: float,
+                 low_default: float, high_default: float, decimals: int = 0, parent=None):
+        super().__init__(parent)
+        
+        self.decimals = decimals
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.label = QLabel(name)
+        self.label.setFixedWidth(120)
+        self.label.setStyleSheet("color: #aaa;")
+        
+        self.slider = RangeSlider(min_val, max_val, low_default, high_default, decimals)
+        self.slider.rangeChanged.connect(self._on_change)
+        
+        self.value_label = QLabel(f"{low_default:.{decimals}f}-{high_default:.{decimals}f}")
+        self.value_label.setFixedWidth(80)
+        self.value_label.setStyleSheet("color: #0af;")
+        
+        layout.addWidget(self.label)
+        layout.addWidget(self.slider)
+        layout.addWidget(self.value_label)
+    
+    def _on_change(self, low: float, high: float):
+        self.value_label.setText(f"{low:.{self.decimals}f}-{high:.{self.decimals}f}")
+        self.rangeChanged.emit(low, high)
+    
+    def low(self) -> float:
+        return self.slider.low()
+    
+    def high(self) -> float:
+        return self.slider.high()
+    
+    def setLow(self, value: float):
+        self.slider.setLow(value)
+        self._on_change(self.slider.low(), self.slider.high())
+    
+    def setHigh(self, value: float):
+        self.slider.setHigh(value)
+        self._on_change(self.slider.low(), self.slider.high())
 
 
 class SliderWithLabel(QWidget):
@@ -1607,6 +1816,9 @@ class BREadbeatsWindow(QMainWindow):
         
     def _setup_ui(self):
         """Build the user interface"""
+        # Create menu bar
+        self._create_menu_bar()
+        
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
@@ -1638,6 +1850,12 @@ class BREadbeatsWindow(QMainWindow):
         self.visualizer_type_combo.currentIndexChanged.connect(self._on_visualizer_type_change)
         bottom_layout.addWidget(self.visualizer_type_combo)
         
+        # Hide range indicators checkbox
+        self.hide_indicators_checkbox = QCheckBox("Hide Range Indicators")
+        self.hide_indicators_checkbox.setChecked(False)
+        self.hide_indicators_checkbox.stateChanged.connect(self._on_hide_indicators_toggle)
+        bottom_layout.addWidget(self.hide_indicators_checkbox)
+        
         bottom_layout.addStretch()  # Gap before Whip the Llama button
         
         # projectM launcher button (Winamp throwback)
@@ -1648,6 +1866,148 @@ class BREadbeatsWindow(QMainWindow):
         bottom_layout.addWidget(self.projectm_btn)
         
         main_layout.addLayout(bottom_layout)
+    
+    def _create_menu_bar(self):
+        """Create menu bar with Performance and About options"""
+        menubar = self.menuBar()
+        
+        # Menu (main menu with Performance submenu and About)
+        main_menu = menubar.addMenu("Menu")
+        
+        # Load Presets action
+        load_presets_action = main_menu.addAction("Load Presets...")
+        load_presets_action.triggered.connect(self._on_load_presets)
+        
+        # Separator
+        main_menu.addSeparator()
+        
+        # Performance submenu
+        perf_menu = main_menu.addMenu("Performance")
+        
+        # FFT Size submenu
+        fft_menu = perf_menu.addMenu("FFT Size (requires restart)")
+        fft_sizes = [512, 1024, 2048, 4096, 8192]
+        fft_labels = [
+            "512 (fast, ~86Hz/bin)",
+            "1024 (balanced, ~43Hz/bin)",
+            "2048 (good bass, ~21Hz/bin)",
+            "4096 (great bass, ~11Hz/bin)",
+            "8192 (best bass, ~5Hz/bin)"
+        ]
+        current_fft = getattr(self.config.audio, 'fft_size', 1024)
+        for i, (size, label) in enumerate(zip(fft_sizes, fft_labels)):
+            action = fft_menu.addAction(label)
+            action.triggered.connect(lambda checked, idx=i: self._on_menu_fft_change(idx))
+            if size == current_fft:
+                action.setCheckable(True)
+                action.setChecked(True)
+        
+        # Spectrum Updates submenu
+        spec_menu = perf_menu.addMenu("Spectrum Updates")
+        spec_options = ["Every frame (smooth)", "Every 2 frames (fast)", "Every 4 frames (faster)"]
+        spec_values = [1, 2, 4]
+        current_skip = getattr(self.config.audio, 'spectrum_skip_frames', 2)
+        for i, (label, value) in enumerate(zip(spec_options, spec_values)):
+            action = spec_menu.addAction(label)
+            action.triggered.connect(lambda checked, idx=i: self._on_menu_spectrum_change(idx))
+            if value == current_skip:
+                action.setCheckable(True)
+                action.setChecked(True)
+        
+        # Separator
+        main_menu.addSeparator()
+        
+        # About action
+        about_action = main_menu.addAction("About")
+        about_action.triggered.connect(self._on_about)
+        
+        # Separator
+        main_menu.addSeparator()
+        
+        # Close action
+        close_action = main_menu.addAction("Close")
+        close_action.triggered.connect(self.close)
+    
+    def _on_load_presets(self):
+        """Open file dialog to load a presets .json file"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Presets",
+            "",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        if file_path:
+            try:
+                with open(file_path, 'r') as f:
+                    import json
+                    data = json.load(f)
+                # Apply loaded presets to config
+                self._apply_preset_data(data)
+                print(f"[Config] Loaded presets from {file_path}")
+            except Exception as e:
+                QMessageBox.warning(self, "Load Error", f"Failed to load presets:\n{e}")
+    
+    def _apply_preset_data(self, data: dict):
+        """Apply preset data dictionary to config and UI"""
+        # Helper to safely set attributes
+        def safe_set(obj, key, value):
+            if hasattr(obj, key):
+                setattr(obj, key, value)
+        
+        # Beat detection
+        if 'beat' in data:
+            for k, v in data['beat'].items():
+                safe_set(self.config.beat, k, v)
+        
+        # Stroke settings
+        if 'stroke' in data:
+            for k, v in data['stroke'].items():
+                safe_set(self.config.stroke, k, v)
+        
+        # Jitter
+        if 'jitter' in data:
+            for k, v in data['jitter'].items():
+                safe_set(self.config.jitter, k, v)
+        
+        # Creep
+        if 'creep' in data:
+            for k, v in data['creep'].items():
+                safe_set(self.config.creep, k, v)
+        
+        # Audio
+        if 'audio' in data:
+            for k, v in data['audio'].items():
+                safe_set(self.config.audio, k, v)
+        
+        # Pulse frequency
+        if 'pulse_freq' in data:
+            for k, v in data['pulse_freq'].items():
+                safe_set(self.config.pulse_freq, k, v)
+        
+        # Carrier frequency
+        if 'carrier_freq' in data:
+            for k, v in data['carrier_freq'].items():
+                safe_set(self.config.carrier_freq, k, v)
+        
+        # Apply to UI
+        self._apply_config_to_ui()
+    
+    def _on_menu_fft_change(self, index: int):
+        """Handle FFT size change from menu"""
+        self._on_fft_size_change(index)
+    
+    def _on_menu_spectrum_change(self, index: int):
+        """Handle spectrum update rate change from menu"""
+        self._on_spectrum_skip_change(index)
+    
+    def _on_about(self):
+        """Show About dialog"""
+        about_text = """bREadbeats v1.0
+Live Audio to Restim
+
+Bug reports/share your presets:
+bREadfan_69@hotmail.com"""
+        QMessageBox.information(self, "About bREadbeats", about_text)
     
     def _apply_config_to_ui(self):
         """Apply loaded config values to UI sliders"""
@@ -1661,8 +2021,8 @@ class BREadbeatsWindow(QMainWindow):
             self.flux_mult_slider.setValue(self.config.beat.flux_multiplier)
             self.audio_gain_slider.setValue(self.config.audio.gain)
             self.silence_reset_slider.setValue(self.config.beat.silence_reset_ms)
-            self.freq_low_slider.setValue(self.config.beat.freq_low)
-            self.freq_high_slider.setValue(self.config.beat.freq_high)
+            self.freq_range_slider.setLow(self.config.beat.freq_low)
+            self.freq_range_slider.setHigh(self.config.beat.freq_high)
             
             # Set spectrum canvas sample rate and update all 3 frequency bands
             self.spectrum_canvas.set_sample_rate(self.config.audio.sample_rate)
@@ -1688,8 +2048,8 @@ class BREadbeatsWindow(QMainWindow):
             self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
             self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
             self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
-            self.depth_freq_low_slider.setValue(int(self.config.stroke.depth_freq_low))
-            self.depth_freq_high_slider.setValue(int(self.config.stroke.depth_freq_high))
+            self.depth_freq_range_slider.setLow(int(self.config.stroke.depth_freq_low))
+            self.depth_freq_range_slider.setHigh(int(self.config.stroke.depth_freq_high))
             self._on_depth_band_change()  # Update stroke depth band (green)
             self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
             self.flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
@@ -1711,11 +2071,11 @@ class BREadbeatsWindow(QMainWindow):
             self.port_spin.setValue(self.config.connection.port)
             
             # Other tab (pulse freq settings)
-            self.pulse_freq_low_slider.setValue(self.config.pulse_freq.monitor_freq_min)
-            self.pulse_freq_high_slider.setValue(self.config.pulse_freq.monitor_freq_max)
+            self.pulse_freq_range_slider.setLow(self.config.pulse_freq.monitor_freq_min)
+            self.pulse_freq_range_slider.setHigh(self.config.pulse_freq.monitor_freq_max)
             self._on_p0_band_change()  # Update P0 TCode band (blue)
-            self.tcode_freq_min_slider.setValue(self.config.pulse_freq.tcode_freq_min)
-            self.tcode_freq_max_slider.setValue(self.config.pulse_freq.tcode_freq_max)
+            self.tcode_freq_range_slider.setLow(self.config.pulse_freq.tcode_freq_min)
+            self.tcode_freq_range_slider.setHigh(self.config.pulse_freq.tcode_freq_max)
             self.freq_weight_slider.setValue(self.config.pulse_freq.freq_weight)
             
             # Volume
@@ -1818,12 +2178,26 @@ class BREadbeatsWindow(QMainWindow):
         self.volume_slider.setContentsMargins(0, 0, 0, 0)
         btn_layout.addWidget(self.volume_slider, 0, 2, 1, 2)
 
-        # Pulse Freq display (shows sent TCode value x2)
+        # Frequency displays - stacked vertically
+        freq_display_layout = QVBoxLayout()
+        freq_display_layout.setSpacing(0)
+        
+        # Carrier Freq display (shows sent F0 TCode value)
+        self.carrier_freq_label = QLabel("Carrier: --")
+        self.carrier_freq_label.setStyleSheet("color: #0af; font-size: 11px; font-weight: bold;")
+        self.carrier_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        freq_display_layout.addWidget(self.carrier_freq_label)
+        
+        # Pulse Freq display (shows sent P0 TCode value)
         self.pulse_freq_label = QLabel("Pulse: --")
-        self.pulse_freq_label.setStyleSheet("color: #f80; font-size: 12px; font-weight: bold;")
+        self.pulse_freq_label.setStyleSheet("color: #f80; font-size: 11px; font-weight: bold;")
         self.pulse_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.pulse_freq_label.setFixedWidth(80)
-        btn_layout.addWidget(self.pulse_freq_label, 0, 4)
+        freq_display_layout.addWidget(self.pulse_freq_label)
+        
+        freq_display_widget = QWidget()
+        freq_display_widget.setLayout(freq_display_layout)
+        freq_display_widget.setFixedWidth(80)
+        btn_layout.addWidget(freq_display_widget, 0, 4)
 
         # Beat indicator (lights up on any beat)
         self.beat_indicator = QLabel("●")
@@ -2085,12 +2459,20 @@ class BREadbeatsWindow(QMainWindow):
         self.phosphor_canvas.setVisible(index == 3)
         
         # Sync the frequency bands to the newly visible visualizer
-        if hasattr(self, 'freq_low_slider') and hasattr(self, 'freq_high_slider'):
+        if hasattr(self, 'freq_range_slider'):
             self._on_freq_band_change()
-        if hasattr(self, 'depth_freq_low_slider') and hasattr(self, 'depth_freq_high_slider'):
+        if hasattr(self, 'depth_freq_range_slider'):
             self._on_depth_band_change()
-        if hasattr(self, 'pulse_freq_low_slider') and hasattr(self, 'pulse_freq_high_slider'):
+        if hasattr(self, 'pulse_freq_range_slider'):
             self._on_p0_band_change()
+    
+    def _on_hide_indicators_toggle(self, state: int):
+        """Toggle visibility of frequency range indicators on all visualizers"""
+        hide = state == 2  # Qt.Checked = 2
+        # Apply to all visualizer canvases
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+            if hasattr(canvas, 'set_indicators_visible'):
+                canvas.set_indicators_visible(not hide)
     
     def _create_position_panel(self) -> QGroupBox:
         """Alpha/Beta position display"""
@@ -2116,7 +2498,8 @@ class BREadbeatsWindow(QMainWindow):
         tabs.addTab(self._create_stroke_settings_tab(), "Stroke Settings")
         tabs.addTab(self._create_jitter_creep_tab(), "Effects / Axis")
         tabs.addTab(self._create_tempo_tracking_tab(), "Tempo Tracking")
-        tabs.addTab(self._create_other_tab(), "Other")
+        tabs.addTab(self._create_pulse_freq_tab(), "Pulse Freq")
+        tabs.addTab(self._create_carrier_freq_tab(), "Carrier Freq")
         return tabs
     
     def _create_presets_panel(self) -> QGroupBox:
@@ -2136,31 +2519,40 @@ class BREadbeatsWindow(QMainWindow):
         
         return group
 
-    def _create_other_tab(self) -> QWidget:
-        """Other tab for dominant frequency to TCode P0xxxx and performance settings"""
+    def _create_pulse_freq_tab(self) -> QWidget:
+        """Pulse Frequency (P0 TCode) controls"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
         freq_group = QGroupBox("Pulse Frequency Controls - blue overlay on spectrum")
         freq_layout = QVBoxLayout(freq_group)
 
-        self.pulse_freq_low_slider = SliderWithLabel("Monitor Freq Min (Hz)", 30, 18000, 30, 0)
-        self.pulse_freq_high_slider = SliderWithLabel("Monitor Freq Max (Hz)", 30, 18000, 4000, 0)
-        self.pulse_freq_low_slider.valueChanged.connect(self._on_p0_band_change)
-        self.pulse_freq_high_slider.valueChanged.connect(self._on_p0_band_change)
-        freq_layout.addWidget(self.pulse_freq_low_slider)
-        freq_layout.addWidget(self.pulse_freq_high_slider)
+        # Monitor frequency range (single range slider with two handles)
+        self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 21000, 30, 4000, 0)
+        self.pulse_freq_range_slider.rangeChanged.connect(self._on_p0_band_change)
+        freq_layout.addWidget(self.pulse_freq_range_slider)
 
-        # TCode output range sliders (in Hz, same scale as Pulse display: Hz = TCode/67)
+        # TCode output range slider (in Hz, same scale as Pulse display: Hz = TCode/67)
         # TCode range 0-9999 maps to ~0-150Hz via /67
-        self.tcode_freq_min_slider = SliderWithLabel("Sent Freq Min (Hz)", 0, 150, 30, 0)
-        self.tcode_freq_max_slider = SliderWithLabel("Sent Freq Max (Hz)", 0, 150, 105, 0)
-        freq_layout.addWidget(self.tcode_freq_min_slider)
-        freq_layout.addWidget(self.tcode_freq_max_slider)
+        self.tcode_freq_range_slider = RangeSliderWithLabel("Sent Freq (Hz)", 0, 150, 30, 105, 0)
+        freq_layout.addWidget(self.tcode_freq_range_slider)
 
         # Frequency weight slider - 0=no freq influence, 1=full tracking, 2=exaggerated
         self.freq_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 2.0, 1.0, 2)
         freq_layout.addWidget(self.freq_weight_slider)
+
+        # Mode toggle (Hz vs Speed) and Invert checkbox for Pulse
+        pulse_mode_layout = QHBoxLayout()
+        pulse_mode_layout.addWidget(QLabel("Mode:"))
+        self.pulse_mode_combo = QComboBox()
+        self.pulse_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)"])
+        self.pulse_mode_combo.setCurrentIndex(0)
+        pulse_mode_layout.addWidget(self.pulse_mode_combo)
+        self.pulse_invert_checkbox = QCheckBox("Invert")
+        self.pulse_invert_checkbox.setChecked(False)
+        pulse_mode_layout.addWidget(self.pulse_invert_checkbox)
+        pulse_mode_layout.addStretch()
+        freq_layout.addLayout(pulse_mode_layout)
 
         # Display for current dominant frequency
         freq_display_layout = QHBoxLayout()
@@ -2171,90 +2563,53 @@ class BREadbeatsWindow(QMainWindow):
         freq_layout.addLayout(freq_display_layout)
 
         layout.addWidget(freq_group)
-        
-        # Performance settings group
-        perf_group = QGroupBox("Performance (requires restart)")
-        perf_layout = QVBoxLayout(perf_group)
-        
-        # FFT Size dropdown
-        fft_layout = QHBoxLayout()
-        fft_layout.addWidget(QLabel("FFT Size:"))
-        self.fft_size_combo = QComboBox()
-        self.fft_size_combo.addItems([
-            "512 (fast, ~86Hz/bin)",
-            "1024 (balanced, ~43Hz/bin)",
-            "2048 (good bass, ~21Hz/bin)",
-            "4096 (great bass, ~11Hz/bin)",
-            "8192 (best bass, ~5Hz/bin)"
-        ])
-        # Set current based on config
-        fft_sizes = [512, 1024, 2048, 4096, 8192]
-        current_fft = getattr(self.config.audio, 'fft_size', 1024)
-        if current_fft in fft_sizes:
-            self.fft_size_combo.setCurrentIndex(fft_sizes.index(current_fft))
-        else:
-            self.fft_size_combo.setCurrentIndex(1)  # Default to 1024
-        self.fft_size_combo.currentIndexChanged.connect(self._on_fft_size_change)
-        fft_layout.addWidget(self.fft_size_combo)
-        fft_layout.addStretch()
-        perf_layout.addLayout(fft_layout)
-        
-        # Spectrum update rate dropdown
-        skip_layout = QHBoxLayout()
-        skip_layout.addWidget(QLabel("Spectrum Updates:"))
-        self.spectrum_skip_combo = QComboBox()
-        self.spectrum_skip_combo.addItems(["Every frame (smooth)", "Every 2 frames (fast)", "Every 4 frames (faster)"])
-        current_skip = getattr(self.config.audio, 'spectrum_skip_frames', 2)
-        skip_map = {1: 0, 2: 1, 4: 2}
-        self.spectrum_skip_combo.setCurrentIndex(skip_map.get(current_skip, 1))
-        self.spectrum_skip_combo.currentIndexChanged.connect(self._on_spectrum_skip_change)
-        skip_layout.addWidget(self.spectrum_skip_combo)
-        skip_layout.addStretch()
-        perf_layout.addLayout(skip_layout)
-        
-        # Visualizer enable/disable checkbox
-        self.visualizer_checkbox = QCheckBox("Enable Spectrum Visualizer (uses CPU)")
-        self.visualizer_checkbox.setChecked(getattr(self.config.audio, 'visualizer_enabled', True))
-        self.visualizer_checkbox.stateChanged.connect(self._on_visualizer_toggle)
-        perf_layout.addWidget(self.visualizer_checkbox)
-        
-        # Butterworth filter checkbox
-        self.butterworth_checkbox = QCheckBox("Use Butterworth bandpass filter (better bass isolation)")
-        self.butterworth_checkbox.setChecked(getattr(self.config.audio, 'use_butterworth', True))
-        self.butterworth_checkbox.stateChanged.connect(self._on_butterworth_toggle)
-        perf_layout.addWidget(self.butterworth_checkbox)
-        
-        # High-pass filter cutoff slider
-        self.highpass_slider = SliderWithLabel("High-Pass Filter (Hz)", 0, 60, 
-                                                getattr(self.config.audio, 'highpass_filter_hz', 30), 0)
-        self.highpass_slider.valueChanged.connect(self._on_highpass_change)
-        perf_layout.addWidget(self.highpass_slider)
-        
-        layout.addWidget(perf_group)
         layout.addStretch()
         return widget
-    
-    def _on_visualizer_toggle(self, state: int):
-        """Toggle spectrum visualizer on/off"""
-        enabled = state == 2  # Qt.Checked = 2
-        self.config.audio.visualizer_enabled = enabled
-        if self.audio_engine:
-            self.audio_engine._visualizer_enabled = enabled
-        # Hide/show spectrum canvas
-        if hasattr(self, 'spectrum_canvas') and self.spectrum_canvas:
-            self.spectrum_canvas.setVisible(enabled)
-        print(f"[Config] Visualizer {'enabled' if enabled else 'disabled'}")
+
+    def _create_carrier_freq_tab(self) -> QWidget:
+        """Carrier Frequency (F0 TCode) controls - frequency axis"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # F0 Frequency Controls group (same structure as Pulse)
+        f0_group = QGroupBox("Frequency Controls (F0) - same source as Pulse")
+        f0_layout = QVBoxLayout(f0_group)
+
+        # Monitor frequency range for F0
+        self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 21000, 30, 4000, 0)
+        self.f0_freq_range_slider.rangeChanged.connect(self._on_f0_band_change)
+        f0_layout.addWidget(self.f0_freq_range_slider)
+
+        # TCode output range slider for F0
+        self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Freq (Hz)", 0, 150, 30, 105, 0)
+        f0_layout.addWidget(self.f0_tcode_range_slider)
+
+        # Frequency weight slider for F0
+        self.f0_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 2.0, 1.0, 2)
+        f0_layout.addWidget(self.f0_weight_slider)
+
+        # Mode toggle (Hz vs Speed) and Invert checkbox for F0
+        f0_mode_layout = QHBoxLayout()
+        f0_mode_layout.addWidget(QLabel("Mode:"))
+        self.f0_mode_combo = QComboBox()
+        self.f0_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)"])
+        self.f0_mode_combo.setCurrentIndex(0)
+        f0_mode_layout.addWidget(self.f0_mode_combo)
+        self.f0_invert_checkbox = QCheckBox("Invert")
+        self.f0_invert_checkbox.setChecked(False)
+        f0_mode_layout.addWidget(self.f0_invert_checkbox)
+        f0_mode_layout.addStretch()
+        f0_layout.addLayout(f0_mode_layout)
+
+        layout.addWidget(f0_group)
+        layout.addStretch()
+        return widget
     
     def _on_butterworth_toggle(self, state: int):
         """Toggle Butterworth filter (requires restart)"""
         enabled = state == 2
         self.config.audio.use_butterworth = enabled
         print(f"[Config] Butterworth filter {'enabled' if enabled else 'disabled'} (restart required)")
-    
-    def _on_highpass_change(self, value: float):
-        """Update high-pass filter cutoff (requires restart)"""
-        self.config.audio.highpass_filter_hz = int(value)
-        print(f"[Config] High-pass filter set to {int(value)} Hz (restart required)")
     
     def _on_fft_size_change(self, index: int):
         """Update FFT size setting (requires restart to take effect)"""
@@ -2295,13 +2650,9 @@ class BREadbeatsWindow(QMainWindow):
         # Get sample rate (default to 44100 if not available yet)
         sr = getattr(self.config.audio, 'sample_rate', 44100)
         nyquist = sr // 2
-        self.freq_low_slider = SliderWithLabel("Low Freq (Hz)", 30, 18000, 30, 0)
-        self.freq_low_slider.valueChanged.connect(self._on_freq_band_change)
-        freq_layout.addWidget(self.freq_low_slider)
-
-        self.freq_high_slider = SliderWithLabel("High Freq (Hz)", 30, 18000, 4000, 0)
-        self.freq_high_slider.valueChanged.connect(self._on_freq_band_change)
-        freq_layout.addWidget(self.freq_high_slider)
+        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 21000, 30, 4000, 0)
+        self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
+        freq_layout.addWidget(self.freq_range_slider)
         
         layout.addWidget(freq_group)
         
@@ -2334,18 +2685,21 @@ class BREadbeatsWindow(QMainWindow):
         self.audio_gain_slider.valueChanged.connect(lambda v: setattr(self.config.audio, 'gain', v))
         layout.addWidget(self.audio_gain_slider)
         
+        # Butterworth filter checkbox (requires restart)
+        self.butterworth_checkbox = QCheckBox("Use Butterworth bandpass filter (better bass isolation)")
+        self.butterworth_checkbox.setChecked(getattr(self.config.audio, 'use_butterworth', True))
+        self.butterworth_checkbox.stateChanged.connect(self._on_butterworth_toggle)
+        layout.addWidget(self.butterworth_checkbox)
+        
         layout.addStretch()
         return widget
     
-    def _on_freq_band_change(self, _=None):
+    def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""
-        low = self.freq_low_slider.value()
-        high = self.freq_high_slider.value()
-        
-        # Ensure low < high
-        if low >= high:
-            high = low + 20
-            self.freq_high_slider.setValue(high)
+        # Handle both range slider (low, high params) and direct calls
+        if low is None:
+            low = self.freq_range_slider.low()
+            high = self.freq_range_slider.high()
         
         self.config.beat.freq_low = low
         self.config.beat.freq_high = high
@@ -2361,15 +2715,11 @@ class BREadbeatsWindow(QMainWindow):
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_frequency_band(low / max_freq, high / max_freq)
     
-    def _on_depth_band_change(self, _=None):
+    def _on_depth_band_change(self, low=None, high=None):
         """Update stroke depth frequency band in config and spectrum overlay"""
-        low = self.depth_freq_low_slider.value()
-        high = self.depth_freq_high_slider.value()
-        
-        # Ensure low < high
-        if low >= high:
-            high = low + 20
-            self.depth_freq_high_slider.setValue(high)
+        if low is None:
+            low = self.depth_freq_range_slider.low()
+            high = self.depth_freq_range_slider.high()
         
         self.config.stroke.depth_freq_low = float(low)
         self.config.stroke.depth_freq_high = float(high)
@@ -2383,15 +2733,11 @@ class BREadbeatsWindow(QMainWindow):
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_depth_band(low, high)
     
-    def _on_p0_band_change(self, _=None):
+    def _on_p0_band_change(self, low=None, high=None):
         """Update P0 TCode frequency band in config and spectrum overlay"""
-        low = self.pulse_freq_low_slider.value()
-        high = self.pulse_freq_high_slider.value()
-        
-        # Ensure low < high
-        if low >= high:
-            high = low + 20
-            self.pulse_freq_high_slider.setValue(high)
+        if low is None:
+            low = self.pulse_freq_range_slider.low()
+            high = self.pulse_freq_range_slider.high()
         
         self.config.pulse_freq.monitor_freq_min = float(low)
         self.config.pulse_freq.monitor_freq_max = float(high)
@@ -2404,6 +2750,25 @@ class BREadbeatsWindow(QMainWindow):
             self.bar_canvas.set_p0_band(low, high)
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_p0_band(low, high)
+    
+    def _on_f0_band_change(self, low=None, high=None):
+        """Update F0 TCode frequency band in config and spectrum overlay"""
+        if low is None:
+            low = self.f0_freq_range_slider.low()
+            high = self.f0_freq_range_slider.high()
+        
+        self.config.carrier_freq.monitor_freq_min = float(low)
+        self.config.carrier_freq.monitor_freq_max = float(high)
+        
+        # Update spectrum overlay (cyan band for F0)
+        if hasattr(self, 'spectrum_canvas'):
+            self.spectrum_canvas.set_f0_band(low, high)
+        if hasattr(self, 'mountain_canvas'):
+            self.mountain_canvas.set_f0_band(low, high)
+        if hasattr(self, 'bar_canvas'):
+            self.bar_canvas.set_f0_band(low, high)
+        if hasattr(self, 'phosphor_canvas'):
+            self.phosphor_canvas.set_f0_band(low, high)
     
     def _on_tempo_tracking_toggle(self, state):
         """Enable/disable tempo tracking"""
@@ -2478,8 +2843,8 @@ class BREadbeatsWindow(QMainWindow):
 
         preset_data = {
             # Beat Detection Tab
-            'freq_low': self.freq_low_slider.value(),
-            'freq_high': self.freq_high_slider.value(),
+            'freq_low': self.freq_range_slider.low(),
+            'freq_high': self.freq_range_slider.high(),
             'sensitivity': self.sensitivity_slider.value(),
             'peak_floor': self.peak_floor_slider.value(),
             'peak_decay': self.peak_decay_slider.value(),
@@ -2504,8 +2869,8 @@ class BREadbeatsWindow(QMainWindow):
             'stroke_fullness': self.fullness_slider.value(),
             'minimum_depth': self.min_depth_slider.value(),
             'freq_depth_factor': self.freq_depth_slider.value(),
-            'depth_freq_low': self.depth_freq_low_slider.value(),
-            'depth_freq_high': self.depth_freq_high_slider.value(),
+            'depth_freq_low': self.depth_freq_range_slider.low(),
+            'depth_freq_high': self.depth_freq_range_slider.high(),
             'flux_threshold': self.flux_threshold_slider.value(),
             'flux_scaling_weight': self.flux_scaling_slider.value(),
             'phase_advance': self.phase_advance_slider.value(),
@@ -2522,10 +2887,10 @@ class BREadbeatsWindow(QMainWindow):
             'beta_weight': self.beta_weight_slider.value(),
 
             # Other Tab
-            'pulse_freq_low': self.pulse_freq_low_slider.value(),
-            'pulse_freq_high': self.pulse_freq_high_slider.value(),
-            'tcode_freq_min': self.tcode_freq_min_slider.value(),
-            'tcode_freq_max': self.tcode_freq_max_slider.value(),
+            'pulse_freq_low': self.pulse_freq_range_slider.low(),
+            'pulse_freq_high': self.pulse_freq_range_slider.high(),
+            'tcode_freq_min': self.tcode_freq_range_slider.low(),
+            'tcode_freq_max': self.tcode_freq_range_slider.high(),
             'freq_weight': self.freq_weight_slider.value(),
         }
         self.custom_beat_presets[str(idx)] = preset_data
@@ -2546,8 +2911,8 @@ class BREadbeatsWindow(QMainWindow):
         if key in self.custom_beat_presets:
             preset_data = self.custom_beat_presets[key]
             # Beat Detection Tab
-            self.freq_low_slider.setValue(preset_data['freq_low'])
-            self.freq_high_slider.setValue(preset_data['freq_high'])
+            self.freq_range_slider.setLow(preset_data['freq_low'])
+            self.freq_range_slider.setHigh(preset_data['freq_high'])
             self.sensitivity_slider.setValue(preset_data['sensitivity'])
             self.peak_floor_slider.setValue(preset_data['peak_floor'])
             self.peak_decay_slider.setValue(preset_data['peak_decay'])
@@ -2585,9 +2950,9 @@ class BREadbeatsWindow(QMainWindow):
             self.min_depth_slider.setValue(preset_data['minimum_depth'])
             self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
             if 'depth_freq_low' in preset_data:
-                self.depth_freq_low_slider.setValue(preset_data['depth_freq_low'])
+                self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
             if 'depth_freq_high' in preset_data:
-                self.depth_freq_high_slider.setValue(preset_data['depth_freq_high'])
+                self.depth_freq_range_slider.setHigh(preset_data['depth_freq_high'])
             self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
             if 'flux_scaling_weight' in preset_data:
                 self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
@@ -2605,13 +2970,13 @@ class BREadbeatsWindow(QMainWindow):
 
             # Other Tab
             if 'pulse_freq_low' in preset_data:
-                self.pulse_freq_low_slider.setValue(preset_data['pulse_freq_low'])
+                self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
             if 'pulse_freq_high' in preset_data:
-                self.pulse_freq_high_slider.setValue(preset_data['pulse_freq_high'])
+                self.pulse_freq_range_slider.setHigh(preset_data['pulse_freq_high'])
             if 'tcode_freq_min' in preset_data:
-                self.tcode_freq_min_slider.setValue(preset_data['tcode_freq_min'])
+                self.tcode_freq_range_slider.setLow(preset_data['tcode_freq_min'])
             if 'tcode_freq_max' in preset_data:
-                self.tcode_freq_max_slider.setValue(preset_data['tcode_freq_max'])
+                self.tcode_freq_range_slider.setHigh(preset_data['tcode_freq_max'])
             if 'freq_weight' in preset_data:
                 self.freq_weight_slider.setValue(preset_data['freq_weight'])
 
@@ -2728,13 +3093,9 @@ class BREadbeatsWindow(QMainWindow):
         depth_freq_group = QGroupBox("Depth Frequency Range (Hz) - green overlay on spectrum")
         depth_freq_layout = QVBoxLayout(depth_freq_group)
         
-        self.depth_freq_low_slider = SliderWithLabel("Depth Freq Low (Hz)", 30, 18000, 30, 0)
-        self.depth_freq_low_slider.valueChanged.connect(self._on_depth_band_change)
-        depth_freq_layout.addWidget(self.depth_freq_low_slider)
-        
-        self.depth_freq_high_slider = SliderWithLabel("Depth Freq High (Hz)", 30, 18000, 4000, 0)
-        self.depth_freq_high_slider.valueChanged.connect(self._on_depth_band_change)
-        depth_freq_layout.addWidget(self.depth_freq_high_slider)
+        self.depth_freq_range_slider = RangeSliderWithLabel("Depth Freq (Hz)", 30, 21000, 30, 4000, 0)
+        self.depth_freq_range_slider.rangeChanged.connect(self._on_depth_band_change)
+        depth_freq_layout.addWidget(self.depth_freq_range_slider)
         
         layout.addWidget(depth_freq_group)
         
@@ -3002,8 +3363,8 @@ class BREadbeatsWindow(QMainWindow):
 
         # Track and display dominant frequency in 'Other' tab
         dom_freq = event.frequency if hasattr(event, 'frequency') else 0.0
-        low = self.pulse_freq_low_slider.value()
-        high = self.pulse_freq_high_slider.value()
+        low = self.pulse_freq_range_slider.low()
+        high = self.pulse_freq_range_slider.high()
         # Only update if within selected range
         if low <= dom_freq <= high:
             self.dominant_freq_label.setText(f"{dom_freq:.1f} Hz")
@@ -3030,34 +3391,94 @@ class BREadbeatsWindow(QMainWindow):
                 base_volume = self.volume_slider.value()
                 silence_factor = getattr(self.stroke_mapper, '_tcode_silence_volume_factor', 1.0)
                 cmd.volume = base_volume * silence_factor
+                
                 # Use the actual dominant frequency
                 dom_freq = event.frequency if hasattr(event, 'frequency') else 0.0
-                # Map dominant frequency to TCode output range (Hz-based, matching Pulse display)
-                # Sent Freq sliders are in Hz (0-150), convert to TCode 0-9999 via *67
-                tcode_min_val = int(self.tcode_freq_min_slider.value() * 67)
-                tcode_max_val = int(self.tcode_freq_max_slider.value() * 67)
+                
+                # Calculate dot speed (position delta magnitude for Speed mode)
+                if not hasattr(self, '_last_dot_alpha'):
+                    self._last_dot_alpha = 0.0
+                    self._last_dot_beta = 0.0
+                    self._last_dot_time = time.time()
+                current_time = time.time()
+                dt = max(0.001, current_time - self._last_dot_time)
+                delta_alpha = cmd.alpha - self._last_dot_alpha
+                delta_beta = cmd.beta - self._last_dot_beta
+                dot_speed = np.sqrt(delta_alpha**2 + delta_beta**2) / dt  # units per second
+                self._last_dot_alpha = cmd.alpha
+                self._last_dot_beta = cmd.beta
+                self._last_dot_time = current_time
+                
+                # --- P0 (Pulse Frequency) ---
+                pulse_mode = self.pulse_mode_combo.currentIndex()  # 0=Hz, 1=Speed
+                pulse_invert = self.pulse_invert_checkbox.isChecked()
+                
+                tcode_min_val = int(self.tcode_freq_range_slider.low() * 67)
+                tcode_max_val = int(self.tcode_freq_range_slider.high() * 67)
                 tcode_min_val = max(0, min(9999, tcode_min_val))
                 tcode_max_val = max(0, min(9999, tcode_max_val))
-                # Normalize dom_freq within selected input range
-                in_low = self.pulse_freq_low_slider.value()
-                in_high = self.pulse_freq_high_slider.value()
-                norm = (dom_freq - in_low) / max(1, in_high - in_low)
+                
+                if pulse_mode == 0:  # Hz mode
+                    in_low = self.pulse_freq_range_slider.low()
+                    in_high = self.pulse_freq_range_slider.high()
+                    norm = (dom_freq - in_low) / max(1, in_high - in_low)
+                else:  # Speed mode
+                    # Map dot speed (typically 0-10 units/sec) to 0-1
+                    norm = min(1.0, dot_speed / 10.0)
+                
                 norm = max(0.0, min(1.0, norm))
-                # freq_weight: 1.0 = full frequency tracking, 0.0 = no frequency influence (uses midpoint)
-                freq_weight = self.freq_weight_slider.value()  # 0.0–2.0
-                # Blend between midpoint (0.5) and actual normalized frequency
-                # weight=0: always midpoint, weight=1: full tracking, weight=2: exaggerated
+                freq_weight = self.freq_weight_slider.value()
                 norm_weighted = 0.5 + (norm - 0.5) * freq_weight
-                norm_weighted = max(0.0, min(1.0, norm_weighted))  # Clamp to valid range
-                # Map to TCode output range
+                norm_weighted = max(0.0, min(1.0, norm_weighted))
+                
+                if pulse_invert:
+                    norm_weighted = 1.0 - norm_weighted
+                
                 p0_val = int(tcode_min_val + norm_weighted * (tcode_max_val - tcode_min_val))
                 p0_val = max(0, min(9999, p0_val))
                 cmd.pulse_freq = p0_val
-                # Update Pulse Freq display
+                
                 if hasattr(self, 'pulse_freq_label'):
-                    display_freq = p0_val / 67  # Convert TCode to approx Hz (1.5-150hz range)
+                    display_freq = p0_val / 67
                     self.pulse_freq_label.setText(f"Pulse: {display_freq:.0f}hz")
-                print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} P0={p0_val:04d}")
+                
+                # --- F0 (Frequency axis) ---
+                f0_mode = self.f0_mode_combo.currentIndex()  # 0=Hz, 1=Speed
+                f0_invert = self.f0_invert_checkbox.isChecked()
+                
+                f0_tcode_min = int(self.f0_tcode_range_slider.low() * 67)
+                f0_tcode_max = int(self.f0_tcode_range_slider.high() * 67)
+                f0_tcode_min = max(0, min(9999, f0_tcode_min))
+                f0_tcode_max = max(0, min(9999, f0_tcode_max))
+                
+                if f0_mode == 0:  # Hz mode
+                    f0_in_low = self.f0_freq_range_slider.low()
+                    f0_in_high = self.f0_freq_range_slider.high()
+                    f0_norm = (dom_freq - f0_in_low) / max(1, f0_in_high - f0_in_low)
+                else:  # Speed mode
+                    f0_norm = min(1.0, dot_speed / 10.0)
+                
+                f0_norm = max(0.0, min(1.0, f0_norm))
+                f0_weight = self.f0_weight_slider.value()
+                f0_norm_weighted = 0.5 + (f0_norm - 0.5) * f0_weight
+                f0_norm_weighted = max(0.0, min(1.0, f0_norm_weighted))
+                
+                if f0_invert:
+                    f0_norm_weighted = 1.0 - f0_norm_weighted
+                
+                f0_val = int(f0_tcode_min + f0_norm_weighted * (f0_tcode_max - f0_tcode_min))
+                f0_val = max(0, min(9999, f0_val))
+                
+                # Add F0 to tcode_tags
+                if not hasattr(cmd, 'tcode_tags') or cmd.tcode_tags is None:
+                    cmd.tcode_tags = {}
+                cmd.tcode_tags['F0'] = f0_val
+                
+                if hasattr(self, 'carrier_freq_label'):
+                    display_f0 = f0_val / 67
+                    self.carrier_freq_label.setText(f"Carrier: {display_f0:.0f}hz")
+                
+                print(f"[Main] Sending cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} P0={p0_val:04d} F0={f0_val:04d}")
                 self.network_engine.send_command(cmd)
         elif event.is_beat and not self.is_sending:
             print("[Main] Beat detected but Play not enabled")
@@ -3168,10 +3589,10 @@ class BREadbeatsWindow(QMainWindow):
 
         # Save all settings from sliders to config before closing
         self.config.stroke.phase_advance = self.phase_advance_slider.value()
-        self.config.pulse_freq.monitor_freq_min = self.pulse_freq_low_slider.value()
-        self.config.pulse_freq.monitor_freq_max = self.pulse_freq_high_slider.value()
-        self.config.pulse_freq.tcode_freq_min = self.tcode_freq_min_slider.value()
-        self.config.pulse_freq.tcode_freq_max = self.tcode_freq_max_slider.value()
+        self.config.pulse_freq.monitor_freq_min = self.pulse_freq_range_slider.low()
+        self.config.pulse_freq.monitor_freq_max = self.pulse_freq_range_slider.high()
+        self.config.pulse_freq.tcode_freq_min = self.tcode_freq_range_slider.low()
+        self.config.pulse_freq.tcode_freq_max = self.tcode_freq_range_slider.high()
         self.config.pulse_freq.freq_weight = self.freq_weight_slider.value()
         self.config.volume = self.volume_slider.value()
         
