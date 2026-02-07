@@ -341,7 +341,7 @@ class SpectrumCanvas(pg.PlotWidget):
         pass
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
-        """Update waterfall with new spectrum data - scrolls upward"""
+        """Update waterfall with new spectrum data - scrolls upward with rainbow frequency colors"""
         if spectrum is None or len(spectrum) == 0:
             return
             
@@ -360,9 +360,37 @@ class SpectrumCanvas(pg.PlotWidget):
         self.waterfall_data[1:, :] = self.waterfall_data[:-1, :]
         self.waterfall_data[0, :] = spectrum
         
+        # Create RGB image with frequency-based hue and amplitude-based brightness
+        # Pre-compute base colors for each frequency bin if not done
+        if not hasattr(self, '_freq_colors'):
+            self._freq_colors = np.zeros((self.num_bins, 3), dtype=np.float32)
+            for i in range(self.num_bins):
+                hue = (i / self.num_bins) * 270  # 0-270 degrees (red->blue)
+                h = hue / 60.0
+                x_val = 1.0 - abs(h % 2 - 1)
+                if h < 1:
+                    r, g, b = 1.0, x_val, 0.0
+                elif h < 2:
+                    r, g, b = x_val, 1.0, 0.0
+                elif h < 3:
+                    r, g, b = 0.0, 1.0, x_val
+                elif h < 4:
+                    r, g, b = 0.0, x_val, 1.0
+                else:
+                    r, g, b = x_val, 0.0, 1.0
+                self._freq_colors[i] = [r, g, b]
+        
+        # Vectorized: brightness = waterfall_data ^ 0.7 for gamma correction
+        brightness = self.waterfall_data ** 0.7
+        
+        # Shape: (history, bins, 3) - multiply brightness by pre-computed colors
+        # brightness is (history, bins), colors is (bins, 3)
+        # Result: (history, bins, 3)
+        rgb_data = (brightness[:, :, np.newaxis] * self._freq_colors[np.newaxis, :, :] * 255).astype(np.uint8)
+        
         # Update image - transpose so X=freq, Y=time (new at bottom)
-        # PyQtGraph ImageItem: first axis = X (horizontal), second axis = Y (vertical)
-        self.img_item.setImage(self.waterfall_data.T, autoLevels=False, levels=(0, 1))
+        # For RGB: shape should be (width, height, 3) so transpose first two axes
+        self.img_item.setImage(rgb_data.transpose(1, 0, 2), autoLevels=False)
         # Position image to fill the view exactly (must be after setImage)
         self.img_item.setRect(0, 0, self.num_bins, self.history_len)
 
