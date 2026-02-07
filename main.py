@@ -1627,8 +1627,27 @@ class BREadbeatsWindow(QMainWindow):
         # Bottom: Tabs with sliders
         main_layout.addWidget(self._create_settings_tabs())
         
-        # Presets panel - always visible below tabs
-        main_layout.addWidget(self._create_presets_panel())
+        # Bottom row: Presets + Visualizer controls
+        bottom_layout = QHBoxLayout()
+        bottom_layout.addWidget(self._create_presets_panel())
+        
+        # Visualizer controls (no groupbox)
+        bottom_layout.addWidget(QLabel("Visualizer:"))
+        self.visualizer_type_combo = QComboBox()
+        self.visualizer_type_combo.addItems(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor"])
+        self.visualizer_type_combo.currentIndexChanged.connect(self._on_visualizer_type_change)
+        bottom_layout.addWidget(self.visualizer_type_combo)
+        
+        bottom_layout.addStretch()  # Gap before Whip the Llama button
+        
+        # projectM launcher button (Winamp throwback)
+        self.projectm_btn = QPushButton("Whip the Llama")
+        self.projectm_btn.setToolTip("Launch projectM music visualizer (if installed)")
+        self.projectm_btn.clicked.connect(self._on_launch_projectm)
+        self.projectm_btn.setMaximumWidth(120)
+        bottom_layout.addWidget(self.projectm_btn)
+        
+        main_layout.addLayout(bottom_layout)
     
     def _apply_config_to_ui(self):
         """Apply loaded config values to UI sliders"""
@@ -2027,27 +2046,9 @@ class BREadbeatsWindow(QMainWindow):
         self.preset_loopback_btn.setStyleSheet("color: #0a0; font-weight: bold;" if is_loopback else "color: #fff;")
     
     def _create_spectrum_panel(self) -> QGroupBox:
-        """Spectrum visualizer panel with type selection"""
+        """Spectrum visualizer panel"""
         group = QGroupBox("Frequency Selection")
         layout = QVBoxLayout(group)
-        
-        # Visualizer type selector and fullscreen buttons
-        vis_layout = QHBoxLayout()
-        vis_layout.addWidget(QLabel("Visualizer:"))
-        self.visualizer_type_combo = QComboBox()
-        self.visualizer_type_combo.addItems(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor"])
-        self.visualizer_type_combo.currentIndexChanged.connect(self._on_visualizer_type_change)
-        vis_layout.addWidget(self.visualizer_type_combo)
-        vis_layout.addStretch()
-        
-        # projectM launcher button
-        self.projectm_btn = QPushButton("projectM")
-        self.projectm_btn.setToolTip("Launch projectM music visualizer (if installed)")
-        self.projectm_btn.clicked.connect(self._on_launch_projectm)
-        self.projectm_btn.setMaximumWidth(70)
-        vis_layout.addWidget(self.projectm_btn)
-        
-        layout.addLayout(vis_layout)
         
         # Create all visualizers (only one visible at a time)
         self.spectrum_canvas = SpectrumCanvas(self, width=8, height=3)
@@ -2092,35 +2093,12 @@ class BREadbeatsWindow(QMainWindow):
             self._on_p0_band_change()
     
     def _create_position_panel(self) -> QGroupBox:
-        """Alpha/Beta position display with rotation slider"""
+        """Alpha/Beta position display"""
         group = QGroupBox("Position (α/β)")
         layout = QVBoxLayout(group)
 
-        # Rotation slider (-180 to 180, default 0 for correct axis mapping)
-        rot_layout = QHBoxLayout()
-        rot_label = QLabel("Rotation (°):")
-        rot_label.setStyleSheet("color: #aaa;")
-        self.position_rotation_slider = QSlider(Qt.Orientation.Horizontal)
-        self.position_rotation_slider.setMinimum(-180)
-        self.position_rotation_slider.setMaximum(180)
-        self.position_rotation_slider.setValue(0)
-        self.position_rotation_slider.setFixedWidth(180)
-        self.position_rotation_slider.setSingleStep(1)
-        self.position_rotation_slider.setPageStep(10)
-        self.position_rotation_slider.setTickInterval(30)
-        self.position_rotation_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.position_rotation_slider.valueChanged.connect(lambda _: self.position_canvas.setup_plot())
-        self.position_rotation_value = QLabel("0°")
-        self.position_rotation_value.setStyleSheet("color: #0af;")
-        self.position_rotation_slider.valueChanged.connect(
-            lambda v: self.position_rotation_value.setText(f"{v}°"))
-        rot_layout.addWidget(rot_label)
-        rot_layout.addWidget(self.position_rotation_slider)
-        rot_layout.addWidget(self.position_rotation_value)
-        layout.addLayout(rot_layout)
-
-        # Provide a function to get the current rotation value
-        self.position_canvas = PositionCanvas(self, size=2, get_rotation=lambda: self.position_rotation_slider.value())
+        # Position canvas (no rotation - fixed at 0)
+        self.position_canvas = PositionCanvas(self, size=2, get_rotation=lambda: 0)
         layout.addWidget(self.position_canvas)
 
         # Position labels (hidden but still tracked internally)
@@ -2136,15 +2114,16 @@ class BREadbeatsWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self._create_beat_detection_tab(), "Beat Detection")
         tabs.addTab(self._create_stroke_settings_tab(), "Stroke Settings")
-        tabs.addTab(self._create_jitter_creep_tab(), "Jitter / Creep")
+        tabs.addTab(self._create_jitter_creep_tab(), "Effects / Axis")
         tabs.addTab(self._create_tempo_tracking_tab(), "Tempo Tracking")
         tabs.addTab(self._create_other_tab(), "Other")
         return tabs
     
     def _create_presets_panel(self) -> QGroupBox:
         """Presets panel - always displayed below all tabs"""
-        group = QGroupBox("Presets (L=Load, R=Save)")
+        group = QGroupBox("Presets")
         layout = QHBoxLayout(group)
+        layout.setContentsMargins(5, 5, 5, 5)
         
         self.custom_beat_presets = {}
         self.preset_buttons = []
@@ -2155,7 +2134,6 @@ class BREadbeatsWindow(QMainWindow):
             self.preset_buttons.append(btn)
             layout.addWidget(btn)
         
-        layout.addStretch()
         return group
 
     def _create_other_tab(self) -> QWidget:
@@ -2760,22 +2738,6 @@ class BREadbeatsWindow(QMainWindow):
         
         layout.addWidget(depth_freq_group)
         
-        # Axis Weights section
-        axis_group = QGroupBox("Axis Weights")
-        axis_layout = QVBoxLayout(axis_group)
-        axis_layout.addWidget(QLabel("Modes 1-3: Scales axis amplitude (0=off, 1=normal, 2=double)"))
-        axis_layout.addWidget(QLabel("Mode 4 (User): Controls flux/peak response (0=flux, 1=balanced, 2=peak)"))
-        
-        self.alpha_weight_slider = SliderWithLabel("Alpha Weight", 0.0, 2.0, 1.0)
-        self.alpha_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'alpha_weight', v))
-        axis_layout.addWidget(self.alpha_weight_slider)
-        
-        self.beta_weight_slider = SliderWithLabel("Beta Weight", 0.0, 2.0, 1.0)
-        self.beta_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'beta_weight', v))
-        axis_layout.addWidget(self.beta_weight_slider)
-        
-        layout.addWidget(axis_group)
-        
         layout.addStretch()
         return widget
     
@@ -2817,6 +2779,22 @@ class BREadbeatsWindow(QMainWindow):
         creep_layout.addWidget(self.creep_speed_slider)
         
         layout.addWidget(creep_group)
+        
+        # Axis Weights section (moved from Stroke Settings)
+        axis_group = QGroupBox("Axis Weights")
+        axis_layout = QVBoxLayout(axis_group)
+        axis_layout.addWidget(QLabel("Modes 1-3: Scales axis amplitude (0=off, 1=normal, 2=double)"))
+        axis_layout.addWidget(QLabel("Mode 4 (User): Controls flux/peak response (0=flux, 1=balanced, 2=peak)"))
+        
+        self.alpha_weight_slider = SliderWithLabel("Alpha Weight", 0.0, 2.0, 1.0)
+        self.alpha_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'alpha_weight', v))
+        axis_layout.addWidget(self.alpha_weight_slider)
+        
+        self.beta_weight_slider = SliderWithLabel("Beta Weight", 0.0, 2.0, 1.0)
+        self.beta_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'beta_weight', v))
+        axis_layout.addWidget(self.beta_weight_slider)
+        
+        layout.addWidget(axis_group)
         
         layout.addStretch()
         return widget
