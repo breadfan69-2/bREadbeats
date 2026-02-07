@@ -394,12 +394,7 @@ class SpectrumCanvas(pg.PlotWidget):
         if spectrum is None or len(spectrum) == 0:
             return
         
-        # Cut off at 18kHz to avoid showing ultrasonic frequencies
-        cutoff_hz = 18000
-        nyquist = self.sample_rate / 2
-        cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
-        spectrum = spectrum[:cutoff_idx]
-            
+        # Use full Nyquist range (no cutoff)
         # Resample to num_bins using interpolation
         if len(spectrum) != self.num_bins:
             x_old = np.linspace(0, 1, len(spectrum))
@@ -687,8 +682,8 @@ class MountainRangeCanvas(pg.PlotWidget):
         if spectrum is None or len(spectrum) == 0:
             return
         
-        # Cut off at 18kHz to avoid showing ultrasonic frequencies
-        cutoff_hz = 18000
+        # Cut off at Nyquist (22050 Hz at 44.1kHz sample rate)
+        cutoff_hz = 22050
         nyquist = self.sample_rate / 2
         cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
         spectrum = spectrum[:cutoff_idx]
@@ -971,8 +966,8 @@ class BarGraphCanvas(pg.PlotWidget):
         if spectrum is None or len(spectrum) == 0:
             return
         
-        # Cut off at 18kHz to avoid showing ultrasonic frequencies
-        cutoff_hz = 18000
+        # Cut off at Nyquist (22050 Hz at 44.1kHz sample rate)
+        cutoff_hz = 22050
         nyquist = self.sample_rate / 2
         cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
         spectrum = spectrum[:cutoff_idx]
@@ -1217,8 +1212,8 @@ class PhosphorCanvas(pg.PlotWidget):
         if spectrum is None or len(spectrum) == 0:
             return
         
-        # Cut off at 18kHz to avoid showing ultrasonic frequencies
-        cutoff_hz = 18000
+        # Cut off at Nyquist (22050 Hz at 44.1kHz sample rate)
+        cutoff_hz = 22050
         nyquist = self.sample_rate / 2
         cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
         spectrum = spectrum[:cutoff_idx]
@@ -1707,8 +1702,8 @@ class BREadbeatsWindow(QMainWindow):
         # Cached TCode Sent Freq slider values (Hz) for thread-safe P0/F0 computation
         self._cached_tcode_freq_min: float = 30.0
         self._cached_tcode_freq_max: float = 105.0
-        self._cached_f0_tcode_min: float = 30.0
-        self._cached_f0_tcode_max: float = 105.0
+        self._cached_f0_tcode_min: float = 500.0
+        self._cached_f0_tcode_max: float = 1000.0
         # Track previous enabled state for send-zero-once logic
         self._prev_p0_enabled: bool = True
         self._prev_f0_enabled: bool = True
@@ -2735,7 +2730,7 @@ bREadfan_69@hotmail.com"""
         freq_layout = QVBoxLayout(freq_group)
 
         # Monitor frequency range (single range slider with two handles)
-        self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 21000, 30, 4000, 0)
+        self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
         self.pulse_freq_range_slider.rangeChanged.connect(self._on_p0_band_change)
         freq_layout.addWidget(self.pulse_freq_range_slider)
 
@@ -2778,12 +2773,12 @@ bREadfan_69@hotmail.com"""
         f0_layout = QVBoxLayout(f0_group)
 
         # Monitor frequency range for F0
-        self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 21000, 30, 4000, 0)
+        self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
         self.f0_freq_range_slider.rangeChanged.connect(self._on_f0_band_change)
         f0_layout.addWidget(self.f0_freq_range_slider)
 
-        # TCode output range slider for F0
-        self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Freq (Hz)", 0, 150, 30, 105, 0)
+        # TCode output range slider for F0 (display 500-1500 maps to TCode 0-9999)
+        self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Freq", 500, 1500, 500, 1000, 0)
         f0_layout.addWidget(self.f0_tcode_range_slider)
 
         # Frequency weight slider for F0
@@ -2855,7 +2850,7 @@ bREadfan_69@hotmail.com"""
         # Get sample rate (default to 44100 if not available yet)
         sr = getattr(self.config.audio, 'sample_rate', 44100)
         nyquist = sr // 2
-        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 21000, 30, 4000, 0)
+        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 4000, 0)
         self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
         freq_layout.addWidget(self.freq_range_slider)
         
@@ -3339,7 +3334,7 @@ bREadfan_69@hotmail.com"""
         depth_freq_group = QGroupBox("Depth Frequency Range (Hz) - green overlay on spectrum")
         depth_freq_layout = QVBoxLayout(depth_freq_group)
         
-        self.depth_freq_range_slider = RangeSliderWithLabel("Depth Freq (Hz)", 30, 21000, 30, 4000, 0)
+        self.depth_freq_range_slider = RangeSliderWithLabel("Depth Freq (Hz)", 30, 22050, 30, 4000, 0)
         self.depth_freq_range_slider.rangeChanged.connect(self._on_depth_band_change)
         depth_freq_layout.addWidget(self.depth_freq_range_slider)
         
@@ -3760,10 +3755,10 @@ bREadfan_69@hotmail.com"""
             if f0_invert:
                 f0_norm_weighted = 1.0 - f0_norm_weighted
             
-            # Map dominant frequency to TCode output range (Hz-based, matching Carrier display)
-            # Sent Freq sliders are in Hz (0-150), convert to TCode 0-9999 via *67
-            f0_tcode_min = int(self._cached_f0_tcode_min * 67)
-            f0_tcode_max = int(self._cached_f0_tcode_max * 67)
+            # Map dominant frequency to TCode output range
+            # Sent Freq sliders are 500-1500 display units, convert to TCode 0-9999: tcode = (slider - 500) * 10
+            f0_tcode_min = int((self._cached_f0_tcode_min - 500) * 10)
+            f0_tcode_max = int((self._cached_f0_tcode_max - 500) * 10)
             f0_tcode_min = max(0, min(9999, f0_tcode_min))
             f0_tcode_max = max(0, min(9999, f0_tcode_max))
             f0_val = int(f0_tcode_min + f0_norm_weighted * (f0_tcode_max - f0_tcode_min))
@@ -3773,8 +3768,8 @@ bREadfan_69@hotmail.com"""
                 cmd.tcode_tags = {}
             cmd.tcode_tags['F0'] = f0_val
             self._cached_f0_val = f0_val
-            display_f0 = f0_val / 67  # Convert TCode to approx Hz
-            self._cached_carrier_display = f"Carrier: {display_f0:.0f}hz"
+            display_f0 = f0_val / 10 + 500  # Convert TCode to display units (500-1500)
+            self._cached_carrier_display = f"Carrier: {display_f0:.0f}"
         else:
             self._cached_f0_val = None
             self._cached_carrier_display = "Carrier: off"

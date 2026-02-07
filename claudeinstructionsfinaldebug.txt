@@ -1,3 +1,25 @@
 hi claude,
 
-in vscode here, to the left of the "terminal" tab, there is a "problems" tab that has a "21" plackard on it.  what does that mean?  can you look at it?
+this is my code that you helped create.  You designed the UI and layout.  I love it.  We have some more work to do, but some parts are FINISHED!
+there was a major rewrite and we need to make sure everything stayed applied as intended.  Please look over the code closely.  Take a good look at commit history and get an understanding what the program does, how its different parts are linked, and how its wired.
+
+[strokemode][1-4]  need to be handled with care.  They are easy to disturb calculations, and then don't make the correct patterns.  Use caution with them and always double check against commit 097fea9, it is latest and probably most correct.
+
+we need to go through the following commits and look at diffs and function and decide what our "benchmark" behavior is.
+we will look line-by-line at each commit diff from present and note similarities, differences, and make decisions if needed through the process.
+we need to decide which commits have best behavior of functions and make sure that "best" behavior stays current in code.
+
+097fea9, 87214dc - strokemodes/return function
+ef7c72e, - downbeat behavior/tracking
+059be93, 0809eb7, 2430684- "jitter" behavior (291428c may be the source of improper jitter behavior that keeps coming back, we need to look into this)
+003e307, 003e307 - creep behavior, creep reset
+
+5ab4469 - beat detection, tempo prediction, flux weighting
+87214dc - patterns were not correct here but strokemapper/strokecontroller behavior was perfect
+9d53193 - idle suppression
+710d63e - behavior of frequency detection min/max sliders (now rangesliders, check wiring)(also apply to any new freq rangesliders)
+058d94a - BETA.  basic program function reference.
+
+please create a new document that will serve as direction for future agents to hold these important features as intended through future edits. list the improvements we have made through commits and explain their purposes.  explain how the program works, the basics of wiring/connections of audio input->beat detection->strokesettings/strokemapping-> tcp code.  also explain dominantaudiofreq_detection->monitored range->translation to tcode values for [P0] and [F0]. 
+highlight the key program features here and what their intended behavior is to help avoid accidental changes to behavoir in the future.
+we will confirm all behavior is correct in UI before slating this reference.  when all behavior is confirmed correct we will make a commit that will serve as reference to proper behavior, as well as agent instructions document.  thank you!

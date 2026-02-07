@@ -97,8 +97,8 @@ class CarrierFreqConfig:
     """Carrier frequency (F0 TCode) mapping settings"""
     monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
     monitor_freq_max: float = 200.0   # Max frequency to monitor (Hz)
-    tcode_freq_min: float = 30.0      # Min sent frequency (Hz, converted to TCode)
-    tcode_freq_max: float = 105.0     # Max sent frequency (Hz, converted to TCode)
+    tcode_freq_min: float = 500.0     # Min sent frequency (display 500-1500, converted to TCode 0-9999)
+    tcode_freq_max: float = 1000.0    # Max sent frequency (display 500-1500, converted to TCode 0-9999)
     freq_weight: float = 1.0          # How much frequency affects F0 (0=none, 1=full)
 
 @dataclass

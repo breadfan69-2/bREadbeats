@@ -1,8 +1,8 @@
-i think our journey may have come to an end for the moment
+add function: when not silent, boost amplification slowly until beat forms
 
-i need you to gather up all recent changes, make sure you get them all, we've done some stuff here@  and in other chat sessions possibly.  but everything is perfect right now i think.
+carrier freq "sent freq" fix fake range change labels not output [500-1500]
 
-so double, triple check that we have recent changes gathered, commit, and push to repo
 
-then build exe for me with all hidden imports/dependancies etc.  make sure to check for new modules/imports/dependancies and add to breadbeats.spec if necessary
+how is projectM button supposed to function
 
+ranging sliders don't go to end of visualizer
