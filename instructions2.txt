@@ -1,44 +1,9 @@
-Hi claude!   glad to have you back again.  please take a moment to look over the codebase and understand how it works, and what it does.
-also look at last first 3 to 5 commits to reference proper behavior for {strokemodes} [strokemode1] should be as originally implemented.  [strokemode2][strokemode3] have improvements that stay. [strokemode4] is user-custom and relies on interpretation of peak energy/flux to determine its patterns.   All [strokemodes] should be tied to all adjustment sliders as appropriate.  [strokemode4] has custom controls loaded in [axis weights] sliders that are different from 1, 2, and 3.
+the mountain range visualizer is better!   but i like the other 2 better....
 
-
-have a few issues:
-
-FIRST and FOREMOST we need to check strokemodes, return function especially, lets look at how the motion sets up for the next beat, its currently choppy and i don't love it.  if possible, without creating a que, we need to make a smooth arc return path when setting up for next beat/dropping beat.  we can talk about this if necessary.  
-
-
------------------------------------------------------------------------------
-
-RE: VISUALIZER DISPLAY AND AVAILABLE SLIDER FREQUENCY VALUES
--need to change maximum slider values for all [frequency monitoring] range sliders to 30-20000, and also change range of visualizer to 30-20000
-
--can we make the freq selection boxes on the visualizer 3 different heights?   and mabye put tiny labels on them.  
-
-[label] = [tab]         [group box]           [function]
-[beat]  = [beat detection]-?[frequency band]->[lowFreq/highFreq sliders]
-[pulse] = [other]->[pulse freq controls]->[monitorFreq min/max sliders]
-[stroke]= [stroke settings]->[depth freq low/high]and[freq depth factor]
-
-lets also group these freq-specific sliders on the other tabs into groupboxes like the ones on the [beat detection] tab.  and instead of noting "shown as overlay on spectrum"  can we just note the color of the overlay for each?
-
-i know its a lot to ask, but what are the chances of implementing a selection for visualizer type?  the bar-graph ptgraph one we had before switching to the waterfall was nice, but i'd want the option to use either.  also, can we improve the graphics of the waterfall at all?  the pyqtgraph is so much better on resources, theres a lot to spare now :-)
-
-------------------------------------------------------------
-
-RE: JITTER/CREEP
-
- -creep can and should be applied regardless of jitter checkbox status.    and vice-versa.
-
- - change maximum [creep speed] to 0.1 with default of [0.02]
- - change maximum [jitter][circle size] to 0.0
- - change default [creep speed] to .25
-
-
-------------------------------------------------------------------
-RE: V0[volume] tcode behavior
--make sure we are reducing by 15% when [is silent=true] is detected for more than 3000ms.  restore previous volume on [is silent=false] using 500ms rise time.
+mabye you can even find something prettier here, this one really looks ideal "spectrograph" :https://github.com/nickcercone/spectrogram
 
 
 
+purely pretty, not very functional for our purpose, but perhaps could add as a nice visualizatoin only function, to be used after settings are all dialed in- https://github.com/projectM-visualizer/projectm
 
- 
+check out those repos and see if we can add those types of visualizers too ok?   the "purely pretty" one we would want a fullscreen mode for ;-)
