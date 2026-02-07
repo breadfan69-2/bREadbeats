@@ -12,7 +12,7 @@ binaries = []
 hiddenimports = [
     'sounddevice', 'aubio', 'pyaudiowpatch', 'numpy', 'matplotlib',
     'PyQt6', 'dateutil', 'six', 'fonttools', 'comtypes', 'pillow',
-    'cycler', 'kiwisolver', 'contourpy',
+    'cycler', 'kiwisolver', 'contourpy', 'pyqtgraph', 'scipy',
     'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets',
     'matplotlib.backends.backend_qtagg',
     'queue', 'threading', 'json', 'pathlib'

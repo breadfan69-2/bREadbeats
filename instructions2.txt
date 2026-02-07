@@ -1,12 +1,5 @@
-i love the phosphor display!
-we need to give the visualizers more room in the window..its opening with visualizer a little bit vertically scrunched.   mabye move tabs down.
+wow we are down to silly little UI tweaks!   hooray!    
 
-please move the [axis weights]sliders to the [jitter/creep]tab, to help layout and make all tabs have same vertical requirement. rename [jitter/creep]tab -> [effects/axis controls]
-make sure to add any new modules/imports to breadbeats.spec and requirements
+we can remove the "enable spectrum visualizer" selection box and its wiring.  was for testing purposes.
 
-rename "project M' button to 
-
-   Whip
-the Llama
-
-with that exact formatting, 2 rows text, centered.  winamp throwback :-)
+is it not possible to only show spectrum visualizer ending at 18000hz?   past 18000 is useless information, beyond audible.  if we can set the end limits of all visualizers to 18000hz would be perfect.  if not possible to change actual visualizer display range, please reset all {frequency} sliders to have maximum hz matching visualizer display.
