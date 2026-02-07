@@ -1,11 +1,8 @@
- cheaper claude did some stuff here, but can you check his work?  mainly the wiring of the new and re-arranged sliders.
-----------------------------------
- i love the new dropdown menu, can it be called "menu" instead of "file"?  
-to keep up with standard windows styling we should also put a "close" function on it.
-May as well set up a "load presets" function too, open a file chooser to pick a .json
+i think our journey may have come to an end for the moment
 
-----------------------------
-  we need to add a display for sent [carrier_freq] value, same as [pulse_freq].
-is there room directly above the [pulse_freq] display?
---------------------------------
-can we change all the doubled up min/max sliders(one ranging function, 2 whole sliders) to the ranging style with 2 draggable tabs?(one ranging function, one slider with 2 tabs)?   it would save a lot of space.
+i need you to gather up all recent changes, make sure you get them all, we've done some stuff here@  and in other chat sessions possibly.  but everything is perfect right now i think.
+
+so double, triple check that we have recent changes gathered, commit, and push to repo
+
+then build exe for me with all hidden imports/dependancies etc.  make sure to check for new modules/imports/dependancies and add to breadbeats.spec if necessary
+
