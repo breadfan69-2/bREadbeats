@@ -1,5 +1,25 @@
-wow we are down to silly little UI tweaks!   hooray!    
+wow we are down to silly little UI tweaks!   hooray! 
 
-we can remove the "enable spectrum visualizer" selection box and its wiring.  was for testing purposes.
+except:
+RE:STROKEMAPPING/RETURN FUNCTION  (take a good look at this code [re: strokemapper/creep/jitter/other effects] and previous commits involving strokemapping/jitter/creep/return, especially earlier ones.  I liked how it worked better a few days ago.)
+-it seems like there are a lot of straight lines being drawn when setting up for the next beat.   is there a designated position for return?  there does not need to me, it just needs to smoothly go back to the beat, always continuing on a sinusoidal arc.  arc size can vary, but the motion needs to stay smooth and "loopy".   the "return" function may actually be causing more jumping/teleporting?  mabye we need to send a minimum duration with EVERY command?  say 200ms?  remember we also have to keep sending 100% live data, never que anything.
 
-is it not possible to only show spectrum visualizer ending at 18000hz?   past 18000 is useless information, beyond audible.  if we can set the end limits of all visualizers to 18000hz would be perfect.  if not possible to change actual visualizer display range, please reset all {frequency} sliders to have maximum hz matching visualizer display.
+RE:REMOVAL OF TEST EQUIPMENT [other]->[performance]
+-we can remove the "enable spectrum visualizer" selection box and its wiring.  was for testing purposes.
+-we can remove the "high pass filter" and all its wiring.
+-keep the spectrum updates and FFT dropdowns, but move them next to each other instead of stacking.
+-move [butterworth bandpass filter] checkbox and function to [beat detection] tab.
+
+
+RE:SPECTRUM VISUALIZERS AND RANGE
+-lets change the range of all {audio frequency} selector sliders back to 21000hz.  and remove any clamping that may have been in place.  [beatdetection]-[low/high freq sliders],[strokesettings]-[depthfreq low/high]
+-can we add a checkbox to hide visualizer range indicators ?  placement: bottom of window between visualizer dropdown and {whipthellama}button.
+
+
+RE: VOLUME DROP ON [SILENCE]
+-i don't see this happening.  i don't see it in restim, i don't see it in console, i don't see it on volume slider.  are we sending proper 4 digit tcode? (V0[xxxx]) with [0001-9999] range?  I feel like this function never got connected properly.  I see [silence] and [fade] in the console but i don't see volume changing anywhere.  if you don't recall, its supposed to be a 15% reduction after 1500ms of silence, and fade back up to previous setting when no longer silent over 500ms
+
+RE: ADDITIONAL TCODE CONTROLS  first, read this:  [https://github.com/multiaxis/TCode-Specification] | and check at [git/diglet48/restim] for proper tcode-restim tagging.
+-add a new tcode axis, [FREQUENCY].   this will also be controlled by [audio_dominant_frequency] in the same manner as [pulse_frequency].   add a groupbox for identical controls on the [other] tab.
+
+-for both [FREQUENCY] AND [PULSE_FREQUENCY]  add a new mode to be weighted by dot speed.  mode will be selected by a toggle placed in the groupbox with each function.  mode types=[hz](controlled by [dominant_frequency] / [speed](controlled by dot speed).  also a checkbox to invert commands for the selected mode.

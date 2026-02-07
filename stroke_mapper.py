@@ -103,7 +103,7 @@ class StrokeMapper:
         quiet_energy_thresh = beat_cfg.peak_floor * 0.3  # Lowered even more
         fade_duration = 2.0  # seconds to fade out
         silence_reset_threshold = beat_cfg.silence_reset_ms / 1000.0  # Convert ms to seconds
-        silence_volume_threshold = 3.0  # 3000ms before reducing volume by 15%
+        silence_volume_threshold = 1.5  # 1500ms before reducing volume by 15%
         volume_restore_duration = 0.5  # 500ms to restore volume
         
         is_truly_silent = (event.spectral_flux < quiet_flux_thresh and event.peak_energy < quiet_energy_thresh)
@@ -592,6 +592,7 @@ class StrokeMapper:
         # Handle smooth arc return after beat stroke (unified for all modes)
         if self.state.arc_return_active:
             reset_duration_ms = 400  # Smooth arc return over 400ms
+            step_duration_ms = 200  # Minimum 200ms per command for smooth motion
             elapsed_ms = (now - self.state.arc_return_start_time) * 1000
             if elapsed_ms < reset_duration_ms:
                 progress = elapsed_ms / reset_duration_ms
@@ -631,7 +632,7 @@ class StrokeMapper:
                 silence_factor = getattr(self, '_tcode_silence_volume_factor', 1.0)
                 fade = getattr(self, '_fade_intensity', 1.0)
                 volume = self.get_volume() * silence_factor * fade
-                return TCodeCommand(alpha_target, beta_target, 17, volume)
+                return TCodeCommand(alpha_target, beta_target, step_duration_ms, volume)
             else:
                 # Arc return complete
                 self.state.arc_return_active = False
@@ -743,8 +744,8 @@ class StrokeMapper:
         alpha_target = np.clip(alpha_target, -1.0, 1.0)
         beta_target = np.clip(beta_target, -1.0, 1.0)
         
-        # Duration based on update rate (smooth motion)
-        duration_ms = 17  # Match update throttle for smooth circles
+        # Duration: minimum 200ms per command for smooth continuous motion
+        duration_ms = 200  # Minimum duration per command prevents jerky motion
         
         # Update state and timing
         self.state.alpha = alpha_target
