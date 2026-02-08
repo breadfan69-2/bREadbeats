@@ -1821,15 +1821,15 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_acceptable_bpm_min: float = 60.0  # Minimum acceptable BPM
         self._auto_acceptable_bpm_max: float = 180.0  # Maximum acceptable BPM
         self._auto_consec_beat_threshold: int = 8  # Consecutive beats in range required to lock
-        # Impact-based step sizes: (hunt_step, oscillation_amplitude_scale, max_limit_when_hunting)
+        # Impact-based step sizes: (hunt_step, max_limit_when_hunting)
         # Oscillation amplitude is always 3/4 of step_size (computed in _adjust_single_param)
         self._auto_param_config: dict = {
-            'sensitivity': (0.008, 5000.0, 1.0),     # 75% impact - small steps
-            'audio_amp': (0.04, 5000.0, 5.0),        # 75% impact - no limit when hunting
-            'flux_mult': (0.015, 5000.0, 5.0),       # 40% impact
-            'rise_sens': (0.008, 5000.0, 1.0),       # 30% impact
-            'peak_floor': (0.004, 5000.0, 0.0),      # 15% impact
-            'peak_decay': (0.002, 5000.0, 0.5),      # 10% impact
+            'sensitivity': (0.008, 1.0),     # 75% impact - small steps
+            'audio_amp': (0.04, 5.0),        # 75% impact - no limit when hunting
+            'flux_mult': (0.015, 5.0),       # 40% impact
+            'rise_sens': (0.008, 1.0),       # 30% impact
+            'peak_floor': (0.004, 0.0),      # 15% impact
+            'peak_decay': (0.002, 0.5),      # 10% impact
         }
         
         # State
@@ -3414,15 +3414,14 @@ bREadfan_69@hotmail.com"""
         self._auto_cooldown_sec = value
         print(f"[Auto] Cooldown changed to {value:.2f}s")
     
-    def _update_param_config(self, param: str, step: Optional[float] = None, lock_time: Optional[float] = None):
-        """Update step size or lock time for an auto-adjust parameter from spinbox"""
-        print(f"[Spinbox] _update_param_config called: param={param}, step={step}, lock_time={lock_time}")
+    def _update_param_config(self, param: str, step: Optional[float] = None):
+        """Update step size for an auto-adjust parameter from spinbox"""
+        print(f"[Spinbox] _update_param_config called: param={param}, step={step}")
         if param in self._auto_param_config:
-            cur_step, cur_lock, cur_max = self._auto_param_config[param]
+            cur_step, cur_max = self._auto_param_config[param]
             new_step = step if step is not None else cur_step
-            new_lock = lock_time if lock_time is not None else cur_lock
-            self._auto_param_config[param] = (new_step, new_lock, cur_max)
-            print(f"[Spinbox] ✓ {param} config: step={new_step:.3f}, lock={new_lock:.0f}ms")
+            self._auto_param_config[param] = (new_step, cur_max)
+            print(f"[Spinbox] ✓ {param} config: step={new_step:.4f}")
         else:
             print(f"[Spinbox] ✗ {param} NOT in _auto_param_config!")
     
@@ -3672,7 +3671,7 @@ bREadfan_69@hotmail.com"""
         if not config:
             return False
         
-        step_size, lock_time_ms, hunt_max = config
+        step_size, hunt_max = config
         
         # Oscillation amplitude is always 3/4 of step size
         osc_amp = step_size * 0.75
@@ -3834,15 +3833,6 @@ bREadfan_69@hotmail.com"""
         self.sensitivity_step_spin.setToolTip("Step size")
         self.sensitivity_step_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', step=v))
         sens_row.addWidget(self.sensitivity_step_spin)
-        self.sensitivity_lock_spin = QDoubleSpinBox()
-        self.sensitivity_lock_spin.setRange(250.0, 5000.0)
-        self.sensitivity_lock_spin.setSingleStep(250.0)
-        self.sensitivity_lock_spin.setDecimals(0)
-        self.sensitivity_lock_spin.setValue(5000.0)
-        self.sensitivity_lock_spin.setFixedWidth(75)
-        self.sensitivity_lock_spin.setToolTip("Lock time (ms)")
-        self.sensitivity_lock_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', lock_time=v))
-        sens_row.addWidget(self.sensitivity_lock_spin)
         layout.addLayout(sens_row)
         
         # Peak floor: minimum energy to consider (0 = disabled) - with auto toggle
@@ -3864,15 +3854,6 @@ bREadfan_69@hotmail.com"""
         self.peak_floor_step_spin.setToolTip("Step size")
         self.peak_floor_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', step=v))
         peak_floor_row.addWidget(self.peak_floor_step_spin)
-        self.peak_floor_lock_spin = QDoubleSpinBox()
-        self.peak_floor_lock_spin.setRange(250.0, 5000.0)
-        self.peak_floor_lock_spin.setSingleStep(250.0)
-        self.peak_floor_lock_spin.setDecimals(0)
-        self.peak_floor_lock_spin.setValue(5000.0)
-        self.peak_floor_lock_spin.setFixedWidth(75)
-        self.peak_floor_lock_spin.setToolTip("Lock time (ms)")
-        self.peak_floor_lock_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', lock_time=v))
-        peak_floor_row.addWidget(self.peak_floor_lock_spin)
         layout.addLayout(peak_floor_row)
         
         # Peak decay - with auto toggle
@@ -3893,15 +3874,6 @@ bREadfan_69@hotmail.com"""
         self.peak_decay_step_spin.setToolTip("Step size")
         self.peak_decay_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', step=v))
         peak_decay_row.addWidget(self.peak_decay_step_spin)
-        self.peak_decay_lock_spin = QDoubleSpinBox()
-        self.peak_decay_lock_spin.setRange(250.0, 5000.0)
-        self.peak_decay_lock_spin.setSingleStep(250.0)
-        self.peak_decay_lock_spin.setDecimals(0)
-        self.peak_decay_lock_spin.setValue(5000.0)
-        self.peak_decay_lock_spin.setFixedWidth(75)
-        self.peak_decay_lock_spin.setToolTip("Lock time (ms)")
-        self.peak_decay_lock_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', lock_time=v))
-        peak_decay_row.addWidget(self.peak_decay_lock_spin)
         layout.addLayout(peak_decay_row)
         
         # Rise sensitivity: 0 = disabled, higher = require more rise - with auto toggle
@@ -3922,15 +3894,6 @@ bREadfan_69@hotmail.com"""
         self.rise_sens_step_spin.setToolTip("Step size")
         self.rise_sens_step_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', step=v))
         rise_sens_row.addWidget(self.rise_sens_step_spin)
-        self.rise_sens_lock_spin = QDoubleSpinBox()
-        self.rise_sens_lock_spin.setRange(250.0, 5000.0)
-        self.rise_sens_lock_spin.setSingleStep(250.0)
-        self.rise_sens_lock_spin.setDecimals(0)
-        self.rise_sens_lock_spin.setValue(5000.0)
-        self.rise_sens_lock_spin.setFixedWidth(75)
-        self.rise_sens_lock_spin.setToolTip("Lock time (ms)")
-        self.rise_sens_lock_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', lock_time=v))
-        rise_sens_row.addWidget(self.rise_sens_lock_spin)
         layout.addLayout(rise_sens_row)
         
         # Flux Multiplier - with auto toggle
@@ -3951,15 +3914,6 @@ bREadfan_69@hotmail.com"""
         self.flux_mult_step_spin.setToolTip("Step size")
         self.flux_mult_step_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', step=v))
         flux_mult_row.addWidget(self.flux_mult_step_spin)
-        self.flux_mult_lock_spin = QDoubleSpinBox()
-        self.flux_mult_lock_spin.setRange(250.0, 5000.0)
-        self.flux_mult_lock_spin.setSingleStep(250.0)
-        self.flux_mult_lock_spin.setDecimals(0)
-        self.flux_mult_lock_spin.setValue(5000.0)
-        self.flux_mult_lock_spin.setFixedWidth(75)
-        self.flux_mult_lock_spin.setToolTip("Lock time (ms)")
-        self.flux_mult_lock_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', lock_time=v))
-        flux_mult_row.addWidget(self.flux_mult_lock_spin)
         layout.addLayout(flux_mult_row)
         
         # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud) - with auto toggle
@@ -3980,15 +3934,6 @@ bREadfan_69@hotmail.com"""
         self.audio_amp_step_spin.setToolTip("Step size")
         self.audio_amp_step_spin.valueChanged.connect(lambda v: self._update_param_config('audio_amp', step=v))
         audio_gain_row.addWidget(self.audio_amp_step_spin)
-        self.audio_amp_lock_spin = QDoubleSpinBox()
-        self.audio_amp_lock_spin.setRange(250.0, 5000.0)
-        self.audio_amp_lock_spin.setSingleStep(250.0)
-        self.audio_amp_lock_spin.setDecimals(0)
-        self.audio_amp_lock_spin.setValue(5000.0)
-        self.audio_amp_lock_spin.setFixedWidth(75)
-        self.audio_amp_lock_spin.setToolTip("Lock time (ms)")
-        self.audio_amp_lock_spin.valueChanged.connect(lambda v: self._update_param_config('audio_amp', lock_time=v))
-        audio_gain_row.addWidget(self.audio_amp_lock_spin)
         layout.addLayout(audio_gain_row)
         
         # Butterworth filter checkbox (requires restart)
@@ -5143,23 +5088,22 @@ bREadfan_69@hotmail.com"""
         print("EXPERIMENTAL SPINBOX SHUTDOWN VALUES")
         print("="*70)
         
-        print("\nParameter        │ Step Size  │ Lock Time (ms)")
-        print("-" * 55)
+        print("\nParameter        │ Step Size")
+        print("-" * 35)
         params = [
-            ("sensitivity", self.sensitivity_step_spin, self.sensitivity_lock_spin),
-            ("peak_floor", self.peak_floor_step_spin, self.peak_floor_lock_spin),
-            ("peak_decay", self.peak_decay_step_spin, self.peak_decay_lock_spin),
-            ("rise_sens", self.rise_sens_step_spin, self.rise_sens_lock_spin),
-            ("flux_mult", self.flux_mult_step_spin, self.flux_mult_lock_spin),
-            ("audio_amp", self.audio_amp_step_spin, self.audio_amp_lock_spin),
+            ("sensitivity", self.sensitivity_step_spin),
+            ("peak_floor", self.peak_floor_step_spin),
+            ("peak_decay", self.peak_decay_step_spin),
+            ("rise_sens", self.rise_sens_step_spin),
+            ("flux_mult", self.flux_mult_step_spin),
+            ("audio_amp", self.audio_amp_step_spin),
         ]
         
-        for param_name, step_spin, lock_spin in params:
+        for param_name, step_spin in params:
             step_val = step_spin.value()
-            lock_val = lock_spin.value()
-            print(f"{param_name:16} │ {step_val:.3f}     │ {lock_val:.0f}")
+            print(f"{param_name:16} │ {step_val:.4f}")
         
-        print("-" * 55)
+        print("-" * 35)
         consec_beat_val = self.auto_consec_beats_spin.value()
         print(f"Consecutive-beat lock threshold: {consec_beat_val:.0f} beats (in 60-180 BPM range)")
         print(f"Oscillation rule: 3/4 of step size (automatic)")
