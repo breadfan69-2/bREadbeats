@@ -42,6 +42,8 @@ class BeatEvent:
     is_downbeat: bool = False # True if this is a downbeat (strong beat, beat 1)
     bpm: float = 0.0          # Current tempo in beats per minute
     tempo_reset: bool = False # True if tempo/beat counter was reset
+    tempo_locked: bool = False  # True if consecutive downbeats match predicted pattern (locked tempo)
+    phase_error_ms: float = 0.0  # How far off from predicted downbeat timing (milliseconds)
 
 
 class AudioEngine:
@@ -58,6 +60,8 @@ class AudioEngine:
         self.measure_energy_accum = [0.0] * self.beats_per_measure
         self.measure_beat_counts = [0] * self.beats_per_measure
         self.downbeat_confidence = 0.0
+        # Reset pattern matching state
+        self._reset_downbeat_pattern()
     """
     Engine 1: The Ears
     Captures system audio and detects beats in real-time.
@@ -126,6 +130,14 @@ class AudioEngine:
         self.measure_beat_counts: list[int] = [0] * self.beats_per_measure       # How many beats at each position
         self.downbeat_position: int = 0        # Which position (0-3) is the downbeat
         self.downbeat_confidence: float = 0.0  # How confident we are in downbeat placement
+        
+        # Downbeat pattern matching - strict filtering against predicted tempo
+        self.pattern_match_tolerance_ms: float = getattr(config.beat, 'pattern_match_tolerance_ms', 100.0)
+        self.consecutive_match_threshold: int = getattr(config.beat, 'consecutive_match_threshold', 3)
+        self.downbeat_pattern_enabled: bool = getattr(config.beat, 'downbeat_pattern_enabled', True)
+        self.consecutive_matching_downbeats: int = 0  # Counter for downbeats matching predicted pattern
+        self.last_predicted_downbeat_time: float = 0.0  # When we predicted the downbeat should occur
+        self.phase_error_ms: float = 0.0       # How far off from predicted (in ms)
         
         # Butterworth filter state (initialized in start() when sample rate is known)
         self._butter_sos = None                # Filter coefficients (second-order sections)
@@ -345,6 +357,7 @@ class AudioEngine:
         if self._butter_sos is not None:
             # Use time-domain energy from Butterworth filtered signal
             band_energy = np.sqrt(np.mean(beat_mono ** 2))
+            band_energy = band_energy * self.config.audio.gain  # Apply audio gain
             # Still compute spectral flux from filtered signal's spectrum
             beat_windowed = beat_mono * self._hanning_window
             beat_spectrum = np.abs(np.fft.rfft(beat_windowed))
@@ -356,8 +369,7 @@ class AudioEngine:
             band_energy = np.sqrt(np.mean(band_spectrum ** 2)) if len(band_spectrum) > 0 else 0
             spectral_flux = self._compute_spectral_flux(band_spectrum)
         
-        # Apply audio gain amplification
-        band_energy = band_energy * self.config.audio.gain
+        # Note: Audio gain already applied to band_spectrum above, no need to apply again
         
         # Debug: print every 20 frames to see levels
         if not hasattr(self, '_debug_counter'):
@@ -389,6 +401,7 @@ class AudioEngine:
             self.beat_times.clear()
             self.beat_position_in_measure = 0
             self.is_downbeat = False
+            self._reset_downbeat_pattern()  # Also reset pattern matching when tempo resets
             tempo_reset_flag = True
         
         # Detect beat based on mode (using band energy)
@@ -401,6 +414,9 @@ class AudioEngine:
         # Use last_known_tempo if smoothed_tempo was reset
         current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else self.last_known_tempo
         
+        # Check if tempo is locked (consecutive downbeats matching predicted pattern)
+        tempo_is_locked = self.consecutive_matching_downbeats >= self.consecutive_match_threshold
+        
         event = BeatEvent(
             timestamp=time.time(),
             intensity=min(1.0, band_energy / max(0.0001, self.peak_envelope)),
@@ -410,7 +426,9 @@ class AudioEngine:
             peak_energy=band_energy,
             is_downbeat=self.is_downbeat if is_beat else False,  # Only downbeat if it's an actual beat
             bpm=current_bpm,
-            tempo_reset=tempo_reset_flag
+            tempo_reset=tempo_reset_flag,
+            tempo_locked=tempo_is_locked,
+            phase_error_ms=self.phase_error_ms
         )
         
         # Notify callback
@@ -660,10 +678,26 @@ class AudioEngine:
                     self.downbeat_position = strongest_pos
                 
                 # Downbeat = when current position matches the strongest position
-                self.is_downbeat = (pos_idx == self.downbeat_position) and total_beats >= self.beats_per_measure * 2
+                is_energy_downbeat = (pos_idx == self.downbeat_position) and total_beats >= self.beats_per_measure * 2
                 
-                if self.is_downbeat:
-                    print(f"[Downbeat] Position {pos_idx+1}/{self.beats_per_measure} (confidence={self.downbeat_confidence:.2f}, energies={[f'{e:.2f}' for e in avg_energies]})")
+                # Apply strict pattern matching if enabled
+                if is_energy_downbeat and self.downbeat_pattern_enabled and self.smoothed_tempo > 0:
+                    pattern_matches = self._validate_downbeat_against_pattern(current_time)
+                    self.is_downbeat = pattern_matches
+                    
+                    if pattern_matches:
+                        self.consecutive_matching_downbeats += 1
+                        print(f"[Downbeat] Position {pos_idx+1}/{self.beats_per_measure} (confidence={self.downbeat_confidence:.2f}, "
+                              f"pattern_match=YES, consecutive={self.consecutive_matching_downbeats}/{self.consecutive_match_threshold}, "
+                              f"error={self.phase_error_ms:.1f}ms, energies={[f'{e:.2f}' for e in avg_energies]})")
+                    else:
+                        self.consecutive_matching_downbeats = 0
+                        print(f"[Downbeat REJECTED] Position {pos_idx+1}/{self.beats_per_measure} (confidence={self.downbeat_confidence:.2f}, "
+                              f"pattern_match=NO, error={self.phase_error_ms:.1f}ms exceeds tolerance, energies={[f'{e:.2f}' for e in avg_energies]})")
+                else:
+                    self.is_downbeat = is_energy_downbeat
+                    if self.is_downbeat:
+                        print(f"[Downbeat] Position {pos_idx+1}/{self.beats_per_measure} (confidence={self.downbeat_confidence:.2f}, energies={[f'{e:.2f}' for e in avg_energies]})")
         
         self.last_beat_time = current_time
     
@@ -672,6 +706,55 @@ class AudioEngine:
         if self.smoothed_tempo > 0:
             predicted_interval = 60.0 / self.smoothed_tempo
             self.predicted_next_beat = current_time + predicted_interval
+    
+    def _validate_downbeat_against_pattern(self, current_time: float) -> bool:
+        """
+        Validate that a detected downbeat matches the predicted tempo pattern within tolerance.
+        
+        Strategy:
+        1. If this is the first/second downbeat, use it to establish predicted pattern
+        2. For subsequent downbeats, check if timing matches predicted downbeat time
+        3. Calculate phase error (how far off from prediction)
+        4. Return True only if error is within tolerance_ms
+        
+        Args:
+            current_time: Time of the detected downbeat (seconds)
+            
+        Returns:
+            True if downbeat matches predicted pattern, False otherwise
+        """
+        beat_interval = 60.0 / self.smoothed_tempo  # Seconds between beats
+        measure_interval = beat_interval * self.beats_per_measure  # Seconds per measure
+        
+        # First few downbeats: establish the predicted pattern
+        if self.last_predicted_downbeat_time <= 0:
+            # Set up the prediction based on this downbeat
+            self.last_predicted_downbeat_time = current_time
+            self.consecutive_matching_downbeats = 1
+            self.phase_error_ms = 0.0
+            return True
+        
+        # Calculate when we predicted this downbeat should occur
+        # (one measure after the last predicted downbeat)
+        predicted_time = self.last_predicted_downbeat_time + measure_interval
+        
+        # Calculate phase error in milliseconds
+        self.phase_error_ms = (current_time - predicted_time) * 1000.0
+        
+        # Check if within tolerance
+        if abs(self.phase_error_ms) <= self.pattern_match_tolerance_ms:
+            # Update prediction for next downbeat
+            self.last_predicted_downbeat_time = current_time
+            return True
+        else:
+            # Error exceeds tolerance - reject this downbeat
+            return False
+        
+    def _reset_downbeat_pattern(self):
+        """Reset downbeat pattern matching state (call after temp lock expires or on silence)"""
+        self.consecutive_matching_downbeats = 0
+        self.last_predicted_downbeat_time = 0.0
+        self.phase_error_ms = 0.0
         
     def get_tempo_info(self) -> dict:
         """Get current tempo information for UI display"""
@@ -686,7 +769,9 @@ class AudioEngine:
             'predicted_next_beat': self.predicted_next_beat,
             'interval_count': len(self.beat_intervals),
             'confidence': min(1.0, len(self.beat_intervals) / 4.0),  # Confidence grows with more beats
-            'stability': self.beat_stability  # 0.0 = chaotic, 1.0 = perfectly stable
+            'stability': self.beat_stability,  # 0.0 = chaotic, 1.0 = perfectly stable
+            'consecutive_matching_downbeats': self.consecutive_matching_downbeats,  # Pattern match counter
+            'phase_error_ms': self.phase_error_ms  # How far off from predicted (milliseconds)
         }
             
     def _estimate_frequency(self, spectrum: np.ndarray) -> float:

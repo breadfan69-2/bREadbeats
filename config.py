@@ -38,6 +38,11 @@ class BeatDetectionConfig:
     tempo_timeout_ms: int = 2000         # How long no beats before resetting tempo tracking (ms)
     beats_per_measure: int = 4           # Time signature: 4 = 4/4, 3 = 3/4, 6 = 6/8
     phase_snap_weight: float = 0.3       # How much to snap detected beats toward predicted time (0=off, 1=full)
+    
+    # Downbeat pattern matching (strict tempo mode)
+    pattern_match_tolerance_ms: float = 100.0  # Max deviation from predicted beat (ms) to accept downbeat
+    consecutive_match_threshold: int = 3       # N consecutive matching downbeats to lock tempo
+    downbeat_pattern_enabled: bool = True      # Enable/disable strict downbeat pattern matching
 
 @dataclass
 class StrokeConfig:

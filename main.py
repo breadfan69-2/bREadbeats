@@ -1748,6 +1748,14 @@ class BREadbeatsWindow(QMainWindow):
         # Track previous enabled state for send-zero-once logic
         self._prev_p0_enabled: bool = True
         self._prev_f0_enabled: bool = True
+        
+        # P0/F0 sliding window averaging (250ms window for smoother, more readable signal)
+        from collections import deque
+        self._p0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
+        self._f0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
+        self._freq_window_ms: float = 250.0  # Window size in milliseconds
+        self._p0_last_send_time: float = 0.0  # For throttling P0 sends
+        self._f0_last_send_time: float = 0.0  # For throttling F0 sends
         self._last_freq_display_time: float = 0.0  # Throttle freq display updates to 100ms
         self._last_dot_alpha: float = 0.0
         self._last_dot_beta: float = 0.0
@@ -1772,12 +1780,20 @@ class BREadbeatsWindow(QMainWindow):
         self._last_beat_time_for_auto: float = 0.0  # Track last beat for auto-adjust
         self._auto_adjust_timer: Optional[QTimer] = None
         self._auto_adjust_interval_ms: int = 100  # Timer tick rate (just checks if cooldown elapsed)
-        self._auto_threshold_sec: float = 0.43  # Beat interval threshold in seconds (428ms = 140 BPM)
-        self._auto_upper_threshold_bpm: float = 160.0  # Upper BPM threshold - reverse adjustment above this
+        self._auto_threshold_sec: float = 0.43  # Beat interval threshold in seconds (428ms = 140 BPM) - for stability detection
+        self._auto_upper_threshold_bpm: float = 360.0  # Upper BPM threshold - reverse adjustment above this (doubled to not interfere)
         self._auto_cooldown_sec: float = 0.10  # Cooldown between parameter adjustments (seconds)
         self._auto_param_index: int = 0  # Current position in the parameter cycle
         self._auto_last_adjust_time: float = 0.0  # When we last adjusted a parameter
-        self._auto_param_order: list = ['sensitivity', 'audio_amp', 'flux_mult', 'rise_sens', 'peak_floor', 'peak_decay']  # Ordered by impact
+        # HUNTING cycle: repeats flux_mult for better dial-in (1/8 interval)
+        # REVERSING cycle: reversed order (original interval)
+        self._auto_hunting_cycle: list = [
+            'audio_amp', 'flux_mult', 'sensitivity', 'peak_decay', 'flux_mult',
+            'rise_sens', 'peak_floor', 'flux_mult', 'peak_decay', 'flux_mult',
+            'peak_floor', 'rise_sens', 'flux_mult', 'sensitivity'
+        ]
+        self._auto_reversing_cycle: list = list(reversed(self._auto_hunting_cycle))
+        self._auto_param_order: list = ['sensitivity', 'audio_amp', 'flux_mult', 'rise_sens', 'peak_floor', 'peak_decay']  # Unique params for state tracking
         # Per-parameter lock states: HUNTING, REVERSING, LOCKED
         self._auto_param_state: dict = {
             'audio_amp': 'HUNTING',
@@ -1792,19 +1808,24 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_last_downbeat_conf: float = 0.0  # Last seen downbeat confidence
         self._auto_downbeat_threshold: float = 0.3  # Low threshold - just needs some downbeats detected
         self._auto_no_beat_since: float = 0.0  # Timestamp when beats were last lost (for 1500ms timer)
-        self._auto_param_lock_time: dict = {  # When each param was locked (timestamp)
-            'audio_amp': 0.0, 'peak_floor': 0.0, 'peak_decay': 0.0,
-            'rise_sens': 0.0, 'sensitivity': 0.0, 'flux_mult': 0.0,
+        self._auto_no_beat_count: int = 0  # Consecutive no-beat cycles while music is playing
+        self._auto_beathunting_threshold: int = 3  # After N no-beat cycles, trigger beathunting
+        # Hunting warmup: prevent locks until all params have had time to hunt
+        self._auto_hunt_start_time: float = 0.0  # When hunting started
+        self._auto_warmup_sec: float = 2.0  # Minimum seconds of hunting before locks allowed
+        # Consecutive beats per-param: lock after 8 consecutive valid beats (within 60-180 BPM range)
+        self._auto_consecutive_beats: dict = {  # Count of consecutive beats within acceptable range per param
+            'audio_amp': 0, 'peak_floor': 0, 'peak_decay': 0,
+            'rise_sens': 0, 'sensitivity': 0, 'flux_mult': 0,
         }
-        # Consecutive-beat lock: stop ALL hunting after N seconds of continuous beats
-        self._auto_consec_lock_sec: float = 5.0  # Seconds of continuous beats before full lock
-        self._auto_consec_beat_start: float = 0.0  # When consecutive beats started
-        self._auto_consec_locked: bool = False  # True = all hunting stopped
-        # Impact-based step sizes: (hunt_step, lock_time_ms, max_limit_when_hunting)
+        self._auto_acceptable_bpm_min: float = 60.0  # Minimum acceptable BPM
+        self._auto_acceptable_bpm_max: float = 180.0  # Maximum acceptable BPM
+        self._auto_consec_beat_threshold: int = 8  # Consecutive beats in range required to lock
+        # Impact-based step sizes: (hunt_step, oscillation_amplitude_scale, max_limit_when_hunting)
         # Oscillation amplitude is always 3/4 of step_size (computed in _adjust_single_param)
         self._auto_param_config: dict = {
             'sensitivity': (0.008, 5000.0, 1.0),     # 75% impact - small steps
-            'audio_amp': (0.04, 5000.0, 1.0),        # 75% impact - LIMIT TO 1.0 when hunting
+            'audio_amp': (0.04, 5000.0, 5.0),        # 75% impact - no limit when hunting
             'flux_mult': (0.015, 5000.0, 5.0),       # 40% impact
             'rise_sens': (0.008, 5000.0, 1.0),       # 30% impact
             'peak_floor': (0.004, 5000.0, 0.0),      # 15% impact
@@ -3256,8 +3277,8 @@ bREadfan_69@hotmail.com"""
         self.tcode_freq_range_slider = RangeSliderWithLabel("Sent Freq (Hz)", 0, 150, 30, 105, 0)
         freq_layout.addWidget(self.tcode_freq_range_slider)
 
-        # Frequency weight slider - 0=no freq influence, 1=full tracking, 2=exaggerated
-        self.freq_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 2.0, 1.0, 2)
+        # Frequency weight slider - 0=no freq influence, 1=full tracking, 5=strongly exaggerated
+        self.freq_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 5.0, 1.0, 2)
         freq_layout.addWidget(self.freq_weight_slider)
 
         # Mode toggle (Hz vs Speed) and Invert checkbox for Pulse
@@ -3298,8 +3319,8 @@ bREadfan_69@hotmail.com"""
         self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Freq", 500, 1500, 500, 1000, 0)
         f0_layout.addWidget(self.f0_tcode_range_slider)
 
-        # Frequency weight slider for F0
-        self.f0_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 2.0, 1.0, 2)
+        # Frequency weight slider for F0 - 0=no freq influence, 1=full tracking, 5=strongly exaggerated
+        self.f0_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 5.0, 1.0, 2)
         f0_layout.addWidget(self.f0_weight_slider)
 
         # Mode toggle (Hz vs Speed) and Invert checkbox for F0
@@ -3351,6 +3372,21 @@ bREadfan_69@hotmail.com"""
             self._auto_param_state[param] = 'HUNTING'
             if param == 'flux_mult':
                 self._auto_flux_lock_count = 0
+            # Set slider to reset value when enabling auto
+            # Inverted params (peak_floor, peak_decay, audio_amp) reset to MAX/hunting value (hunting lowers them)
+            # Normal params (rise_sens, sensitivity, flux_mult) reset to MIN (hunting raises them)
+            reset_values = {
+                'audio_amp': 1.0, 'peak_floor': 0.08, 'peak_decay': 0.999,
+                'rise_sens': 0.02, 'sensitivity': 0.1, 'flux_mult': 0.1
+            }
+            sliders = {
+                'audio_amp': self.audio_gain_slider, 'peak_floor': self.peak_floor_slider,
+                'peak_decay': self.peak_decay_slider, 'rise_sens': self.rise_sens_slider,
+                'sensitivity': self.sensitivity_slider, 'flux_mult': self.flux_mult_slider
+            }
+            if param in sliders and param in reset_values:
+                sliders[param].setValue(reset_values[param])
+                print(f"[Auto] {param} slider set to reset value {reset_values[param]}")
         print(f"[Auto] {param} auto-adjust {'enabled' if enabled else 'disabled'}")
         
         # Start/stop auto-adjust timer based on whether any auto is enabled
@@ -3359,10 +3395,12 @@ bREadfan_69@hotmail.com"""
             self._auto_adjust_timer = QTimer()
             self._auto_adjust_timer.timeout.connect(self._auto_adjust_beat_detection)
             self._auto_adjust_timer.start(self._auto_adjust_interval_ms)
-            print("[Auto] Started auto-adjust timer")
+            self._auto_hunt_start_time = time.time()  # Start warmup period
+            print(f"[Auto] Started auto-adjust timer (warmup {self._auto_warmup_sec}s)")
         elif not any_enabled and self._auto_adjust_timer is not None:
             self._auto_adjust_timer.stop()
             self._auto_adjust_timer = None
+            self._auto_hunt_start_time = 0.0
             print("[Auto] Stopped auto-adjust timer")
     
     def _on_auto_threshold_change(self, value: float):
@@ -3397,15 +3435,15 @@ bREadfan_69@hotmail.com"""
         - peak_floor/peak_decay/rise_sens: hunt until downbeat, lock. Resume if downbeat lost.
         - flux_mult: hunt until downbeat, lock. Resume once if lost. Lock permanently on 2nd detection.
         
-        Shorter steps with larger oscillations to sweep parameter space during hunting.
+        HUNTING mode: 1/8 interval with specific cycle order for faster parameter search.
+        REVERSING mode: Original interval with reversed order.
         """
         # Hunt as soon as audio stream is running (Start pressed), don't require Play
         if not self.is_running:
             return
         
         current_time = time.time()
-        if current_time - self._auto_last_adjust_time < self._auto_cooldown_sec:
-            return
+        # NOTE: Cooldown is now checked later based on HUNTING vs REVERSING mode
         
         # Get beat/tempo info
         tempo_info = {'bpm': 0, 'confidence': 0}
@@ -3430,13 +3468,12 @@ bREadfan_69@hotmail.com"""
                 if self._auto_param_state[p] != 'HUNTING':
                     self._auto_param_state[p] = 'HUNTING'
                     any_changed = True
-            if any_changed or self._auto_consec_locked:
+            if any_changed:
                 self._auto_flux_lock_count = 0
-                self._auto_consec_locked = False
-                self._auto_consec_beat_start = 0.0
                 self._auto_no_beat_since = 0.0
-                for p in self._auto_param_lock_time:
-                    self._auto_param_lock_time[p] = 0.0
+                self._auto_no_beat_count = 0  # Reset beathunting counter
+                for p in self._auto_consecutive_beats:
+                    self._auto_consecutive_beats[p] = 0  # Reset beat counters
                 print(f"[Auto] Silence - all params reset to HUNTING")
             return
         
@@ -3449,100 +3486,102 @@ bREadfan_69@hotmail.com"""
         has_downbeat = downbeat_conf >= self._auto_downbeat_threshold
         too_fast = bpm >= self._auto_upper_threshold_bpm
         
-        # === CONSECUTIVE BEAT LOCK ===
-        if has_beat and has_tempo:
-            if self._auto_consec_beat_start == 0.0:
-                self._auto_consec_beat_start = current_time
-            elif not self._auto_consec_locked and (current_time - self._auto_consec_beat_start) >= self._auto_consec_lock_sec:
-                self._auto_consec_locked = True
-                for p in self._auto_param_state:
-                    if self._auto_param_state[p] != 'LOCKED':
-                        self._auto_param_state[p] = 'LOCKED'
-                print(f"[Auto] CONSECUTIVE LOCK - all params LOCKED after {self._auto_consec_lock_sec:.1f}s of continuous beats")
-        else:
-            self._auto_consec_beat_start = 0.0  # Reset timer if beat lost
+        # === BEAT-COUNT LOCKING (per-parameter, 8 consecutive beats in 60-180 BPM range) ===
+        # Track consecutive beats per-param: increment if beat in range, reset if out of range or no beat
+        beat_in_acceptable_range = (self._auto_acceptable_bpm_min <= bpm <= self._auto_acceptable_bpm_max) if has_beat else False
         
-        # If consecutive-locked, skip all adjustments until silence resets
-        if self._auto_consec_locked:
-            return
+        if beat_in_acceptable_range:
+            for p in self._auto_consecutive_beats:
+                self._auto_consecutive_beats[p] += 1
+        else:
+            # Reset all counters if beat lost or out of range
+            for p in self._auto_consecutive_beats:
+                self._auto_consecutive_beats[p] = 0
         
         # === PER-PARAMETER STATE TRANSITIONS ===
         
         # Track no-beat timer for audio_amp unlock
         if has_beat:
             self._auto_no_beat_since = 0.0  # Reset - we have beats
-        elif self._auto_no_beat_since == 0.0:
-            self._auto_no_beat_since = current_time  # Start the no-beat timer
+            self._auto_no_beat_count = 0  # Reset beathunting counter
+        else:
+            # No beat detected - start/continue no-beat timer
+            if self._auto_no_beat_since == 0.0:
+                self._auto_no_beat_since = current_time  # Start the no-beat timer
+            self._auto_no_beat_count += 1  # Increment beathunting counter on EVERY cycle
         
         no_beat_duration = (current_time - self._auto_no_beat_since) if self._auto_no_beat_since > 0 else 0.0
         
-        # audio_amp: lock at first beat detection
-        # Unlock ONLY if sensitivity is HUNTING AND no beat for 1500ms
-        if self._auto_param_state['audio_amp'] == 'HUNTING' and has_beat:
-            self._auto_param_state['audio_amp'] = 'LOCKED'
-            self._auto_param_lock_time['audio_amp'] = current_time
-            print(f"[Auto] audio_amp LOCKED (first beat at {bpm:.0f} BPM)")
+        # === BEATHUNTING TRIGGER ===
+        # After N consecutive no-beat cycles while music is playing, trigger beathunting
+        # This opens ALL locks and restarts parameter search regardless of lock times
+        if self._auto_no_beat_count >= self._auto_beathunting_threshold and has_audio:
+            any_was_locked = any(s == 'LOCKED' or s == 'REVERSING' for s in self._auto_param_state.values())
+            if any_was_locked:
+                for p in self._auto_param_state:
+                    self._auto_param_state[p] = 'HUNTING'
+                    self._auto_consecutive_beats[p] = 0  # Reset beat counter
+                self._auto_flux_lock_count = 0
+                print(f"[Auto] ⬇ BEATHUNTING triggered after {self._auto_no_beat_count} no-beat cycles - ALL params reset to HUNTING")
+            self._auto_no_beat_count = 0  # Reset counter after triggering
+        
+        # === WARMUP CHECK: No locks allowed during warmup period ===
+        warmup_elapsed = current_time - self._auto_hunt_start_time if self._auto_hunt_start_time > 0 else 999.0
+        warmup_complete = warmup_elapsed >= self._auto_warmup_sec
+        
+        # audio_amp: lock after N consecutive beats in acceptable range (after warmup)
+        if self._auto_param_state['audio_amp'] == 'HUNTING' and beat_in_acceptable_range and warmup_complete:
+            if self._auto_consecutive_beats['audio_amp'] >= self._auto_consec_beat_threshold:
+                self._auto_param_state['audio_amp'] = 'LOCKED'
+                print(f"[Auto] audio_amp LOCKED ({self._auto_consec_beat_threshold} consecutive beats at {bpm:.0f} BPM)")
+        # Unlock if sensitivity is HUNTING AND no beat for 1500ms
         elif self._auto_param_state['audio_amp'] == 'LOCKED' and not has_beat:
             sens_is_hunting = self._auto_param_state['sensitivity'] == 'HUNTING'
-            lock_cfg = self._auto_param_config.get('audio_amp', (0, 5000.0, 0))
-            min_lock_time_ms = lock_cfg[1]
-            time_locked_ms = (current_time - self._auto_param_lock_time.get('audio_amp', 0)) * 1000
-            if sens_is_hunting and no_beat_duration >= 1.5 and time_locked_ms >= min_lock_time_ms:
+            if sens_is_hunting and no_beat_duration >= 1.5:
                 self._auto_param_state['audio_amp'] = 'HUNTING'
+                self._auto_consecutive_beats['audio_amp'] = 0  # Reset counter
                 print(f"[Auto] audio_amp resumed HUNTING (sensitivity hunting + no beat for {no_beat_duration:.1f}s)")
         
-        # sensitivity: lock when tempo detected
-        if self._auto_param_state['sensitivity'] == 'HUNTING' and has_tempo:
-            self._auto_param_state['sensitivity'] = 'LOCKED'
-            self._auto_param_lock_time['sensitivity'] = current_time
-            print(f"[Auto] sensitivity LOCKED (tempo at {bpm:.0f} BPM)")
+        # sensitivity: lock after N consecutive beats in acceptable range (after warmup)
+        if self._auto_param_state['sensitivity'] == 'HUNTING' and beat_in_acceptable_range and warmup_complete:
+            if self._auto_consecutive_beats['sensitivity'] >= self._auto_consec_beat_threshold:
+                self._auto_param_state['sensitivity'] = 'LOCKED'
+                print(f"[Auto] sensitivity LOCKED ({self._auto_consec_beat_threshold} consecutive beats at {bpm:.0f} BPM)")
         # When downbeat found, reverse sensitivity to find minimum
         elif self._auto_param_state['sensitivity'] == 'LOCKED' and has_downbeat:
-            lock_cfg = self._auto_param_config.get('sensitivity', (0, 5000.0, 0))
-            time_locked_ms = (current_time - self._auto_param_lock_time.get('sensitivity', 0)) * 1000
-            if time_locked_ms >= lock_cfg[1]:
-                self._auto_param_state['sensitivity'] = 'REVERSING'
-                print(f"[Auto] sensitivity REVERSING (downbeat conf={downbeat_conf:.2f})")
+            self._auto_param_state['sensitivity'] = 'REVERSING'
+            print(f"[Auto] sensitivity REVERSING (downbeat conf={downbeat_conf:.2f})")
         # When downbeat lost during reversal, re-lock
         elif self._auto_param_state['sensitivity'] == 'REVERSING' and not has_downbeat:
             self._auto_param_state['sensitivity'] = 'LOCKED'
-            self._auto_param_lock_time['sensitivity'] = current_time
             print(f"[Auto] sensitivity re-LOCKED (downbeat lost)")
-        # If sensitivity is locked but no tempo anymore, unlock after lock_time
-        elif self._auto_param_state['sensitivity'] == 'LOCKED' and not has_tempo:
-            lock_cfg = self._auto_param_config.get('sensitivity', (0, 5000.0, 0))
-            time_locked_ms = (current_time - self._auto_param_lock_time.get('sensitivity', 0)) * 1000
-            if time_locked_ms >= lock_cfg[1]:
-                self._auto_param_state['sensitivity'] = 'HUNTING'
-                print(f"[Auto] sensitivity resumed HUNTING (tempo lost after {time_locked_ms:.0f}ms locked)")
+        # If sensitivity is locked but beat out of acceptable range, unlock
+        elif self._auto_param_state['sensitivity'] == 'LOCKED' and not beat_in_acceptable_range:
+            self._auto_param_state['sensitivity'] = 'HUNTING'
+            self._auto_consecutive_beats['sensitivity'] = 0  # Reset counter
+            print(f"[Auto] sensitivity resumed HUNTING (beat out of acceptable range)")
         
-        # peak_floor, peak_decay, rise_sens: hunt until downbeat, resume if lost (respecting lock time)
+        # peak_floor, peak_decay, rise_sens: hunt until downbeat, resume if lost
         for p in ['peak_floor', 'peak_decay', 'rise_sens']:
-            if self._auto_param_state[p] == 'HUNTING' and has_downbeat:
+            if self._auto_param_state[p] == 'HUNTING' and has_downbeat and warmup_complete:
                 self._auto_param_state[p] = 'LOCKED'
-                self._auto_param_lock_time[p] = current_time
                 print(f"[Auto] {p} LOCKED (downbeat detected)")
-            elif self._auto_param_state[p] == 'LOCKED' and not has_downbeat and has_tempo:
-                lock_cfg = self._auto_param_config.get(p, (0, 5000.0, 0))
-                time_locked_ms = (current_time - self._auto_param_lock_time.get(p, 0)) * 1000
-                if time_locked_ms >= lock_cfg[1]:
-                    self._auto_param_state[p] = 'HUNTING'
-                    print(f"[Auto] {p} resumed HUNTING (downbeat lost after {time_locked_ms:.0f}ms locked)")
+            elif self._auto_param_state[p] == 'LOCKED' and not has_downbeat and beat_in_acceptable_range:
+                self._auto_param_state[p] = 'HUNTING'
+                self._auto_consecutive_beats[p] = 0  # Reset counter
+                print(f"[Auto] {p} resumed HUNTING (downbeat lost)")
         
-        # flux_mult: hunt until downbeat, lock permanently on 2nd detection
-        if self._auto_param_state['flux_mult'] == 'HUNTING' and has_downbeat:
+        # flux_mult: hunt until downbeat, lock permanently on 2nd detection (after warmup)
+        if self._auto_param_state['flux_mult'] == 'HUNTING' and has_downbeat and warmup_complete:
             self._auto_flux_lock_count += 1
             self._auto_param_state['flux_mult'] = 'LOCKED'
-            self._auto_param_lock_time['flux_mult'] = current_time
             permanent = " (PERMANENT)" if self._auto_flux_lock_count >= 2 else ""
             print(f"[Auto] flux_mult LOCKED{permanent} (count={self._auto_flux_lock_count})")
-        elif self._auto_param_state['flux_mult'] == 'LOCKED' and not has_downbeat and has_tempo:
+        elif self._auto_param_state['flux_mult'] == 'LOCKED' and not has_downbeat and beat_in_acceptable_range:
             if self._auto_flux_lock_count < 2:
-                lock_cfg = self._auto_param_config.get('flux_mult', (0, 5000.0, 0))
-                time_locked_ms = (current_time - self._auto_param_lock_time.get('flux_mult', 0)) * 1000
-                if time_locked_ms >= lock_cfg[1]:
-                    self._auto_param_state['flux_mult'] = 'HUNTING'
-                    print(f"[Auto] flux_mult resumed HUNTING (downbeat lost after {time_locked_ms:.0f}ms locked)")
+                self._auto_param_state['flux_mult'] = 'HUNTING'
+                self._auto_consecutive_beats['flux_mult'] = 0  # Reset counter
+                print(f"[Auto] flux_mult resumed HUNTING (downbeat lost)")
             # If >= 2, stay LOCKED permanently
         
         # === HANDLE TOO-FAST: reverse all non-locked params ===
@@ -3559,17 +3598,50 @@ bREadfan_69@hotmail.com"""
                 self._auto_param_index = (self._auto_param_index + 1) % len(huntable)
             return
         
-        # === ADJUST NEXT ENABLED NON-LOCKED PARAMETER ===
-        enabled_params = [p for p in self._auto_param_order if self._auto_adjust_enabled.get(p, False)]
-        if not enabled_params:
+        # === DETERMINE CYCLE ORDER AND INTERVAL ===
+        # Check if any enabled param is in HUNTING vs REVERSING state
+        hunting_params = [p for p in self._auto_param_order if 
+                        self._auto_adjust_enabled.get(p, False) and 
+                        self._auto_param_state.get(p) == 'HUNTING']
+        reversing_params = [p for p in self._auto_param_order if 
+                          self._auto_adjust_enabled.get(p, False) and 
+                          self._auto_param_state.get(p) == 'REVERSING']
+        
+        if not hunting_params and not reversing_params:
+            return  # All locked, nothing to adjust
+        
+        # Build the active cycle based on current states
+        # HUNTING: use hunting_cycle at 1/8 interval (repeats some params)
+        # REVERSING: use reversing_cycle at original interval
+        if hunting_params:
+            # Filter hunting_cycle to only include enabled params that are actually HUNTING
+            active_cycle = [p for p in self._auto_hunting_cycle if 
+                          self._auto_adjust_enabled.get(p, False) and 
+                          self._auto_param_state.get(p) == 'HUNTING']
+            effective_cooldown = self._auto_cooldown_sec / 8.0
+            # Debug: Show actual cycle with duplicates on first iteration
+            if len(active_cycle) > 0 and self._auto_param_index == 0:
+                # Show detailed diagnostic
+                enabled = [p for p, v in self._auto_adjust_enabled.items() if v]
+                hunting = [p for p, s in self._auto_param_state.items() if s == 'HUNTING']
+                print(f"[Auto] HUNTING ({len(active_cycle)} steps): enabled={enabled}, hunting={hunting}")
+                print(f"[Auto] Cycle: {active_cycle}")
+        else:
+            # All adjustable params are REVERSING
+            active_cycle = [p for p in self._auto_reversing_cycle if 
+                          self._auto_adjust_enabled.get(p, False) and 
+                          self._auto_param_state.get(p) == 'REVERSING']
+            effective_cooldown = self._auto_cooldown_sec  # Original interval
+        
+        if not active_cycle:
             return
         
-        adjustable = [p for p in enabled_params if self._auto_param_state.get(p) in ('HUNTING', 'REVERSING')]
-        if not adjustable:
+        # Check cooldown based on current mode
+        if current_time - self._auto_last_adjust_time < effective_cooldown:
             return
         
-        self._auto_param_index = self._auto_param_index % len(adjustable)
-        param = adjustable[self._auto_param_index]
+        self._auto_param_index = self._auto_param_index % len(active_cycle)
+        param = active_cycle[self._auto_param_index]
         
         state = self._auto_param_state[param]
         raise_sensitivity = (state == 'HUNTING')  # HUNTING=raise, REVERSING=lower
@@ -3580,9 +3652,10 @@ bREadfan_69@hotmail.com"""
         if adjusted:
             self._auto_last_adjust_time = current_time
             direction = "↑" if raise_sensitivity else "↓"
-            print(f"[Auto] {direction} {param} ({state}, BPM={bpm:.0f}, db={downbeat_conf:.2f})")
+            interval_str = f"{effective_cooldown*1000:.0f}ms" if hunting_params else f"{self._auto_cooldown_sec*1000:.0f}ms"
+            print(f"[Auto] {direction} {param} ({state}, BPM={bpm:.0f}, db={downbeat_conf:.2f}, interval={interval_str})")
         
-        self._auto_param_index = (self._auto_param_index + 1) % len(adjustable)
+        self._auto_param_index = (self._auto_param_index + 1) % len(active_cycle)
         self._auto_oscillation_phase += 0.3
     
     def _adjust_single_param(self, param: str, raise_sensitivity: bool, oscillate: bool = False) -> bool:
@@ -3611,13 +3684,13 @@ bREadfan_69@hotmail.com"""
         
         if param == 'audio_amp':
             current = self.audio_gain_slider.value()
-            # LIMIT TO 1.0 when hunting (auto-range shouldn't boost beyond unity)
-            max_val = hunt_max if raise_sensitivity else 10.0
+            # hunt_max allows full range when hunting (5.0)
+            max_val = hunt_max if raise_sensitivity else 5.0
             if raise_sensitivity:
                 new_val = min(max_val, current + step_size + osc_offset)
             else:
-                new_val = max(0.1, current - step_size + osc_offset)
-            new_val = max(0.1, min(10.0, new_val))
+                new_val = max(0.15, current - step_size + osc_offset)
+            new_val = max(0.15, min(5.0, new_val))
             if abs(new_val - current) > 0.001:
                 self.audio_gain_slider.setValue(new_val)
                 return True
@@ -3628,7 +3701,7 @@ bREadfan_69@hotmail.com"""
                 new_val = current - step_size - osc_offset  # Lower
             else:
                 new_val = current + step_size - osc_offset  # Raise
-            new_val = max(0.0, min(0.8, new_val))
+            new_val = max(0.01, min(0.14, new_val))
             if abs(new_val - current) > 0.001:
                 self.peak_floor_slider.setValue(new_val)
                 return True
@@ -3639,18 +3712,18 @@ bREadfan_69@hotmail.com"""
                 new_val = current - step_size - osc_offset  # Lower
             else:
                 new_val = current + step_size - osc_offset  # Raise
-            new_val = max(0.5, min(0.999, new_val))
+            new_val = max(0.2, min(0.999, new_val))
             if abs(new_val - current) > 0.001:
                 self.peak_decay_slider.setValue(new_val)
                 return True
         elif param == 'rise_sens':
             current = self.rise_sens_slider.value()
-            # Rise sensitivity inverted: lower = more tolerant, higher = stricter
+            # Rise sensitivity: higher = stricter threshold, so raise when hunting for beats
             if raise_sensitivity:
-                new_val = current - step_size - osc_offset  # Lower (more tolerant)
+                new_val = current + step_size + osc_offset  # Raise (stricter detection)
             else:
-                new_val = current + step_size - osc_offset  # Raise (stricter)
-            new_val = max(0.0, min(1.0, new_val))
+                new_val = current - step_size + osc_offset  # Lower (more tolerant)
+            new_val = max(0.02, min(1.0, new_val))
             if abs(new_val - current) > 0.001:
                 self.rise_sens_slider.setValue(new_val)
                 return True
@@ -3660,7 +3733,7 @@ bREadfan_69@hotmail.com"""
                 new_val = current + step_size + osc_offset
             else:
                 new_val = current - step_size + osc_offset
-            new_val = max(0.0, min(1.0, new_val))
+            new_val = max(0.1, min(1.0, new_val))  # Min 0.1 to avoid killing signal
             if abs(new_val - current) > 0.001:
                 self.sensitivity_slider.setValue(new_val)
                 return True
@@ -3715,17 +3788,16 @@ bREadfan_69@hotmail.com"""
         self.auto_cooldown_spin.setToolTip("Cooldown (sec) between auto-adjust steps - higher = more stable, lower = faster convergence")
         self.auto_cooldown_spin.valueChanged.connect(self._on_auto_cooldown_change)
         type_layout.addWidget(self.auto_cooldown_spin)
-        # Consecutive-beat full lock timer
-        type_layout.addWidget(QLabel("lock:"))
-        self.auto_consec_lock_spin = QDoubleSpinBox()
-        self.auto_consec_lock_spin.setRange(1.0, 30.0)
-        self.auto_consec_lock_spin.setSingleStep(0.5)
-        self.auto_consec_lock_spin.setDecimals(1)
-        self.auto_consec_lock_spin.setValue(5.0)
-        self.auto_consec_lock_spin.setFixedWidth(75)
-        self.auto_consec_lock_spin.setToolTip("Seconds of consecutive beats before ALL hunting stops (until silence)")
-        self.auto_consec_lock_spin.valueChanged.connect(lambda v: setattr(self, '_auto_consec_lock_sec', v))
-        type_layout.addWidget(self.auto_consec_lock_spin)
+        # Consecutive-beat lock threshold (beats required to lock)
+        type_layout.addWidget(QLabel("beats:"))
+        self.auto_consec_beats_spin = QSpinBox()
+        self.auto_consec_beats_spin.setRange(1, 20)
+        self.auto_consec_beats_spin.setSingleStep(1)
+        self.auto_consec_beats_spin.setValue(8)
+        self.auto_consec_beats_spin.setFixedWidth(60)
+        self.auto_consec_beats_spin.setToolTip("Consecutive beats within 60-180 BPM range required to lock parameters")
+        self.auto_consec_beats_spin.valueChanged.connect(lambda v: setattr(self, '_auto_consec_beat_threshold', v))
+        type_layout.addWidget(self.auto_consec_beats_spin)
         layout.addLayout(type_layout)
         
         # Frequency band selection
@@ -3754,11 +3826,11 @@ bREadfan_69@hotmail.com"""
         self.sensitivity_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('sensitivity', state))
         sens_row.addWidget(self.sensitivity_auto_cb)
         self.sensitivity_step_spin = QDoubleSpinBox()
-        self.sensitivity_step_spin.setRange(0.001, 0.1)
-        self.sensitivity_step_spin.setSingleStep(0.001)
-        self.sensitivity_step_spin.setDecimals(3)
+        self.sensitivity_step_spin.setRange(0.0001, 0.1)
+        self.sensitivity_step_spin.setSingleStep(0.0001)
+        self.sensitivity_step_spin.setDecimals(4)
         self.sensitivity_step_spin.setValue(0.008)
-        self.sensitivity_step_spin.setFixedWidth(75)
+        self.sensitivity_step_spin.setFixedWidth(85)
         self.sensitivity_step_spin.setToolTip("Step size")
         self.sensitivity_step_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', step=v))
         sens_row.addWidget(self.sensitivity_step_spin)
@@ -3774,8 +3846,9 @@ bREadfan_69@hotmail.com"""
         layout.addLayout(sens_row)
         
         # Peak floor: minimum energy to consider (0 = disabled) - with auto toggle
+        # Range 0.01-0.15: typical band_energy is 0.08-0.15 with default gain
         peak_floor_row = QHBoxLayout()
-        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.0, 0.8, 0.0, 2)
+        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.01, 0.14, 0.05, 3)
         self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
         peak_floor_row.addWidget(self.peak_floor_slider, 1)
         self.peak_floor_auto_cb = QCheckBox("auto")
@@ -3783,11 +3856,11 @@ bREadfan_69@hotmail.com"""
         self.peak_floor_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_floor', state))
         peak_floor_row.addWidget(self.peak_floor_auto_cb)
         self.peak_floor_step_spin = QDoubleSpinBox()
-        self.peak_floor_step_spin.setRange(0.001, 0.1)
-        self.peak_floor_step_spin.setSingleStep(0.001)
-        self.peak_floor_step_spin.setDecimals(3)
+        self.peak_floor_step_spin.setRange(0.0001, 0.1)
+        self.peak_floor_step_spin.setSingleStep(0.0001)
+        self.peak_floor_step_spin.setDecimals(4)
         self.peak_floor_step_spin.setValue(0.004)
-        self.peak_floor_step_spin.setFixedWidth(75)
+        self.peak_floor_step_spin.setFixedWidth(85)
         self.peak_floor_step_spin.setToolTip("Step size")
         self.peak_floor_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', step=v))
         peak_floor_row.addWidget(self.peak_floor_step_spin)
@@ -3804,7 +3877,7 @@ bREadfan_69@hotmail.com"""
         
         # Peak decay - with auto toggle
         peak_decay_row = QHBoxLayout()
-        self.peak_decay_slider = SliderWithLabel("Peak Decay", 0.5, 0.999, 0.9, 3)
+        self.peak_decay_slider = SliderWithLabel("Peak Decay", 0.2, 0.999, 0.9, 3)
         self.peak_decay_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_decay', v))
         peak_decay_row.addWidget(self.peak_decay_slider, 1)
         self.peak_decay_auto_cb = QCheckBox("auto")
@@ -3812,11 +3885,11 @@ bREadfan_69@hotmail.com"""
         self.peak_decay_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_decay', state))
         peak_decay_row.addWidget(self.peak_decay_auto_cb)
         self.peak_decay_step_spin = QDoubleSpinBox()
-        self.peak_decay_step_spin.setRange(0.001, 0.1)
-        self.peak_decay_step_spin.setSingleStep(0.001)
-        self.peak_decay_step_spin.setDecimals(3)
+        self.peak_decay_step_spin.setRange(0.0001, 0.1)
+        self.peak_decay_step_spin.setSingleStep(0.0001)
+        self.peak_decay_step_spin.setDecimals(4)
         self.peak_decay_step_spin.setValue(0.002)
-        self.peak_decay_step_spin.setFixedWidth(75)
+        self.peak_decay_step_spin.setFixedWidth(85)
         self.peak_decay_step_spin.setToolTip("Step size")
         self.peak_decay_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', step=v))
         peak_decay_row.addWidget(self.peak_decay_step_spin)
@@ -3833,7 +3906,7 @@ bREadfan_69@hotmail.com"""
         
         # Rise sensitivity: 0 = disabled, higher = require more rise - with auto toggle
         rise_sens_row = QHBoxLayout()
-        self.rise_sens_slider = SliderWithLabel("Rise Sensitivity", 0.0, 1.0, 0.0)
+        self.rise_sens_slider = SliderWithLabel("Rise Sensitivity", 0.02, 1.0, 0.02)
         self.rise_sens_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'rise_sensitivity', v))
         rise_sens_row.addWidget(self.rise_sens_slider, 1)
         self.rise_sens_auto_cb = QCheckBox("auto")
@@ -3841,11 +3914,11 @@ bREadfan_69@hotmail.com"""
         self.rise_sens_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('rise_sens', state))
         rise_sens_row.addWidget(self.rise_sens_auto_cb)
         self.rise_sens_step_spin = QDoubleSpinBox()
-        self.rise_sens_step_spin.setRange(0.001, 0.1)
-        self.rise_sens_step_spin.setSingleStep(0.001)
-        self.rise_sens_step_spin.setDecimals(3)
+        self.rise_sens_step_spin.setRange(0.0001, 0.1)
+        self.rise_sens_step_spin.setSingleStep(0.0001)
+        self.rise_sens_step_spin.setDecimals(4)
         self.rise_sens_step_spin.setValue(0.008)
-        self.rise_sens_step_spin.setFixedWidth(75)
+        self.rise_sens_step_spin.setFixedWidth(85)
         self.rise_sens_step_spin.setToolTip("Step size")
         self.rise_sens_step_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', step=v))
         rise_sens_row.addWidget(self.rise_sens_step_spin)
@@ -3870,11 +3943,11 @@ bREadfan_69@hotmail.com"""
         self.flux_mult_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('flux_mult', state))
         flux_mult_row.addWidget(self.flux_mult_auto_cb)
         self.flux_mult_step_spin = QDoubleSpinBox()
-        self.flux_mult_step_spin.setRange(0.001, 0.5)
-        self.flux_mult_step_spin.setSingleStep(0.005)
-        self.flux_mult_step_spin.setDecimals(3)
+        self.flux_mult_step_spin.setRange(0.0001, 0.5)
+        self.flux_mult_step_spin.setSingleStep(0.0001)
+        self.flux_mult_step_spin.setDecimals(4)
         self.flux_mult_step_spin.setValue(0.015)
-        self.flux_mult_step_spin.setFixedWidth(75)
+        self.flux_mult_step_spin.setFixedWidth(85)
         self.flux_mult_step_spin.setToolTip("Step size")
         self.flux_mult_step_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', step=v))
         flux_mult_row.addWidget(self.flux_mult_step_spin)
@@ -3889,9 +3962,9 @@ bREadfan_69@hotmail.com"""
         flux_mult_row.addWidget(self.flux_mult_lock_spin)
         layout.addLayout(flux_mult_row)
         
-        # Audio amplification/gain: boost weak signals (0.1=quiet, 10.0=loud) - with auto toggle
+        # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud) - with auto toggle
         audio_gain_row = QHBoxLayout()
-        self.audio_gain_slider = SliderWithLabel("Audio Amplification", 0.1, 10.0, 5.0, 1)
+        self.audio_gain_slider = SliderWithLabel("Audio Amplification", 0.15, 5.0, 1.0, 2)
         self.audio_gain_slider.valueChanged.connect(lambda v: setattr(self.config.audio, 'gain', v))
         audio_gain_row.addWidget(self.audio_gain_slider, 1)
         self.audio_gain_auto_cb = QCheckBox("auto")
@@ -3899,11 +3972,11 @@ bREadfan_69@hotmail.com"""
         self.audio_gain_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('audio_amp', state))
         audio_gain_row.addWidget(self.audio_gain_auto_cb)
         self.audio_amp_step_spin = QDoubleSpinBox()
-        self.audio_amp_step_spin.setRange(0.001, 0.5)
-        self.audio_amp_step_spin.setSingleStep(0.01)
-        self.audio_amp_step_spin.setDecimals(3)
+        self.audio_amp_step_spin.setRange(0.0001, 0.5)
+        self.audio_amp_step_spin.setSingleStep(0.0001)
+        self.audio_amp_step_spin.setDecimals(4)
         self.audio_amp_step_spin.setValue(0.040)
-        self.audio_amp_step_spin.setFixedWidth(75)
+        self.audio_amp_step_spin.setFixedWidth(85)
         self.audio_amp_step_spin.setToolTip("Step size")
         self.audio_amp_step_spin.valueChanged.connect(lambda v: self._update_param_config('audio_amp', step=v))
         audio_gain_row.addWidget(self.audio_amp_step_spin)
@@ -4585,6 +4658,16 @@ bREadfan_69@hotmail.com"""
             self.play_btn.setChecked(False)
             self.play_btn.setText("▶ Play")  # Reset play button text
             self.is_sending = False
+            # Reset all beat tracking locks to HUNTING on Stop
+            for p in self._auto_param_state:
+                self._auto_param_state[p] = 'HUNTING'
+            self._auto_flux_lock_count = 0
+            self._auto_no_beat_since = 0.0
+            self._auto_no_beat_count = 0
+            self._auto_param_index = 0
+            for p in self._auto_consecutive_beats:
+                self._auto_consecutive_beats[p] = 0  # Reset beat counters
+            print("[Auto] Stop pressed - all beat tracking locks reset to HUNTING")
     
     def _on_play_pause(self, checked: bool):
         """Play/pause sending commands"""
@@ -4638,6 +4721,20 @@ bREadfan_69@hotmail.com"""
     
     def _start_engines(self):
         """Initialize and start all engines"""
+        # Reset all auto-adjust state on Start (fresh hunt every time)
+        for p in self._auto_param_state:
+            self._auto_param_state[p] = 'HUNTING'
+        self._auto_flux_lock_count = 0
+        self._auto_hunt_start_time = time.time()  # Restart warmup period
+        self._auto_no_beat_since = 0.0
+        self._auto_no_beat_count = 0
+        self._auto_param_index = 0
+        self._auto_last_adjust_time = 0.0
+        # Reset consecutive beat counters
+        for p in self._auto_consecutive_beats:
+            self._auto_consecutive_beats[p] = 0
+        print("[Auto] Start pressed - all hunting state reset")
+        
         # Set selected audio device and loopback mode
         combo_idx = self.device_combo.currentIndex()
         if combo_idx >= 0 and combo_idx in self.audio_device_map:
@@ -4766,7 +4863,7 @@ bREadfan_69@hotmail.com"""
         self._last_dot_beta = cmd.beta
         self._last_dot_time = now
         
-        # --- P0 (Pulse Frequency) ---
+        # --- P0 (Pulse Frequency) with 250ms sliding window averaging ---
         p0_enabled = self._cached_p0_enabled
         if p0_enabled:
             pulse_mode = self._cached_pulse_mode
@@ -4787,15 +4884,32 @@ bREadfan_69@hotmail.com"""
             if pulse_invert:
                 norm_weighted = 1.0 - norm_weighted
             
-            # Map dominant frequency to TCode output range (Hz-based, matching Pulse display)
+            # Add sample to sliding window
+            self._p0_freq_window.append((now, norm_weighted))
+            
+            # Remove samples older than window size
+            window_cutoff = now - (self._freq_window_ms / 1000.0)
+            while self._p0_freq_window and self._p0_freq_window[0][0] < window_cutoff:
+                self._p0_freq_window.popleft()
+            
+            # Calculate average over window
+            if self._p0_freq_window:
+                avg_norm = sum(s[1] for s in self._p0_freq_window) / len(self._p0_freq_window)
+            else:
+                avg_norm = norm_weighted
+            
+            # Map averaged frequency to TCode output range (Hz-based, matching Pulse display)
             # Sent Freq sliders are in Hz (0-150), convert to TCode 0-9999 via *67
             tcode_min_val = int(self._cached_tcode_freq_min * 67)
             tcode_max_val = int(self._cached_tcode_freq_max * 67)
             tcode_min_val = max(0, min(9999, tcode_min_val))
             tcode_max_val = max(0, min(9999, tcode_max_val))
-            p0_val = int(tcode_min_val + norm_weighted * (tcode_max_val - tcode_min_val))
+            p0_val = int(tcode_min_val + avg_norm * (tcode_max_val - tcode_min_val))
             p0_val = max(0, min(9999, p0_val))
+            
+            # Send P0 with 250ms duration for smooth transitions
             cmd.pulse_freq = p0_val
+            cmd.pulse_freq_duration = int(self._freq_window_ms)  # 250ms duration
             self._cached_p0_val = p0_val
             display_freq = p0_val / 67  # Convert TCode to approx Hz (1.5-150hz range)
             self._cached_pulse_display = f"Pulse: {display_freq:.0f}hz"
@@ -4803,8 +4917,9 @@ bREadfan_69@hotmail.com"""
             cmd.pulse_freq = None
             self._cached_p0_val = None
             self._cached_pulse_display = "Pulse: off"
+            self._p0_freq_window.clear()  # Clear window when disabled
         
-        # --- F0 (Carrier Frequency) ---
+        # --- F0 (Carrier Frequency) with 250ms sliding window averaging ---
         f0_enabled = self._cached_f0_enabled
         if f0_enabled:
             f0_mode = self._cached_f0_mode
@@ -4825,24 +4940,40 @@ bREadfan_69@hotmail.com"""
             if f0_invert:
                 f0_norm_weighted = 1.0 - f0_norm_weighted
             
-            # Map dominant frequency to TCode output range
+            # Add sample to sliding window
+            self._f0_freq_window.append((now, f0_norm_weighted))
+            
+            # Remove samples older than window size
+            f0_window_cutoff = now - (self._freq_window_ms / 1000.0)
+            while self._f0_freq_window and self._f0_freq_window[0][0] < f0_window_cutoff:
+                self._f0_freq_window.popleft()
+            
+            # Calculate average over window
+            if self._f0_freq_window:
+                f0_avg_norm = sum(s[1] for s in self._f0_freq_window) / len(self._f0_freq_window)
+            else:
+                f0_avg_norm = f0_norm_weighted
+            
+            # Map averaged frequency to TCode output range
             # Sent Freq sliders are 500-1500 display units, convert to TCode 0-9999: tcode = (slider - 500) * 10
             f0_tcode_min = int((self._cached_f0_tcode_min - 500) * 10)
             f0_tcode_max = int((self._cached_f0_tcode_max - 500) * 10)
             f0_tcode_min = max(0, min(9999, f0_tcode_min))
             f0_tcode_max = max(0, min(9999, f0_tcode_max))
-            f0_val = int(f0_tcode_min + f0_norm_weighted * (f0_tcode_max - f0_tcode_min))
+            f0_val = int(f0_tcode_min + f0_avg_norm * (f0_tcode_max - f0_tcode_min))
             f0_val = max(0, min(9999, f0_val))
             
             if cmd.tcode_tags is None:
                 cmd.tcode_tags = {}
             cmd.tcode_tags['F0'] = f0_val
+            cmd.tcode_tags['F0_duration'] = int(self._freq_window_ms)  # 250ms duration
             self._cached_f0_val = f0_val
             display_f0 = f0_val / 10 + 500  # Convert TCode to display units (500-1500)
             self._cached_carrier_display = f"Carrier: {display_f0:.0f}"
         else:
             self._cached_f0_val = None
             self._cached_carrier_display = "Carrier: off"
+            self._f0_freq_window.clear()  # Clear window when disabled
         
         # Log
         p0_str = f"P0={cmd.pulse_freq:04d}" if cmd.pulse_freq is not None else "P0=off"
@@ -4911,28 +5042,31 @@ bREadfan_69@hotmail.com"""
         self._pending_spectrum = spectrum
     
     def _do_spectrum_update(self):
-        """Actually update spectrum at throttled rate"""
+        """Actually update spectrum at throttled rate - only update visible visualizer"""
         if self._pending_spectrum is not None and hasattr(self, 'spectrum_canvas') and self.spectrum_canvas is not None:
             # Handle both old format (numpy array) and new format (dict with stats)
             if isinstance(self._pending_spectrum, dict):
                 spectrum = self._pending_spectrum['spectrum']
                 peak = self._pending_spectrum.get('peak_energy', 0)
                 flux = self._pending_spectrum.get('spectral_flux', 0)
-                # Update all visualizers (only visible one renders)
-                self.spectrum_canvas.update_spectrum(spectrum, peak, flux)
-                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None:
+                # Only update the currently visible visualizer for performance
+                if self.spectrum_canvas.isVisible():
+                    self.spectrum_canvas.update_spectrum(spectrum, peak, flux)
+                elif hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
                     self.mountain_canvas.update_spectrum(spectrum, peak, flux)
-                if hasattr(self, 'bar_canvas') and self.bar_canvas is not None:
+                elif hasattr(self, 'bar_canvas') and self.bar_canvas is not None and self.bar_canvas.isVisible():
                     self.bar_canvas.update_spectrum(spectrum, peak, flux)
-                if hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None:
+                elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
                     self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
             else:
-                self.spectrum_canvas.update_spectrum(self._pending_spectrum)
-                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None:
+                # Legacy format - only update visible visualizer
+                if self.spectrum_canvas.isVisible():
+                    self.spectrum_canvas.update_spectrum(self._pending_spectrum)
+                elif hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
                     self.mountain_canvas.update_spectrum(self._pending_spectrum)
-                if hasattr(self, 'bar_canvas') and self.bar_canvas is not None:
+                elif hasattr(self, 'bar_canvas') and self.bar_canvas is not None and self.bar_canvas.isVisible():
                     self.bar_canvas.update_spectrum(self._pending_spectrum)
-                if hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None:
+                elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
                     self.phosphor_canvas.update_spectrum(self._pending_spectrum)
             self._pending_spectrum = None
     
@@ -5026,8 +5160,8 @@ bREadfan_69@hotmail.com"""
             print(f"{param_name:16} │ {step_val:.3f}     │ {lock_val:.0f}")
         
         print("-" * 55)
-        consec_lock_val = self.auto_consec_lock_spin.value()
-        print(f"Consecutive-lock timer: {consec_lock_val:.1f} seconds")
+        consec_beat_val = self.auto_consec_beats_spin.value()
+        print(f"Consecutive-beat lock threshold: {consec_beat_val:.0f} beats (in 60-180 BPM range)")
         print(f"Oscillation rule: 3/4 of step size (automatic)")
         print("="*70 + "\n")
 

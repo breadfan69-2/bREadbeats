@@ -200,6 +200,9 @@ class StrokeMapper:
         On downbeats (beat 1 of measure), create an extended full loop that takes
         approximately one full measure (4 beats) to complete. This makes downbeats
         feel more pronounced and creates a clear measure structure.
+        
+        When tempo is LOCKED (consecutive downbeats match predicted tempo), hit harder
+        with increased stroke amplitude and radius for more emphatic feel.
         """
         cfg = self.config.stroke
         now = time.time()
@@ -224,17 +227,22 @@ class StrokeMapper:
         # Apply flux factor to scale stroke size (0.5-1.5 range)
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
         
-        # On downbeat, use full stroke amplitude scaled by flux
-        stroke_len = cfg.stroke_max * flux_factor
-        stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
+        # TEMPO LOCK BOOST: When tempo is locked, hit HARDER with stronger amplitude
+        # This creates more confident, emphatic downbeats when we're sure of the tempo
+        tempo_locked = getattr(event, 'tempo_locked', False)
+        lock_boost = 1.25 if tempo_locked else 1.0  # 25% stronger when locked
+        
+        # On downbeat, use full stroke amplitude scaled by flux and lock boost
+        stroke_len = cfg.stroke_max * flux_factor * lock_boost
+        stroke_len = max(cfg.stroke_min, min(cfg.stroke_max * 1.25, stroke_len))  # Allow up to 125% of max when locked
         
         freq_factor = self._freq_to_factor(event.frequency)
         depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
         
-        # Radius for the arc - scale by flux factor for more dynamic range
+        # Radius for the arc - scale by flux factor and lock boost for more dynamic range
         min_radius = 0.3
-        radius = min_radius + (1.0 - min_radius) * flux_factor
-        radius = max(min_radius, min(1.0, radius))
+        radius = min_radius + (1.0 - min_radius) * flux_factor * lock_boost
+        radius = max(min_radius, min(1.0, radius))  # Clamp to 1.0 max
         
         # Apply axis weights
         alpha_weight = self.config.alpha_weight
@@ -268,7 +276,8 @@ class StrokeMapper:
         # Update state
         self.state.last_stroke_time = now
         self.state.last_beat_time = now
-        print(f"[StrokeMapper] ⬇ DOWNBEAT ARC start (mode={self.config.stroke.mode.name}) ({n_points} pts, {measure_duration_ms}ms total, full measure)")
+        lock_str = "LOCKED+BOOST" if tempo_locked else "unlocked"
+        print(f"[StrokeMapper] ⬇ DOWNBEAT ARC start (mode={self.config.stroke.mode.name}) ({n_points} pts, {measure_duration_ms}ms, tempo={lock_str})")
         # Don't return a command here - the arc thread will send all points
         # Returning None signals that the arc is being handled asynchronously
         return None

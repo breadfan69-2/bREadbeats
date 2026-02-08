@@ -1,5 +1,0 @@
-can we establish a time constant of consecutive beats that will stop hunting completly until the next [silence]?
-
-
-can you install step and lock adjustment spinwheels for testing purposes please?  on all of the auto-range functions
-

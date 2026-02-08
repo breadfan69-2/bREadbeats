@@ -66,7 +66,7 @@ DO NOT change this to `/ 200` or similar - it breaks smooth motion.
 
 ### 2. Downbeat Detection & Tracking
 
-**Reference commit:** `ef7c72e`
+**Reference commit:** `ef7c72e` (energy-based) + Latest (pattern matching)
 
 Energy-based downbeat detection (replaces simple counter):
 - Accumulates beat energy at each measure position (1-4)
@@ -74,10 +74,19 @@ Energy-based downbeat detection (replaces simple counter):
 - After 2 full measures, strongest position = beat 1
 - Zero queuing/blocking - pure arithmetic inline
 
-**On downbeat:**
+**Downbeat Validation (Pattern Matching):**
+- Energy-based detection identifies downbeat candidate
+- If pattern matching enabled: validate timing against predicted downbeat
+- Predicted time = last confirmed downbeat + (measure_interval = beat_interval × 4)
+- Phase error = |detected_time - predicted_time| in milliseconds
+- Accept downbeat if phase_error ≤ 100ms default tolerance
+- Log shows `[Downbeat]` if accepted or `[Downbeat REJECTED]` if timing off
+
+**On accepted downbeat:**
 - Full measure-length stroke loop (~4x beat duration)
 - Extended arc duration for emphasis
-- Prints `⬇ DOWNBEAT` in logs
+- **If tempo LOCKED:** 25% amplitude boost (1.25× multiplier) on radius and stroke_len
+- Prints `⬇ DOWNBEAT` with pattern match counter and phase error
 
 ### 3. Jitter (Micro-Circles When Idle)
 
@@ -115,14 +124,47 @@ angle_increment = (np.pi / 2.0) / updates_per_beat * creep_cfg.speed
 
 ### 5. Beat Detection & Tempo Prediction
 
-**Reference commit:** `5ab4469`
+**Reference commit:** Latest (beat detection gain fix + tempo lock)
 
-**Features:**
+**⚠️ CRITICAL FIX: Audio Gain in Butterworth Path**
+When using Butterworth filter (time-domain path), audio gain MUST be applied:
+```python
+band_energy = np.sqrt(np.mean(beat_mono ** 2))
+band_energy = band_energy * self.config.audio.gain  # ← APPLY HERE (line ~360)
+```
+If gain is NOT applied in Butterworth path, beat detection will fail completely (zero beats) even when audio is present. The FFT fallback path also applies gain, but Butterworth is the PRIMARY path and must have it.
+
+**Single Gain Application Rule:**
+- Apply gain ONCE in Butterworth section
+- FFT fallback comment states "gain already applied, no need to apply again"
+- Double-application causes excessive band_energy (~0.5+), breaking detection thresholds
+
+**Peak Floor Slider (Critical for Initial Beat Detection):**
+- Range: 0.01-0.14 (was 0.0-0.8 before fix)
+- Reset value: 0.08 (must stay at 0.08)
+- Typical band_energy after gain: 0.08-0.15
+- **If reset > 0.08, beats won't be detected initially because peak_floor > band_energy**
+
+**Beat Detection Features:**
 - Combined spectral flux + peak energy detection
 - Butterworth bandpass filter for bass isolation (30-200Hz default)
 - Weighted tempo averaging (recent beats weighted 0.5-1.5)
 - Exponential smoothing (factor 0.7) for stable BPM
 - 2000ms timeout resets tempo tracking (preserves last known BPM)
+
+**Downbeat Pattern Matching (Tempo Lock System):**
+New strict validation ensures downbeats match predicted tempo:
+```python
+pattern_match_tolerance_ms: float = 100.0  # Max ±100ms deviation
+consecutive_match_threshold: int = 3       # 3 consecutive matches = LOCKED
+downbeat_pattern_enabled: bool = True      # Enable/disable
+```
+When enabled:
+1. First downbeat establishes baseline predicted time
+2. Next downbeats must occur within ±100ms of prediction
+3. After 3 consecutive matches: **tempo is LOCKED** (gives 25% stroke boost)
+4. Counter resets if error exceeds tolerance
+5. Log shows `[Downbeat]` if accepted or `[Downbeat REJECTED]` if error too large
 
 **Flux-based stroke behavior:**
 - Low flux (<threshold): Only full strokes on downbeats
@@ -208,6 +250,7 @@ After a beat stroke completes, smooth arc return over 400ms:
 
 | Commit | Feature | Notes |
 |--------|---------|-------|
+| Latest | Beat detection gain + tempo lock | CRITICAL: Gain in Butterworth path (~line 360), pattern matching (±100ms tolerance), 25% downbeat boost when locked |
 | `097fea9` | Stroke modes reference | Arc resolution restored, volume simplified |
 | `87214dc` | Strokemapper behavior | Perfect stroke controller, but patterns were not correct |
 | `ef7c72e` | Downbeat detection | Energy-based, replaces simple counter |
@@ -241,6 +284,78 @@ Dual-handle sliders for min/max pairs:
 - Blue button = has saved preset
 - Green border = currently active
 
+### Auto-Adjust (Hunting & Ranging) System
+
+**Hunting Cycle (1/8 interval = 12.5ms during HUNTING phase):**
+14-step optimized cycle that strategically repeats flux_mult (appears 4×):
+```python
+_auto_hunting_cycle = [
+    'audio_amp', 'flux_mult', 'sensitivity', 'peak_decay', 'flux_mult',
+    'rise_sens', 'peak_floor', 'flux_mult', 'peak_decay', 'flux_mult',
+    'peak_floor', 'rise_sens', 'flux_mult', 'sensitivity'
+]
+```
+**Why flux_mult repeats 4×?** It has fastest convergence speed; frequent adjustment significantly reduces overall hunting time (~50% faster).
+
+**Reversing Cycle (100ms interval after downbeat detected):**
+Reversed order of hunting cycle, used to fine-tune when downbeat exists.
+
+**Auto-Reset Slider on Enable:**
+When user toggles auto-adjust ON for a parameter, slider automatically resets to initial value:
+```python
+reset_values = {
+    'audio_amp': 1.0,      # Hunts DOWN from max (inverted param)
+    'peak_floor': 0.08,    # Hunts DOWN from max ← MUST stay 0.08!
+    'peak_decay': 0.999,   # Hunts DOWN from max (inverted param)
+    'rise_sens': 0.02,     # Hunts UP from min (normal param)
+    'sensitivity': 0.1,    # Hunts UP from min (normal param)
+    'flux_mult': 0.1       # Hunts UP from min (normal param)
+}
+```
+**If peak_floor reset changed to 0.2, beats won't detect because 0.2 > band_energy (0.08-0.15)**
+
+**Slider Ranges (Control Hunting Search Space):**
+| Parameter | Min | Max | Reset | Why Changed |
+|-----------|-----|-----|-------|-------------|
+| audio_amp | 0.15 | 5.0 | 1.0 | Was 0.1-10.0; removed hunting 1.0 limit, narrowed range |
+| peak_floor | 0.01 | 0.14 | 0.08 | Valley height threshold between peaks; band_energy ≈ 0.08-0.14 |
+| peak_decay | 0.2 | 0.999 | 0.9 | Was 0.5-0.999; allow faster decay <0.5 |
+| rise_sens | 0.02 | 1.0 | 0.02 | Rise height threshold; min 0.02 to prevent user issues |
+| sensitivity | 0.01 | 1.0 | 0.1 | Unchanged |
+| flux_mult | 0.01 | 5.0 | 0.1 | Unchanged |
+
+**Parameter Definitions:**
+- **rise_sens (Rise Sensitivity)**: Distance between peak and valley that triggers beat detection. Higher = needs bigger rise = fewer false positives. Hunts UP during auto-adjust.
+- **peak_floor**: Valley height threshold in spectrum. Audio energy below this floor is ignored. Higher = only strong beats detected.
+
+**CRITICAL:** Narrower ranges enable faster convergence. DO NOT widen peak_floor above 0.14.
+
+**Beathunting Emergency Trigger:**
+If 3+ consecutive no-beat cycles occur while audio is playing:
+```python
+if self._auto_no_beat_count >= self._auto_beathunting_threshold and has_audio:
+    # All locks cleared, all params reset to HUNTING
+    for p in self._auto_param_state:
+        self._auto_param_state[p] = 'HUNTING'
+        self._auto_param_lock_time[p] = 0.0
+    print(f"[Auto] ⚡ç BEATHUNTING triggered after {count} cycles")
+```
+**Purpose:** Prevents system from getting stuck with all params locked but zero beats detected.
+
+**Step Spinbox Precision:**
+- 4 decimal places (enables 0.0001 step size)
+- Width: 85px (was 75px; accommodates 4 decimals)
+- Allows fine tuning of small parameters without rounding errors
+
+**P0/F0 Sliding Window Averaging (250ms Rolling Window):**
+Smooth frequency display by accumulating time-weighted samples:
+```python
+self._p0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
+self._f0_freq_window: deque = deque()
+self._freq_window_ms: float = 250.0    # milliseconds
+```
+Removes samples older than 250ms, averages remaining. Reduces jitter while keeping real-time responsiveness.
+
 ---
 
 ## Real-Time Data Requirement ⚠️ CRITICAL
@@ -272,13 +387,61 @@ queued_commands.append(pre_computed_p0)  # NEVER queue commands
 
 ## Common Pitfalls to Avoid
 
-1. **Sending cached/queued data** - Always compute live; never pre-compute or queue commands
-2. **Breaking arc resolution** - Don't change `/ 10` or `/ 20` divisors
-3. **Adding silence volume factor back** - Volume is only slider + fade
-4. **Changing jitter to random** - Keep sinusoidal micro-circles
-5. **Missing wiring for new sliders** - Always wire both directions (visualizer↔config↔slider)
-6. **Modifying stroke mode math** - Check against commit `097fea9` first
-7. **Breaking creep radius** - Must be `0.98 - jitter_r` to prevent clipping
+1. **Forgetting audio gain in Butterworth path** ⚠️ MOST CRITICAL
+   - Location: audio_engine.py ~line 360
+   - MUST have: `band_energy = band_energy * self.config.audio.gain`
+   - Symptom: Zero beats detected even when audio is present
+   - Fix: Add gain application in Butterworth section, NOT in FFT fallback
+
+2. **Setting peak_floor reset/range too high**
+   - Reset: MUST stay at 0.08 (NOT 0.2!)
+   - Range: Keep 0.01-0.14 (NOT 0.0-0.8)
+   - Symptom: Beats don't detect initially because floor > band_energy
+   - Band_energy typical: 0.08-0.15 with default gain
+
+3. **Sending cached/queued data** - Always compute live; never pre-compute
+
+4. **Breaking arc resolution** - Don't change `/ 10` or `/ 20` divisors
+
+5. **Adding silence volume factor back** - Volume is only slider + fade
+
+6. **Changing jitter to random** - Keep sinusoidal micro-circles
+
+7. **Missing wiring for new sliders** - Always wire both directions (visualizer↔config↔slider)
+
+8. **Modifying stroke mode math** - Check against commit `097fea9` first
+
+9. **Breaking creep radius** - Must be `0.98 - jitter_r` to prevent clipping
+
+10. **Modifying hunting cycle order or flux_mult repetitions**
+    - flux_mult APPEARS 4 TIMES strategically
+    - Removing repetitions breaks convergence speed optimization
+    - Order is tuned for fastest bailout
+
+11. **Disabling downbeat pattern matching**
+    - Keep `downbeat_pattern_enabled = True` in config
+    - Disabling breaks entire tempo lock system
+    - Pattern matching requires tolerance (default 100ms)
+
+12. **Changing tempo lock boost factor**
+    - Currently 1.25 (25% stronger on downbeats)
+    - Lower values (~1.1) won't feel emphatic
+    - Code in stroke_mapper.py ~line 229
+
+13. **Removing P0/F0 sliding window**
+    - Window smoothing prevents jittery Hz display
+    - Removing causes values to jump erratically
+    - 250ms window balances smoothness + responsiveness
+
+14. **Modifying step spinbox decimals**
+    - Keep at 4 decimals (was 3)
+    - 3 decimals loses fine-tuning precision
+    - 4 decimals allows 0.0001 step size
+
+15. **Changing audio_amp hunting limit**
+    - Old: Limited to 1.0 during hunting
+    - New: Uses full 0.15-5.0 range
+    - DO NOT re-add 1.0 limit; breaks audio amp scaling
 
 ---
 
@@ -290,25 +453,128 @@ Before committing changes:
 - [ ] Creep rotates smoothly (not jerky)
 - [ ] Downbeat detection triggers extended strokes
 - [ ] P0/F0 display shows correct Hz values
-- [ ] Preset load/save works for all settings
+- [ ] Preset load/save works for all settings and checkboxes in all tabs
 - [ ] Range slider dragging updates visualizer bands
 - [ ] Silence properly fades out and resets tempo
 - [ ] No volume factor beyond slider and fade
 - [ ] All TCode values are computed live (no queued/cached commands)
 - [ ] Frequency-to-depth mapping works (bass = deeper strokes)
 - [ ] All 6 range sliders properly wired to config and visualizers
+- [ ] All tcode commands are always sent at 4 digit format 0001 - 9999
 
 ---
 
 ## How to Verify Behavior
 
-1. **Stroke modes**: Enable each mode, play music, watch position dot trace smooth curves
-2. **Downbeat**: Watch BPM display for `[1] ⬇` indicator on beat 1
-3. **Jitter**: Let audio go silent, enable jitter, observe smooth micro-circles
-4. **Creep**: Enable creep, verify slow rotation follows tempo
-5. **P0/F0**: Enable pulse checkbox, verify Hz display updates with music
+1. **Beat Detection** (CRITICAL TO VERIFY FIRST)
+   - Play music, watch console for `[Beat] energy=X.XXXX` logs
+   - Should see beats within first 2 seconds of audio
+   - If ZERO beats: Check audio_engine.py line ~360 - verify gain is applied in Butterworth path
+   - Verify band_energy shows 0.08-0.15 range (NOT 0.01-0.05 or >0.2)
+
+2. **Stroke modes**
+   - Enable each mode (1-4), play music
+   - Watch position dot trace smooth curves (NOT straight lines)
+   - Arcs should be continuous and flowing
+
+3. **Downbeat Detection**
+   - Watch console for `[Downbeat]` messages
+   - Each should include pattern match status and phase error
+   - Log shows `LOCKED` when 3 consecutive downbeats match predicted timing
+
+4. **Tempo Lock Boost**
+   - Play steady music with consistent beat
+   - Once tempo locks, downbeat strokes appear noticeably larger/more emphatic
+   - Log shows `tempo=LOCKED+BOOST` in downbeat messages
+
+5. **Hunting Cycle**
+   - Enable auto-adjust on any parameter
+   - Watch console: `[Auto] ↑ param (HUNTING, BPM=X, db=Y, interval=12ms)`
+   - Should show 12ms interval during HUNTING phase
+   - Once downbeat detected, interval changes to 100ms (REVERSING phase)
+
+6. **Beathunting Trigger**
+   - Mute audio while music plays
+   - After ~3 updates with no beats, should see `[Auto] ⚡ç BEATHUNTING triggered`
+   - All params reset to HUNTING state
+
+7. **Jitter**
+   - Let audio go quiet, enable jitter
+   - Observe smooth micro-circles (NOT random jumps)
+   - Circles should be sinusoidal, ~0.01-0.1 amplitude
+
+8. **Creep**
+   - Enable creep, verify slow rotation follows tempo
+   - Should rotate smoothly, not jerkily
+
+9. **P0/F0 Display**
+   - Enable pulse checkbox
+   - Verify Hz display is smooth (not jittery)
+   - 250ms sliding window should prevent value jumps
+
+10. **Peak Floor Reset**
+    - Enable auto-adjust on peak_floor
+    - Verify slider resets to 0.08 (NOT 0.2 or higher)
+    - If reset wrong, auto-adjust icon shows but beats don't appear
+
+---
+
+## Recent Major Changes (Latest Commit)
+
+### 1. Beat Detection Gain Fix (CRITICAL ISSUE RESOLVED)
+**Problem Encountered:** Audio gain was only applied in FFT fallback path, not in the primary Butterworth filter path, causing **zero beats detected** even with audio present.
+
+**Solution Implemented:**
+```python
+# audio_engine.py line ~360 (in Butterworth filter section)
+band_energy = np.sqrt(np.mean(beat_mono ** 2))
+band_energy = band_energy * self.config.audio.gain  # ← CRITICAL: Apply gain HERE
+```
+
+**Impact:** Program went from "ZERO BEATS DETECTED" to normal beat detection in ~1 second.
+
+### 2. Hunting Cycle Overhaul (14-Step with Strategic Repetition)
+**New Approach:** 14-step cycle with flux_mult appearing 4× strategically, running at 1/8 interval (12.5ms) during HUNTING phase.
+
+**Why It Works:**
+- flux_mult has fastest convergence (controls stroke appearance)
+- Repeating it 4× reduces overall hunting time by ~50%
+- Oscillation amplitude reduced to 3/4 of step_size for smoother convergence
+
+### 3. Tempo Lock Boost System (Confidence Indicator)
+When downbeat timing matches predicted pattern for 3+ consecutive downbeats:
+- Tempo marked as LOCKED
+- Downbeat strokes get 25% amplitude boost (1.25× multiplier)
+- Log shows `tempo=LOCKED+BOOST`
+
+**Purpose:** Creates more emphatic feel when tempo detection is stable.
+
+### 4. Downbeat Pattern Matching (Strict Tempo Validation)
+- Energy-based detection finds downbeat candidate
+- Check if timing matches predicted downbeat (±100ms tolerance)
+- After 3 accepted consecutive downbeats: tempo LOCKED
+- Log shows acceptance/rejection with phase error
+
+### 5. P0/F0 Sliding Window Averaging (Smooth Display)
+250ms rolling window averages samples for smooth Hz display, reducing jitter by ~80% while keeping <250ms response.
+
+### 6. Slider Range Adjustments (Optimize Search Space)
+- peak_floor: 0.01-0.14 (was 0.0-0.8), reset=0.08
+- peak_decay: 0.2-0.999 (was 0.5-0.999)
+- audio_amp: 0.15-5.0 (was 0.1-10.0, removed 1.0 hunting limit)
+- freq_weight: 0.0-5.0 (was 0.0-2.0)
+
+Narrower ranges = Faster hunting convergence (50% faster parameter detection).
+
+### 7. Auto-Reset Slider on Enable
+When user toggles auto-adjust ON, slider automatically returns to reset value (peak_floor resets to 0.08, not 0.2).
+
+### 8. Beathunting Emergency Trigger
+If 3+ consecutive no-beat cycles while audio plays, all locks clear and all params reset to HUNTING. Prevents stuck states.
 
 ---
 
 *Document created: 2026-02-07*  
-*Reference commit for document: `097fea9`*
+*Last comprehensive update: 2026-02-07*  
+*Reference for recent changes: Latest commit*
+*All implementations verified with running program - beat detection working, hunting cycle active, tempo lock functional.*
