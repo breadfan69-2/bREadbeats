@@ -1,35 +1,24 @@
-# bREadbeats - Audio Beat Detection to restim
-# All required dependencies for building and running
+# bREadbeats - Audio Beat Detection to Restim
+# Core runtime dependencies
 
-# GUI
+# GUI Framework
 PyQt6>=6.5.0
 
-# Audio and math
+# Audio Processing & Math
 numpy>=1.24.0
-pyaudiowpatch>=0.2.12
-sounddevice>=0.4.6
-scipy>=1.10.0              # For Butterworth bandpass filter
+pyaudiowpatch>=0.2.12          # Audio device enumeration
+sounddevice>=0.4.6             # Audio input capture
+scipy>=1.10.0                  # Butterworth bandpass filter for beat detection
 
-# Visualization
-matplotlib>=3.7.0
-pyqtgraph>=0.13.0           # High-performance plotting (replaces matplotlib for real-time)
-moderngl>=5.8.0             # GPU-accelerated shader visualizations
-moderngl-window>=2.4.0      # Windowing for moderngl
+# Visualization & Display
+pyqtgraph>=0.13.0              # Real-time audio/beat visualization
+Pillow>=10.0.0                 # Image processing
 
-# Windows audio (WASAPI) support
-comtypes>=1.2.0
+# Windows Audio Support
+comtypes>=1.2.0                # Windows COM interface for WASAPI
 
-# Optional: beat detection enhancement (falls back gracefully if missing)
-aubio>=0.4.9
+# Beat Detection
+aubio>=0.4.9                   # Optional: Additional beat detection (falls back gracefully)
 
-# Matplotlib and PyQt dependencies (explicit for PyInstaller)
-python-dateutil>=2.8.0
-six>=1.16.0
-fonttools>=4.38.0
-Pillow>=10.0.0
-cycler>=0.11.0
-kiwisolver>=1.4.0
-contourpy>=1.0.0
-
-# Build tool (for creating standalone exe from source)
-PyInstaller>=6.0.0
+# Splash Screen
+pictex>=0.1.0                  # Styled text rendering for splash screen

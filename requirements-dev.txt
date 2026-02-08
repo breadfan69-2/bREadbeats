@@ -1,0 +1,8 @@
+# bREadbeats - Development and Build Tools
+# Install with: pip install -r requirements-dev.txt
+
+# Main runtime dependencies
+-r requirements.txt
+
+# Build & Packaging
+PyInstaller>=6.0.0             # Create standalone Windows exe

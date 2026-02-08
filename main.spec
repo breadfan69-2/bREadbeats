@@ -1,12 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
+# Collect PyQt6 properly
+pyqt_datas, pyqt_binaries, pyqt_hiddenimports = collect_all('PyQt6')
 
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[('bREadbeats.ico', '.'), ('C:\\Users\\andre\\.bREadbeats\\presets.json', '.bREadbeats')],
-    hiddenimports=['scipy', 'scipy.signal', 'scipy.signal._sosfilt', 'pyqtgraph', 'fonttools', 'comtypes', 'pillow'],
+    binaries=pyqt_binaries,
+    datas=[('bREadbeats.ico', '.'), ('splash_screen.png', '.'), ('C:\\Users\\andre\\.bREadbeats\\presets.json', '.bREadbeats')] + pyqt_datas,
+    hiddenimports=['scipy', 'scipy.signal', 'scipy.signal._sosfilt', 'scipy.signal._lfilter', 'pyqtgraph', 'fonttools', 'comtypes', 'pillow'] + pyqt_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

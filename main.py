@@ -3,7 +3,15 @@ bREadbeats - Main Application
 Qt GUI with beat detection, stroke mapping, and spectrum visualization.
 """
 
+# Print loading message IMMEDIATELY before any imports
 import sys
+print("\n" + "="*60)
+print("bREadbeats - Audio Beat Detection & TCode Generator")
+print("="*60)
+print("Please wait, loading BeatTracker modules....")
+print("="*60 + "\n")
+sys.stdout.flush()
+
 import numpy as np
 import queue
 import threading
@@ -17,10 +25,11 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QCheckBox,
     QSpinBox, QDoubleSpinBox, QLineEdit, QTabWidget, QFrame,
-    QGridLayout, QSizePolicy, QMenuBar, QMenu, QMessageBox, QFileDialog
+    QGridLayout, QSizePolicy, QMenuBar, QMenu, QMessageBox, QFileDialog,
+    QSplashScreen
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRect
-from PyQt6.QtGui import QFont, QPalette, QColor, QPainter, QBrush, QPen
+from PyQt6.QtGui import QFont, QPalette, QColor, QPainter, QBrush, QPen, QPixmap
 from typing import Optional
 
 # PyQtGraph for high-performance real-time plotting
@@ -5151,7 +5160,32 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     
+    # Show splash screen while loading
+    # When frozen with PyInstaller, use sys._MEIPASS; otherwise use __file__
+    if getattr(sys, 'frozen', False):
+        resource_dir = Path(sys._MEIPASS)
+    else:
+        resource_dir = Path(__file__).parent
+    
+    splash_path = resource_dir / 'splash_screen.png'
+    if splash_path.exists():
+        pixmap = QPixmap(str(splash_path))
+        splash = QSplashScreen(pixmap)
+        splash.show()
+        app.processEvents()
+    else:
+        splash = None
+    
+    # Create main window (this triggers module loading)
     window = BREadbeatsWindow()
+    
+    print("\nInitialization complete. Starting GUI...\n")
+    sys.stdout.flush()
+    
+    # Close splash and show main window
+    if splash:
+        splash.finish(window)
+    
     window.show()
     
     sys.exit(app.exec())
