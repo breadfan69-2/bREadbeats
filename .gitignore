@@ -22,3 +22,12 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Documentation/working notes - NOT for version control
+instructions*.txt
+INSTRUCTIONS*.txt
+FINALINSTRUCTIONS*.TXT
+NOTES*.txt
+chathistory.txt
+build.log
+*finaldebug.txt
