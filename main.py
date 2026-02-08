@@ -5,10 +5,14 @@ Qt GUI with beat detection, stroke mapping, and spectrum visualization.
 
 # Heavy imports - these are the slow ones, but splash is already showing by this point
 import sys
+import time
+
+_import_t0 = time.perf_counter()
+print("\n[Startup] main.py loading heavy modules...", flush=True)
+
 import numpy as np
 import queue
 import threading
-import time
 import json
 import os
 from pathlib import Path
@@ -33,6 +37,8 @@ from config import Config, StrokeMode, BeatDetectionType
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from stroke_mapper import StrokeMapper
+
+print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
 
 
 # Config persistence - use exe folder when packaged, home dir when running from source

@@ -15,10 +15,13 @@ Author: bREadbeats
 """
 
 import sys
+import time
+
+t0 = time.perf_counter()
 print("\n[Startup] Initializing bREadbeats...", flush=True)
 
 from pathlib import Path
-print("[Startup] Loading system modules...", flush=True)
+print(f"[Startup] Loading system modules... (+{(time.perf_counter()-t0)*1000:.0f} ms)", flush=True)
 
 # Print loading message immediately
 print("\n" + "="*60)
@@ -30,11 +33,11 @@ print("[Startup] Preparing GUI framework...")
 print("="*60 + "\n", flush=True)
 
 # Import ONLY PyQt6 essentials first for splash screen (fast)
+t_pyqt = time.perf_counter()
 from PyQt6.QtWidgets import QApplication, QSplashScreen
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import Qt
-
-print("[Startup] GUI framework loaded. Initializing application...", flush=True)
+print(f"[Startup] GUI framework loaded (+{(time.perf_counter()-t_pyqt)*1000:.0f} ms). Initializing application...", flush=True)
 
 def main():
     app = QApplication(sys.argv)
@@ -57,10 +60,12 @@ def main():
         app.processEvents()  # Force display update
     
     print("[Startup] Loading audio engine and processing modules...", flush=True)
+    t_main = time.perf_counter()
     
     # NOW import heavy modules (numpy, scipy, pyqtgraph, etc.)
     from main import BREadbeatsWindow
-    
+    print(f"[Startup] Loaded main module (+{(time.perf_counter()-t_main)*1000:.0f} ms)", flush=True)
+
     print("[Startup] Creating main window...", flush=True)
     
     # Create main window
