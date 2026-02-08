@@ -34,6 +34,7 @@ This document serves as a canonical reference for future AI agents working on bR
 - **stroke_mapper.py** - Beat→stroke conversion, 4 stroke modes, jitter/creep
 - **network_engine.py** - TCP connection to restim, TCodeCommand class
 - **config.py** - All configuration dataclasses and defaults
+- **hunt order.txt** - Auto-adjust hunting cycle sequence (14 steps with strategic flux_mult repetition)
 
 ---
 
