@@ -1,0 +1,43 @@
+we need to remove all beat tracking locks from all parametars when pressing "stop"
+
+also automatically set auto-ranging sliders to minimum value when toggling auto [on]
+
+i want to cycle the auto ranging differently..can we loop this order, on 1/8 the current timer interval? (can we go that fast??), when [hungting] only.  Use opposite order when [reversing], and original time interval.   
+
+
+***************************************
+*****CHANGED, ADDED MORE STEPS*****
+----------------------------
+1.[audio amplification]
+2.[flux multiplier]
+3.[sensitivity]
+4.[peak decay]
+5.[FLUX MULTIPLIER]
+6.[rise sensitivity]
+6.[peak floor]
+8.[FLUX MULTIPLIER]
+7.[peak decay]
+8.[FLUX MULTIPLIER]
+9.[peak floor]
+10.[rise sensitivity]
+11.[FLUX MULTIPLIER]
+12.[sensitivity]
+restart
+__________________________________________________END CHANGE
+hopefully this will dial it in a bit better!
+
+
+
+*****************NEW INSTRUCTION********************
+
+-can i please have smaller interval resolution on step length for the autorange sliders and their selector scrollboxes?  with the faster loop i need to go down to 0.0001.  is that possible?  boxes can be wider if necessary, watch window formatting.
+
+-peak floor, peak decay, rise sensitivity are being reset backwards on toggle[autorange].  since their [hunting] motion is backward, they need to reset to their maximum (right side) setting.  
+-change peak decay min setting to .2
+-change peak floor minimum to 0.5
+-change [audio amplification] minimum and reset values to 0.15 and change maximum range to 5 (was 10)
+
+
+after implementing this, please start the program for verification.   
+
+then, proceed with the rest of instructions5.txt 

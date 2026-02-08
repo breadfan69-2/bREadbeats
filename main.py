@@ -27,11 +27,6 @@ from typing import Optional
 import pyqtgraph as pg
 pg.setConfigOptions(antialias=False, useOpenGL=False)  # Disable for compatibility
 
-# Keep matplotlib imports for fallback (unused but avoids import errors)
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
-
 from config import Config, StrokeMode, BeatDetectionType
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
