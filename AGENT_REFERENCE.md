@@ -7,7 +7,7 @@ This document serves as a canonical reference for future AI agents working on bR
 
 ## Program Overview
 
-**bREadbeats** is a real-time audio-reactive TCode generator for restim devices. It captures system audio, detects beats and tempo, and generates smooth circular/arc stroke patterns in the alpha/beta plane. Additionally, it monitors dominant audio frequencies and translates them to TCode values for pulse frequency (P0) and carrier frequency (F0).
+**bREadbeats** is a real-time audio-reactive TCode generator for restim devices. It captures system audio, detects beats and tempo, and generates smooth circular/arc stroke patterns in the alpha/beta plane. Additionally, it monitors dominant audio frequencies and translates them to TCode values for pulse frequency (P0) and carrier frequency (F0), and feeds the same dominant frequency into StrokeMapper to scale stroke depth (bass → deeper, treble → shallower).
 
 ### Core Signal Flow
 
@@ -30,8 +30,8 @@ This document serves as a canonical reference for future AI agents working on bR
 
 ### Key Files
 - **main.py** - GUI (PyQt6), wiring, P0/F0 computation, visualizers
-- **audio_engine.py** - Audio capture, FFT, beat/tempo detection, downbeat tracking
-- **stroke_mapper.py** - Beat→stroke conversion, 4 stroke modes, jitter/creep
+- **audio_engine.py** - Audio capture, FFT, beat/tempo detection, downbeat tracking, dominant-frequency estimation per frame
+- **stroke_mapper.py** - Beat→stroke conversion, 4 stroke modes, jitter/creep, depth scaling from dominant frequency via `_freq_to_factor`
 - **network_engine.py** - TCP connection to restim, TCodeCommand class
 - **config.py** - All configuration dataclasses and defaults
 - **hunt order.txt** - Auto-adjust hunting cycle sequence (14 steps with strategic flux_mult repetition)
