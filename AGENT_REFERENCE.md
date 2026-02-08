@@ -300,6 +300,18 @@ _auto_hunting_cycle = [
 **Reversing Cycle (100ms interval after downbeat detected):**
 Reversed order of hunting cycle, used to fine-tune when downbeat exists.
 
+**Beat-Count Lock System (Replaces Time-Based Locks):**
+Parameters lock after 8 consecutive beats where BPM stays within 60-180 range:
+```python
+_auto_beats_lock_threshold = 8  # Consecutive beats required to lock
+_auto_bpm_min = 60.0            # Min BPM for valid beat
+_auto_bpm_max = 180.0           # Max BPM for valid beat
+_auto_consecutive_beat_count = {}  # Per-param beat counters
+```
+When a parameter's counter reaches threshold, it transitions from HUNTING → LOCKED.
+Global "beats:" spinbox (default 8) controls this threshold for all parameters.
+Individual slider lock_spin widgets were removed - only global beat-count lock exists now.
+
 **Auto-Reset Slider on Enable:**
 When user toggles auto-adjust ON for a parameter, slider automatically resets to initial value:
 ```python
@@ -337,7 +349,7 @@ if self._auto_no_beat_count >= self._auto_beathunting_threshold and has_audio:
     # All locks cleared, all params reset to HUNTING
     for p in self._auto_param_state:
         self._auto_param_state[p] = 'HUNTING'
-        self._auto_param_lock_time[p] = 0.0
+        self._auto_consecutive_beat_count[p] = 0  # Reset beat counters
     print(f"[Auto] ⚡ç BEATHUNTING triggered after {count} cycles")
 ```
 **Purpose:** Prevents system from getting stuck with all params locked but zero beats detected.
@@ -572,9 +584,16 @@ When user toggles auto-adjust ON, slider automatically returns to reset value (p
 ### 8. Beathunting Emergency Trigger
 If 3+ consecutive no-beat cycles while audio plays, all locks clear and all params reset to HUNTING. Prevents stuck states.
 
+### 9. Beat-Count Lock (Replaces Time-Based Locks)
+- Old system: Parameters locked after X milliseconds in REVERSING state
+- New system: Parameters lock after 8 consecutive beats within valid BPM range (60-180)
+- Global "beats:" spinbox controls threshold for all parameters
+- Individual slider lock_spin widgets removed (6 total removed)
+- Simpler `_auto_param_config` tuple: (step_size, max_limit) instead of (step, lock_time, max)
+
 ---
 
 *Document created: 2026-02-07*  
-*Last comprehensive update: 2026-02-07*  
+*Last comprehensive update: 2026-02-08*  
 *Reference for recent changes: Latest commit*
 *All implementations verified with running program - beat detection working, hunting cycle active, tempo lock functional.*

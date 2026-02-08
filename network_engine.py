@@ -16,59 +16,60 @@ from config import Config
 
 @dataclass
 class TCodeCommand:
-        """T-code command for restim"""
-        alpha: float      # Alpha position (-1.0 to 1.0, will be mapped to 0-9999)
-        beta: float       # Beta position (-1.0 to 1.0, will be mapped to 0-9999)
-        duration_ms: int  # Duration for the move
-        volume: float = 1.0  # Volume (0.0 to 1.0)
-        pulse_freq: Optional[int] = None  # Optional P0 frequency (0-9999)
-        pulse_freq_duration: Optional[int] = None  # Optional P0 duration (uses 250ms for smooth averaging)
-        tcode_tags: dict = field(default_factory=dict)  # Optional additional T-code tags
+    """T-code command for restim"""
+    alpha: float      # Alpha position (-1.0 to 1.0, will be mapped to 0-9999)
+    beta: float       # Beta position (-1.0 to 1.0, will be mapped to 0-9999)
+    duration_ms: int  # Duration for the move
+    volume: float = 1.0  # Volume (0.0 to 1.0)
+    pulse_freq: Optional[int] = None  # Optional P0 frequency (0-9999)
+    pulse_freq_duration: Optional[int] = None  # Optional P0 duration (250ms for smooth averaging)
+    tcode_tags: dict = field(default_factory=dict)  # Optional additional T-code tags
 
-        def to_tcode(self) -> str:
-                """
-                Convert to T-code string for restim.
-                restim coordinate system:
-                    - L0 = vertical axis (our alpha/Y, negated)
-                    - L1 = horizontal axis (our beta/X, negated)
-                Rotated 90 degrees clockwise to match restim display orientation
-                """
-                # Rotate 90 degrees clockwise: swap and negate appropriately
-                rotated_alpha = self.beta
-                rotated_beta = -self.alpha
+    def to_tcode(self) -> str:
+        """
+        Convert to T-code string for restim.
+        restim coordinate system:
+            - L0 = vertical axis (our alpha/Y, negated)
+            - L1 = horizontal axis (our beta/X, negated)
+        Rotated 90 degrees clockwise to match restim display orientation
+        """
+        # Rotate 90 degrees clockwise: swap and negate appropriately
+        rotated_alpha = self.beta
+        rotated_beta = -self.alpha
 
-                # Map -1.0..1.0 to 0..9999
-                l0_val = int((-rotated_alpha + 1.0) / 2.0 * 9999)  # rotated_alpha -> L0 (vertical, negated)
-                l1_val = int((-rotated_beta + 1.0) / 2.0 * 9999)   # rotated_beta -> L1 (horizontal, negated)
+        # Map -1.0..1.0 to 0..9999
+        l0_val = int((-rotated_alpha + 1.0) / 2.0 * 9999)
+        l1_val = int((-rotated_beta + 1.0) / 2.0 * 9999)
 
-                # Clamp to valid range
-                l0_val = max(0, min(9999, l0_val))
-                l1_val = max(0, min(9999, l1_val))
+        # Clamp to valid range
+        l0_val = max(0, min(9999, l0_val))
+        l1_val = max(0, min(9999, l1_val))
 
-                # Volume to 0..9999
-                v0_val = int(max(0.0, min(1.0, self.volume)) * 9999)
+        # Volume to 0..9999
+        v0_val = int(max(0.0, min(1.0, self.volume)) * 9999)
 
-                # Build command string - all axes in one message
-                # Format: L0xxxxIyyy L1xxxxIyyy V0xxxxIyyy [P0xxxx]
-                cmd = f"L0{l0_val:04d}I{self.duration_ms} L1{l1_val:04d}I{self.duration_ms} V0{v0_val:04d}I{self.duration_ms}"
-                    # Add P0xxxxIyyy if present (4 digits, 0000-9999)
-                    # Use pulse_freq_duration (250ms) for smooth averaged transitions if set
-                p0_val = getattr(self, 'pulse_freq', None)
-                if p0_val is not None:
-                        p0_dur = getattr(self, 'pulse_freq_duration', None) or self.duration_ms
-                        cmd += f" P0{int(p0_val):04d}I{p0_dur}"
-                # Add any other tcode_tags if present (with interpolation time)
-                tcode_tags = getattr(self, 'tcode_tags', {})
-                for tag, val in tcode_tags.items():
-                    if tag == 'F0_duration':
-                        continue  # Skip duration tag itself
-                    if tag != 'P0':
-                        # Use F0_duration for F0 if available
-                        f0_dur = tcode_tags.get('F0_duration', None) if tag == 'F0' else None
-                        dur = f0_dur or self.duration_ms
-                        cmd += f" {tag}{int(val):04d}I{dur}"
-                cmd += "\n"
-                return cmd
+        # Build command string: L0xxxxIyyy L1xxxxIyyy V0xxxxIyyy [P0xxxx] [F0xxxx]
+        cmd = f"L0{l0_val:04d}I{self.duration_ms} L1{l1_val:04d}I{self.duration_ms} V0{v0_val:04d}I{self.duration_ms}"
+        
+        # Add P0xxxxIyyy if present (4 digits, 0000-9999)
+        p0_val = getattr(self, 'pulse_freq', None)
+        if p0_val is not None:
+            p0_dur = getattr(self, 'pulse_freq_duration', None) or self.duration_ms
+            cmd += f" P0{int(p0_val):04d}I{p0_dur}"
+        
+        # Add any other tcode_tags if present (with interpolation time)
+        tcode_tags = getattr(self, 'tcode_tags', {})
+        for tag, val in tcode_tags.items():
+            if tag == 'F0_duration':
+                continue  # Skip duration tag itself
+            if tag != 'P0':
+                # Use F0_duration for F0 if available
+                f0_dur = tcode_tags.get('F0_duration', None) if tag == 'F0' else None
+                dur = f0_dur or self.duration_ms
+                cmd += f" {tag}{int(val):04d}I{dur}"
+        
+        cmd += "\n"
+        return cmd
 
 
 class NetworkEngine:

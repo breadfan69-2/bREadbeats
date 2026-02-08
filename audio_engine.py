@@ -7,7 +7,6 @@ Uses pyaudiowpatch for WASAPI loopback capture.
 import numpy as np
 import pyaudiowpatch as pyaudio
 import threading
-import queue
 from dataclasses import dataclass
 from typing import Callable, Optional
 import time

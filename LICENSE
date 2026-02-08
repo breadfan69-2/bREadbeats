@@ -1,0 +1,86 @@
+bREadbeats - Source Available License
+=====================================
+
+Copyright (c) 2026 bREadbeats (breadfan69-2)
+All Rights Reserved.
+
+This software and associated documentation files (the "Software") are made 
+available under the following terms:
+
+PERMISSIONS
+-----------
+You are granted permission to:
+
+1. USE the Software for personal, non-commercial purposes
+2. STUDY the source code to learn from it
+3. MODIFY the Software for personal use
+4. SHARE the Software with others under these same terms
+
+REQUIREMENTS
+------------
+If you modify, adapt, or build upon this Software, you MUST:
+
+1. Share your modifications with the original author (breadfan69-2) by 
+   submitting a pull request to the original repository or by other means
+   of direct communication
+
+2. Include this license and copyright notice in all copies or substantial 
+   portions of the Software
+
+3. Clearly indicate any changes you made to the original Software
+
+RESTRICTIONS
+------------
+You may NOT:
+
+1. Use the Software or any derivative works for commercial purposes
+2. Sell, sublicense, or otherwise commercialize the Software
+3. Remove or alter any copyright notices or this license
+4. Claim the Software as your own original work
+
+DEFINITION OF COMMERCIAL USE
+----------------------------
+"Commercial use" means any use intended for or directed toward commercial 
+advantage or monetary compensation. This includes but is not limited to:
+- Selling the Software
+- Including the Software in a product or service for sale
+- Using the Software to generate revenue directly or indirectly
+- Using the Software in a commercial entity's operations
+
+THIRD-PARTY COMPONENTS
+----------------------
+This Software uses the following third-party libraries, each with their own 
+licenses:
+
+- PyQt6: GPL v3 / Commercial (https://www.riverbankcomputing.com/software/pyqt/)
+- NumPy: BSD License (https://numpy.org/doc/stable/license.html)
+- SciPy: BSD License (https://scipy.org/scipylib/license.html)
+- Matplotlib: PSF-based License (https://matplotlib.org/stable/users/license.html)
+- PyQtGraph: MIT License (https://github.com/pyqtgraph/pyqtgraph)
+- aubio: GPL v3 (https://aubio.org/)
+
+Users must comply with the licenses of all third-party components.
+
+DISCLAIMER
+----------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+USE AT YOUR OWN RISK. This software is designed for use with electronic 
+stimulation devices (e-stim). Improper use can be dangerous. The author 
+assumes no responsibility for any injury or damage resulting from use of 
+this software.
+
+CONTACT
+-------
+For questions, permissions, or to share modifications:
+GitHub: https://github.com/breadfan69-2/bREadbeats
+
+---
+This is a source-available license, not an open-source license as defined 
+by the Open Source Initiative (OSI). The non-commercial restriction makes 
+this incompatible with OSI-approved licenses.
