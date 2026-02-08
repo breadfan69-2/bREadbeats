@@ -3,15 +3,8 @@ bREadbeats - Main Application
 Qt GUI with beat detection, stroke mapping, and spectrum visualization.
 """
 
-# Print loading message IMMEDIATELY before any imports
+# Heavy imports - these are the slow ones, but splash is already showing by this point
 import sys
-print("\n" + "="*60)
-print("bREadbeats - Audio Beat Detection & TCode Generator")
-print("="*60)
-print("Please wait, loading BeatTracker modules....")
-print("="*60 + "\n")
-sys.stdout.flush()
-
 import numpy as np
 import queue
 import threading
@@ -123,6 +116,16 @@ def load_config() -> Config:
                 for key, value in data['pulse_freq'].items():
                     if hasattr(config.pulse_freq, key):
                         setattr(config.pulse_freq, key, value)
+            
+            if 'carrier_freq' in data:
+                for key, value in data['carrier_freq'].items():
+                    if hasattr(config.carrier_freq, key):
+                        setattr(config.carrier_freq, key, value)
+            
+            if 'auto_adjust' in data:
+                for key, value in data['auto_adjust'].items():
+                    if hasattr(config.auto_adjust, key):
+                        setattr(config.auto_adjust, key, value)
             
             # Top-level values
             if 'alpha_weight' in data:
@@ -2610,6 +2613,7 @@ Inspired by:
     digitalparkinglot's creations
     edger477 (ideas from funscriptgenerator)
     diglet48 (wouldn't be here without restim!)
+    shadlock0133 (music-vibes)
 
 Bug reports/share your presets:
 bREadfan_69@hotmail.com"""
@@ -2694,6 +2698,22 @@ bREadfan_69@hotmail.com"""
             
             # Volume
             self.volume_slider.setValue(self.config.volume)
+            
+            # Auto-adjust step sizes and settings
+            if hasattr(self.config, 'auto_adjust'):
+                self.sensitivity_step_spin.setValue(self.config.auto_adjust.step_sensitivity)
+                self.peak_floor_step_spin.setValue(self.config.auto_adjust.step_peak_floor)
+                self.peak_decay_step_spin.setValue(self.config.auto_adjust.step_peak_decay)
+                self.rise_sens_step_spin.setValue(self.config.auto_adjust.step_rise_sens)
+                self.flux_mult_step_spin.setValue(self.config.auto_adjust.step_flux_mult)
+                self.audio_amp_step_spin.setValue(self.config.auto_adjust.step_audio_amp)
+                self.auto_threshold_spin.setValue(self.config.auto_adjust.threshold_sec)
+                self.auto_cooldown_spin.setValue(self.config.auto_adjust.cooldown_sec)
+                self.auto_consec_beats_spin.setValue(self.config.auto_adjust.consec_beats)
+                # Update internal variables tied to spinboxes
+                self._auto_threshold_sec = self.config.auto_adjust.threshold_sec
+                self._auto_cooldown_sec = self.config.auto_adjust.cooldown_sec
+                self._auto_consec_beat_threshold = self.config.auto_adjust.consec_beats
             
             print("[UI] Loaded all settings from config")
         except AttributeError as e:
@@ -4188,6 +4208,17 @@ bREadfan_69@hotmail.com"""
             'auto_global': self.global_auto_range_cb.isChecked(),
             'auto_threshold_sec': self._auto_threshold_sec,
             'auto_cooldown_sec': self._auto_cooldown_sec,
+            
+            # Auto-adjust step sizes for each parameter
+            'step_sensitivity': self.sensitivity_step_spin.value(),
+            'step_peak_floor': self.peak_floor_step_spin.value(),
+            'step_peak_decay': self.peak_decay_step_spin.value(),
+            'step_rise_sens': self.rise_sens_step_spin.value(),
+            'step_flux_mult': self.flux_mult_step_spin.value(),
+            'step_audio_amp': self.audio_amp_step_spin.value(),
+            
+            # Consecutive beats lock threshold
+            'auto_consec_beats': self.auto_consec_beats_spin.value(),
         }
         
         # Add custom name if provided
@@ -4313,6 +4344,24 @@ bREadfan_69@hotmail.com"""
                 self.auto_threshold_spin.setValue(preset_data['auto_threshold_sec'])
             if 'auto_cooldown_sec' in preset_data:
                 self.auto_cooldown_spin.setValue(preset_data['auto_cooldown_sec'])
+
+            # Auto-adjust step sizes for each parameter
+            if 'step_sensitivity' in preset_data:
+                self.sensitivity_step_spin.setValue(preset_data['step_sensitivity'])
+            if 'step_peak_floor' in preset_data:
+                self.peak_floor_step_spin.setValue(preset_data['step_peak_floor'])
+            if 'step_peak_decay' in preset_data:
+                self.peak_decay_step_spin.setValue(preset_data['step_peak_decay'])
+            if 'step_rise_sens' in preset_data:
+                self.rise_sens_step_spin.setValue(preset_data['step_rise_sens'])
+            if 'step_flux_mult' in preset_data:
+                self.flux_mult_step_spin.setValue(preset_data['step_flux_mult'])
+            if 'step_audio_amp' in preset_data:
+                self.audio_amp_step_spin.setValue(preset_data['step_audio_amp'])
+            
+            # Consecutive beats lock threshold
+            if 'auto_consec_beats' in preset_data:
+                self.auto_consec_beats_spin.setValue(preset_data['auto_consec_beats'])
 
             # --- Sync config object with UI (especially enum) ---
             self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)
@@ -5147,6 +5196,17 @@ bREadfan_69@hotmail.com"""
         self.config.beat.tempo_timeout_ms = int(self.tempo_timeout_slider.value())
         self.config.beat.phase_snap_weight = self.phase_snap_slider.value()
         
+        # Save auto-adjust step sizes and settings
+        self.config.auto_adjust.step_sensitivity = self.sensitivity_step_spin.value()
+        self.config.auto_adjust.step_peak_floor = self.peak_floor_step_spin.value()
+        self.config.auto_adjust.step_peak_decay = self.peak_decay_step_spin.value()
+        self.config.auto_adjust.step_rise_sens = self.rise_sens_step_spin.value()
+        self.config.auto_adjust.step_flux_mult = self.flux_mult_step_spin.value()
+        self.config.auto_adjust.step_audio_amp = self.audio_amp_step_spin.value()
+        self.config.auto_adjust.threshold_sec = self.auto_threshold_spin.value()
+        self.config.auto_adjust.cooldown_sec = self.auto_cooldown_spin.value()
+        self.config.auto_adjust.consec_beats = self.auto_consec_beats_spin.value()
+        
         # Save config before closing
         save_config(self.config)
 
@@ -5157,11 +5217,11 @@ bREadfan_69@hotmail.com"""
 
 
 def main():
+    """Main entry point - backup if not launched via run.py"""
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     
-    # Show splash screen while loading
-    # When frozen with PyInstaller, use sys._MEIPASS; otherwise use __file__
+    # Show splash screen while loading (fallback for direct main.py execution)
     if getattr(sys, 'frozen', False):
         resource_dir = Path(sys._MEIPASS)
     else:
@@ -5176,7 +5236,7 @@ def main():
     else:
         splash = None
     
-    # Create main window (this triggers module loading)
+    # Create main window
     window = BREadbeatsWindow()
     
     print("\nInitialization complete. Starting GUI...\n")
