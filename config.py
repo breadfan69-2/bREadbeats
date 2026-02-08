@@ -107,6 +107,22 @@ class CarrierFreqConfig:
     freq_weight: float = 1.0          # How much frequency affects F0 (0=none, 1=full)
 
 @dataclass
+class AutoAdjustConfig:
+    """Auto-adjust (hunting) step sizes and related settings"""
+    # Step sizes for each parameter
+    step_sensitivity: float = 0.008
+    step_peak_floor: float = 0.004
+    step_peak_decay: float = 0.002
+    step_rise_sens: float = 0.008
+    step_flux_mult: float = 0.015
+    step_audio_amp: float = 0.040
+    
+    # Global settings for auto-adjust
+    threshold_sec: float = 0.43       # Beat interval threshold in seconds
+    cooldown_sec: float = 0.10        # Cooldown between adjustments
+    consec_beats: int = 8             # Consecutive beats required to lock
+
+@dataclass
 class AudioConfig:
     """Audio capture settings"""
     sample_rate: int = 44100
@@ -136,6 +152,7 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     pulse_freq: PulseFreqConfig = field(default_factory=PulseFreqConfig)
     carrier_freq: CarrierFreqConfig = field(default_factory=CarrierFreqConfig)
+    auto_adjust: AutoAdjustConfig = field(default_factory=AutoAdjustConfig)
     
     # Global
     alpha_weight: float = 1.0         # Per-axis mix for alpha

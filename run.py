@@ -14,7 +14,67 @@ Requirements:
 Author: bREadbeats
 """
 
-from main import main
+import sys
+print("\n[Startup] Initializing bREadbeats...", flush=True)
+
+from pathlib import Path
+print("[Startup] Loading system modules...", flush=True)
+
+# Print loading message immediately
+print("\n" + "="*60)
+print("bREadbeats - Audio Beat Detection & TCode Generator")
+print("="*60)
+print("Please wait, loading BeatTracker modules....")
+print("="*60)
+print("[Startup] Preparing GUI framework...")
+print("="*60 + "\n", flush=True)
+
+# Import ONLY PyQt6 essentials first for splash screen (fast)
+from PyQt6.QtWidgets import QApplication, QSplashScreen
+from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt
+
+print("[Startup] GUI framework loaded. Initializing application...", flush=True)
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+    
+    print("[Startup] Displaying splash screen...", flush=True)
+    
+    # Show splash screen IMMEDIATELY before any heavy imports
+    if getattr(sys, 'frozen', False):
+        resource_dir = Path(sys._MEIPASS)
+    else:
+        resource_dir = Path(__file__).parent
+    
+    splash_path = resource_dir / 'splash_screen.png'
+    splash = None
+    if splash_path.exists():
+        pixmap = QPixmap(str(splash_path))
+        splash = QSplashScreen(pixmap)
+        splash.show()
+        app.processEvents()  # Force display update
+    
+    print("[Startup] Loading audio engine and processing modules...", flush=True)
+    
+    # NOW import heavy modules (numpy, scipy, pyqtgraph, etc.)
+    from main import BREadbeatsWindow
+    
+    print("[Startup] Creating main window...", flush=True)
+    
+    # Create main window
+    window = BREadbeatsWindow()
+    
+    print("\nInitialization complete. Starting GUI...\n", flush=True)
+    
+    # Close splash and show main window
+    if splash:
+        splash.finish(window)
+    
+    window.show()
+    
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()
