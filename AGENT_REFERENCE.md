@@ -36,7 +36,39 @@ This document serves as a canonical reference for future AI agents working on bR
 - **config.py** - All configuration dataclasses and defaults
 - **hunt order.txt** - Auto-adjust hunting cycle sequence (14 steps with strategic flux_mult repetition)
 
----
+### Dependencies
+
+**Runtime Requirements** (`requirements.txt`):
+- **PyQt6** ≥6.5.0 - GUI framework (main.py, visualization widgets)
+- **numpy** ≥1.24.0 - Audio signal processing
+- **scipy** ≥1.10.0 - Butterworth bandpass filter (`scipy.signal.butter`, `sosfilt`, `sosfilt_zi`)
+- **sounddevice** ≥0.4.6 - Audio input capture (PortAudio wrapper)
+- **pyaudiowpatch** ≥0.2.12 - Audio device enumeration (Windows WASAPI support)
+- **pyqtgraph** ≥0.13.0 - Real-time waveform/spectrum/beat visualization
+- **comtypes** ≥1.2.0 - Windows COM interface for WASAPI loopback audio
+- **aubio** ≥0.4.9 - Optional: Additional beat detection (falls back gracefully if missing)
+- **Pillow** ≥10.0.0 - Image processing
+- **pictex** ≥0.1.0 - Splash screen styled text rendering
+
+**Development/Build** (`requirements-dev.txt`):
+- **PyInstaller** ≥6.0.0 - Standalone exe packaging (development only)
+
+**NOT INCLUDED** (legacy/unused):
+- ~~matplotlib~~ - Replaced by pyqtgraph for real-time plotting
+- ~~moderngl/moderngl-window~~ - Never used in codebase
+- ~~python-dateutil, six, fonttools, cycler, kiwisolver, contourpy~~ - matplotlib dependencies (removed with matplotlib)
+
+### Installation
+
+```bash
+# Core runtime
+pip install -r requirements.txt
+
+# For development/building exe
+pip install -r requirements-dev.txt
+```
+
+
 
 ## Critical Features & Behaviors
 

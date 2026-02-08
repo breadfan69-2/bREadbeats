@@ -1,28 +1,28 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-# Include data files (presets.json and icon)
+# Include data files (presets.json, icon, and splash screen)
 datas = [
     ('presets.json', '.'),
-    ('bREadbeats.ico', '.')
+    ('bREadbeats.ico', '.'),
+    ('splash_screen.png', '.')
 ]
 binaries = []
 
 # Hidden imports - all libraries that might not be auto-detected
 hiddenimports = [
-    'sounddevice', 'aubio', 'pyaudiowpatch', 'numpy', 'matplotlib',
+    'sounddevice', 'aubio', 'pyaudiowpatch', 'numpy',
     'PyQt6', 'dateutil', 'six', 'fonttools', 'comtypes', 'pillow',
-    'cycler', 'kiwisolver', 'contourpy', 'pyqtgraph', 'scipy',
+    'pyqtgraph',
+    'scipy', 'scipy.signal', 'scipy.signal._sosfilt', 'scipy.signal._lfilter',
     'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtWidgets',
-    'matplotlib.backends.backend_qtagg',
     'queue', 'threading', 'json', 'pathlib'
 ]
 
-# Collect all data and binaries for PyQt6 and matplotlib
+# Collect all data and binaries for PyQt6
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('matplotlib')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# scipy and matplotlib: Only specific functions used, no need to collect_all
 
 
 a = Analysis(

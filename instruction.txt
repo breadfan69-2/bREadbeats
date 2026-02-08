@@ -1,15 +1,28 @@
-please show me the difference between our local copy of agent_reference and remote copy
+last time, we created a "program loading" splash screen, and attempted adding a console message as early in program loading as possible {please wait, loading....}
 
-i want to confirm recent local changes are correct and do not negate anything important that is saved on remote.
+this helps with the "dead console" feeling, but the program is sooo slow to load.  Is there anything we can do to get the GUI on the screen sooner?
+Perhaps loading modules in background after GUI is built?
 
-after we have confirmed this, commit and push.
-
-then, i want to add a splash screen on startup while the program is loading. 
-
-I need you to create a graphic for the splash screen. It should use a modified version of our icon file [bbicon.png], you may need to resize.   Overlay the png image with text that we will create using reference from:
+is it anyway possible to get the splash screen loaded sooner?
 
 
-https://www.reddit.com/r/Python/comments/1lwjsar/pictex_a_python_library_to_easily_create_stylized/
 
 
-The text will say "Please wait, loading BeatTracker modules...."
+
+
+____________________________________________________________________
+********************************************************************
+
+
+add credits to "inspired by"
+shadlock0133 (music-vibes)
+
+
+
+
+___________________________________________________________________
+*********************************************************************
+
+
+implement saving of [autorange][hunting] step sizes on presets.json and when program closes
+
