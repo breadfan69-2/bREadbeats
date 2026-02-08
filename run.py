@@ -16,11 +16,12 @@ Author: bREadbeats
 
 import sys
 import time
-import threading
 
 t0 = time.perf_counter()
+print("\n[Startup] Initializing bREadbeats...", flush=True)
 
 from pathlib import Path
+print(f"[Startup] Loading system modules... (+{(time.perf_counter()-t0)*1000:.0f} ms)", flush=True)
 
 # Print loading message immediately
 print("\n" + "="*60)
@@ -56,48 +57,29 @@ def main():
         pixmap = QPixmap(str(splash_path))
         splash = QSplashScreen(pixmap)
         splash.show()
+        splash.showMessage("Loading core modules...", Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, Qt.GlobalColor.white)
         app.processEvents()  # Force display update
     
-    # Show banner only after splash is visible to avoid an early "stuck" console
-    print("\n" + "=" * 60)
-    print("bREadbeats - Audio Beat Detection & TCode Generator")
-    print("=" * 60)
-    print("Please wait, loading BeatTracker modules....")
-    print("=" * 60 + "\n", flush=True)
-
-    # Progress dots while heavy imports load (prevents dead console feel)
-    progress_stop = threading.Event()
-
-    def _progress_worker():
-        while not progress_stop.is_set():
-            sys.stdout.write('.')
-            sys.stdout.flush()
-            time.sleep(0.3)
-
-    def _start_progress():
-        progress_stop.clear()
-        t = threading.Thread(target=_progress_worker, daemon=True)
-        t.start()
-        return t
-
-    def _stop_progress():
-        progress_stop.set()
-        sys.stdout.write('\n')
-        sys.stdout.flush()
-
     print("[Startup] Loading audio engine and processing modules...", flush=True)
+    if splash:
+        splash.showMessage("Loading audio engine and processing modules...", Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, Qt.GlobalColor.white)
+        app.processEvents()
     t_main = time.perf_counter()
-    _start_progress()
     
     # NOW import heavy modules (numpy, scipy, pyqtgraph, etc.)
     from main import BREadbeatsWindow
-    _stop_progress()
     print(f"[Startup] Loaded main module (+{(time.perf_counter()-t_main)*1000:.0f} ms)", flush=True)
+    if splash:
+        splash.showMessage("Initializing UI...", Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, Qt.GlobalColor.white)
+        app.processEvents()
 
     print("[Startup] Creating main window...", flush=True)
     
     # Create main window
     window = BREadbeatsWindow()
+    if splash:
+        splash.showMessage("Starting services...", Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom, Qt.GlobalColor.white)
+        app.processEvents()
     
     print("\nInitialization complete. Starting GUI...\n", flush=True)
     
