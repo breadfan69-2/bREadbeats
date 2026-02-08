@@ -1,0 +1,15 @@
+please show me the difference between our local copy of agent_reference and remote copy
+
+i want to confirm recent local changes are correct and do not negate anything important that is saved on remote.
+
+after we have confirmed this, commit and push.
+
+then, i want to add a splash screen on startup while the program is loading. 
+
+I need you to create a graphic for the splash screen. It should use a modified version of our icon file [bbicon.png], you may need to resize.   Overlay the png image with text that we will create using reference from:
+
+
+https://www.reddit.com/r/Python/comments/1lwjsar/pictex_a_python_library_to_easily_create_stylized/
+
+
+The text will say "Please wait, loading BeatTracker modules...."
