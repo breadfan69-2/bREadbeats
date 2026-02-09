@@ -4005,6 +4005,10 @@ bREadfan_69@hotmail.com"""
         self.config.beat.freq_low = low
         self.config.beat.freq_high = high
         
+        # Re-initialize Butterworth filter with new band so beat detection actually uses it
+        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+            self.audio_engine._init_butterworth_filter()
+        
         # Update spectrum overlay
         sr = self.config.audio.sample_rate
         max_freq = sr / 2
@@ -5152,93 +5156,129 @@ bREadfan_69@hotmail.com"""
                 self._volume_ramp_active = False
         
         # ===== AUTO-FREQUENCY BAND TRACKING =====
-        # Scans full range for most consistent peaks/valleys, then narrows to target width
+        # Constantly scans full range for consistent peaks/valleys until beat is LOCKED,
+        # then narrows to spinbox target width. Expands + unlocks on 3 missed beats.
         if self._auto_freq_enabled and hasattr(self, 'audio_engine') and self.audio_engine is not None:
             now = time.time()
             # Update every 100ms (10 Hz)
             if now - self._auto_freq_last_update > 0.1:
                 self._auto_freq_last_update = now
                 
-                # Check for missed beats (expand if 3+ missed)
+                # Check tempo lock state from audio engine
+                tempo_is_locked = (self.audio_engine.consecutive_matching_downbeats 
+                                   >= self.audio_engine.consecutive_match_threshold)
+                
+                # ---- MISSED BEAT TRACKING (only when we have tempo) ----
                 if self.audio_engine.smoothed_tempo > 0:
                     expected_interval = 60.0 / self.audio_engine.smoothed_tempo
                     self._auto_freq_expected_interval = expected_interval
                     
-                    # Check if we missed a beat
+                    # Track beat arrivals to detect misses
                     time_since_beat = now - self.audio_engine.last_beat_time
-                    if time_since_beat > expected_interval * 1.5:  # Missed by 50%
-                        if self._auto_freq_last_beat_time != self.audio_engine.last_beat_time:
-                            self._auto_freq_missed_count += 1
-                            self._auto_freq_last_beat_time = self.audio_engine.last_beat_time
-                    else:
-                        # Beat detected - reset miss counter
-                        if self._auto_freq_last_beat_time != self.audio_engine.last_beat_time:
+                    if self.audio_engine.last_beat_time != self._auto_freq_last_beat_time:
+                        # New beat arrived
+                        if time_since_beat < expected_interval * 1.5:
+                            # Beat on time - reset miss counter
                             self._auto_freq_missed_count = 0
-                            self._auto_freq_last_beat_time = self.audio_engine.last_beat_time
+                        self._auto_freq_last_beat_time = self.audio_engine.last_beat_time
+                    elif time_since_beat > expected_interval * 2.0:
+                        # No new beat and we've waited 2x the expected interval = missed
+                        # Count one miss per expected interval
+                        missed_intervals = int(time_since_beat / expected_interval) - 1
+                        self._auto_freq_missed_count = max(self._auto_freq_missed_count, missed_intervals)
                     
-                    # Expand and recenter on 3+ missed beats
+                    # EXPAND + UNLOCK on 3+ missed beats
                     if self._auto_freq_missed_count >= self._auto_freq_missed_threshold:
+                        # UNLOCK tempo - reset consecutive matching downbeats
+                        self.audio_engine.consecutive_matching_downbeats = 0
+                        # Reset auto-freq to full-range scanning
                         self._auto_freq_phase = 'scanning'
-                        self._auto_freq_current_width = 22050.0  # Reset to full range
+                        self._auto_freq_current_width = 22050.0  # Full range
                         self._auto_freq_missed_count = 0
-                        print(f"[AutoFreq] Expanding after {self._auto_freq_missed_threshold} missed beats")
+                        # Clear band energy history for fresh scan
+                        self.audio_engine._band_energy_history.clear()
+                        print(f"[AutoFreq] ⚡ {self._auto_freq_missed_threshold} missed beats → UNLOCKED tempo, expanding to full range")
                 
-                # Find the most consistent frequency band (search FULL range)
+                # ---- ALWAYS search full range for best consistent band ----
                 center, low, high, score = self.audio_engine.find_consistent_frequency_band(
                     min_freq=30.0,
                     max_freq=22050.0,
-                    band_width=self._auto_freq_current_width
+                    band_width=self._auto_freq_width  # Always search with target width
                 )
                 
-                if center > 0 and score > 0.1:  # Valid band found with decent consistency
-                    # State machine for gradual close-down
-                    if self._auto_freq_phase == 'scanning':
-                        # First good detection - start close-down
-                        self._auto_freq_current_center = center
-                        self._auto_freq_closedown_start = now
-                        self._auto_freq_phase = 'closing'
-                        print(f"[AutoFreq] Found consistent band at {int(center)} Hz (score={score:.2f}), starting close-down")
-                    
-                    elif self._auto_freq_phase == 'closing':
-                        # Gradually narrow width from full to target over 1500ms
+                if center > 0 and score > 0.1:
+                    # Smooth blend toward detected peak (always track the best band)
+                    if self._auto_freq_current_center <= 0:
+                        self._auto_freq_current_center = center  # First detection
+                    else:
+                        blend = 0.3 if self._auto_freq_phase == 'scanning' else 0.1
+                        self._auto_freq_current_center += (center - self._auto_freq_current_center) * blend
+                
+                # ---- STATE MACHINE: driven by tempo lock ----
+                if self._auto_freq_phase == 'scanning' and tempo_is_locked:
+                    # Tempo just locked! Start closing down to target width
+                    self._auto_freq_closedown_start = now
+                    self._auto_freq_phase = 'closing'
+                    print(f"[AutoFreq] Beat LOCKED → closing down to {int(self._auto_freq_width)} Hz band around {int(self._auto_freq_current_center)} Hz")
+                
+                elif self._auto_freq_phase == 'closing':
+                    if not tempo_is_locked:
+                        # Tempo lost during close-down → go back to scanning
+                        self._auto_freq_phase = 'scanning'
+                        self._auto_freq_current_width = 22050.0
+                        print(f"[AutoFreq] Tempo lost during close-down → back to scanning")
+                    else:
+                        # Gradually narrow width from full to target over close-down duration
                         elapsed = now - self._auto_freq_closedown_start
                         progress = min(1.0, elapsed / self._auto_freq_closedown_duration)
-                        
-                        # Interpolate width: full_range → target_width
                         target_width = self._auto_freq_width
                         full_width = 22050.0 - 30.0
                         self._auto_freq_current_width = full_width - (full_width - target_width) * progress
                         
-                        # Smooth blend center toward detected peak
-                        blend = 0.2  # 20% per update during close-down
-                        self._auto_freq_current_center += (center - self._auto_freq_current_center) * blend
-                        
                         if progress >= 1.0:
                             self._auto_freq_phase = 'tracking'
-                            print(f"[AutoFreq] Close-down complete, now tracking at {int(self._auto_freq_current_center)} Hz ±{int(target_width/2)} Hz")
-                    
-                    elif self._auto_freq_phase == 'tracking':
-                        # Normal tracking - slowly blend toward detected peak
-                        blend = 0.1  # 10% per update during tracking
-                        self._auto_freq_current_center += (center - self._auto_freq_current_center) * blend
-                        self._auto_freq_current_width = self._auto_freq_width  # Use target width
+                            self._auto_freq_current_width = target_width
+                            print(f"[AutoFreq] Close-down complete → tracking at {int(self._auto_freq_current_center)} Hz ±{int(target_width/2)} Hz")
+                
+                elif self._auto_freq_phase == 'tracking':
+                    if not tempo_is_locked:
+                        # Tempo lost while tracking → go back to scanning
+                        self._auto_freq_phase = 'scanning'
+                        self._auto_freq_current_width = 22050.0
+                        print(f"[AutoFreq] Tempo UNLOCKED → back to full-range scanning")
+                    else:
+                        self._auto_freq_current_width = self._auto_freq_width  # Hold at target width
+                
+                # While scanning (not locked), use full range for beat detection
+                if self._auto_freq_phase == 'scanning':
+                    self._auto_freq_current_width = 22050.0
                 
                 # Compute new freq band around smoothed center
                 half_width = self._auto_freq_current_width / 2
-                new_low = max(30, self._auto_freq_current_center - half_width)
-                new_high = min(22050, self._auto_freq_current_center + half_width)
+                if self._auto_freq_current_center > 0:
+                    new_low = max(30, self._auto_freq_current_center - half_width)
+                    new_high = min(22050, self._auto_freq_current_center + half_width)
+                else:
+                    new_low = 30
+                    new_high = 22050
                 
-                # Update the freq range slider properly (use setLow/setHigh, not setRange)
+                # Update the freq range slider (use setLow/setHigh)
                 self.freq_range_slider.setLow(int(new_low))
                 self.freq_range_slider.setHigh(int(new_high))
                 
-                # Manually trigger the config/visualizer update
+                # Trigger config + visualizer + Butterworth filter update
                 self._on_freq_band_change(int(new_low), int(new_high))
                 
-                # Update display label with phase
+                # Update display label with phase and lock status
                 if hasattr(self, 'auto_freq_label'):
-                    phase_str = self._auto_freq_phase[0].upper()  # S/C/T
-                    self.auto_freq_label.setText(f"[{phase_str}] {int(new_low)}-{int(new_high)} Hz")
+                    if self._auto_freq_phase == 'scanning':
+                        phase_str = 'SCAN'
+                    elif self._auto_freq_phase == 'closing':
+                        phase_str = 'CLOSE'
+                    else:
+                        phase_str = 'TRACK'
+                    lock_str = '🔒' if tempo_is_locked else '🔓'
+                    self.auto_freq_label.setText(f"{lock_str}[{phase_str}] {int(new_low)}-{int(new_high)} Hz")
     
     def _log_experimental_spinbox_shutdown_values(self):
         """Log final experimental spinbox values at shutdown for documentation"""
