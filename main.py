@@ -4021,7 +4021,7 @@ bREadfan_69@hotmail.com"""
         auto_freq_layout.addWidget(self.auto_freq_cb)
         auto_freq_layout.addWidget(QLabel("width:"))
         self.auto_freq_width_spin = QSpinBox()
-        self.auto_freq_width_spin.setRange(50, 1000)
+        self.auto_freq_width_spin.setRange(50, 2000)
         self.auto_freq_width_spin.setSingleStep(50)
         self.auto_freq_width_spin.setValue(300)
         self.auto_freq_width_spin.setFixedWidth(60)
