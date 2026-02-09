@@ -2041,6 +2041,13 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_to: float = 1.0
         self._volume_ramp_duration: float = 0.8  # 800ms
         
+        # Auto-frequency band tracking state
+        self._auto_freq_enabled: bool = False
+        self._auto_freq_width: float = 300.0      # Hz
+        self._auto_freq_speed: float = 0.1        # 0.0=slow, 1.0=fast
+        self._auto_freq_current_center: float = 0.0  # Current center frequency (Hz)
+        self._auto_freq_last_update: float = 0.0  # Timestamp of last update
+        
         # State
         self.is_running = False
         self.is_sending = False
@@ -3703,6 +3710,26 @@ bREadfan_69@hotmail.com"""
             speed_label = "Fine" if speed < 0.3 else "Aggressive" if speed > 0.7 else "Normal"
             print(f"[Config] BPS adjustment speed: {speed_label} ({speed:.2f})")
     
+    def _on_auto_freq_toggle(self, state: int):
+        """Toggle auto-frequency band tracking"""
+        enabled = (state == 2)  # Qt.Checked
+        self._auto_freq_enabled = enabled
+        if enabled:
+            print(f"[AutoFreq] Enabled - searching for peak frequency band")
+        else:
+            print(f"[AutoFreq] Disabled")
+    
+    def _on_auto_freq_width_change(self, value: int):
+        """Handle auto-freq width spinbox change"""
+        self._auto_freq_width = float(value)
+        print(f"[Config] Auto-freq band width set to {value} Hz")
+    
+    def _on_auto_freq_speed_change(self, value: int):
+        """Handle auto-freq speed slider change"""
+        self._auto_freq_speed = value / 100.0  # 0-100 to 0.0-1.0
+        speed_label = "Slow" if self._auto_freq_speed < 0.3 else "Fast" if self._auto_freq_speed > 0.7 else "Normal"
+        print(f"[Config] Auto-freq tracking speed: {speed_label} ({self._auto_freq_speed:.2f})")
+    
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings with vertical scroll"""
         # Outer scroll area (no wheel to prevent interference with parameter sliders)
@@ -3825,6 +3852,41 @@ bREadfan_69@hotmail.com"""
         
         bps_layout.addStretch()
         metric_layout.addLayout(bps_layout)
+        
+        # ===== AUTO-FREQUENCY BAND TRACKING CONTROLS =====
+        autofreq_layout = QHBoxLayout()
+        
+        self.auto_freq_cb = QCheckBox("Auto-Freq Band")
+        self.auto_freq_cb.setToolTip("Automatically find and track the most powerful frequency band for beat detection")
+        self.auto_freq_cb.stateChanged.connect(self._on_auto_freq_toggle)
+        autofreq_layout.addWidget(self.auto_freq_cb)
+        
+        autofreq_layout.addWidget(QLabel("Width:"))
+        self.auto_freq_width_spin = QSpinBox()
+        self.auto_freq_width_spin.setRange(50, 1000)
+        self.auto_freq_width_spin.setSingleStep(50)
+        self.auto_freq_width_spin.setValue(300)
+        self.auto_freq_width_spin.setSuffix(" Hz")
+        self.auto_freq_width_spin.setFixedWidth(80)
+        self.auto_freq_width_spin.setToolTip("Width of frequency band to search for (Hz)")
+        self.auto_freq_width_spin.valueChanged.connect(self._on_auto_freq_width_change)
+        autofreq_layout.addWidget(self.auto_freq_width_spin)
+        
+        autofreq_layout.addWidget(QLabel("Speed:"))
+        self.auto_freq_speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.auto_freq_speed_slider.setRange(0, 100)
+        self.auto_freq_speed_slider.setValue(10)
+        self.auto_freq_speed_slider.setFixedWidth(80)
+        self.auto_freq_speed_slider.setToolTip("Tracking speed: Slow (stable) ↔ Fast (responsive)")
+        self.auto_freq_speed_slider.valueChanged.connect(self._on_auto_freq_speed_change)
+        autofreq_layout.addWidget(self.auto_freq_speed_slider)
+        
+        self.auto_freq_label = QLabel("Band: --")
+        self.auto_freq_label.setStyleSheet("color: #AAA; font-size: 9px;")
+        autofreq_layout.addWidget(self.auto_freq_label)
+        
+        autofreq_layout.addStretch()
+        metric_layout.addLayout(autofreq_layout)
         
         # Metric status label
         self.metric_status_label = QLabel("Metrics: [idle]")
@@ -5064,6 +5126,43 @@ bREadfan_69@hotmail.com"""
             elapsed = time.time() - self._volume_ramp_start_time
             if elapsed >= self._volume_ramp_duration:
                 self._volume_ramp_active = False
+        
+        # ===== AUTO-FREQUENCY BAND TRACKING =====
+        # Periodically find peak frequency band and smoothly update beat detection freq range
+        if self._auto_freq_enabled and hasattr(self, 'audio_engine') and self.audio_engine is not None:
+            now = time.time()
+            # Update every 100ms (10 Hz)
+            if now - self._auto_freq_last_update > 0.1:
+                self._auto_freq_last_update = now
+                
+                # Find the most powerful frequency band
+                center, low, high = self.audio_engine.find_peak_frequency_band(
+                    min_freq=30.0,
+                    max_freq=2000.0,
+                    band_width=self._auto_freq_width
+                )
+                
+                if center > 0:
+                    # Smooth transition: blend current center toward detected peak
+                    if self._auto_freq_current_center == 0:
+                        # First time: jump to detected center
+                        self._auto_freq_current_center = center
+                    else:
+                        # Smooth blend based on speed (0.1 = 10% per update, 1.0 = instant)
+                        blend = min(1.0, self._auto_freq_speed + 0.05)  # At least 5% per update
+                        self._auto_freq_current_center += (center - self._auto_freq_current_center) * blend
+                    
+                    # Compute new freq band around smoothed center
+                    half_width = self._auto_freq_width / 2
+                    new_low = max(30, self._auto_freq_current_center - half_width)
+                    new_high = min(22050, self._auto_freq_current_center + half_width)
+                    
+                    # Update the freq range slider (this will also update config and visualizer)
+                    self.freq_range_slider.setRange(int(new_low), int(new_high))
+                    
+                    # Update display label
+                    if hasattr(self, 'auto_freq_label'):
+                        self.auto_freq_label.setText(f"Band: {int(new_low)}-{int(new_high)} Hz")
     
     def _log_experimental_spinbox_shutdown_values(self):
         """Log final experimental spinbox values at shutdown for documentation"""
