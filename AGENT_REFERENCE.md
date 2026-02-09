@@ -403,27 +403,47 @@ self._freq_window_ms: float = 250.0    # milliseconds
 Removes samples older than 250ms, averages remaining. Reduces jitter while keeping real-time responsiveness.
 
 **Auto-Frequency Band Tracking (Experimental):**
-Automatically finds and tracks the most powerful frequency band within 30-2000Hz for beat detection.
+Automatically finds and tracks the most consistent frequency band for beat detection.
+Driven by **tempo lock state** - keeps scanning until beat is locked, then narrows down.
+
 ```python
-self._auto_freq_enabled: bool = False  # Toggle via "auto-freq band" checkbox
-self._auto_freq_width: float = 300.0   # Width of band to search (Hz) - "width:" spinbox
-self._auto_freq_speed: float = 0.1     # Tracking speed 0-1 (higher=faster) - "speed:" spinbox
+self._auto_freq_enabled: bool = False      # Toggle via "auto-freq band" checkbox
+self._auto_freq_width: float = 300.0       # Target band width (Hz) - "width:" spinbox
+self._auto_freq_phase: str = 'scanning'    # 'scanning', 'closing', 'tracking'
+self._auto_freq_missed_threshold: int = 3  # Expand + UNLOCK after this many misses
 ```
-**HUNTING mode behavior:**
-- Finds peak ~300Hz band within 30-2000Hz using sliding window FFT energy
-- Smoothly transitions current center toward peak using speed parameter
-- Updates beat detection freq_low/freq_high config and slider
 
-**REVERSING/LOCKED mode behavior:**
-- Uses 1.5× wider band (expanded_width = _auto_freq_width * 1.5)
-- Only EXPANDS range (never shrinks) at 30% of normal speed
-- Allows locked parameters to capture more frequency content
+**State Machine (driven by tempo lock):**
+1. **SCANNING** (tempo not locked): Full 30-22050 Hz range used for beat detection.
+   Continuously finds bands with consistent peak/valley patterns using
+   `find_consistent_frequency_band()`. Center smoothly tracks the best band (30% blend).
+2. **CLOSING** (tempo just locked): Gradually narrows from full range to spinbox width
+   over 1.5 seconds. If tempo unlocks during close-down → back to SCANNING.
+3. **TRACKING** (tempo locked, close-down done): Holds at target width, slowly tracks
+   peak (10% blend). If tempo unlocks → back to SCANNING.
 
-**Audio Engine Method:**
+**3 Missed Beats → UNLOCK + EXPAND:**
+When 3 consecutive expected beats are missed:
+- `audio_engine.consecutive_matching_downbeats` reset to 0 (UNLOCKS tempo)
+- Phase reset to SCANNING with full 22050 Hz width
+- Band energy history cleared for fresh scan
+- This ensures the system re-scans when music changes or detection drifts
+
+**Butterworth Filter Re-initialization:**
+When `_on_freq_band_change()` is called (by auto-freq or manual slider), the Butterworth
+bandpass filter is re-initialized via `audio_engine._init_butterworth_filter()` so the
+actual beat detection filter matches the displayed band.
+
+**Audio Engine Methods:**
 ```python
+def find_consistent_frequency_band(min_freq, max_freq, band_width) -> (center, low, high, score)
 def find_peak_frequency_band(min_freq, max_freq, band_width) -> (center, low, high)
 ```
-Returns the center and bounds of the most powerful frequency band.
+
+**GUI Updates (all react in real-time):**
+- Beat detection freq range slider moves to show current auto-freq band
+- All visualizer canvases (spectrum, mountain, bar, phosphor) red band overlay updates
+- Auto-freq label shows phase + lock icon: 🔓[SCAN], 🔒[CLOSE], 🔒[TRACK]
 
 ---
 
