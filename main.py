@@ -1910,60 +1910,6 @@ class SliderWithLabel(QWidget):
         self.slider.setValue(int(value * self.multiplier))
 
 
-class TrafficLightWidget(QWidget):
-    """
-    Horizontal traffic light indicator for auto-range state:
-    - Green = all params LOCKED (beat locked)
-    - Yellow = any param HUNTING
-    - Red = any param REVERSING
-    All lights off when auto-range is disabled.
-    """
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(54, 18)  # 3 circles of 14px diameter + spacing
-        self._green_on = False
-        self._yellow_on = False
-        self._red_on = False
-        
-    def set_state(self, green: bool, yellow: bool, red: bool):
-        """Set which lights are on"""
-        self._green_on = green
-        self._yellow_on = yellow
-        self._red_on = red
-        self.update()
-        
-    def all_off(self):
-        """Turn all lights off"""
-        self.set_state(False, False, False)
-        
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # Draw 3 circles: Green, Yellow, Red (left to right)
-        colors = [
-            (self._green_on, QColor(0, 200, 0), QColor(0, 60, 0)),      # Green
-            (self._yellow_on, QColor(255, 200, 0), QColor(80, 60, 0)),  # Yellow
-            (self._red_on, QColor(255, 50, 50), QColor(80, 20, 20)),    # Red
-        ]
-        
-        for i, (is_on, on_color, off_color) in enumerate(colors):
-            x = 2 + i * 18  # 18px spacing between circles
-            y = 2
-            diameter = 14
-            
-            # Draw circle
-            painter.setPen(QPen(QColor(60, 60, 60), 1))
-            if is_on:
-                painter.setBrush(QBrush(on_color))
-            else:
-                painter.setBrush(QBrush(off_color))
-            painter.drawEllipse(x, y, diameter, diameter)
-        
-        painter.end()
-
-
 class NoWheelScrollArea(QScrollArea):
     """
     Custom QScrollArea that ignores mouse wheel events.
@@ -2025,28 +1971,6 @@ class BREadbeatsWindow(QMainWindow):
         self.audio_engine = None
         self.network_engine = None
         self.stroke_mapper = None
-        
-        # Initialize _auto_param_config BEFORE _setup_ui so spinbox signals can access it
-        self._auto_param_config: dict = {
-            'sensitivity': (0.008, BEAT_RANGE_LIMITS['sensitivity'][1]),  # 75% impact - small steps
-            'audio_amp': (0.04, BEAT_RANGE_LIMITS['audio_amp'][1]),       # 75% impact - no limit when hunting
-            'flux_mult': (0.015, BEAT_RANGE_LIMITS['flux_mult'][1]),      # 40% impact
-            'rise_sens': (0.008, BEAT_RANGE_LIMITS['rise_sens'][1]),      # 30% impact
-            'peak_floor': (0.004, BEAT_RANGE_LIMITS['peak_floor'][1]),    # 15% impact
-            'peak_decay': (0.002, BEAT_RANGE_LIMITS['peak_decay'][1]),    # 10% impact
-        }
-
-        # Persisted auto-adjust toggle state is needed before applying config to UI
-        enabled_cfg = getattr(self.config.auto_adjust, 'enabled_params', {}) or {}
-        self._auto_adjust_enabled: dict = {
-            'audio_amp': enabled_cfg.get('audio_amp', False),
-            'peak_floor': enabled_cfg.get('peak_floor', False),
-            'peak_decay': enabled_cfg.get('peak_decay', False),
-            'rise_sens': enabled_cfg.get('rise_sens', False),
-            'sensitivity': enabled_cfg.get('sensitivity', False),
-            'flux_mult': enabled_cfg.get('flux_mult', False),
-        }
-        self._auto_freq_enabled: bool = bool(getattr(self.config.auto_adjust, 'auto_freq_enabled', False))
         
         # Setup UI
         self._setup_ui()
@@ -2116,65 +2040,6 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_from: float = 0.0
         self._volume_ramp_to: float = 1.0
         self._volume_ramp_duration: float = 0.8  # 800ms
-        
-        # Auto beat detection adjustment state (persisted)
-        self._last_beat_time_for_auto: float = 0.0  # Track last beat for auto-adjust
-        self._auto_adjust_timer: Optional[QTimer] = None
-        self._auto_adjust_interval_ms: int = 100  # Timer tick rate (just checks if cooldown elapsed)
-        self._auto_threshold_sec: float = 0.43  # Beat interval threshold in seconds (428ms = 140 BPM) - for stability detection
-        self._auto_upper_threshold_bpm: float = 360.0  # Upper BPM threshold - reverse adjustment above this (doubled to not interfere)
-        self._auto_cooldown_sec: float = 0.10  # Cooldown between parameter adjustments (seconds)
-        self._auto_param_index: int = 0  # Current position in the parameter cycle
-        self._auto_last_adjust_time: float = 0.0  # When we last adjusted a parameter
-        # HUNTING cycle: repeats flux_mult for better dial-in (1/8 interval)
-        # REVERSING cycle: reversed order (original interval)
-        self._auto_hunting_cycle: list = [
-            'audio_amp', 'flux_mult', 'sensitivity', 'peak_decay', 'flux_mult',
-            'rise_sens', 'peak_floor', 'flux_mult', 'peak_decay', 'flux_mult',
-            'peak_floor', 'rise_sens', 'flux_mult', 'sensitivity'
-        ]
-        self._auto_reversing_cycle: list = list(reversed(self._auto_hunting_cycle))
-        self._auto_param_order: list = ['sensitivity', 'audio_amp', 'flux_mult', 'rise_sens', 'peak_floor', 'peak_decay']  # Unique params for state tracking
-        # Per-parameter lock states: HUNTING, REVERSING, LOCKED
-        self._auto_param_state: dict = {
-            'audio_amp': 'HUNTING',
-            'peak_floor': 'HUNTING',
-            'peak_decay': 'HUNTING',
-            'rise_sens': 'HUNTING',
-            'sensitivity': 'HUNTING',
-            'flux_mult': 'HUNTING',
-        }
-        self._auto_flux_lock_count: int = 0  # Permanent lock after 2nd downbeat detection
-        self._auto_oscillation_phase: float = 0.0  # Phase for oscillation sine wave
-        self._auto_last_downbeat_conf: float = 0.0  # Last seen downbeat confidence
-        self._auto_downbeat_threshold: float = 0.3  # Low threshold - just needs some downbeats detected
-        self._auto_no_beat_since: float = 0.0  # Timestamp when beats were last lost (for 1500ms timer)
-        self._auto_no_beat_count: int = 0  # Consecutive no-beat cycles while music is playing
-        self._auto_beathunting_threshold: int = 3  # After N no-beat cycles, trigger beathunting
-        # Hunting warmup: prevent locks until all params have had time to hunt
-        self._auto_hunt_start_time: float = 0.0  # When hunting started
-        self._auto_warmup_sec: float = 2.0  # Minimum seconds of hunting before locks allowed
-        # Consecutive beats per-param: lock after 8 consecutive valid beats (within 60-180 BPM range)
-        self._auto_consecutive_beats: dict = {  # Count of consecutive beats within acceptable range per param
-            'audio_amp': 0, 'peak_floor': 0, 'peak_decay': 0,
-            'rise_sens': 0, 'sensitivity': 0, 'flux_mult': 0,
-        }
-        self._auto_consecutive_downbeats: dict = {  # Count of consecutive downbeats per param
-            'peak_floor': 0, 'peak_decay': 0, 'rise_sens': 0, 'flux_mult': 0,
-        }
-        self._auto_downbeat_lock_threshold_5: int = 5  # Downbeats needed to lock peak_floor/peak_decay/rise_sens
-        self._auto_downbeat_lock_threshold_2: int = 2  # Downbeats needed to lock flux_mult
-        self._auto_acceptable_bpm_min: float = 60.0  # Minimum acceptable BPM
-        self._auto_acceptable_bpm_max: float = 180.0  # Maximum acceptable BPM
-        self._auto_consec_beat_threshold: int = 8  # Consecutive beats in range required to lock
-        
-        # Auto-frequency band tracking (experimental)
-        self._auto_freq_width: float = 300.0  # Width of frequency band to search (Hz)
-        self._auto_freq_speed: float = 0.1  # Speed of frequency band adjustment (0.0-1.0, higher=faster)
-        self._auto_freq_min: float = 30.0  # Minimum frequency to search (Hz)
-        self._auto_freq_max: float = 2000.0  # Maximum frequency to search (Hz)
-        self._auto_freq_last_update: float = 0.0  # Last time we updated the frequency band
-        self._auto_freq_current_center: float = 100.0  # Current center frequency of beat detection band
         
         # State
         self.is_running = False
@@ -2755,23 +2620,7 @@ class BREadbeatsWindow(QMainWindow):
         
         g1_layout.addWidget(QLabel("• Check [Start] and [Play] are pressed"))
         g1_layout.addWidget(QLabel("• Both BPM lights should blink with stable count"))
-        
-        # Beat detection with auto button
-        beat_box = QGroupBox()
-        beat_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
-        bb_layout = QVBoxLayout(beat_box)
-        bb_layout.setSpacing(2)
-        bb_layout.addWidget(QLabel("[Beat Detection] Raise sensitivity/amplification\nuntil you see blinking, or toggle auto:"))
-        auto_btn_row = QHBoxLayout()
-        auto_all_btn = QPushButton("Enable All Auto")
-        auto_all_btn.setToolTip("Enable auto-adjustment for all beat detection sliders")
-        auto_all_btn.clicked.connect(lambda: self._enable_all_auto_beat_detection(True))
-        auto_btn_row.addWidget(auto_all_btn)
-        auto_off_btn = QPushButton("Disable All Auto")
-        auto_off_btn.clicked.connect(lambda: self._enable_all_auto_beat_detection(False))
-        auto_btn_row.addWidget(auto_off_btn)
-        bb_layout.addLayout(auto_btn_row)
-        g1_layout.addWidget(beat_box)
+        g1_layout.addWidget(QLabel("• Raise sensitivity/amplification until beats detected"))
         
         scroll_layout.addWidget(group1)
         
@@ -2859,29 +2708,6 @@ class BREadbeatsWindow(QMainWindow):
         layout.addWidget(close_btn)
         
         dialog.show()  # Use show() instead of exec() for non-modal
-    
-    def _enable_all_auto_beat_detection(self, enable: bool):
-        """Enable or disable all auto-adjust checkboxes for beat detection"""
-        if hasattr(self, 'audio_gain_auto_cb'):
-            self.audio_gain_auto_cb.setChecked(enable)
-        if hasattr(self, 'peak_floor_auto_cb'):
-            self.peak_floor_auto_cb.setChecked(enable)
-        if hasattr(self, 'peak_decay_auto_cb'):
-            self.peak_decay_auto_cb.setChecked(enable)
-        if hasattr(self, 'rise_sens_auto_cb'):
-            self.rise_sens_auto_cb.setChecked(enable)
-        if hasattr(self, 'sensitivity_auto_cb'):
-            self.sensitivity_auto_cb.setChecked(enable)
-        if hasattr(self, 'flux_mult_auto_cb'):
-            self.flux_mult_auto_cb.setChecked(enable)
-        # Update global auto-range checkbox state
-        if hasattr(self, 'global_auto_range_cb'):
-            # Block signals to prevent recursion
-            self.global_auto_range_cb.blockSignals(True)
-            self.global_auto_range_cb.setChecked(enable)
-            self.global_auto_range_cb.blockSignals(False)
-        if hasattr(self.config, 'auto_adjust'):
-            self.config.auto_adjust.auto_range_enabled = enable
     
     def _on_load_presets(self):
         """Open file dialog to load a presets .json file"""
@@ -3014,14 +2840,6 @@ bREadfan_69@hotmail.com"""
                 self.audio_gain_slider,
                 self.silence_reset_slider,
                 self.freq_range_slider,
-                getattr(self, 'global_auto_range_cb', None),
-                getattr(self, 'audio_gain_auto_cb', None),
-                getattr(self, 'peak_floor_auto_cb', None),
-                getattr(self, 'peak_decay_auto_cb', None),
-                getattr(self, 'rise_sens_auto_cb', None),
-                getattr(self, 'sensitivity_auto_cb', None),
-                getattr(self, 'flux_mult_auto_cb', None),
-                getattr(self, 'auto_freq_cb', None),
                 self.tempo_tracking_checkbox,
                 self.time_sig_combo,
                 self.stability_threshold_slider,
@@ -3053,15 +2871,6 @@ bREadfan_69@hotmail.com"""
                 self.f0_tcode_range_slider,
                 self.f0_weight_slider,
                 self.volume_slider,
-                getattr(self, 'sensitivity_step_spin', None),
-                getattr(self, 'peak_floor_step_spin', None),
-                getattr(self, 'peak_decay_step_spin', None),
-                getattr(self, 'rise_sens_step_spin', None),
-                getattr(self, 'flux_mult_step_spin', None),
-                getattr(self, 'audio_amp_step_spin', None),
-                getattr(self, 'auto_threshold_spin', None),
-                getattr(self, 'auto_cooldown_spin', None),
-                getattr(self, 'auto_consec_beats_spin', None),
             ):
                 # Beat detection tab
                 self.detection_type_combo.setCurrentIndex(self.config.beat.detection_type - 1)
@@ -3074,25 +2883,6 @@ bREadfan_69@hotmail.com"""
                 self.silence_reset_slider.setValue(self.config.beat.silence_reset_ms)
                 self.freq_range_slider.setLow(self.config.beat.freq_low)
                 self.freq_range_slider.setHigh(self.config.beat.freq_high)
-
-                # Auto-range toggles (persisted)
-                auto_states = self._auto_adjust_enabled
-                if hasattr(self, 'global_auto_range_cb'):
-                    self.global_auto_range_cb.setChecked(getattr(self.config.auto_adjust, 'auto_range_enabled', False))
-                if hasattr(self, 'audio_gain_auto_cb'):
-                    self.audio_gain_auto_cb.setChecked(auto_states.get('audio_amp', False))
-                if hasattr(self, 'peak_floor_auto_cb'):
-                    self.peak_floor_auto_cb.setChecked(auto_states.get('peak_floor', False))
-                if hasattr(self, 'peak_decay_auto_cb'):
-                    self.peak_decay_auto_cb.setChecked(auto_states.get('peak_decay', False))
-                if hasattr(self, 'rise_sens_auto_cb'):
-                    self.rise_sens_auto_cb.setChecked(auto_states.get('rise_sens', False))
-                if hasattr(self, 'sensitivity_auto_cb'):
-                    self.sensitivity_auto_cb.setChecked(auto_states.get('sensitivity', False))
-                if hasattr(self, 'flux_mult_auto_cb'):
-                    self.flux_mult_auto_cb.setChecked(auto_states.get('flux_mult', False))
-                if hasattr(self, 'auto_freq_cb'):
-                    self.auto_freq_cb.setChecked(getattr(self.config.auto_adjust, 'auto_freq_enabled', False))
 
                 # Tempo tracking settings
                 self.tempo_tracking_checkbox.setChecked(self.config.beat.tempo_tracking_enabled)
@@ -3145,18 +2935,6 @@ bREadfan_69@hotmail.com"""
                 # Volume (config stores 0-1, slider shows 0-100)
                 self.volume_slider.setValue(int(self.config.volume * 100))
 
-                # Auto-adjust step sizes and settings
-                if hasattr(self.config, 'auto_adjust'):
-                    self.sensitivity_step_spin.setValue(self.config.auto_adjust.step_sensitivity)
-                    self.peak_floor_step_spin.setValue(self.config.auto_adjust.step_peak_floor)
-                    self.peak_decay_step_spin.setValue(self.config.auto_adjust.step_peak_decay)
-                    self.rise_sens_step_spin.setValue(self.config.auto_adjust.step_rise_sens)
-                    self.flux_mult_step_spin.setValue(self.config.auto_adjust.step_flux_mult)
-                    self.audio_amp_step_spin.setValue(self.config.auto_adjust.step_audio_amp)
-                    self.auto_threshold_spin.setValue(self.config.auto_adjust.threshold_sec)
-                    self.auto_cooldown_spin.setValue(self.config.auto_adjust.cooldown_sec)
-                    self.auto_consec_beats_spin.setValue(self.config.auto_adjust.consec_beats)
-
             # Set spectrum canvas sample rate and update all 3 frequency bands
             self.spectrum_canvas.set_sample_rate(self.config.audio.sample_rate)
             if hasattr(self, 'mountain_canvas'):
@@ -3174,12 +2952,6 @@ bREadfan_69@hotmail.com"""
 
             # Log level menu (persisted)
             self._sync_log_level_menu(getattr(self.config, 'log_level', get_log_level()))
-
-            # Update internal variables tied to spinboxes
-            if hasattr(self.config, 'auto_adjust'):
-                self._auto_threshold_sec = self.config.auto_adjust.threshold_sec
-                self._auto_cooldown_sec = self.config.auto_adjust.cooldown_sec
-                self._auto_consec_beat_threshold = self.config.auto_adjust.consec_beats
             
             print("[UI] Loaded all settings from config")
         except AttributeError as e:
@@ -3668,11 +3440,6 @@ bREadfan_69@hotmail.com"""
             'tcode_freq_min': self.tcode_freq_range_slider.low(),
             'tcode_freq_max': self.tcode_freq_range_slider.high(),
             'freq_weight': self.freq_weight_slider.value(),
-            
-            # Auto-frequency band tracking (experimental)
-            'auto_freq_enabled': self.auto_freq_cb.isChecked(),
-            'auto_freq_width': self.auto_freq_width_spin.value(),
-            'auto_freq_speed': self.auto_freq_speed_spin.value(),
         }
     
     def _revert_preset(self):
@@ -3858,94 +3625,6 @@ bREadfan_69@hotmail.com"""
             self.audio_engine._spectrum_skip_frames = skip_values[index]
         print(f"[Config] Spectrum skip frames changed to {skip_values[index]}")
     
-    def _on_auto_toggle(self, param: str, state: int):
-        """Toggle auto-adjustment for a beat detection parameter"""
-        enabled = state == 2
-        self._auto_adjust_enabled[param] = enabled
-        # Persist per-parameter auto state
-        if hasattr(self.config, 'auto_adjust') and hasattr(self.config.auto_adjust, 'enabled_params'):
-            self.config.auto_adjust.enabled_params[param] = enabled
-        
-        # ALWAYS release locks when toggled (both on and off)
-        # This ensures a fresh start when re-enabling
-        self._auto_param_state[param] = 'HUNTING'
-        if param == 'flux_mult':
-            self._auto_flux_lock_count = 0
-        # Reset downbeat counter for this param
-        if param in self._auto_consecutive_downbeats:
-            self._auto_consecutive_downbeats[param] = 0
-        # Reset beat counter for this param
-        if hasattr(self, '_auto_consecutive_beat_count') and param in self._auto_consecutive_beat_count:
-            self._auto_consecutive_beat_count[param] = 0
-        
-        if enabled:
-            # Set slider to reset value when enabling auto (single source of truth)
-            reset_values = BEAT_RESET_DEFAULTS
-            sliders = {
-                'audio_amp': self.audio_gain_slider, 'peak_floor': self.peak_floor_slider,
-                'peak_decay': self.peak_decay_slider, 'rise_sens': self.rise_sens_slider,
-                'sensitivity': self.sensitivity_slider, 'flux_mult': self.flux_mult_slider
-            }
-            if param in sliders and param in reset_values:
-                sliders[param].setValue(reset_values[param])
-                print(f"[Auto] {param} slider set to reset value {reset_values[param]}")
-        
-        print(f"[Auto] {param} auto-adjust {'enabled' if enabled else 'disabled'} (lock released)")
-        
-        # Start/stop auto-adjust timer based on whether any auto is enabled (including auto-freq)
-        any_enabled = any(self._auto_adjust_enabled.values()) or self._auto_freq_enabled
-        if any_enabled and self._auto_adjust_timer is None:
-            self._auto_adjust_timer = QTimer()
-            self._auto_adjust_timer.timeout.connect(self._auto_adjust_beat_detection)
-            self._auto_adjust_timer.start(self._auto_adjust_interval_ms)
-            self._auto_hunt_start_time = time.time()  # Start warmup period
-            print(f"[Auto] Started auto-adjust timer (warmup {self._auto_warmup_sec}s)")
-        elif not any_enabled and self._auto_adjust_timer is not None:
-            self._auto_adjust_timer.stop()
-            self._auto_adjust_timer = None
-            self._auto_hunt_start_time = 0.0
-            print("[Auto] Stopped auto-adjust timer")
-    
-    def _on_auto_threshold_change(self, value: float):
-        """Update auto-range threshold (beat interval in seconds)"""
-        self._auto_threshold_sec = value
-        bpm = 60.0 / value if value > 0 else 0
-        print(f"[Auto] Threshold changed to {value:.2f}s ({bpm:.0f} BPM)")
-    
-    def _on_auto_cooldown_change(self, value: float):
-        """Update cooldown between auto-adjust steps (seconds)"""
-        self._auto_cooldown_sec = value
-        print(f"[Auto] Cooldown changed to {value:.2f}s")
-    
-    def _on_auto_freq_toggle(self, state: int):
-        """Toggle auto-frequency band tracking"""
-        enabled = (state == 2)
-        self._auto_freq_enabled = enabled
-        if hasattr(self.config, 'auto_adjust'):
-            self.config.auto_adjust.auto_freq_enabled = enabled
-        if enabled:
-            # Initialize center to current band center
-            current_low = self.config.beat.freq_low
-            current_high = self.config.beat.freq_high
-            self._auto_freq_current_center = (current_low + current_high) / 2
-            print(f"[AutoFreq] Enabled - starting from center={self._auto_freq_current_center:.0f}Hz")
-        else:
-            print(f"[AutoFreq] Disabled")
-        
-        # Start/stop auto-adjust timer based on whether any auto is enabled (including auto-freq)
-        any_enabled = any(self._auto_adjust_enabled.values()) or self._auto_freq_enabled
-        if any_enabled and self._auto_adjust_timer is None:
-            self._auto_adjust_timer = QTimer()
-            self._auto_adjust_timer.timeout.connect(self._auto_adjust_beat_detection)
-            self._auto_adjust_timer.start(self._auto_adjust_interval_ms)
-            self._auto_hunt_start_time = time.time()  # Start warmup period
-            print(f"[Auto] Started auto-adjust timer (warmup {self._auto_warmup_sec}s)")
-        elif not any_enabled and self._auto_adjust_timer is not None:
-            self._auto_adjust_timer.stop()
-            self._auto_adjust_timer = None
-            self._auto_hunt_start_time = 0.0
-            print("[Auto] Stopped auto-adjust timer")
-    
     def _on_metric_toggle(self, metric: str, enabled: bool):
         """Toggle a real-time metric-based auto-ranging metric"""
         if not hasattr(self, 'audio_engine') or self.audio_engine is None:
@@ -4023,7 +3702,7 @@ bREadfan_69@hotmail.com"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
-        # Detection type with global auto-range toggle and threshold
+        # Detection type
         type_layout = QHBoxLayout()
         type_layout.addWidget(QLabel("Detection Type:"))
         self.detection_type_combo = QComboBox()
@@ -4032,79 +3711,7 @@ bREadfan_69@hotmail.com"""
         self.detection_type_combo.currentIndexChanged.connect(self._on_detection_type_change)
         type_layout.addWidget(self.detection_type_combo)
         type_layout.addStretch()
-        self.global_auto_range_cb = QCheckBox("auto-range")
-        self.global_auto_range_cb.setToolTip("Toggle all auto-adjustment functions for beat detection")
-        self.global_auto_range_cb.stateChanged.connect(lambda state: self._enable_all_auto_beat_detection(state == 2))
-        type_layout.addWidget(self.global_auto_range_cb)
-        # Experimental label
-        exp_label = QLabel("{experimental}")
-        exp_label.setStyleSheet("color: #FFD700; font-style: italic; font-size: 10px;")
-        exp_label.setToolTip("Auto-range features are experimental and may behave unexpectedly")
-        type_layout.addWidget(exp_label)
-        # Traffic light indicator: Red=LOCKED, Yellow=REVERSING, Green=HUNTING
-        self.auto_traffic_light = TrafficLightWidget()
-        self.auto_traffic_light.setToolTip("Red=Beat Locked, Yellow=Reversing, Green=Hunting")
-        type_layout.addWidget(self.auto_traffic_light)
-        # Threshold spinbox for auto-range (in seconds, 100ms-2000ms)
-        self.auto_threshold_spin = QDoubleSpinBox()
-        self.auto_threshold_spin.setRange(0.10, 2.00)
-        self.auto_threshold_spin.setSingleStep(0.01)
-        self.auto_threshold_spin.setDecimals(2)
-        self.auto_threshold_spin.setValue(0.43)  # Default 428ms = 140 BPM
-        self.auto_threshold_spin.setFixedWidth(60)
-        self.auto_threshold_spin.setToolTip("Beat interval threshold (sec) - auto lowers sensitivity above this rate")
-        self.auto_threshold_spin.valueChanged.connect(self._on_auto_threshold_change)
-        type_layout.addWidget(self.auto_threshold_spin)
-        # Cooldown spinbox for auto-range (seconds between parameter adjustments)
-        type_layout.addWidget(QLabel("cd:"))
-        self.auto_cooldown_spin = QDoubleSpinBox()
-        self.auto_cooldown_spin.setRange(0.01, 5.00)
-        self.auto_cooldown_spin.setSingleStep(0.05)
-        self.auto_cooldown_spin.setDecimals(2)
-        self.auto_cooldown_spin.setValue(0.10)  # Default 100ms between adjustments
-        self.auto_cooldown_spin.setFixedWidth(60)
-        self.auto_cooldown_spin.setToolTip("Cooldown (sec) between auto-adjust steps - higher = more stable, lower = faster convergence")
-        self.auto_cooldown_spin.valueChanged.connect(self._on_auto_cooldown_change)
-        type_layout.addWidget(self.auto_cooldown_spin)
-        # Consecutive-beat lock threshold (beats required to lock)
-        type_layout.addWidget(QLabel("beats:"))
-        self.auto_consec_beats_spin = QSpinBox()
-        self.auto_consec_beats_spin.setRange(1, 20)
-        self.auto_consec_beats_spin.setSingleStep(1)
-        self.auto_consec_beats_spin.setValue(8)
-        self.auto_consec_beats_spin.setFixedWidth(60)
-        self.auto_consec_beats_spin.setToolTip("Consecutive beats within 60-180 BPM range required to lock parameters")
-        self.auto_consec_beats_spin.valueChanged.connect(lambda v: setattr(self, '_auto_consec_beat_threshold', v))
-        type_layout.addWidget(self.auto_consec_beats_spin)
         layout.addLayout(type_layout)
-        
-        # Auto-frequency band tracking row (experimental)
-        auto_freq_layout = QHBoxLayout()
-        self.auto_freq_cb = QCheckBox("auto-freq band")
-        self.auto_freq_cb.setToolTip("Automatically find and track the most powerful frequency band for beat detection")
-        self.auto_freq_cb.stateChanged.connect(self._on_auto_freq_toggle)
-        auto_freq_layout.addWidget(self.auto_freq_cb)
-        auto_freq_layout.addWidget(QLabel("width:"))
-        self.auto_freq_width_spin = QSpinBox()
-        self.auto_freq_width_spin.setRange(50, 10000)
-        self.auto_freq_width_spin.setSingleStep(100)
-        self.auto_freq_width_spin.setValue(300)
-        self.auto_freq_width_spin.setFixedWidth(70)
-        self.auto_freq_width_spin.setToolTip("Width of frequency band to track (Hz)")
-        self.auto_freq_width_spin.valueChanged.connect(lambda v: setattr(self, '_auto_freq_width', float(v)))
-        auto_freq_layout.addWidget(self.auto_freq_width_spin)
-        auto_freq_layout.addWidget(QLabel("speed:"))
-        self.auto_freq_speed_spin = QDoubleSpinBox()
-        self.auto_freq_speed_spin.setRange(0.01, 1.00)
-        self.auto_freq_speed_spin.setSingleStep(0.05)
-        self.auto_freq_speed_spin.setDecimals(2)
-        self.auto_freq_speed_spin.setValue(0.10)
-        self.auto_freq_speed_spin.setFixedWidth(60)
-        self.auto_freq_speed_spin.setToolTip("Speed of frequency band tracking (0=slow, 1=instant)")
-        self.auto_freq_speed_spin.valueChanged.connect(lambda v: setattr(self, '_auto_freq_speed', v))
-        auto_freq_layout.addWidget(self.auto_freq_speed_spin)
-        auto_freq_layout.addStretch()
-        layout.addLayout(auto_freq_layout)
         
         # ===== REAL-TIME METRIC-BASED AUTO-RANGING CONTROLS =====
         metric_group = QGroupBox("Real-Time Metrics (Experimental - No Timer Cycle)")
@@ -4162,68 +3769,23 @@ bREadfan_69@hotmail.com"""
         levels_group = QGroupBox("Levels")
         levels_layout = QVBoxLayout(levels_group)
         
-        # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud) - with auto toggle
-        audio_gain_row = QHBoxLayout()
+        # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud)
         aa_min, aa_max = BEAT_RANGE_LIMITS['audio_amp']
         self.audio_gain_slider = SliderWithLabel("Audio Amplification", aa_min, aa_max, self.config.audio.gain, 2)
         self.audio_gain_slider.valueChanged.connect(lambda v: setattr(self.config.audio, 'gain', v))
-        audio_gain_row.addWidget(self.audio_gain_slider, 1)
-        self.audio_gain_auto_cb = QCheckBox("auto")
-        self.audio_gain_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
-        self.audio_gain_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('audio_amp', state))
-        audio_gain_row.addWidget(self.audio_gain_auto_cb)
-        self.audio_amp_step_spin = QDoubleSpinBox()
-        self.audio_amp_step_spin.setRange(0.0001, 0.5)
-        self.audio_amp_step_spin.setSingleStep(0.0001)
-        self.audio_amp_step_spin.setDecimals(4)
-        self.audio_amp_step_spin.setValue(0.040)
-        self.audio_amp_step_spin.setFixedWidth(85)
-        self.audio_amp_step_spin.setToolTip("Step size")
-        self.audio_amp_step_spin.valueChanged.connect(lambda v: self._update_param_config('audio_amp', step=v))
-        audio_gain_row.addWidget(self.audio_amp_step_spin)
-        levels_layout.addLayout(audio_gain_row)
+        levels_layout.addWidget(self.audio_gain_slider)
         
-        # Sensitivity: higher = more beats detected (0.0=strict, 1.0=very sensitive) - with auto toggle
-        sens_row = QHBoxLayout()
+        # Sensitivity: higher = more beats detected (0.0=strict, 1.0=very sensitive)
         sens_min, sens_max = BEAT_RANGE_LIMITS['sensitivity']
         self.sensitivity_slider = SliderWithLabel("Sensitivity", sens_min, sens_max, self.config.beat.sensitivity)
         self.sensitivity_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'sensitivity', v))
-        sens_row.addWidget(self.sensitivity_slider, 1)
-        self.sensitivity_auto_cb = QCheckBox("auto")
-        self.sensitivity_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
-        self.sensitivity_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('sensitivity', state))
-        sens_row.addWidget(self.sensitivity_auto_cb)
-        self.sensitivity_step_spin = QDoubleSpinBox()
-        self.sensitivity_step_spin.setRange(0.0001, 0.1)
-        self.sensitivity_step_spin.setSingleStep(0.0001)
-        self.sensitivity_step_spin.setDecimals(4)
-        self.sensitivity_step_spin.setValue(0.008)
-        self.sensitivity_step_spin.setFixedWidth(85)
-        self.sensitivity_step_spin.setToolTip("Step size")
-        self.sensitivity_step_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', step=v))
-        sens_row.addWidget(self.sensitivity_step_spin)
-        levels_layout.addLayout(sens_row)
+        levels_layout.addWidget(self.sensitivity_slider)
         
-        # Flux Multiplier - with auto toggle
-        flux_mult_row = QHBoxLayout()
+        # Flux Multiplier
         fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
         self.flux_mult_slider = SliderWithLabel("Flux Multiplier", fm_min, fm_max, self.config.beat.flux_multiplier, 1)
         self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
-        flux_mult_row.addWidget(self.flux_mult_slider, 1)
-        self.flux_mult_auto_cb = QCheckBox("auto")
-        self.flux_mult_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
-        self.flux_mult_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('flux_mult', state))
-        flux_mult_row.addWidget(self.flux_mult_auto_cb)
-        self.flux_mult_step_spin = QDoubleSpinBox()
-        self.flux_mult_step_spin.setRange(0.0001, 0.5)
-        self.flux_mult_step_spin.setSingleStep(0.0001)
-        self.flux_mult_step_spin.setDecimals(4)
-        self.flux_mult_step_spin.setValue(0.015)
-        self.flux_mult_step_spin.setFixedWidth(85)
-        self.flux_mult_step_spin.setToolTip("Step size")
-        self.flux_mult_step_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', step=v))
-        flux_mult_row.addWidget(self.flux_mult_step_spin)
-        levels_layout.addLayout(flux_mult_row)
+        levels_layout.addWidget(self.flux_mult_slider)
         
         layout.addWidget(levels_group)
         
@@ -4231,69 +3793,24 @@ bREadfan_69@hotmail.com"""
         peaks_group = QGroupBox("Peaks")
         peaks_layout = QVBoxLayout(peaks_group)
         
-        # Peak floor: minimum energy to consider (0 = disabled) - with auto toggle
+        # Peak floor: minimum energy to consider (0 = disabled)
         # Range 0.01-0.15: typical band_energy is 0.08-0.15 with default gain
-        peak_floor_row = QHBoxLayout()
         pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
         self.peak_floor_slider = SliderWithLabel("Peak Floor", pf_min, pf_max, self.config.beat.peak_floor, 3)
         self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
-        peak_floor_row.addWidget(self.peak_floor_slider, 1)
-        self.peak_floor_auto_cb = QCheckBox("auto")
-        self.peak_floor_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
-        self.peak_floor_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_floor', state))
-        peak_floor_row.addWidget(self.peak_floor_auto_cb)
-        self.peak_floor_step_spin = QDoubleSpinBox()
-        self.peak_floor_step_spin.setRange(0.0001, 0.1)
-        self.peak_floor_step_spin.setSingleStep(0.0001)
-        self.peak_floor_step_spin.setDecimals(4)
-        self.peak_floor_step_spin.setValue(0.004)
-        self.peak_floor_step_spin.setFixedWidth(85)
-        self.peak_floor_step_spin.setToolTip("Step size")
-        self.peak_floor_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', step=v))
-        peak_floor_row.addWidget(self.peak_floor_step_spin)
-        peaks_layout.addLayout(peak_floor_row)
+        peaks_layout.addWidget(self.peak_floor_slider)
         
-        # Peak decay - with auto toggle
-        peak_decay_row = QHBoxLayout()
+        # Peak decay
         pd_min, pd_max = BEAT_RANGE_LIMITS['peak_decay']
         self.peak_decay_slider = SliderWithLabel("Peak Decay", pd_min, pd_max, self.config.beat.peak_decay, 3)
         self.peak_decay_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_decay', v))
-        peak_decay_row.addWidget(self.peak_decay_slider, 1)
-        self.peak_decay_auto_cb = QCheckBox("auto")
-        self.peak_decay_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
-        self.peak_decay_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_decay', state))
-        peak_decay_row.addWidget(self.peak_decay_auto_cb)
-        self.peak_decay_step_spin = QDoubleSpinBox()
-        self.peak_decay_step_spin.setRange(0.0001, 0.1)
-        self.peak_decay_step_spin.setSingleStep(0.0001)
-        self.peak_decay_step_spin.setDecimals(4)
-        self.peak_decay_step_spin.setValue(0.002)
-        self.peak_decay_step_spin.setFixedWidth(85)
-        self.peak_decay_step_spin.setToolTip("Step size")
-        self.peak_decay_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', step=v))
-        peak_decay_row.addWidget(self.peak_decay_step_spin)
-        peaks_layout.addLayout(peak_decay_row)
+        peaks_layout.addWidget(self.peak_decay_slider)
         
-        # Rise sensitivity: 0 = disabled, higher = require more rise - with auto toggle
-        rise_sens_row = QHBoxLayout()
+        # Rise sensitivity: 0 = disabled, higher = require more rise
         rs_min, rs_max = BEAT_RANGE_LIMITS['rise_sens']
         self.rise_sens_slider = SliderWithLabel("Rise Sensitivity", rs_min, rs_max, self.config.beat.rise_sensitivity)
         self.rise_sens_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'rise_sensitivity', v))
-        rise_sens_row.addWidget(self.rise_sens_slider, 1)
-        self.rise_sens_auto_cb = QCheckBox("auto")
-        self.rise_sens_auto_cb.setToolTip("Auto-lower when no beats detected (more sensitive), raise when too many")
-        self.rise_sens_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('rise_sens', state))
-        rise_sens_row.addWidget(self.rise_sens_auto_cb)
-        self.rise_sens_step_spin = QDoubleSpinBox()
-        self.rise_sens_step_spin.setRange(0.0001, 0.1)
-        self.rise_sens_step_spin.setSingleStep(0.0001)
-        self.rise_sens_step_spin.setDecimals(4)
-        self.rise_sens_step_spin.setValue(0.008)
-        self.rise_sens_step_spin.setFixedWidth(85)
-        self.rise_sens_step_spin.setToolTip("Step size")
-        self.rise_sens_step_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', step=v))
-        rise_sens_row.addWidget(self.rise_sens_step_spin)
-        peaks_layout.addLayout(rise_sens_row)
+        peaks_layout.addWidget(self.rise_sens_slider)
         
         layout.addWidget(peaks_group)
         
@@ -4535,25 +4052,6 @@ bREadfan_69@hotmail.com"""
             'tcode_freq_min': self.tcode_freq_range_slider.low(),
             'tcode_freq_max': self.tcode_freq_range_slider.high(),
             'freq_weight': self.freq_weight_slider.value(),
-
-            # Auto-adjust parameters (NOT checkbox states - excluded to prevent auto from re-enabling)
-            'auto_threshold_sec': self._auto_threshold_sec,
-            'auto_cooldown_sec': self._auto_cooldown_sec,
-            
-            # Auto-adjust step sizes for each parameter
-            'step_sensitivity': self.sensitivity_step_spin.value(),
-            'step_peak_floor': self.peak_floor_step_spin.value(),
-            'step_peak_decay': self.peak_decay_step_spin.value(),
-            'step_rise_sens': self.rise_sens_step_spin.value(),
-            'step_flux_mult': self.flux_mult_step_spin.value(),
-            'step_audio_amp': self.audio_amp_step_spin.value(),
-            
-            # Consecutive beats lock threshold
-            'auto_consec_beats': self.auto_consec_beats_spin.value(),
-            
-            # Auto-frequency band tracking (experimental, parameters only - checkbox state not saved)
-            'auto_freq_width': self.auto_freq_width_spin.value(),
-            'auto_freq_speed': self.auto_freq_speed_spin.value(),
         }
         
         # Add custom name if provided
@@ -4657,38 +4155,6 @@ bREadfan_69@hotmail.com"""
                 self.tcode_freq_range_slider.setHigh(preset_data['tcode_freq_max'])
             if 'freq_weight' in preset_data:
                 self.freq_weight_slider.setValue(preset_data['freq_weight'])
-
-            # Auto-adjust parameters (NOT checkbox states - those are excluded from presets)
-            if 'auto_threshold_sec' in preset_data:
-                self.auto_threshold_spin.setValue(preset_data['auto_threshold_sec'])
-            if 'auto_cooldown_sec' in preset_data:
-                self.auto_cooldown_spin.setValue(preset_data['auto_cooldown_sec'])
-
-            # Auto-adjust step sizes for each parameter
-            if 'step_sensitivity' in preset_data:
-                self.sensitivity_step_spin.setValue(preset_data['step_sensitivity'])
-            if 'step_peak_floor' in preset_data:
-                self.peak_floor_step_spin.setValue(preset_data['step_peak_floor'])
-            if 'step_peak_decay' in preset_data:
-                self.peak_decay_step_spin.setValue(preset_data['step_peak_decay'])
-            if 'step_rise_sens' in preset_data:
-                self.rise_sens_step_spin.setValue(preset_data['step_rise_sens'])
-            if 'step_flux_mult' in preset_data:
-                self.flux_mult_step_spin.setValue(preset_data['step_flux_mult'])
-            if 'step_audio_amp' in preset_data:
-                self.audio_amp_step_spin.setValue(preset_data['step_audio_amp'])
-            
-            # Consecutive beats lock threshold
-            if 'auto_consec_beats' in preset_data:
-                self.auto_consec_beats_spin.setValue(preset_data['auto_consec_beats'])
-            
-            # Auto-frequency band tracking (experimental, parameters only - checkbox state not loaded)
-            if 'auto_freq_width' in preset_data:
-                self.auto_freq_width_spin.setValue(preset_data['auto_freq_width'])
-                self._auto_freq_width = float(preset_data['auto_freq_width'])
-            if 'auto_freq_speed' in preset_data:
-                self.auto_freq_speed_spin.setValue(preset_data['auto_freq_speed'])
-                self._auto_freq_speed = preset_data['auto_freq_speed']
 
             # --- Sync config object with UI (especially enum) ---
             self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)
@@ -5073,20 +4539,6 @@ bREadfan_69@hotmail.com"""
     
     def _start_engines(self):
         """Initialize and start all engines"""
-        # Reset all auto-adjust state on Start (fresh hunt every time)
-        for p in self._auto_param_state:
-            self._auto_param_state[p] = 'HUNTING'
-        self._auto_flux_lock_count = 0
-        self._auto_hunt_start_time = time.time()  # Restart warmup period
-        self._auto_no_beat_since = 0.0
-        self._auto_no_beat_count = 0
-        self._auto_param_index = 0
-        self._auto_last_adjust_time = 0.0
-        # Reset consecutive beat counters
-        for p in self._auto_consecutive_beats:
-            self._auto_consecutive_beats[p] = 0
-        print("[Auto] Start pressed - all hunting state reset")
-        
         # Set selected audio device and loopback mode
         combo_idx = self.device_combo.currentIndex()
         if combo_idx >= 0 and combo_idx in self.audio_device_map:
@@ -5510,24 +4962,6 @@ bREadfan_69@hotmail.com"""
             self._cached_f0_tcode_min = self.f0_tcode_range_slider.low()
             self._cached_f0_tcode_max = self.f0_tcode_range_slider.high()
             
-            # Update traffic light indicator for auto-range state
-            if hasattr(self, 'auto_traffic_light') and hasattr(self, 'global_auto_range_cb'):
-                if self.global_auto_range_cb.isChecked():
-                    # Count states
-                    states = list(self._auto_param_state.values())
-                    any_hunting = any(s == 'HUNTING' for s in states)
-                    any_reversing = any(s == 'REVERSING' for s in states)
-                    all_locked = all(s == 'LOCKED' for s in states)
-                    # Traffic light: Red=locked, Yellow=reversing, Green=hunting
-                    self.auto_traffic_light.set_state(
-                        green=any_hunting,
-                        yellow=any_reversing and not any_hunting,
-                        red=all_locked
-                    )
-                else:
-                    # Auto-range off: all lights off
-                    self.auto_traffic_light.all_off()
-            
             # Update peak floor bars on all visualizers
             peak_floor = self.config.beat.peak_floor
             for canvas_name in ['mountain_canvas', 'spectrum_canvas', 'bar_canvas', 'phosphor_canvas']:
@@ -5602,20 +5036,6 @@ bREadfan_69@hotmail.com"""
         self.config.beat.stability_threshold = self.stability_threshold_slider.value()
         self.config.beat.tempo_timeout_ms = int(self.tempo_timeout_slider.value())
         self.config.beat.phase_snap_weight = self.phase_snap_slider.value()
-        
-        # Save auto-adjust step sizes and settings
-        self.config.auto_adjust.step_sensitivity = self.sensitivity_step_spin.value()
-        self.config.auto_adjust.step_peak_floor = self.peak_floor_step_spin.value()
-        self.config.auto_adjust.step_peak_decay = self.peak_decay_step_spin.value()
-        self.config.auto_adjust.step_rise_sens = self.rise_sens_step_spin.value()
-        self.config.auto_adjust.step_flux_mult = self.flux_mult_step_spin.value()
-        self.config.auto_adjust.step_audio_amp = self.audio_amp_step_spin.value()
-        self.config.auto_adjust.threshold_sec = self.auto_threshold_spin.value()
-        self.config.auto_adjust.cooldown_sec = self.auto_cooldown_spin.value()
-        self.config.auto_adjust.consec_beats = self.auto_consec_beats_spin.value()
-        self.config.auto_adjust.enabled_params = dict(self._auto_adjust_enabled)
-        self.config.auto_adjust.auto_range_enabled = self.global_auto_range_cb.isChecked() if hasattr(self, 'global_auto_range_cb') else False
-        self.config.auto_adjust.auto_freq_enabled = self._auto_freq_enabled
         
         # Save config before closing
         save_config(self.config)
