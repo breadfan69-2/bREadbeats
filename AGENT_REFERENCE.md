@@ -371,8 +371,10 @@ reset_values = {
 | flux_mult | 0.2 | 10.0 | 0.2 | Min raised to 0.2 to prevent stroke disconnect |
 
 **Parameter Definitions:**
-- **rise_sens (Rise Sensitivity)**: Distance between peak and valley that triggers beat detection. Higher = needs bigger rise = fewer false positives. Hunts UP during auto-adjust.
-- **peak_floor**: Valley height threshold in spectrum. Audio energy below this floor is ignored. Higher = only strong beats detected.
+- **flux_mult (Flux Multiplier)**: Controls overall beat sensitivity by scaling spectral flux threshold. Lower = less sensitive (fewer false beats). Best used when downbeat and expected beats are both above detection threshold but background noise/artifacts cause extra beats.
+- **peak_decay**: Exponential decay rate applied to spectrum peaks frame-to-frame. Lower = faster decay = easier differentiation between troughs and peaks. Faster decay (lower values) makes beat detection more responsive to sudden energy changes.
+- **rise_sens (Rise Sensitivity)**: Size of the rise (amplitude distance between peak and valley) that the system considers significant for beat detection. Lower = smaller rise triggers detection = more sensitive. Best used when overall beats are excessive but downbeats are missing (reduces false positives while keeping real beats).
+- **peak_floor**: Valley height threshold in spectrum. Audio energy below this floor is ignored. Higher = only strong beats detected; lower = catches quieter beats.
 
 **CRITICAL:** Narrower ranges enable faster convergence. DO NOT widen peak_floor above 0.28.
 
@@ -402,32 +404,45 @@ self._freq_window_ms: float = 250.0    # milliseconds
 ```
 Removes samples older than 250ms, averages remaining. Reduces jitter while keeping real-time responsiveness.
 
-**Auto-Frequency Band Tracking (Experimental):**
+**Auto-Frequency Band Tracking:**
 Automatically finds and tracks the most consistent frequency band for beat detection.
-Driven by **tempo lock state** - keeps scanning until beat is locked, then narrows down.
+Band width animates smoothly: **narrows when beats arrive** (15% per update toward spinbox target),
+**widens when beats are missed** (10% per update toward full 22050 Hz range).
 
 ```python
-self._auto_freq_enabled: bool = False      # Toggle via "auto-freq band" checkbox
-self._auto_freq_width: float = 300.0       # Target band width (Hz) - "width:" spinbox
-self._auto_freq_phase: str = 'scanning'    # 'scanning', 'closing', 'tracking'
-self._auto_freq_missed_threshold: int = 3  # Expand + UNLOCK after this many misses
+self._auto_freq_enabled: bool = False           # Toggle via "auto-freq band" checkbox
+self._auto_freq_width: float = 300.0            # Target band width (Hz) - "width:" spinbox
+self._auto_freq_current_width: float = 22050.0  # Animated display width
+self._auto_freq_current_center: float = 0.0     # Tracked center frequency (Hz)
+self._auto_freq_phase: str = 'scanning'         # 'scanning', 'widening', 'tracking'
+self._auto_freq_missed_threshold: int = 3       # Expand + UNLOCK after this many misses
 ```
 
-**State Machine (driven by tempo lock):**
-1. **SCANNING** (tempo not locked): Full 30-22050 Hz range used for beat detection.
+**State Machine (driven by beat arrivals):**
+1. **SCANNING** (no beats): Full 30-22050 Hz range used for beat detection.
    Continuously finds bands with consistent peak/valley patterns using
-   `find_consistent_frequency_band()`. Center smoothly tracks the best band (30% blend).
-2. **CLOSING** (tempo just locked): Gradually narrows from full range to spinbox width
-   over 1.5 seconds. If tempo unlocks during close-down → back to SCANNING.
-3. **TRACKING** (tempo locked, close-down done): Holds at target width, slowly tracks
-   peak (10% blend). If tempo unlocks → back to SCANNING.
+   `find_consistent_frequency_band()`. Center smoothly tracks the best band (30% blend when unlocked).
+2. **WIDENING** (beats missed): Width gradually expands toward full range at 10% per 100ms update.
+   Center position freezes during widening to prevent oscillation. Label shows `⚡[WIDEN]`.
+3. **TRACKING** (beats arriving, tempo locked): Width gradually narrows toward spinbox target at 15% per 100ms update.
+   Center tracks detected peaks (10% blend when locked, 30% when scanning). Label shows `🔒[TRACK]`.
 
-**3 Missed Beats → UNLOCK + EXPAND:**
-When 3 consecutive expected beats are missed:
-- `audio_engine.consecutive_matching_downbeats` reset to 0 (UNLOCKS tempo)
-- Phase reset to SCANNING with full 22050 Hz width
-- Band energy history cleared for fresh scan
-- This ensures the system re-scans when music changes or detection drifts
+**Missed Beat Detection & Unlock Mechanism:**
+When beats are expected but don't arrive within 2× expected interval:
+- Increment `_auto_freq_missed_count` (tracks consecutive misses)
+- Width begins expanding immediately (WIDENING phase starts)
+- After 3+ consecutive missed beats:
+  - `audio_engine.consecutive_matching_downbeats` reset to 0 (UNLOCKS tempo lock)
+  - `_band_energy_history` cleared for fresh scan
+  - Missed count reset to prevent re-triggering
+  - Console logs: `[AutoFreq] ⚡ 3 missed beats → UNLOCKED tempo`
+- Width continues expanding, center frozen until next beat arrives
+
+**Width Animation Rules:**
+- On beat arrival: `width += (target_width - width) * 0.15` (narrows 15% per update)
+- On missed beat: `width += (22050 - width) * 0.10` (widens 10% per update)
+- Center updates: Only when NOT widening and score > 0.1 (no tracking during widen phase)
+- Band display: Centered on `_auto_freq_current_center ± (current_width / 2)`
 
 **Butterworth Filter Re-initialization:**
 When `_on_freq_band_change()` is called (by auto-freq or manual slider), the Butterworth
@@ -437,13 +452,16 @@ actual beat detection filter matches the displayed band.
 **Audio Engine Methods:**
 ```python
 def find_consistent_frequency_band(min_freq, max_freq, band_width) -> (center, low, high, score)
-def find_peak_frequency_band(min_freq, max_freq, band_width) -> (center, low, high)
+  # Returns center frequency, low/high bounds, and consistency score (0-1)
 ```
 
 **GUI Updates (all react in real-time):**
 - Beat detection freq range slider moves to show current auto-freq band
 - All visualizer canvases (spectrum, mountain, bar, phosphor) red band overlay updates
-- Auto-freq label shows phase + lock icon: 🔓[SCAN], 🔒[CLOSE], 🔒[TRACK]
+- Auto-freq label shows phase + lock icon + band range:
+  - `🔓[SCAN] 30-22050 Hz` (no beats detected yet)
+  - `⚡[WIDEN] (expanding)` (missing beats, width expanding)
+  - `🔒[TRACK] (narrowed)` (beats locked, width narrowed)
 
 ---
 
@@ -532,6 +550,24 @@ queued_commands.append(pre_computed_p0)  # NEVER queue commands
     - New: Uses full 0.15-5.0 range
     - DO NOT re-add 1.0 limit; breaks audio amp scaling
 
+16. **Modifying auto-freq width animation rates**
+    - Narrow rate: MUST stay at 15% per update (when beats arrive)
+    - Widen rate: MUST stay at 10% per update (when beats missed)
+    - Changing these breaks the balance between responsiveness and stability
+    - Lower widen rate → band gets stuck narrow when music changes
+    - Higher narrow rate → band snaps too fast, not enough scan time
+
+17. **Removing center freezing during WIDENING phase**
+    - Center MUST freeze when `is_missing_beats` is True
+    - Unfreezing causes oscillation/drift when beats are lost
+    - Center should only update when score > 0.1 AND NOT widening
+
+18. **Changing missed beat threshold**
+    - MUST stay at 3 consecutive misses before unlock
+    - Lower (e.g., 1-2) causes excessive unlocks on tempo variations
+    - Higher (e.g., 5+) prevents quick recovery when music changes
+    - Threshold of 3 balances stability with adaptability
+
 ---
 
 ## Testing Checklist
@@ -606,6 +642,16 @@ Before committing changes:
     - Verify slider resets to 0.08 (NOT 0.2 or higher)
     - If reset wrong, auto-adjust icon shows but beats don't appear
 
+11. **Auto-Frequency Band Tracking**
+    - Enable "auto-freq band" checkbox
+    - Play music with steady beat
+    - Observe console: `[AutoFreq] ⚡ 3 missed beats → UNLOCKED tempo` should NOT appear immediately
+    - Band should narrow (get tighter) as beats are detected
+    - Mute audio or change tempo: Band should widen (expand toward full range)
+    - Label should show: `🔓[SCAN]` (searching), `⚡[WIDEN]` (beat loss), `🔒[TRACK]` (locked)
+    - Red frequency band overlay on visualizer should move and resize smoothly (not jitter)
+    - Downbeat strokes should be 25% larger when tempo locked (BOOST active)
+
 ---
 
 ## Recent Major Changes (Latest Commit)
@@ -672,9 +718,36 @@ If 3+ consecutive no-beat cycles while audio plays, all locks clear and all para
 - Individual slider lock_spin widgets removed (6 total removed)
 - Simpler `_auto_param_config` tuple: (step_size, max_limit) instead of (step, lock_time, max)
 
+### 10. Auto-Frequency Band Tracking (Animated Width with Beat Loss Handling)
+**New Behavior:** Band width animates smoothly based on beat arrivals, replacing rigid 3-phase state machine.
+
+**Key Features:**
+- **Animated width** starts at full 22050 Hz, gradually narrows (15%/update) toward spinbox target when beats arrive
+- **Missed beat detection** counts consecutive missing beats; on 3+ misses, width expands (10%/update) back toward full range
+- **Center freezing** during WIDENING phase prevents band oscillation/drift
+- **Tempo unlock on threshold** - after 3+ consecutive missed beats, tempo lock is cleared, history flushed, system resumes scanning
+- **Three phase labels:** `🔓[SCAN]` (searching), `⚡[WIDEN]` (beats lost, expanding), `🔒[TRACK]` (beats active, narrowed)
+
+**Impact on Beat Detection:**
+When beats are lost (music changes, tempo shift, or detection drift):
+1. Width begins expanding at 10% per 100ms update
+2. Center position freezes to prevent oscillation  
+3. Display label changes to `⚡[WIDEN]` for visual feedback
+4. After 3 consecutive expected beats missed, tempo is UNLOCKED:
+   - `consecutive_matching_downbeats` reset to 0
+   - Band energy history cleared for fresh analysis
+   - Search becomes more aggressive over full spectrum
+
+**Integration with Tempo Lock Boost (25% amplification):**
+Once beats stabilize and 3+ downbeats match predicted timing, tempo becomes LOCKED:
+- Downbeat strokes receive 25% amplitude boost (1.25× multiplier)
+- Center tracking switches to 10% blend (more stable)
+- Width continues narrowing toward spinbox target
+- System provides visual/tactile feedback of confidence through larger strokes
+
 ---
 
 *Document created: 2026-02-07*  
-*Last comprehensive update: 2026-02-08*  
-*Reference for recent changes: Latest commit*
-*All implementations verified with running program - beat detection working, hunting cycle active, tempo lock functional.*
+*Last comprehensive update: 2026-02-09*  
+*Reference for recent changes: Commit 30224a7 (auto-freq gradual widen) + tempo lock boost system*
+*All implementations verified with running program - beat detection working, hunting cycle active, tempo lock functional, auto-freq band tracking with beat loss handling.*
