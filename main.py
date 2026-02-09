@@ -3738,15 +3738,9 @@ bREadfan_69@hotmail.com"""
             print(f"[AutoFreq] Disabled")
     
     def _on_auto_freq_width_change(self, value: int):
-        """Handle auto-freq width spinbox change - affects target width and restarts closedown"""
+        """Handle auto-freq width spinbox change - target width for narrowing"""
         self._auto_freq_width = float(value)
-        # Restart the close-down process to apply new width immediately
-        if self._auto_freq_enabled and self._auto_freq_phase != 'scanning':
-            self._auto_freq_closedown_start = time.time()
-            self._auto_freq_phase = 'closing'
-            print(f"[AutoFreq] Band width changed to {value} Hz - restarting close-down")
-        else:
-            print(f"[Config] Auto-freq band width set to {value} Hz")
+        print(f"[Config] Auto-freq band width target set to {value} Hz")
     
     def _on_auto_freq_speed_change(self, value: int):
         """Handle auto-freq speed slider change"""
@@ -5157,8 +5151,8 @@ bREadfan_69@hotmail.com"""
         
         # ===== AUTO-FREQUENCY BAND TRACKING =====
         # Scans full FFT range to find [spinbox width]Hz band with most consistent
-        # peaks/valleys. Slider + visualizer always show that narrow band centered
-        # on the detected peak. On 3 missed beats: reset center for fresh scan.
+        # peaks/valleys. Band width gradually narrows to spinbox value when beats
+        # arrive, and slowly widens back toward full range when beats are missed.
         if self._auto_freq_enabled and hasattr(self, 'audio_engine') and self.audio_engine is not None:
             now = time.time()
             # Update every 100ms (10 Hz)
@@ -5170,6 +5164,7 @@ bREadfan_69@hotmail.com"""
                                    >= self.audio_engine.consecutive_match_threshold)
                 
                 # ---- MISSED BEAT TRACKING (only when we have tempo) ----
+                is_missing_beats = False
                 if self.audio_engine.smoothed_tempo > 0:
                     expected_interval = 60.0 / self.audio_engine.smoothed_tempo
                     self._auto_freq_expected_interval = expected_interval
@@ -5185,14 +5180,24 @@ bREadfan_69@hotmail.com"""
                         missed_intervals = int(time_since_beat / expected_interval) - 1
                         self._auto_freq_missed_count = max(self._auto_freq_missed_count, missed_intervals)
                     
-                    # EXPAND + UNLOCK on 3+ missed beats
+                    is_missing_beats = self._auto_freq_missed_count > 0
+                    
+                    # UNLOCK tempo on threshold misses (but don't snap width)
                     if self._auto_freq_missed_count >= self._auto_freq_missed_threshold:
                         self.audio_engine.consecutive_matching_downbeats = 0
-                        self._auto_freq_phase = 'scanning'
-                        self._auto_freq_current_center = 0.0  # Reset center → full range until new peak found
-                        self._auto_freq_missed_count = 0
                         self.audio_engine._band_energy_history.clear()
-                        print(f"[AutoFreq] ⚡ {self._auto_freq_missed_threshold} missed beats → UNLOCKED, rescan for new peak")
+                        self._auto_freq_missed_count = 0  # Reset to stop re-triggering
+                        print(f"[AutoFreq] ⚡ {self._auto_freq_missed_threshold} missed beats → UNLOCKED tempo")
+                
+                # ---- WIDTH CONTROL: widen slowly on misses, narrow on beats ----
+                if is_missing_beats:
+                    # Gradually widen toward full range (10% of remaining per 100ms update)
+                    self._auto_freq_current_width += (22050.0 - self._auto_freq_current_width) * 0.10
+                    self._auto_freq_phase = 'widening'
+                else:
+                    # Gradually narrow toward spinbox target width (15% per 100ms update)
+                    self._auto_freq_current_width += (self._auto_freq_width - self._auto_freq_current_width) * 0.15
+                    self._auto_freq_phase = 'tracking' if tempo_is_locked else 'scanning'
                 
                 # ---- ALWAYS search full FFT range for best [width]Hz band ----
                 center, low, high, score = self.audio_engine.find_consistent_frequency_band(
@@ -5201,23 +5206,17 @@ bREadfan_69@hotmail.com"""
                     band_width=self._auto_freq_width  # Search with spinbox target width
                 )
                 
-                if center > 0 and score > 0.1:
-                    # Blend toward detected peak — fast when scanning, slow when locked
+                # Only track center when NOT widening — freeze center during widen
+                if center > 0 and score > 0.1 and not is_missing_beats:
                     if self._auto_freq_current_center <= 0:
                         self._auto_freq_current_center = center  # First detection — snap
                     else:
                         blend = 0.3 if not tempo_is_locked else 0.1
                         self._auto_freq_current_center += (center - self._auto_freq_current_center) * blend
                 
-                # ---- Update phase label (informational only) ----
-                if tempo_is_locked:
-                    self._auto_freq_phase = 'tracking'
-                else:
-                    self._auto_freq_phase = 'scanning'
-                
-                # ---- Compute band: spinbox width centered on detected peak ----
+                # ---- Compute band: current width centered on detected peak ----
                 if self._auto_freq_current_center > 0:
-                    half_width = self._auto_freq_width / 2  # Always use spinbox target width
+                    half_width = self._auto_freq_current_width / 2  # Animated width
                     new_low = max(30, self._auto_freq_current_center - half_width)
                     new_high = min(22050, self._auto_freq_current_center + half_width)
                 else:
@@ -5234,8 +5233,15 @@ bREadfan_69@hotmail.com"""
                 
                 # Update display label
                 if hasattr(self, 'auto_freq_label'):
-                    phase_str = 'TRACK' if tempo_is_locked else 'SCAN'
-                    lock_str = '🔒' if tempo_is_locked else '🔓'
+                    if is_missing_beats:
+                        phase_str = 'WIDEN'
+                        lock_str = '⚡'
+                    elif tempo_is_locked:
+                        phase_str = 'TRACK'
+                        lock_str = '🔒'
+                    else:
+                        phase_str = 'SCAN'
+                        lock_str = '🔓'
                     self.auto_freq_label.setText(f"{lock_str}[{phase_str}] {int(new_low)}-{int(new_high)} Hz")
     
     def _log_experimental_spinbox_shutdown_values(self):
