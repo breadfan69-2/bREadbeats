@@ -402,28 +402,48 @@ self._freq_window_ms: float = 250.0    # milliseconds
 ```
 Removes samples older than 250ms, averages remaining. Reduces jitter while keeping real-time responsiveness.
 
-**Auto-Frequency Band Tracking (Experimental):**
-Automatically finds and tracks the most powerful frequency band within 30-2000Hz for beat detection.
-```python
-self._auto_freq_enabled: bool = False  # Toggle via "auto-freq band" checkbox
-self._auto_freq_width: float = 300.0   # Width of band to search (Hz) - "width:" spinbox
-self._auto_freq_speed: float = 0.1     # Tracking speed 0-1 (higher=faster) - "speed:" spinbox
-```
-**HUNTING mode behavior:**
-- Finds peak ~300Hz band within 30-2000Hz using sliding window FFT energy
-- Smoothly transitions current center toward peak using speed parameter
-- Updates beat detection freq_low/freq_high config and slider
+**Metric-Guided Frequency Band Selection:**
+Instead of tracking the loudest band, the system evaluates multiple candidate bands and selects the one with the cleanest beat detection quality.
 
-**REVERSING/LOCKED mode behavior:**
-- Uses 1.5× wider band (expanded_width = _auto_freq_width * 1.5)
-- Only EXPANDS range (never shrinks) at 30% of normal speed
-- Allows locked parameters to capture more frequency content
+```python
+self._auto_freq_enabled: bool = False       # Toggle via "auto-freq band" checkbox
+self._auto_freq_candidates = [              # 5 candidate bands to evaluate
+    (30, 80),    # Sub-bass
+    (50, 150),   # Bass
+    (80, 200),   # Low-mid
+    (100, 300),  # Mid
+    (150, 400),  # Upper-mid
+]
+self._auto_freq_eval_interval: float = 2.0  # Evaluate every 2 seconds
+self._auto_freq_best_band: tuple = (50, 150)  # Current best band
+```
+
+**Band Scoring Formula (0-1 scale):**
+```python
+def _score_frequency_band(low, high) -> float:
+    peak_score = 0.4 * (1.0 - clip(margin/0.1, 0, 1))   # Lower margin = cleaner peaks
+    rhythm_score = 0.4 * (1.0 - clip(cv, 0, 1))         # Lower CV = more regular rhythm
+    stability_score = 0.2 * (1.0 - clip(flux_std/0.5, 0, 1))  # Lower flux variance = stable
+    return peak_score + rhythm_score + stability_score
+```
+
+**Switching Threshold:** Only switches to new band if score is 20% better than current:
+```python
+if new_score > old_score * 1.2:
+    # Apply new band to config and update slider
+    print(f"[AutoFreq] METRIC-SWITCH: {old_band}→{new_band} (score {old:.2f}→{new:.2f})")
+```
+
+**Why Metric-Guided?**
+- Pure energy selection locks onto rumble, HVAC, or sub-bass that doesn't contain beats
+- Metric scoring finds the band where actual beat patterns are strongest
+- 20% threshold prevents constant switching between similar bands
 
 **Audio Engine Method:**
 ```python
-def find_peak_frequency_band(min_freq, max_freq, band_width) -> (center, low, high)
+def compute_band_energy(low_freq: float, high_freq: float) -> float:
+    # Returns sum of squared FFT magnitudes within frequency band
 ```
-Returns the center and bounds of the most powerful frequency band.
 
 ### Dual-Time Metric Auto-Ranging System (NEW)
 

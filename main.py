@@ -2168,13 +2168,29 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_acceptable_bpm_max: float = 180.0  # Maximum acceptable BPM
         self._auto_consec_beat_threshold: int = 8  # Consecutive beats in range required to lock
         
-        # Auto-frequency band tracking (experimental)
+        # Auto-frequency band tracking (metric-guided)
         self._auto_freq_width: float = 300.0  # Width of frequency band to search (Hz)
         self._auto_freq_speed: float = 0.1  # Speed of frequency band adjustment (0.0-1.0, higher=faster)
         self._auto_freq_min: float = 30.0  # Minimum frequency to search (Hz)
         self._auto_freq_max: float = 2000.0  # Maximum frequency to search (Hz)
         self._auto_freq_last_update: float = 0.0  # Last time we updated the frequency band
         self._auto_freq_current_center: float = 100.0  # Current center frequency of beat detection band
+        
+        # Metric-guided frequency band selection
+        # Define candidate bands (low, high) - covers typical beat frequencies
+        self._auto_freq_candidates = [
+            (30, 80),     # Sub-bass / kick fundamental
+            (50, 150),    # Kick drum body
+            (80, 200),    # Bass guitar / kick attack
+            (100, 300),   # Bass to lower-mids
+            (150, 400),   # Snare body / toms
+        ]
+        # Track metrics for each candidate band
+        self._auto_freq_band_metrics: dict[tuple, dict] = {}
+        self._auto_freq_last_eval_time: float = 0.0
+        self._auto_freq_eval_interval: float = 2.0  # Evaluate bands every 2 seconds
+        self._auto_freq_best_band: tuple[float, float] = (50, 150)  # Current best band
+        self._auto_freq_band_switch_count: int = 0  # Track how many times we've switched
         
         # State
         self.is_running = False
@@ -4017,6 +4033,106 @@ bREadfan_69@hotmail.com"""
         
         print(f"[Metric] Target BPS: {bps_min:.1f}-{bps_max:.1f} ({bpm_min}-{bpm_max} BPM)")
 
+    def _score_frequency_band(self, low: float, high: float) -> float:
+        """
+        Score a frequency band based on how well metrics align with optimal zones.
+        
+        Higher score = better band for beat detection.
+        Uses energy margin, beat consistency (autocorrelation), and intensity stability.
+        """
+        if not hasattr(self, 'audio_engine') or self.audio_engine is None:
+            return 0.0
+        
+        band_key = (low, high)
+        
+        # Get or initialize metrics for this band
+        if band_key not in self._auto_freq_band_metrics:
+            self._auto_freq_band_metrics[band_key] = {
+                'energy_history': [],
+                'beat_times': [],
+                'last_beat_count': 0,
+                'score_history': [],
+            }
+        
+        metrics = self._auto_freq_band_metrics[band_key]
+        
+        # Get current energy in this band
+        band_energy = self.audio_engine.compute_band_energy(low, high)
+        peak_floor = self.config.beat.peak_floor
+        
+        # Track energy samples
+        metrics['energy_history'].append(band_energy)
+        if len(metrics['energy_history']) > 32:
+            metrics['energy_history'].pop(0)
+        
+        if len(metrics['energy_history']) < 4:
+            return 0.0  # Need more data
+        
+        energies = np.array(metrics['energy_history'])
+        
+        # Score component 1: Energy margin quality (0.02-0.05 target)
+        # Calculate what peak_floor should be for this band's energy level
+        avg_energy = np.mean(energies)
+        max_energy = np.max(energies)
+        
+        # Good band: has clear peaks above average
+        if avg_energy > 0:
+            peak_ratio = max_energy / avg_energy
+            energy_margin_score = min(1.0, (peak_ratio - 1.0) / 3.0)  # Peaks 4x avg = perfect
+        else:
+            energy_margin_score = 0.0
+        
+        # Score component 2: Energy variance (rhythmic = high variance at beat frequency)
+        energy_std = np.std(energies)
+        energy_mean = np.mean(energies)
+        if energy_mean > 0:
+            cv = energy_std / energy_mean  # Coefficient of variation
+            rhythm_score = min(1.0, cv / 0.5)  # CV of 0.5 = good rhythmic variation
+        else:
+            rhythm_score = 0.0
+        
+        # Score component 3: Stability (not too noisy)
+        # Use difference between consecutive samples to detect noise
+        diffs = np.abs(np.diff(energies))
+        diff_mean = np.mean(diffs)
+        if energy_mean > 0:
+            noise_ratio = diff_mean / energy_mean
+            stability_score = max(0.0, 1.0 - noise_ratio)  # Less noise = higher score
+        else:
+            stability_score = 0.0
+        
+        # Combined score (weighted)
+        total_score = (
+            0.4 * energy_margin_score +  # Peak quality
+            0.4 * rhythm_score +          # Rhythmic content
+            0.2 * stability_score         # Signal stability
+        )
+        
+        # Track score history for smoothing
+        metrics['score_history'].append(total_score)
+        if len(metrics['score_history']) > 8:
+            metrics['score_history'].pop(0)
+        
+        return float(np.mean(metrics['score_history']))
+
+    def _evaluate_frequency_bands(self) -> tuple[float, float]:
+        """
+        Evaluate all candidate frequency bands and return the best one.
+        
+        Returns:
+            Tuple of (low_freq, high_freq) for the best band
+        """
+        best_score = -1.0
+        best_band = self._auto_freq_best_band
+        
+        for low, high in self._auto_freq_candidates:
+            score = self._score_frequency_band(low, high)
+            if score > best_score:
+                best_score = score
+                best_band = (low, high)
+        
+        return best_band
+
     def _on_metric_feedback(self, metric: str, value: float, target_low: float, target_high: float):
         """Process metric feedback and adjust parameters with PD control.
         
@@ -4170,77 +4286,46 @@ bREadfan_69@hotmail.com"""
                 print(f"[Auto] Silence - all params reset to HUNTING")
             return
         
-        # === AUTO-FREQUENCY BAND TRACKING (experimental) ===
-        # Only active during HUNTING phase when enabled
+        # === METRIC-GUIDED FREQUENCY BAND SELECTION ===
+        # Replaces old energy-based auto-freq with metric-guided band scoring
         if self._auto_freq_enabled:
-            # Check if any param is in HUNTING state (frequency tracking only during hunting)
-            any_hunting = any(s == 'HUNTING' for s in self._auto_param_state.values())
+            now = current_time
             
-            if any_hunting:
-                # Find the most powerful frequency band
-                if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-                    center, low, high = self.audio_engine.find_peak_frequency_band(
-                        min_freq=self._auto_freq_min,
-                        max_freq=self._auto_freq_max,
-                        band_width=self._auto_freq_width
-                    )
+            # Evaluate bands periodically (not every frame)
+            if now - self._auto_freq_last_eval_time >= self._auto_freq_eval_interval:
+                self._auto_freq_last_eval_time = now
+                
+                # Score all candidate bands
+                best_band = self._evaluate_frequency_bands()
+                
+                # Check if we should switch to a better band
+                if best_band != self._auto_freq_best_band:
+                    old_band = self._auto_freq_best_band
+                    new_low, new_high = best_band
                     
-                    if center > 0:
-                        # Smooth transition using speed parameter
-                        speed = self._auto_freq_speed
-                        self._auto_freq_current_center = (1 - speed) * self._auto_freq_current_center + speed * center
-                        
-                        # Calculate new band boundaries
-                        half_width = self._auto_freq_width / 2
-                        new_low = max(30, self._auto_freq_current_center - half_width)
-                        new_high = min(22050, self._auto_freq_current_center + half_width)
-                        
-                        # Update config and slider if changed significantly (>5Hz)
-                        old_low = self.config.beat.freq_low
-                        old_high = self.config.beat.freq_high
-                        if abs(new_low - old_low) > 5 or abs(new_high - old_high) > 5:
-                            self.config.beat.freq_low = new_low
-                            self.config.beat.freq_high = new_high
-                            # Update slider (block signals to avoid feedback)
-                            if hasattr(self, 'freq_range_slider'):
-                                self.freq_range_slider.blockSignals(True)
-                                self.freq_range_slider.setLow(int(new_low))
-                                self.freq_range_slider.setHigh(int(new_high))
-                                self.freq_range_slider.blockSignals(False)
-                            print(f"[AutoFreq] HUNTING: band={new_low:.0f}-{new_high:.0f}Hz (center={self._auto_freq_current_center:.0f}Hz)")
-            else:
-                # REVERSING/LOCKED phase: allow range to expand (find wider band)
-                if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-                    # Use wider search width during REVERSING
-                    expanded_width = self._auto_freq_width * 1.5
-                    center, low, high = self.audio_engine.find_peak_frequency_band(
-                        min_freq=self._auto_freq_min,
-                        max_freq=self._auto_freq_max,
-                        band_width=expanded_width
-                    )
+                    # Only switch if the new band is significantly better
+                    old_score = self._score_frequency_band(old_band[0], old_band[1])
+                    new_score = self._score_frequency_band(new_low, new_high)
                     
-                    if center > 0:
-                        # Very slow expansion
-                        speed = self._auto_freq_speed * 0.3  # 30% of normal speed
-                        self._auto_freq_current_center = (1 - speed) * self._auto_freq_current_center + speed * center
+                    if new_score > old_score * 1.2:  # 20% better threshold
+                        self._auto_freq_best_band = best_band
+                        self._auto_freq_band_switch_count += 1
                         
-                        # Calculate expanded band boundaries
-                        half_width = expanded_width / 2
-                        new_low = max(30, self._auto_freq_current_center - half_width)
-                        new_high = min(22050, self._auto_freq_current_center + half_width)
+                        # Update config and slider
+                        self.config.beat.freq_low = new_low
+                        self.config.beat.freq_high = new_high
+                        if hasattr(self, 'freq_range_slider'):
+                            self.freq_range_slider.blockSignals(True)
+                            self.freq_range_slider.setLow(int(new_low))
+                            self.freq_range_slider.setHigh(int(new_high))
+                            self.freq_range_slider.blockSignals(False)
                         
-                        # Update only if expanding the range
-                        old_low = self.config.beat.freq_low
-                        old_high = self.config.beat.freq_high
-                        if new_low < old_low or new_high > old_high:
-                            self.config.beat.freq_low = min(new_low, old_low)
-                            self.config.beat.freq_high = max(new_high, old_high)
-                            if hasattr(self, 'freq_range_slider'):
-                                self.freq_range_slider.blockSignals(True)
-                                self.freq_range_slider.setLow(int(self.config.beat.freq_low))
-                                self.freq_range_slider.setHigh(int(self.config.beat.freq_high))
-                                self.freq_range_slider.blockSignals(False)
-                            print(f"[AutoFreq] EXPANDING: band={self.config.beat.freq_low:.0f}-{self.config.beat.freq_high:.0f}Hz")
+                        print(f"[AutoFreq] METRIC-SWITCH: {old_band[0]:.0f}-{old_band[1]:.0f}Hz → {new_low:.0f}-{new_high:.0f}Hz (score {old_score:.2f} → {new_score:.2f})")
+                else:
+                    # Log current band status periodically
+                    current_score = self._score_frequency_band(self._auto_freq_best_band[0], self._auto_freq_best_band[1])
+                    if current_score > 0:
+                        print(f"[AutoFreq] HOLDING: {self._auto_freq_best_band[0]:.0f}-{self._auto_freq_best_band[1]:.0f}Hz (score={current_score:.2f})")
         
         # Threshold BPM from spinbox
         lower_threshold_bpm = 60.0 / self._auto_threshold_sec if self._auto_threshold_sec > 0 else 140

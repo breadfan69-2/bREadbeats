@@ -887,6 +887,34 @@ class AudioEngine:
         center_freq = (low_freq + high_freq) / 2
         
         return (center_freq, low_freq, high_freq)
+    
+    def compute_band_energy(self, low_freq: float, high_freq: float) -> float:
+        """
+        Compute energy within a specific frequency band.
+        
+        Args:
+            low_freq: Lower frequency bound (Hz)
+            high_freq: Upper frequency bound (Hz)
+            
+        Returns:
+            Total energy in the band (sum of squared magnitudes)
+        """
+        with self.spectrum_lock:
+            if self.spectrum_data is None or len(self.spectrum_data) == 0:
+                return 0.0
+            spectrum = self.spectrum_data.copy()
+        
+        sr = self.config.audio.sample_rate
+        num_bins = len(spectrum)
+        freq_per_bin = sr / (2 * num_bins)
+        
+        low_bin = max(0, int(low_freq / freq_per_bin))
+        high_bin = min(num_bins - 1, int(high_freq / freq_per_bin))
+        
+        if high_bin <= low_bin:
+            return 0.0
+        
+        return float(np.sum(spectrum[low_bin:high_bin] ** 2))
             
     def list_devices(self) -> list[dict]:
         """List available audio devices"""
