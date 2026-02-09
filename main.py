@@ -1671,6 +1671,60 @@ class SliderWithLabel(QWidget):
         self.slider.setValue(int(value * self.multiplier))
 
 
+class TrafficLightWidget(QWidget):
+    """
+    Horizontal traffic light indicator for auto-range state:
+    - Green = all params LOCKED (beat locked)
+    - Yellow = any param HUNTING
+    - Red = any param REVERSING
+    All lights off when auto-range is disabled.
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(54, 18)  # 3 circles of 14px diameter + spacing
+        self._green_on = False
+        self._yellow_on = False
+        self._red_on = False
+        
+    def set_state(self, green: bool, yellow: bool, red: bool):
+        """Set which lights are on"""
+        self._green_on = green
+        self._yellow_on = yellow
+        self._red_on = red
+        self.update()
+        
+    def all_off(self):
+        """Turn all lights off"""
+        self.set_state(False, False, False)
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Draw 3 circles: Green, Yellow, Red (left to right)
+        colors = [
+            (self._green_on, QColor(0, 200, 0), QColor(0, 60, 0)),      # Green
+            (self._yellow_on, QColor(255, 200, 0), QColor(80, 60, 0)),  # Yellow
+            (self._red_on, QColor(255, 50, 50), QColor(80, 20, 20)),    # Red
+        ]
+        
+        for i, (is_on, on_color, off_color) in enumerate(colors):
+            x = 2 + i * 18  # 18px spacing between circles
+            y = 2
+            diameter = 14
+            
+            # Draw circle
+            painter.setPen(QPen(QColor(60, 60, 60), 1))
+            if is_on:
+                painter.setBrush(QBrush(on_color))
+            else:
+                painter.setBrush(QBrush(off_color))
+            painter.drawEllipse(x, y, diameter, diameter)
+        
+        painter.end()
+
+
 class BREadbeatsWindow(QMainWindow):
     """Main application window"""
     
@@ -3406,8 +3460,8 @@ bREadfan_69@hotmail.com"""
             # Inverted params (peak_floor, peak_decay, audio_amp) reset to MAX/hunting value (hunting lowers them)
             # Normal params (rise_sens, sensitivity, flux_mult) reset to MIN (hunting raises them)
             reset_values = {
-                'audio_amp': 1.0, 'peak_floor': 0.08, 'peak_decay': 0.999,
-                'rise_sens': 0.02, 'sensitivity': 0.1, 'flux_mult': 0.1
+                'audio_amp': 0.15, 'peak_floor': 0.08, 'peak_decay': 0.999,
+                'rise_sens': 0.02, 'sensitivity': 0.1, 'flux_mult': 0.2
             }
             sliders = {
                 'audio_amp': self.audio_gain_slider, 'peak_floor': self.peak_floor_slider,
@@ -3796,6 +3850,10 @@ bREadfan_69@hotmail.com"""
         self.global_auto_range_cb.setToolTip("Toggle all auto-adjustment functions for beat detection")
         self.global_auto_range_cb.stateChanged.connect(lambda state: self._enable_all_auto_beat_detection(state == 2))
         type_layout.addWidget(self.global_auto_range_cb)
+        # Traffic light indicator: Red=LOCKED, Yellow=REVERSING, Green=HUNTING
+        self.auto_traffic_light = TrafficLightWidget()
+        self.auto_traffic_light.setToolTip("Red=Beat Locked, Yellow=Reversing, Green=Hunting")
+        type_layout.addWidget(self.auto_traffic_light)
         # Threshold spinbox for auto-range (in seconds, 100ms-2000ms)
         self.auto_threshold_spin = QDoubleSpinBox()
         self.auto_threshold_spin.setRange(0.10, 2.00)
@@ -3928,7 +3986,7 @@ bREadfan_69@hotmail.com"""
         
         # Flux Multiplier - with auto toggle
         flux_mult_row = QHBoxLayout()
-        self.flux_mult_slider = SliderWithLabel("Flux Multiplier", 0.1, 5.0, 1.0, 1)
+        self.flux_mult_slider = SliderWithLabel("Flux Multiplier", 0.2, 5.0, 1.0, 1)
         self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
         flux_mult_row.addWidget(self.flux_mult_slider, 1)
         self.flux_mult_auto_cb = QCheckBox("auto")
@@ -5134,6 +5192,24 @@ bREadfan_69@hotmail.com"""
             self._cached_tcode_freq_max = self.tcode_freq_range_slider.high()
             self._cached_f0_tcode_min = self.f0_tcode_range_slider.low()
             self._cached_f0_tcode_max = self.f0_tcode_range_slider.high()
+            
+            # Update traffic light indicator for auto-range state
+            if hasattr(self, 'auto_traffic_light') and hasattr(self, 'global_auto_range_cb'):
+                if self.global_auto_range_cb.isChecked():
+                    # Count states
+                    states = list(self._auto_param_state.values())
+                    any_hunting = any(s == 'HUNTING' for s in states)
+                    any_reversing = any(s == 'REVERSING' for s in states)
+                    all_locked = all(s == 'LOCKED' for s in states)
+                    # Traffic light: Red=locked, Yellow=reversing, Green=hunting
+                    self.auto_traffic_light.set_state(
+                        green=any_hunting,
+                        yellow=any_reversing and not any_hunting,
+                        red=all_locked
+                    )
+                else:
+                    # Auto-range off: all lights off
+                    self.auto_traffic_light.all_off()
 
         # Handle volume ramp completion
         if self._volume_ramp_active:

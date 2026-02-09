@@ -349,12 +349,12 @@ Individual slider lock_spin widgets were removed - only global beat-count lock e
 When user toggles auto-adjust ON for a parameter, slider automatically resets to initial value:
 ```python
 reset_values = {
-    'audio_amp': 1.0,      # Hunts DOWN from max (inverted param)
+    'audio_amp': 0.15,     # Hunts DOWN from max (inverted param)
     'peak_floor': 0.08,    # Hunts DOWN from max ← MUST stay 0.08!
     'peak_decay': 0.999,   # Hunts DOWN from max (inverted param)
     'rise_sens': 0.02,     # Hunts UP from min (normal param)
     'sensitivity': 0.1,    # Hunts UP from min (normal param)
-    'flux_mult': 0.1       # Hunts UP from min (normal param)
+    'flux_mult': 0.2       # Hunts UP from min (normal param)
 }
 ```
 **If peak_floor reset changed to 0.2, beats won't detect because 0.2 > band_energy (0.08-0.15)**
@@ -362,12 +362,12 @@ reset_values = {
 **Slider Ranges (Control Hunting Search Space):**
 | Parameter | Min | Max | Reset | Why Changed |
 |-----------|-----|-----|-------|-------------|
-| audio_amp | 0.15 | 5.0 | 1.0 | Was 0.1-10.0; removed hunting 1.0 limit, narrowed range |
+| audio_amp | 0.15 | 5.0 | 0.15 | Reset to min; hunting raises it |
 | peak_floor | 0.01 | 0.14 | 0.08 | Valley height threshold between peaks; band_energy ≈ 0.08-0.14 |
 | peak_decay | 0.2 | 0.999 | 0.9 | Was 0.5-0.999; allow faster decay <0.5 |
 | rise_sens | 0.02 | 1.0 | 0.02 | Rise height threshold; min 0.02 to prevent user issues |
 | sensitivity | 0.01 | 1.0 | 0.1 | Unchanged |
-| flux_mult | 0.01 | 5.0 | 0.1 | Unchanged |
+| flux_mult | 0.2 | 5.0 | 0.2 | Min raised to 0.2 to prevent stroke disconnect |
 
 **Parameter Definitions:**
 - **rise_sens (Rise Sensitivity)**: Distance between peak and valley that triggers beat detection. Higher = needs bigger rise = fewer false positives. Hunts UP during auto-adjust.
