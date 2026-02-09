@@ -971,13 +971,13 @@ class AudioEngine:
         direction = 0  # 0=no change, +1=raise floor, -1=lower floor
         
         if avg_margin < self._energy_margin_target_low:
-            # Margin too tight - raise peak_floor to make detection stricter
-            should_adjust = True
-            direction = +1
-        elif avg_margin > self._energy_margin_target_high:
-            # Margin too loose - lower peak_floor to make detection more sensitive
+            # Margin too tight - LOWER peak_floor to make detection more sensitive (give more headroom)
             should_adjust = True
             direction = -1
+        elif avg_margin > self._energy_margin_target_high:
+            # Margin too loose - RAISE peak_floor to make detection stricter (reduce headroom)
+            should_adjust = True
+            direction = +1
         
         if callback and should_adjust:
             callback({
