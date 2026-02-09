@@ -1,0 +1,12 @@
+RE: ADDITIONS TO NEW METRIC BASED AUTORANGE:
+
+**- add {audio amplification} to the metric based autorange system:
+-if no beats detected for [xxx]ms raise [audio amplification]2% of availablerange every (1100?)ms. 
+    -should use same [value from target BPS spinboxes and any other [lost beat] functions should follow same target bps
+
+-do the same implementation for [sensitivity] but based on [downbeat][no downbeat].  [no downbeat]= raise sensitivity 4% of available range
+
+-reverse these parameters when number of Beats is insanely excessive
+
+
+Make these changes, test/verify, commit and push to this experimental branch.  do not include any instruction(#),instructions in commit.  if there are any files like this on remote, show them to me so we can discuss deletion.

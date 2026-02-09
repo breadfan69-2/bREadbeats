@@ -160,20 +160,25 @@ class AudioEngine:
         self._energy_margin_target_high: float = 0.05
         self._energy_margin_adjustment_step: float = 0.002  # Step size per beat
         
-        # Metric 2: Beat Consistency Feedback (Sensitivity Tuning)
-        self._metric_beat_consistency_enabled: bool = False
-        self._beat_consistency_target_low: float = 0.05  # Optimal zone: 0.05-0.15
-        self._beat_consistency_target_high: float = 0.15
+        # Metric 2: Sensitivity Feedback (No Downbeat → raise, Excess Downbeats → lower)
+        self._metric_sensitivity_enabled: bool = False
+        self._sensitivity_check_interval_ms: float = 1100.0  # Check every ~1100ms
+        self._sensitivity_escalate_pct: float = 0.04   # 4% of range per check
+        self._last_downbeat_time: float = 0.0           # Tracked from main.py
+        self._last_sensitivity_check: float = 0.0       # Last time we checked
+        self._downbeat_times: list[float] = []          # Recent downbeat timestamps
+        self._downbeat_window_seconds: float = 4.0      # Rolling window for DPS calc
         
-        # Metric 3: Downbeat Energy Ratio Feedback
+        # Metric 3: Downbeat Energy Ratio Feedback (stub)
         self._metric_downbeat_ratio_enabled: bool = False
         self._downbeat_ratio_target_low: float = 1.8    # Optimal zone: 1.8-2.2
         self._downbeat_ratio_target_high: float = 2.2
         
-        # Metric 4: Audio Gain / Intensity Normalization
-        self._metric_audio_gain_enabled: bool = False
-        self._intensity_target: float = 0.35            # Optimal: 0.3-0.4
-        self._intensity_history: list[float] = []       # Last 16 values
+        # Metric 4: Audio Amp Feedback (No Beats → raise, Excess Beats → lower)
+        self._metric_audio_amp_enabled: bool = False
+        self._audio_amp_check_interval_ms: float = 1100.0  # Check every ~1100ms
+        self._audio_amp_escalate_pct: float = 0.02     # 2% of range per check
+        self._last_audio_amp_check: float = 0.0         # Last time we checked
         
         # ===== TARGET BPS SYSTEM (Beats Per Second) =====
         # Tracks actual beats per second and adjusts parameters to achieve target rate
@@ -1075,14 +1080,23 @@ class AudioEngine:
                 log_event("INFO", "MetricAutoRange", "Peak Floor metric enabled")
             else:
                 log_event("INFO", "MetricAutoRange", "Peak Floor metric disabled")
-        elif metric == 'beat_consistency':
-            self._metric_beat_consistency_enabled = enable
+        elif metric == 'sensitivity':
+            self._metric_sensitivity_enabled = enable
+            if enable:
+                self._last_sensitivity_check = 0.0
+                self._downbeat_times.clear()
+                log_event("INFO", "MetricAutoRange", "Sensitivity metric enabled (downbeat-driven)")
+            else:
+                log_event("INFO", "MetricAutoRange", "Sensitivity metric disabled")
         elif metric == 'downbeat_ratio':
             self._metric_downbeat_ratio_enabled = enable
-        elif metric == 'audio_gain':
-            self._metric_audio_gain_enabled = enable
+        elif metric == 'audio_amp':
+            self._metric_audio_amp_enabled = enable
             if enable:
-                self._intensity_history.clear()
+                self._last_audio_amp_check = 0.0
+                log_event("INFO", "MetricAutoRange", "Audio Amp metric enabled (beat-driven)")
+            else:
+                log_event("INFO", "MetricAutoRange", "Audio Amp metric disabled")
         elif metric == 'target_bps':
             self._target_bps_enabled = enable
             if enable:
@@ -1219,6 +1233,116 @@ class AudioEngine:
         """Set the BPS tolerance (how close to target before adjusting)"""
         self._target_bps_tolerance = max(0.05, min(1.0, tolerance))
 
+    # ===== TIMER-DRIVEN METRIC FEEDBACK (audio_amp & sensitivity) =====
+    # These are called from main.py's _update_display timer, NOT from _on_beat,
+    # because they need to detect the ABSENCE of beats/downbeats.
+
+    def record_downbeat(self, timestamp: float):
+        """Record a downbeat occurrence for sensitivity metric tracking"""
+        self._last_downbeat_time = timestamp
+        self._downbeat_times.append(timestamp)
+        # Prune old timestamps
+        cutoff = timestamp - self._downbeat_window_seconds
+        self._downbeat_times = [t for t in self._downbeat_times if t >= cutoff]
+
+    def compute_audio_amp_feedback(self, now: float, callback=None):
+        """
+        Timer-driven audio_amp adjustment based on beat presence.
+        
+        - No beats for >check_interval → RAISE audio_amp (+2% of range)
+        - ONLY escalates, never reverses (sensitivity handles excess detection)
+        
+        Called from _update_display (~30fps), but only acts every ~1100ms.
+        """
+        if not self._metric_audio_amp_enabled:
+            return
+        
+        # Only check every ~1100ms
+        if now - self._last_audio_amp_check < self._audio_amp_check_interval_ms / 1000.0:
+            return
+        self._last_audio_amp_check = now
+        
+        # Get range for percentage calculation
+        from config import BEAT_RANGE_LIMITS
+        amp_min, amp_max = BEAT_RANGE_LIMITS['audio_amp']
+        amp_range = amp_max - amp_min
+        step = amp_range * self._audio_amp_escalate_pct  # 2% of range
+        
+        # Check time since last beat
+        time_since_beat = now - self.last_beat_time if self.last_beat_time > 0 else float('inf')
+        target_interval = 1.0 / self._target_bps if self._target_bps > 0 else 0.67
+        
+        if time_since_beat > target_interval * 3.0:
+            # No beats detected for 3x expected interval → RAISE audio_amp
+            if callback:
+                callback({
+                    'metric': 'audio_amp',
+                    'adjustment': +step,
+                    'direction': 'raise',
+                    'reason': f'no beats for {time_since_beat:.1f}s',
+                })
+
+    def compute_sensitivity_feedback(self, now: float, callback=None):
+        """
+        Timer-driven sensitivity adjustment based on downbeat presence.
+        
+        - No downbeats for >check_interval → RAISE sensitivity (+4% of range)
+        - Excess downbeats (>3× expected rate) → LOWER sensitivity
+        
+        Called from _update_display (~30fps), but only acts every ~1100ms.
+        Uses target_bps / 4 as expected downbeat rate (1 downbeat per 4 beats).
+        """
+        if not self._metric_sensitivity_enabled:
+            return
+        
+        # Only check every ~1100ms
+        if now - self._last_sensitivity_check < self._sensitivity_check_interval_ms / 1000.0:
+            return
+        self._last_sensitivity_check = now
+        
+        # Get range for percentage calculation
+        from config import BEAT_RANGE_LIMITS
+        sens_min, sens_max = BEAT_RANGE_LIMITS['sensitivity']
+        sens_range = sens_max - sens_min
+        step = sens_range * self._sensitivity_escalate_pct  # 4% of range
+        
+        # Expected downbeat rate = target_bps / 4 (1 downbeat per measure)
+        expected_dps = self._target_bps / 4.0
+        expected_downbeat_interval = 1.0 / expected_dps if expected_dps > 0 else 2.67
+        
+        # Calculate actual downbeats per second
+        actual_dps = 0.0
+        if len(self._downbeat_times) >= 2:
+            window_dur = self._downbeat_times[-1] - self._downbeat_times[0]
+            if window_dur > 0:
+                actual_dps = (len(self._downbeat_times) - 1) / window_dur
+        
+        # Check time since last downbeat
+        time_since_downbeat = now - self._last_downbeat_time if self._last_downbeat_time > 0 else float('inf')
+        
+        # Tolerance for excess: expected_dps * 3.0 (only reduce if way above expected)
+        excess_threshold = expected_dps * 3.0
+        
+        if time_since_downbeat > expected_downbeat_interval * 3.0:
+            # No downbeats for 3x expected interval → RAISE sensitivity
+            if callback:
+                callback({
+                    'metric': 'sensitivity',
+                    'adjustment': +step,
+                    'direction': 'raise',
+                    'reason': f'no downbeats for {time_since_downbeat:.1f}s',
+                    'actual_dps': actual_dps,
+                })
+        elif actual_dps > excess_threshold:
+            # Excess downbeats (>3x expected) → LOWER sensitivity
+            if callback:
+                callback({
+                    'metric': 'sensitivity',
+                    'adjustment': -step,
+                    'direction': 'lower',
+                    'reason': f'excess DPS {actual_dps:.2f} > {excess_threshold:.2f}',
+                    'actual_dps': actual_dps,
+                })
 
 
 if __name__ == "__main__":
