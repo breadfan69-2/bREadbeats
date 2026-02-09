@@ -149,6 +149,32 @@ class AudioEngine:
         # Visualizer toggle
         self._visualizer_enabled = getattr(config.audio, 'visualizer_enabled', True)
         
+        # ===== REAL-TIME METRIC-BASED AUTO-RANGING (NEW SYSTEM) =====
+        # Tracks margins and metrics in real-time to drive parameter adjustments
+        # No timer cycle - pure feedback-based optimization
+        
+        # Metric 1: Peak Floor Feedback (Energy Margin)
+        self._metric_peak_floor_enabled: bool = False  # User toggle
+        self._energy_margin_history: list[float] = []  # Last 16 margins
+        self._energy_margin_target_low: float = 0.02   # Optimal zone: 0.02-0.05
+        self._energy_margin_target_high: float = 0.05
+        self._energy_margin_adjustment_step: float = 0.002  # Step size per beat
+        
+        # Metric 2: Beat Consistency Feedback (Sensitivity Tuning)
+        self._metric_beat_consistency_enabled: bool = False
+        self._beat_consistency_target_low: float = 0.05  # Optimal zone: 0.05-0.15
+        self._beat_consistency_target_high: float = 0.15
+        
+        # Metric 3: Downbeat Energy Ratio Feedback
+        self._metric_downbeat_ratio_enabled: bool = False
+        self._downbeat_ratio_target_low: float = 1.8    # Optimal zone: 1.8-2.2
+        self._downbeat_ratio_target_high: float = 2.2
+        
+        # Metric 4: Audio Gain / Intensity Normalization
+        self._metric_audio_gain_enabled: bool = False
+        self._intensity_target: float = 0.35            # Optimal: 0.3-0.4
+        self._intensity_history: list[float] = []       # Last 16 values
+        
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""
         if not HAS_SCIPY or not self._use_butterworth:
@@ -896,9 +922,77 @@ class AudioEngine:
             for i, d in enumerate(devices)
             if d["max_input_channels"] > 0
         ]
+    
+    # ===== REAL-TIME METRIC FEEDBACK SYSTEM =====
+    
+    def enable_metric_autoranging(self, metric: str, enable: bool = True):
+        """Enable/disable a specific metric-based auto-ranging metric"""
+        if metric == 'peak_floor':
+            self._metric_peak_floor_enabled = enable
+            if enable:
+                self._energy_margin_history.clear()
+                log_event("INFO", "MetricAutoRange", "Peak Floor metric enabled")
+            else:
+                log_event("INFO", "MetricAutoRange", "Peak Floor metric disabled")
+        elif metric == 'beat_consistency':
+            self._metric_beat_consistency_enabled = enable
+        elif metric == 'downbeat_ratio':
+            self._metric_downbeat_ratio_enabled = enable
+        elif metric == 'audio_gain':
+            self._metric_audio_gain_enabled = enable
+            if enable:
+                self._intensity_history.clear()
+    
+    def compute_energy_margin_feedback(self, band_energy: float, callback=None):
+        """
+        Compute energy margin metric and return adjustment for peak_floor.
+        
+        Energy margin = band_energy - peak_floor
+        Optimal zone: 0.02-0.05 (peak_floor is 2-5% below current audio)
+        
+        Returns:
+            (margin, should_adjust, adjustment_direction)
+            adjustment_direction: +1 to raise floor, -1 to lower floor, 0 no change
+        """
+        if not self._metric_peak_floor_enabled:
+            return 0.0, False, 0
+        
+        margin = band_energy - self.config.beat.peak_floor
+        
+        # Track history
+        self._energy_margin_history.append(margin)
+        if len(self._energy_margin_history) > 16:
+            self._energy_margin_history.pop(0)
+        
+        avg_margin = np.mean(self._energy_margin_history) if self._energy_margin_history else margin
+        
+        # Determine action
+        should_adjust = False
+        direction = 0  # 0=no change, +1=raise floor, -1=lower floor
+        
+        if avg_margin < self._energy_margin_target_low:
+            # Margin too tight - raise peak_floor to make detection stricter
+            should_adjust = True
+            direction = +1
+        elif avg_margin > self._energy_margin_target_high:
+            # Margin too loose - lower peak_floor to make detection more sensitive
+            should_adjust = True
+            direction = -1
+        
+        if callback and should_adjust:
+            callback({
+                'metric': 'peak_floor',
+                'margin': avg_margin,
+                'target_low': self._energy_margin_target_low,
+                'target_high': self._energy_margin_target_high,
+                'adjustment': direction * self._energy_margin_adjustment_step,
+                'direction': 'raise' if direction > 0 else 'lower'
+            })
+        
+        return avg_margin, should_adjust, direction
 
 
-# Test
+
 if __name__ == "__main__":
     from config import Config
     

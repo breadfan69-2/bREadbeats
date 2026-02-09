@@ -3946,6 +3946,47 @@ bREadfan_69@hotmail.com"""
             self._auto_hunt_start_time = 0.0
             print("[Auto] Stopped auto-adjust timer")
     
+    def _on_metric_toggle(self, metric: str, enabled: bool):
+        """Toggle a real-time metric-based auto-ranging metric"""
+        if not hasattr(self, 'audio_engine') or self.audio_engine is None:
+            print(f"[Metric] Audio engine not available yet")
+            return
+        
+        self.audio_engine.enable_metric_autoranging(metric, enabled)
+        status = "enabled" if enabled else "disabled"
+        print(f"[Metric] {metric} {status}")
+        
+        # Update status label
+        active_metrics = []
+        if getattr(self, 'metric_peak_floor_cb', None) and self.metric_peak_floor_cb.isChecked():
+            active_metrics.append("FloorMargin")
+        if getattr(self, 'metric_beat_consistency_cb', None) and self.metric_beat_consistency_cb.isChecked():
+            active_metrics.append("BeatConsis")
+        if getattr(self, 'metric_downbeat_ratio_cb', None) and self.metric_downbeat_ratio_cb.isChecked():
+            active_metrics.append("DBRatio")
+        if getattr(self, 'metric_audio_gain_cb', None) and self.metric_audio_gain_cb.isChecked():
+            active_metrics.append("AudioGain")
+        
+        status_text = f"Metrics: [{', '.join(active_metrics) if active_metrics else 'idle'}]"
+        if hasattr(self, 'metric_status_label'):
+            self.metric_status_label.setText(status_text)
+    
+    def _on_metric_feedback(self, feedback_data: dict):
+        """Handle feedback from a metric controller (update slider)"""
+        metric = feedback_data.get('metric', '')
+        adjustment = feedback_data.get('adjustment', 0.0)
+        direction = feedback_data.get('direction', 'hold')
+        
+        if metric == 'peak_floor' and adjustment != 0:
+            current = self.peak_floor_slider.value()
+            new_val = current + adjustment
+            pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
+            new_val = max(pf_min, min(pf_max, new_val))
+            if abs(new_val - current) > 0.001:
+                self.peak_floor_slider.setValue(new_val)
+                margin = feedback_data.get('margin', 0)
+                print(f"[Metric] peak_floor: margin={margin:.4f} ({direction}) → {new_val:.4f}")
+    
     def _update_param_config(self, param: str, step: Optional[float] = None):
         """Update step size for an auto-adjust parameter from spinbox"""
         print(f"[Spinbox] _update_param_config called: param={param}, step={step}")
@@ -4489,6 +4530,43 @@ bREadfan_69@hotmail.com"""
         auto_freq_layout.addWidget(self.auto_freq_speed_spin)
         auto_freq_layout.addStretch()
         layout.addLayout(auto_freq_layout)
+        
+        # ===== REAL-TIME METRIC-BASED AUTO-RANGING CONTROLS =====
+        metric_group = QGroupBox("Real-Time Metrics (Experimental - No Timer Cycle)")
+        metric_layout = QVBoxLayout(metric_group)
+        
+        # Metric controls row
+        metric_ctrl_layout = QHBoxLayout()
+        
+        self.metric_peak_floor_cb = QCheckBox("Peak Floor Margin")
+        self.metric_peak_floor_cb.setToolTip("Auto-adjust peak_floor to maintain 0.02-0.05 energy margin (per beat feedback)")
+        self.metric_peak_floor_cb.stateChanged.connect(lambda state: self._on_metric_toggle('peak_floor', state == 2))
+        metric_ctrl_layout.addWidget(self.metric_peak_floor_cb)
+        
+        self.metric_beat_consistency_cb = QCheckBox("Beat Consistency")
+        self.metric_beat_consistency_cb.setToolTip("Auto-adjust sensitivity based on beat interval variance")
+        self.metric_beat_consistency_cb.stateChanged.connect(lambda state: self._on_metric_toggle('beat_consistency', state == 2))
+        metric_ctrl_layout.addWidget(self.metric_beat_consistency_cb)
+        
+        self.metric_downbeat_ratio_cb = QCheckBox("Downbeat Ratio")
+        self.metric_downbeat_ratio_cb.setToolTip("Auto-adjust peak_floor to maintain 1.8-2.2 downbeat energy ratio")
+        self.metric_downbeat_ratio_cb.stateChanged.connect(lambda state: self._on_metric_toggle('downbeat_ratio', state == 2))
+        metric_ctrl_layout.addWidget(self.metric_downbeat_ratio_cb)
+        
+        self.metric_audio_gain_cb = QCheckBox("Audio Gain Norm")
+        self.metric_audio_gain_cb.setToolTip("Auto-adjust audio_amp to maintain 0.35 intensity (0-1 normalized)")
+        self.metric_audio_gain_cb.stateChanged.connect(lambda state: self._on_metric_toggle('audio_gain', state == 2))
+        metric_ctrl_layout.addWidget(self.metric_audio_gain_cb)
+        
+        metric_ctrl_layout.addStretch()
+        metric_layout.addLayout(metric_ctrl_layout)
+        
+        # Metric status label
+        self.metric_status_label = QLabel("Metrics: [idle]")
+        self.metric_status_label.setStyleSheet("color: #AAA; font-size: 9px;")
+        metric_layout.addWidget(self.metric_status_label)
+        
+        layout.addWidget(metric_group)
         
         # Frequency band selection
         freq_group = QGroupBox("Frequency Band (Hz) - red overlay on spectrum")
@@ -5709,6 +5787,15 @@ bREadfan_69@hotmail.com"""
         if event.is_beat:
             # Track beat time for auto-adjustment feature
             self._last_beat_time_for_auto = time.time()
+            
+            # ===== REAL-TIME METRIC FEEDBACK =====
+            # Compute energy margin and apply metric-based adjustments
+            if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+                # Get energy margin metric and apply feedback if enabled
+                margin, should_adjust, direction = self.audio_engine.compute_energy_margin_feedback(
+                    event.peak_energy, 
+                    callback=self._on_metric_feedback
+                )
             
             # Light up the beat indicator (green for any beat)
             if hasattr(self, 'beat_indicator') and self.beat_indicator is not None:
