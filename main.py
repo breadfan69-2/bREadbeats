@@ -3495,8 +3495,8 @@ bREadfan_69@hotmail.com"""
                 print(f"[Auto] {param} slider set to reset value {reset_values[param]}")
         print(f"[Auto] {param} auto-adjust {'enabled' if enabled else 'disabled'}")
         
-        # Start/stop auto-adjust timer based on whether any auto is enabled
-        any_enabled = any(self._auto_adjust_enabled.values())
+        # Start/stop auto-adjust timer based on whether any auto is enabled (including auto-freq)
+        any_enabled = any(self._auto_adjust_enabled.values()) or self._auto_freq_enabled
         if any_enabled and self._auto_adjust_timer is None:
             self._auto_adjust_timer = QTimer()
             self._auto_adjust_timer.timeout.connect(self._auto_adjust_beat_detection)
@@ -3532,6 +3532,20 @@ bREadfan_69@hotmail.com"""
             print(f"[AutoFreq] Enabled - starting from center={self._auto_freq_current_center:.0f}Hz")
         else:
             print(f"[AutoFreq] Disabled")
+        
+        # Start/stop auto-adjust timer based on whether any auto is enabled (including auto-freq)
+        any_enabled = any(self._auto_adjust_enabled.values()) or self._auto_freq_enabled
+        if any_enabled and self._auto_adjust_timer is None:
+            self._auto_adjust_timer = QTimer()
+            self._auto_adjust_timer.timeout.connect(self._auto_adjust_beat_detection)
+            self._auto_adjust_timer.start(self._auto_adjust_interval_ms)
+            self._auto_hunt_start_time = time.time()  # Start warmup period
+            print(f"[Auto] Started auto-adjust timer (warmup {self._auto_warmup_sec}s)")
+        elif not any_enabled and self._auto_adjust_timer is not None:
+            self._auto_adjust_timer.stop()
+            self._auto_adjust_timer = None
+            self._auto_hunt_start_time = 0.0
+            print("[Auto] Stopped auto-adjust timer")
     
     def _update_param_config(self, param: str, step: Optional[float] = None):
         """Update step size for an auto-adjust parameter from spinbox"""
