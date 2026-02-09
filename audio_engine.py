@@ -175,6 +175,16 @@ class AudioEngine:
         self._intensity_target: float = 0.35            # Optimal: 0.3-0.4
         self._intensity_history: list[float] = []       # Last 16 values
         
+        # ===== TARGET BPS SYSTEM (Beats Per Second) =====
+        # Tracks actual beats per second and adjusts parameters to achieve target rate
+        self._target_bps_enabled: bool = False          # User toggle
+        self._target_bps: float = 1.5                   # Target beats per second (default 90 BPM)
+        self._target_bps_tolerance: float = 0.2         # ± tolerance (0.2 = accept 1.3-1.7 BPS if target is 1.5)
+        self._bps_window_seconds: float = 4.0           # Rolling window for BPS calculation
+        self._bps_beat_times: list[float] = []          # Timestamps of recent beats
+        self._bps_adjustment_speed: float = 0.5         # 0.0=fine, 1.0=aggressive (scales step size)
+        self._bps_base_step: float = 0.002              # Base step for peak_floor adjustment
+        
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""
         if not HAS_SCIPY or not self._use_butterworth:
@@ -942,6 +952,13 @@ class AudioEngine:
             self._metric_audio_gain_enabled = enable
             if enable:
                 self._intensity_history.clear()
+        elif metric == 'target_bps':
+            self._target_bps_enabled = enable
+            if enable:
+                self._bps_beat_times.clear()
+                log_event("INFO", "MetricAutoRange", f"Target BPS enabled (target={self._target_bps:.2f})")
+            else:
+                log_event("INFO", "MetricAutoRange", "Target BPS disabled")
     
     def compute_energy_margin_feedback(self, band_energy: float, callback=None):
         """
@@ -990,6 +1007,86 @@ class AudioEngine:
             })
         
         return avg_margin, should_adjust, direction
+
+    def compute_bps_feedback(self, beat_time: float, callback=None):
+        """
+        Compute BPS (beats per second) feedback and adjust peak_floor to hit target.
+        
+        Tracks beats over a rolling window and compares actual BPS to target.
+        If actual < target: lower peak_floor to detect more beats
+        If actual > target: raise peak_floor to detect fewer beats
+        
+        Args:
+            beat_time: Timestamp of the detected beat
+            callback: Function to call with adjustment data
+            
+        Returns:
+            (actual_bps, should_adjust, adjustment_direction)
+        """
+        if not self._target_bps_enabled:
+            return 0.0, False, 0
+        
+        now = beat_time
+        
+        # Add this beat
+        self._bps_beat_times.append(now)
+        
+        # Prune beats outside the window
+        window_start = now - self._bps_window_seconds
+        self._bps_beat_times = [t for t in self._bps_beat_times if t >= window_start]
+        
+        # Need at least 2 beats to calculate BPS
+        if len(self._bps_beat_times) < 2:
+            return 0.0, False, 0
+        
+        # Calculate actual BPS
+        window_duration = self._bps_beat_times[-1] - self._bps_beat_times[0]
+        if window_duration <= 0:
+            return 0.0, False, 0
+        
+        actual_bps = (len(self._bps_beat_times) - 1) / window_duration
+        
+        # Check if we're within tolerance
+        target_low = self._target_bps - self._target_bps_tolerance
+        target_high = self._target_bps + self._target_bps_tolerance
+        
+        should_adjust = False
+        direction = 0
+        
+        if actual_bps < target_low:
+            # Too few beats - LOWER peak_floor to detect more
+            should_adjust = True
+            direction = -1
+        elif actual_bps > target_high:
+            # Too many beats - RAISE peak_floor to detect fewer
+            should_adjust = True
+            direction = +1
+        
+        if callback and should_adjust:
+            # Scale step by adjustment speed (0.5 = normal, 1.0 = 2x aggressive)
+            step = self._bps_base_step * (1.0 + self._bps_adjustment_speed)
+            callback({
+                'metric': 'target_bps',
+                'actual_bps': actual_bps,
+                'target_bps': self._target_bps,
+                'tolerance': self._target_bps_tolerance,
+                'adjustment': direction * step,
+                'direction': 'raise' if direction > 0 else 'lower'
+            })
+        
+        return actual_bps, should_adjust, direction
+
+    def set_target_bps(self, target: float):
+        """Set the target beats per second"""
+        self._target_bps = max(0.1, min(4.0, target))
+        
+    def set_bps_adjustment_speed(self, speed: float):
+        """Set the BPS adjustment speed (0.0=fine, 1.0=aggressive)"""
+        self._bps_adjustment_speed = max(0.0, min(1.0, speed))
+        
+    def set_bps_tolerance(self, tolerance: float):
+        """Set the BPS tolerance (how close to target before adjusting)"""
+        self._target_bps_tolerance = max(0.05, min(1.0, tolerance))
 
 
 

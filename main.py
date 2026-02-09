@@ -3645,6 +3645,8 @@ bREadfan_69@hotmail.com"""
             active_metrics.append("DBRatio")
         if getattr(self, 'metric_audio_gain_cb', None) and self.metric_audio_gain_cb.isChecked():
             active_metrics.append("AudioGain")
+        if getattr(self, 'metric_target_bps_cb', None) and self.metric_target_bps_cb.isChecked():
+            active_metrics.append("TargetBPS")
         
         status_text = f"Metrics: [{', '.join(active_metrics) if active_metrics else 'idle'}]"
         if hasattr(self, 'metric_status_label'):
@@ -3665,6 +3667,41 @@ bREadfan_69@hotmail.com"""
                 self.peak_floor_slider.setValue(new_val)
                 margin = feedback_data.get('margin', 0)
                 print(f"[Metric] peak_floor: margin={margin:.4f} ({direction}) → {new_val:.4f}")
+        
+        elif metric == 'target_bps' and adjustment != 0:
+            # Adjust peak_floor to hit target BPS
+            current = self.peak_floor_slider.value()
+            new_val = current + adjustment
+            pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
+            new_val = max(pf_min, min(pf_max, new_val))
+            if abs(new_val - current) > 0.001:
+                self.peak_floor_slider.setValue(new_val)
+                actual_bps = feedback_data.get('actual_bps', 0)
+                target_bps = feedback_data.get('target_bps', 0)
+                print(f"[Metric] target_bps: actual={actual_bps:.2f} target={target_bps:.2f} ({direction}) → pf={new_val:.4f}")
+                # Update the BPS display if we have one
+                if hasattr(self, 'bps_actual_label'):
+                    self.bps_actual_label.setText(f"Actual: {actual_bps:.2f} BPS")
+    
+    def _on_target_bps_change(self, value: float):
+        """Handle target BPS spinbox change"""
+        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+            self.audio_engine.set_target_bps(value)
+            print(f"[Config] Target BPS set to {value:.2f}")
+    
+    def _on_bps_tolerance_change(self, value: float):
+        """Handle BPS tolerance spinbox change"""
+        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+            self.audio_engine.set_bps_tolerance(value)
+            print(f"[Config] BPS tolerance set to ±{value:.2f}")
+    
+    def _on_bps_speed_change(self, value: int):
+        """Handle BPS adjustment speed slider change"""
+        speed = value / 100.0  # Convert 0-100 to 0.0-1.0
+        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+            self.audio_engine.set_bps_adjustment_speed(speed)
+            speed_label = "Fine" if speed < 0.3 else "Aggressive" if speed > 0.7 else "Normal"
+            print(f"[Config] BPS adjustment speed: {speed_label} ({speed:.2f})")
     
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings with vertical scroll"""
@@ -3742,6 +3779,52 @@ bREadfan_69@hotmail.com"""
         
         metric_ctrl_layout.addStretch()
         metric_layout.addLayout(metric_ctrl_layout)
+        
+        # ===== TARGET BPS CONTROLS =====
+        bps_layout = QHBoxLayout()
+        
+        self.metric_target_bps_cb = QCheckBox("Target BPS")
+        self.metric_target_bps_cb.setToolTip("Adjust peak_floor to achieve target beats per second")
+        self.metric_target_bps_cb.stateChanged.connect(lambda state: self._on_metric_toggle('target_bps', state == 2))
+        bps_layout.addWidget(self.metric_target_bps_cb)
+        
+        bps_layout.addWidget(QLabel("Target:"))
+        self.target_bps_spin = QDoubleSpinBox()
+        self.target_bps_spin.setRange(0.5, 4.0)
+        self.target_bps_spin.setSingleStep(0.1)
+        self.target_bps_spin.setValue(1.5)
+        self.target_bps_spin.setDecimals(2)
+        self.target_bps_spin.setFixedWidth(65)
+        self.target_bps_spin.setToolTip("Target beats per second (e.g., 1.5 = 90 BPM)")
+        self.target_bps_spin.valueChanged.connect(self._on_target_bps_change)
+        bps_layout.addWidget(self.target_bps_spin)
+        
+        bps_layout.addWidget(QLabel("±"))
+        self.bps_tolerance_spin = QDoubleSpinBox()
+        self.bps_tolerance_spin.setRange(0.05, 1.0)
+        self.bps_tolerance_spin.setSingleStep(0.05)
+        self.bps_tolerance_spin.setValue(0.2)
+        self.bps_tolerance_spin.setDecimals(2)
+        self.bps_tolerance_spin.setFixedWidth(60)
+        self.bps_tolerance_spin.setToolTip("Tolerance: system accepts ±this range around target")
+        self.bps_tolerance_spin.valueChanged.connect(self._on_bps_tolerance_change)
+        bps_layout.addWidget(self.bps_tolerance_spin)
+        
+        bps_layout.addWidget(QLabel("Speed:"))
+        self.bps_speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.bps_speed_slider.setRange(0, 100)
+        self.bps_speed_slider.setValue(50)
+        self.bps_speed_slider.setFixedWidth(80)
+        self.bps_speed_slider.setToolTip("Adjustment speed: Fine (left) ↔ Aggressive (right)")
+        self.bps_speed_slider.valueChanged.connect(self._on_bps_speed_change)
+        bps_layout.addWidget(self.bps_speed_slider)
+        
+        self.bps_actual_label = QLabel("Actual: -- BPS")
+        self.bps_actual_label.setStyleSheet("color: #AAA; font-size: 9px;")
+        bps_layout.addWidget(self.bps_actual_label)
+        
+        bps_layout.addStretch()
+        metric_layout.addLayout(bps_layout)
         
         # Metric status label
         self.metric_status_label = QLabel("Metrics: [idle]")
@@ -4821,6 +4904,12 @@ bREadfan_69@hotmail.com"""
                 # Get energy margin metric and apply feedback if enabled
                 margin, should_adjust, direction = self.audio_engine.compute_energy_margin_feedback(
                     event.peak_energy, 
+                    callback=self._on_metric_feedback
+                )
+                
+                # Get BPS (beats per second) metric and adjust peak_floor to hit target
+                actual_bps, bps_should_adjust, bps_direction = self.audio_engine.compute_bps_feedback(
+                    event.timestamp,
                     callback=self._on_metric_feedback
                 )
             
