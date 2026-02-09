@@ -185,6 +185,12 @@ class AudioEngine:
         self._bps_adjustment_speed: float = 0.5         # 0.0=fine, 1.0=aggressive (scales step size)
         self._bps_base_step: float = 0.002              # Base step for peak_floor adjustment
         
+        # ===== AUTO-FREQUENCY BAND TRACKING (Consistency-Based) =====
+        # Stores band energy history to find bands with consistent peaks/valleys
+        self._band_energy_history: dict[int, list[float]] = {}  # center_bin -> [energy samples]
+        self._band_history_max_samples: int = 32                # Keep last 32 samples per band
+        self._last_spectrum_time: float = 0.0                   # For timing consistency checks
+        
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""
         if not HAS_SCIPY or not self._use_butterworth:
@@ -923,6 +929,131 @@ class AudioEngine:
         center_freq = (low_freq + high_freq) / 2
         
         return (center_freq, low_freq, high_freq)
+    
+    def find_consistent_frequency_band(self, min_freq: float = 30.0, max_freq: float = 22050.0,
+                                        band_width: float = 300.0) -> tuple[float, float, float, float]:
+        """
+        Find the frequency band with most consistent peak/valley variation.
+        Looks for bands where amplitude varies regularly (like a drum beat).
+        
+        Args:
+            min_freq: Minimum frequency to search (Hz)
+            max_freq: Maximum frequency to search (Hz)
+            band_width: Width of the band to evaluate (Hz)
+            
+        Returns:
+            Tuple of (center_freq, low_freq, high_freq, consistency_score).
+            Consistency score: 0.0 = chaotic, 1.0 = perfectly consistent variation.
+            Returns (0, 0, 0, 0) if no data available.
+        """
+        import time as time_module
+        
+        with self.spectrum_lock:
+            if self.spectrum_data is None or len(self.spectrum_data) == 0:
+                return (0.0, 0.0, 0.0, 0.0)
+            spectrum = self.spectrum_data.copy()
+        
+        now = time_module.time()
+        sr = self.config.audio.sample_rate
+        num_bins = len(spectrum)
+        freq_per_bin = sr / (2 * num_bins)
+        
+        # Convert Hz to bin indices
+        min_bin = max(1, int(min_freq / freq_per_bin))
+        max_bin = min(num_bins - 1, int(max_freq / freq_per_bin))
+        band_bins = max(1, int(band_width / freq_per_bin))
+        
+        if max_bin - min_bin < band_bins:
+            center = (min_freq + max_freq) / 2
+            return (center, min_freq, max_freq, 0.0)
+        
+        # Step size for scanning (50Hz steps to reduce computation)
+        step_bins = max(1, int(50.0 / freq_per_bin))
+        
+        # Update band energy history and compute consistency scores
+        best_score = 0.0
+        best_center_bin = min_bin + band_bins // 2
+        
+        for center_bin in range(min_bin + band_bins // 2, max_bin - band_bins // 2, step_bins):
+            start_bin = center_bin - band_bins // 2
+            end_bin = center_bin + band_bins // 2
+            
+            # Current band energy
+            band_energy = np.sqrt(np.mean(spectrum[start_bin:end_bin] ** 2))
+            
+            # Store in history
+            if center_bin not in self._band_energy_history:
+                self._band_energy_history[center_bin] = []
+            history = self._band_energy_history[center_bin]
+            history.append(band_energy)
+            
+            # Keep only last N samples
+            if len(history) > self._band_history_max_samples:
+                history.pop(0)
+            
+            # Need at least 8 samples to evaluate consistency
+            if len(history) < 8:
+                continue
+            
+            # Compute consistency score:
+            # 1. Find peaks and valleys in the history
+            # 2. Measure variance of peak-valley heights
+            # 3. Lower variance = more consistent = higher score
+            
+            arr = np.array(history)
+            mean_val = np.mean(arr)
+            
+            # Find local peaks and valleys (simple sign-change detection)
+            peaks = []
+            valleys = []
+            for i in range(1, len(arr) - 1):
+                if arr[i] > arr[i-1] and arr[i] > arr[i+1]:
+                    peaks.append(arr[i])
+                elif arr[i] < arr[i-1] and arr[i] < arr[i+1]:
+                    valleys.append(arr[i])
+            
+            # Need at least 3 peaks and 3 valleys for meaningful consistency
+            if len(peaks) < 3 or len(valleys) < 3:
+                continue
+            
+            # Peak-valley height variations
+            avg_peak = np.mean(peaks)
+            avg_valley = np.mean(valleys)
+            height = avg_peak - avg_valley
+            
+            if height < 0.001:  # Nearly flat - not useful for beat detection
+                continue
+            
+            # Consistency = inverse of coefficient of variation of peaks and valleys
+            peak_cv = np.std(peaks) / (avg_peak + 1e-6)
+            valley_cv = np.std(valleys) / (avg_valley + 1e-6)
+            combined_cv = (peak_cv + valley_cv) / 2
+            
+            # Score: 1.0 when CV is 0, decreasing as CV increases
+            # Also weight by height (prefer bands with good amplitude swing)
+            consistency = 1.0 / (1.0 + combined_cv * 10)
+            height_factor = min(1.0, height / 0.1)  # Normalize height 0-0.1 to 0-1
+            score = consistency * 0.7 + height_factor * 0.3  # 70% consistency, 30% height
+            
+            if score > best_score:
+                best_score = score
+                best_center_bin = center_bin
+        
+        # Clean up old band histories (bands we haven't seen recently)
+        if len(self._band_energy_history) > 100:
+            # Keep only bands we've updated recently
+            current_keys = set(range(min_bin + band_bins // 2, max_bin - band_bins // 2, step_bins))
+            old_keys = [k for k in self._band_energy_history if k not in current_keys]
+            for k in old_keys[:50]:  # Remove up to 50 old keys
+                del self._band_energy_history[k]
+        
+        # Convert best bin to Hz
+        low_freq = (best_center_bin - band_bins // 2) * freq_per_bin
+        high_freq = (best_center_bin + band_bins // 2) * freq_per_bin
+        center_freq = (low_freq + high_freq) / 2
+        
+        self._last_spectrum_time = now
+        return (center_freq, low_freq, high_freq, best_score)
             
     def list_devices(self) -> list[dict]:
         """List available audio devices"""
