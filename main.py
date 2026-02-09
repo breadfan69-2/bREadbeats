@@ -2043,10 +2043,22 @@ class BREadbeatsWindow(QMainWindow):
         
         # Auto-frequency band tracking state
         self._auto_freq_enabled: bool = False
-        self._auto_freq_width: float = 300.0      # Hz
-        self._auto_freq_speed: float = 0.1        # 0.0=slow, 1.0=fast
-        self._auto_freq_current_center: float = 0.0  # Current center frequency (Hz)
+        self._auto_freq_width: float = 300.0      # Target width in Hz (from spinbox)
+        self._auto_freq_speed: float = 0.1        # Not used for close-down timing
+        self._auto_freq_current_center: float = 0.0  # Current tracked center frequency (Hz)
         self._auto_freq_last_update: float = 0.0  # Timestamp of last update
+        
+        # Gradual close-down state (1500ms to narrow from full range to target width)
+        self._auto_freq_closedown_start: float = 0.0     # When close-down started
+        self._auto_freq_closedown_duration: float = 1.5  # 1500ms = 1.5 seconds
+        self._auto_freq_current_width: float = 22050.0   # Current width (starts full range)
+        self._auto_freq_phase: str = 'scanning'          # 'scanning', 'closing', 'tracking'
+        
+        # Missed beat tracking for auto-expand
+        self._auto_freq_last_beat_time: float = 0.0      # When last beat was detected
+        self._auto_freq_expected_interval: float = 0.5   # Expected beat interval (from BPM)
+        self._auto_freq_missed_count: int = 0            # Consecutive missed beats
+        self._auto_freq_missed_threshold: int = 3        # Expand after this many misses
         
         # State
         self.is_running = False
@@ -3715,14 +3727,26 @@ bREadfan_69@hotmail.com"""
         enabled = (state == 2)  # Qt.Checked
         self._auto_freq_enabled = enabled
         if enabled:
-            print(f"[AutoFreq] Enabled - searching for peak frequency band")
+            # Reset state for fresh scan
+            self._auto_freq_phase = 'scanning'
+            self._auto_freq_current_width = 22050.0  # Start with full range
+            self._auto_freq_current_center = 0.0
+            self._auto_freq_missed_count = 0
+            self._auto_freq_closedown_start = 0.0
+            print(f"[AutoFreq] Enabled - scanning full range for consistent peaks/valleys")
         else:
             print(f"[AutoFreq] Disabled")
     
     def _on_auto_freq_width_change(self, value: int):
-        """Handle auto-freq width spinbox change"""
+        """Handle auto-freq width spinbox change - affects target width and restarts closedown"""
         self._auto_freq_width = float(value)
-        print(f"[Config] Auto-freq band width set to {value} Hz")
+        # Restart the close-down process to apply new width immediately
+        if self._auto_freq_enabled and self._auto_freq_phase != 'scanning':
+            self._auto_freq_closedown_start = time.time()
+            self._auto_freq_phase = 'closing'
+            print(f"[AutoFreq] Band width changed to {value} Hz - restarting close-down")
+        else:
+            print(f"[Config] Auto-freq band width set to {value} Hz")
     
     def _on_auto_freq_speed_change(self, value: int):
         """Handle auto-freq speed slider change"""
@@ -3863,12 +3887,12 @@ bREadfan_69@hotmail.com"""
         
         autofreq_layout.addWidget(QLabel("Width:"))
         self.auto_freq_width_spin = QSpinBox()
-        self.auto_freq_width_spin.setRange(50, 1000)
+        self.auto_freq_width_spin.setRange(50, 20000)  # Full searchable range (30-22050 Hz)
         self.auto_freq_width_spin.setSingleStep(50)
         self.auto_freq_width_spin.setValue(300)
         self.auto_freq_width_spin.setSuffix(" Hz")
         self.auto_freq_width_spin.setFixedWidth(80)
-        self.auto_freq_width_spin.setToolTip("Width of frequency band to search for (Hz)")
+        self.auto_freq_width_spin.setToolTip("Target band width (scanning searches full 20kHz, then narrows)")
         self.auto_freq_width_spin.valueChanged.connect(self._on_auto_freq_width_change)
         autofreq_layout.addWidget(self.auto_freq_width_spin)
         
@@ -5128,41 +5152,93 @@ bREadfan_69@hotmail.com"""
                 self._volume_ramp_active = False
         
         # ===== AUTO-FREQUENCY BAND TRACKING =====
-        # Periodically find peak frequency band and smoothly update beat detection freq range
+        # Scans full range for most consistent peaks/valleys, then narrows to target width
         if self._auto_freq_enabled and hasattr(self, 'audio_engine') and self.audio_engine is not None:
             now = time.time()
             # Update every 100ms (10 Hz)
             if now - self._auto_freq_last_update > 0.1:
                 self._auto_freq_last_update = now
                 
-                # Find the most powerful frequency band
-                center, low, high = self.audio_engine.find_peak_frequency_band(
+                # Check for missed beats (expand if 3+ missed)
+                if self.audio_engine.smoothed_tempo > 0:
+                    expected_interval = 60.0 / self.audio_engine.smoothed_tempo
+                    self._auto_freq_expected_interval = expected_interval
+                    
+                    # Check if we missed a beat
+                    time_since_beat = now - self.audio_engine.last_beat_time
+                    if time_since_beat > expected_interval * 1.5:  # Missed by 50%
+                        if self._auto_freq_last_beat_time != self.audio_engine.last_beat_time:
+                            self._auto_freq_missed_count += 1
+                            self._auto_freq_last_beat_time = self.audio_engine.last_beat_time
+                    else:
+                        # Beat detected - reset miss counter
+                        if self._auto_freq_last_beat_time != self.audio_engine.last_beat_time:
+                            self._auto_freq_missed_count = 0
+                            self._auto_freq_last_beat_time = self.audio_engine.last_beat_time
+                    
+                    # Expand and recenter on 3+ missed beats
+                    if self._auto_freq_missed_count >= self._auto_freq_missed_threshold:
+                        self._auto_freq_phase = 'scanning'
+                        self._auto_freq_current_width = 22050.0  # Reset to full range
+                        self._auto_freq_missed_count = 0
+                        print(f"[AutoFreq] Expanding after {self._auto_freq_missed_threshold} missed beats")
+                
+                # Find the most consistent frequency band (search FULL range)
+                center, low, high, score = self.audio_engine.find_consistent_frequency_band(
                     min_freq=30.0,
-                    max_freq=2000.0,
-                    band_width=self._auto_freq_width
+                    max_freq=22050.0,
+                    band_width=self._auto_freq_current_width
                 )
                 
-                if center > 0:
-                    # Smooth transition: blend current center toward detected peak
-                    if self._auto_freq_current_center == 0:
-                        # First time: jump to detected center
+                if center > 0 and score > 0.1:  # Valid band found with decent consistency
+                    # State machine for gradual close-down
+                    if self._auto_freq_phase == 'scanning':
+                        # First good detection - start close-down
                         self._auto_freq_current_center = center
-                    else:
-                        # Smooth blend based on speed (0.1 = 10% per update, 1.0 = instant)
-                        blend = min(1.0, self._auto_freq_speed + 0.05)  # At least 5% per update
+                        self._auto_freq_closedown_start = now
+                        self._auto_freq_phase = 'closing'
+                        print(f"[AutoFreq] Found consistent band at {int(center)} Hz (score={score:.2f}), starting close-down")
+                    
+                    elif self._auto_freq_phase == 'closing':
+                        # Gradually narrow width from full to target over 1500ms
+                        elapsed = now - self._auto_freq_closedown_start
+                        progress = min(1.0, elapsed / self._auto_freq_closedown_duration)
+                        
+                        # Interpolate width: full_range → target_width
+                        target_width = self._auto_freq_width
+                        full_width = 22050.0 - 30.0
+                        self._auto_freq_current_width = full_width - (full_width - target_width) * progress
+                        
+                        # Smooth blend center toward detected peak
+                        blend = 0.2  # 20% per update during close-down
                         self._auto_freq_current_center += (center - self._auto_freq_current_center) * blend
+                        
+                        if progress >= 1.0:
+                            self._auto_freq_phase = 'tracking'
+                            print(f"[AutoFreq] Close-down complete, now tracking at {int(self._auto_freq_current_center)} Hz ±{int(target_width/2)} Hz")
                     
-                    # Compute new freq band around smoothed center
-                    half_width = self._auto_freq_width / 2
-                    new_low = max(30, self._auto_freq_current_center - half_width)
-                    new_high = min(22050, self._auto_freq_current_center + half_width)
-                    
-                    # Update the freq range slider (this will also update config and visualizer)
-                    self.freq_range_slider.setRange(int(new_low), int(new_high))
-                    
-                    # Update display label
-                    if hasattr(self, 'auto_freq_label'):
-                        self.auto_freq_label.setText(f"Band: {int(new_low)}-{int(new_high)} Hz")
+                    elif self._auto_freq_phase == 'tracking':
+                        # Normal tracking - slowly blend toward detected peak
+                        blend = 0.1  # 10% per update during tracking
+                        self._auto_freq_current_center += (center - self._auto_freq_current_center) * blend
+                        self._auto_freq_current_width = self._auto_freq_width  # Use target width
+                
+                # Compute new freq band around smoothed center
+                half_width = self._auto_freq_current_width / 2
+                new_low = max(30, self._auto_freq_current_center - half_width)
+                new_high = min(22050, self._auto_freq_current_center + half_width)
+                
+                # Update the freq range slider properly (use setLow/setHigh, not setRange)
+                self.freq_range_slider.setLow(int(new_low))
+                self.freq_range_slider.setHigh(int(new_high))
+                
+                # Manually trigger the config/visualizer update
+                self._on_freq_band_change(int(new_low), int(new_high))
+                
+                # Update display label with phase
+                if hasattr(self, 'auto_freq_label'):
+                    phase_str = self._auto_freq_phase[0].upper()  # S/C/T
+                    self.auto_freq_label.setText(f"[{phase_str}] {int(new_low)}-{int(new_high)} Hz")
     
     def _log_experimental_spinbox_shutdown_values(self):
         """Log final experimental spinbox values at shutdown for documentation"""
