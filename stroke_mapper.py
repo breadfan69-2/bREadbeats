@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from config import Config, StrokeMode
 from audio_engine import BeatEvent
 from network_engine import TCodeCommand
+from logging_utils import log_event
 
 
 @dataclass
@@ -71,6 +72,11 @@ class StrokeMapper:
         self.max_strokes_per_sec = 4.5  # Maximum strokes per second
         self.beat_factor = 1  # Skip every Nth beat
         
+        # Creep volume fade state (lower volume when creep sustained for >2 expected beats)
+        self._creep_sustained_start: float = 0.0  # When creep started being sustained
+        self._creep_volume_factor: float = 1.0  # Current creep volume reduction (1.0 = no reduction)
+        self._creep_was_active_last_frame: bool = False  # Track if creep was active last frame
+        
     def process_beat(self, event: BeatEvent) -> Optional[TCodeCommand]:
         """
         Process a beat event and return a stroke command.
@@ -90,27 +96,34 @@ class StrokeMapper:
             self._fade_intensity = 1.0
         if not hasattr(self, '_last_quiet_time'):
             self._last_quiet_time = 0.0
+        if not hasattr(self, '_consecutive_silent_count'):
+            self._consecutive_silent_count = 0
             
         # Thresholds for true silence
-        quiet_flux_thresh = cfg.flux_threshold * 0.03  # Lowered even more
-        quiet_energy_thresh = beat_cfg.peak_floor * 0.3  # Lowered even more
+        quiet_flux_thresh = cfg.flux_threshold * cfg.silence_flux_multiplier
+        quiet_energy_thresh = beat_cfg.peak_floor * cfg.silence_energy_multiplier
         fade_duration = 2.0  # seconds to fade out
         silence_reset_threshold = beat_cfg.silence_reset_ms / 1000.0  # Convert ms to seconds
+        consecutive_silent_required = 10  # Require 10 consecutive silent frames before fading
         
         is_truly_silent = (event.spectral_flux < quiet_flux_thresh and event.peak_energy < quiet_energy_thresh)
         if is_truly_silent:
-            if self._fade_intensity > 0.0:
-                # Start fade-out
-                if self._last_quiet_time == 0.0:
-                    self._last_quiet_time = now
-                elapsed = now - self._last_quiet_time
-                self._fade_intensity = max(0.0, 1.0 - (elapsed / fade_duration))
-                # If silence persists for more than 250ms, reset tempo/downbeat
-                if self.audio_engine and elapsed > silence_reset_threshold:
-                    self.audio_engine.reset_tempo_tracking()
-            else:
-                self._fade_intensity = 0.0
+            self._consecutive_silent_count += 1
+            # Only start fade after 10 consecutive silent frames
+            if self._consecutive_silent_count >= consecutive_silent_required:
+                if self._fade_intensity > 0.0:
+                    # Start fade-out
+                    if self._last_quiet_time == 0.0:
+                        self._last_quiet_time = now
+                    elapsed = now - self._last_quiet_time
+                    self._fade_intensity = max(0.0, 1.0 - (elapsed / fade_duration))
+                    # If silence persists for more than 250ms, reset tempo/downbeat
+                    if self.audio_engine and elapsed > silence_reset_threshold:
+                        self.audio_engine.reset_tempo_tracking()
+                else:
+                    self._fade_intensity = 0.0
         else:
+            self._consecutive_silent_count = 0
             self._fade_intensity = min(1.0, self._fade_intensity + 0.1)
             self._last_quiet_time = 0.0
         
@@ -126,7 +139,7 @@ class StrokeMapper:
             # Check minimum interval for beats only (jitter bypasses this)
             time_since_stroke = (now - self.state.last_stroke_time) * 1000
             if time_since_stroke < cfg.min_interval_ms:
-                print(f"[StrokeMapper] Skipping stroke: min_interval_ms not met ({time_since_stroke:.1f} < {cfg.min_interval_ms})")
+                log_event("INFO", "StrokeMapper", "Skipping stroke: min_interval_ms not met", elapsed_ms=f"{time_since_stroke:.1f}", min_ms=cfg.min_interval_ms)
                 return None
             
             # Check if flux is high or low
@@ -153,7 +166,16 @@ class StrokeMapper:
                     cmd.intensity *= self._fade_intensity
                 if hasattr(cmd, 'volume'):
                     cmd.volume *= self._fade_intensity
-                print(f"[StrokeMapper] ⬇ DOWNBEAT -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} (flux_factor={self._flux_stroke_factor:.2f}, flux={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f})")
+                log_event(
+                    "INFO",
+                    "StrokeMapper",
+                    "Downbeat command",
+                    alpha=f"{cmd.alpha:.2f}",
+                    beta=f"{cmd.beta:.2f}",
+                    flux_factor=f"{self._flux_stroke_factor:.2f}",
+                    flux=f"{event.spectral_flux:.4f}",
+                    fade=f"{self._fade_intensity:.2f}"
+                )
                 return cmd if self._fade_intensity > 0.01 else None
             
             # REGULAR BEAT:
@@ -161,7 +183,7 @@ class StrokeMapper:
             # - High flux: do full strokes on all beats
             if not is_high_flux:
                 # Low flux: skip this beat
-                print(f"[StrokeMapper] Skipping beat (low flux={event.spectral_flux:.4f} < {cfg.flux_threshold})")
+                log_event("INFO", "StrokeMapper", "Skipping beat (low flux)", flux=f"{event.spectral_flux:.4f}", threshold=cfg.flux_threshold)
                 return None
             
             # High flux: Generate full stroke on regular beat too
@@ -170,7 +192,16 @@ class StrokeMapper:
                 cmd.intensity *= self._fade_intensity
             if hasattr(cmd, 'volume'):
                 cmd.volume *= self._fade_intensity
-            print(f"[StrokeMapper] Beat (flux_factor={self._flux_stroke_factor:.2f}, HIGH FLUX={event.spectral_flux:.4f}, fade={self._fade_intensity:.2f}) -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f}")
+            log_event(
+                "INFO",
+                "StrokeMapper",
+                "Beat stroke",
+                flux_factor=f"{self._flux_stroke_factor:.2f}",
+                flux=f"{event.spectral_flux:.4f}",
+                fade=f"{self._fade_intensity:.2f}",
+                alpha=f"{cmd.alpha:.2f}",
+                beta=f"{cmd.beta:.2f}"
+            )
             return cmd if self._fade_intensity > 0.01 else None
             
         elif self.state.idle_time > 0.5:
@@ -182,13 +213,29 @@ class StrokeMapper:
                 if hasattr(cmd, 'volume'):
                     cmd.volume *= self._fade_intensity
                 if cmd is not None:
-                    print(f"[StrokeMapper] Idle -> cmd a={cmd.alpha:.2f} b={cmd.beta:.2f} jitter={self.config.jitter.enabled} creep={self.config.creep.enabled} fade={self._fade_intensity:.2f}")
+                    log_event(
+                        "INFO",
+                        "StrokeMapper",
+                        "Idle command",
+                        alpha=f"{cmd.alpha:.2f}",
+                        beta=f"{cmd.beta:.2f}",
+                        jitter=self.config.jitter.enabled,
+                        creep=self.config.creep.enabled,
+                        fade=f"{self._fade_intensity:.2f}"
+                    )
                 else:
-                    print(f"[StrokeMapper] Idle -> cmd=None jitter={self.config.jitter.enabled} creep={self.config.creep.enabled} fade={self._fade_intensity:.2f}")
+                    log_event(
+                        "INFO",
+                        "StrokeMapper",
+                        "Idle suppressed (no command)",
+                        jitter=self.config.jitter.enabled,
+                        creep=self.config.creep.enabled,
+                        fade=f"{self._fade_intensity:.2f}"
+                    )
                 return cmd
             else:
                 # Suppress idle motion if truly silent
-                print(f"[StrokeMapper] Idle suppressed (truly silent, fade={self._fade_intensity:.2f})")
+                log_event("INFO", "StrokeMapper", "Idle suppressed (truly silent)", fade=f"{self._fade_intensity:.2f}")
                 return None
         
         return None
@@ -277,7 +324,15 @@ class StrokeMapper:
         self.state.last_stroke_time = now
         self.state.last_beat_time = now
         lock_str = "LOCKED+BOOST" if tempo_locked else "unlocked"
-        print(f"[StrokeMapper] ⬇ DOWNBEAT ARC start (mode={self.config.stroke.mode.name}) ({n_points} pts, {measure_duration_ms}ms, tempo={lock_str})")
+        log_event(
+            "INFO",
+            "StrokeMapper",
+            "Downbeat arc start",
+            mode=self.config.stroke.mode.name,
+            points=n_points,
+            duration_ms=measure_duration_ms,
+            tempo_state=lock_str
+        )
         # Don't return a command here - the arc thread will send all points
         # Returning None signals that the arc is being handled asynchronously
         return None
@@ -383,14 +438,21 @@ class StrokeMapper:
         first_beta = float(beta_arc[0])
         self.state.alpha = first_alpha
         self.state.beta = first_beta
-        print(f"[StrokeMapper] ARC start (mode={self.config.stroke.mode.name}) ({n_points} pts, {beat_interval_ms}ms total)")
+        log_event(
+            "INFO",
+            "StrokeMapper",
+            "Arc start",
+            mode=self.config.stroke.mode.name,
+            points=n_points,
+            duration_ms=beat_interval_ms
+        )
         return TCodeCommand(first_alpha, first_beta, step_durations[0], self.get_volume())
     
     def _send_arc_synchronous(self, alpha_arc: np.ndarray, beta_arc: np.ndarray, step_durations: list, n_points: int):
         """Send arc points synchronously with proper sleep timing (Breadbeats approach)"""
         for i in range(1, n_points):  # Skip first point (already sent)
             if self._stop_arc:
-                print(f"[StrokeMapper] ARC interrupted at point {i}")
+                log_event("INFO", "StrokeMapper", "Arc interrupted", point=i)
                 return
             
             alpha = float(alpha_arc[i])
@@ -398,9 +460,8 @@ class StrokeMapper:
             step_ms = step_durations[i]  # Each step has its own duration
             
             if self.send_callback:
-                # Apply fade intensity to arc commands
-                fade = getattr(self, '_fade_intensity', 1.0)
-                volume = self.get_volume() * fade
+                # Apply fade-out to arc strokes
+                volume = self.get_volume() * self._fade_intensity
                 cmd = TCodeCommand(alpha, beta, step_ms, volume)
                 self.send_callback(cmd)
                 self.state.alpha = alpha
@@ -409,7 +470,7 @@ class StrokeMapper:
             # Sleep for this step duration (like Breadbeats time.sleep)
             time.sleep(step_ms / 1000.0)
         
-        print(f"[StrokeMapper] ARC complete ({n_points} points)")
+        log_event("INFO", "StrokeMapper", "Arc complete", points=n_points)
         # Initiate smooth arc return after arc completes
         # Use the new arc_return mechanism for all modes - creates a curved return path
         self.state.arc_return_active = True
@@ -425,10 +486,10 @@ class StrokeMapper:
     def _send_return_stroke(self, duration_ms: int, alpha: float, beta: float):
         """Send the return stroke to opposite position (called by timer)"""
         if self.send_callback:
-            fade = getattr(self, '_fade_intensity', 1.0)
-            volume = self.get_volume() * fade
+            # Apply fade-out to return strokes
+            volume = self.get_volume() * self._fade_intensity
             cmd = TCodeCommand(alpha, beta, duration_ms, volume)
-            print(f"[StrokeMapper] RETURN stroke a={alpha:.2f} b={beta:.2f} dur={duration_ms}ms")
+            log_event("INFO", "StrokeMapper", "Return stroke", alpha=f"{alpha:.2f}", beta=f"{beta:.2f}", duration_ms=duration_ms, fade=f"{self._fade_intensity:.2f}")
             self.send_callback(cmd)
             self.state.alpha = alpha
             self.state.beta = beta
@@ -437,7 +498,15 @@ class StrokeMapper:
         """Calculate target position based on stroke mode"""
         mode = self.config.stroke.mode
         # Debug print to confirm mode switching and parameters
-        print(f"[StrokeMapper] _get_stroke_target: mode={mode.name} stroke_len={stroke_len:.3f} depth={depth:.3f} intensity={event.intensity:.3f}")
+        log_event(
+            "INFO",
+            "StrokeMapper",
+            "Compute stroke target",
+            mode=mode.name,
+            stroke_len=f"{stroke_len:.3f}",
+            depth=f"{depth:.3f}",
+            intensity=f"{event.intensity:.3f}"
+        )
         # Get axis weights (used differently per mode)
         alpha_weight = self.config.alpha_weight  # 0-2 range
         beta_weight = self.config.beta_weight    # 0-2 range
@@ -618,7 +687,7 @@ class StrokeMapper:
                 self.state.beta = to_beta
                 # Also reset creep angle to match new position
                 self.state.creep_angle = np.arctan2(to_alpha, to_beta)
-                print(f"[StrokeMapper] Arc return complete, now at ({to_alpha:.2f}, {to_beta:.2f})")
+                log_event("INFO", "StrokeMapper", "Arc return complete", alpha=f"{to_alpha:.2f}", beta=f"{to_beta:.2f}")
         
         # Legacy: Handle smooth spiral return (kept for backward compatibility)
         elif self.spiral_reset_active:
@@ -652,6 +721,36 @@ class StrokeMapper:
             else:
                 self.state.creep_angle = 0.0
                 self.state.creep_reset_active = False
+        
+        # Creep volume lowering: if creep sustained for >2 expected beats, lower volume 3% over 600ms
+        if creep_active:
+            # Get expected beat duration from audio_engine (if available)
+            expected_beat_ms = 500.0  # Default 500ms (~120 BPM)
+            if self.audio_engine and hasattr(self.audio_engine, 'get_tempo_info'):
+                tempo_info = self.audio_engine.get_tempo_info()
+                if tempo_info and tempo_info.get('bpm', 0) > 0:
+                    expected_beat_ms = 60000.0 / tempo_info['bpm']
+            
+            # Track when creep became sustained (after a beat stroke ended)
+            if not self._creep_was_active_last_frame:
+                # Just started creep - reset timer
+                self._creep_sustained_start = now
+                self._creep_volume_factor = 1.0
+            else:
+                # Creep continues - check if sustained for >2 expected beats
+                sustained_ms = (now - self._creep_sustained_start) * 1000.0
+                threshold_ms = expected_beat_ms * 2.0  # 2 expected beats
+                if sustained_ms > threshold_ms:
+                    # Start fading volume down by 3% over 600ms
+                    fade_start_ms = threshold_ms
+                    fade_duration_ms = 600.0
+                    fade_progress = min(1.0, (sustained_ms - fade_start_ms) / fade_duration_ms)
+                    self._creep_volume_factor = 1.0 - (0.03 * fade_progress)  # 3% reduction at full fade
+            self._creep_was_active_last_frame = True
+        else:
+            # Creep not active - reset
+            self._creep_was_active_last_frame = False
+            self._creep_volume_factor = 1.0
         
         # Creep: slowly rotate around outer edge of circle (works independently of jitter)
         if creep_active:
@@ -729,9 +828,10 @@ class StrokeMapper:
         self.state.beta = beta_target
         self.state.last_stroke_time = now
         
-        # Apply fade intensity
+        # Apply fade intensity and creep volume factor
         fade = getattr(self, '_fade_intensity', 1.0)
-        volume = self.get_volume() * fade
+        creep_vol = getattr(self, '_creep_volume_factor', 1.0)
+        volume = self.get_volume() * fade * creep_vol
         
         return TCodeCommand(alpha_target, beta_target, duration_ms, volume)
     
@@ -783,6 +883,6 @@ if __name__ == "__main__":
         
         cmd = mapper.process_beat(event)
         if cmd:
-            print(f"Beat {i}: {cmd.to_tcode().strip()}")
+            log_event("INFO", "StrokeMapper", "Test beat", index=i, tcode=cmd.to_tcode().strip())
         
         time.sleep(0.2)

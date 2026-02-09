@@ -2,7 +2,7 @@
 # All default values and constants
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Dict, Literal
 from enum import IntEnum
 
 class StrokeMode(IntEnum):
@@ -64,6 +64,11 @@ class StrokeConfig:
     # High flux (>=threshold): full strokes on every beat
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
+    # Silence detection thresholds (fade-out when truly silent)
+    silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
+    silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
+    silence_multiplier_locked: bool = True  # Lock sliders on startup
+
     # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
     phase_advance: float = 0.25
 
@@ -121,6 +126,16 @@ class AutoAdjustConfig:
     threshold_sec: float = 0.43       # Beat interval threshold in seconds
     cooldown_sec: float = 0.10        # Cooldown between adjustments
     consec_beats: int = 8             # Consecutive beats required to lock
+    auto_range_enabled: bool = False  # Global auto-range toggle persistence
+    enabled_params: Dict[str, bool] = field(default_factory=lambda: {
+        'audio_amp': False,
+        'peak_floor': False,
+        'peak_decay': False,
+        'rise_sens': False,
+        'sensitivity': False,
+        'flux_mult': False,
+    })
+    auto_freq_enabled: bool = False   # Persist auto-frequency tracking toggle
 
 @dataclass
 class AudioConfig:
@@ -158,7 +173,27 @@ class Config:
     alpha_weight: float = 1.0         # Per-axis mix for alpha
     beta_weight: float = 1.0          # Per-axis mix for beta
     volume: float = 1.0               # Output volume (0.0-1.0)
+    log_level: str = "INFO"           # Logging level (DEBUG/INFO/WARNING/ERROR)
 
 
 # Default config instance
 DEFAULT_CONFIG = Config()
+
+# Centralized parameter defaults/ranges (reference only; wiring remains in main.py widgets)
+BEAT_RESET_DEFAULTS = {
+    'audio_amp': 0.15,
+    'peak_floor': 0.08,
+    'peak_decay': 0.999,
+    'rise_sens': 0.02,
+    'sensitivity': 0.1,
+    'flux_mult': 0.2,
+}
+
+BEAT_RANGE_LIMITS = {
+    'audio_amp': (0.15, 10.0),
+    'peak_floor': (0.015, 0.28),
+    'peak_decay': (0.230, 0.999),
+    'rise_sens': (0.02, 1.0),
+    'sensitivity': (0.01, 1.0),
+    'flux_mult': (0.2, 10.0),
+}

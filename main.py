@@ -5,6 +5,7 @@ Qt GUI with beat detection, stroke mapping, and spectrum visualization.
 
 # Heavy imports - these are the slow ones, but splash is already showing by this point
 import sys
+from contextlib import contextmanager
 import time
 
 _import_t0 = time.perf_counter()
@@ -15,6 +16,7 @@ import queue
 import threading
 import json
 import os
+import random
 from pathlib import Path
 from dataclasses import asdict
 
@@ -23,7 +25,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QCheckBox,
     QSpinBox, QDoubleSpinBox, QLineEdit, QTabWidget, QFrame,
     QGridLayout, QSizePolicy, QMenuBar, QMenu, QMessageBox, QFileDialog,
-    QSplashScreen
+    QSplashScreen, QScrollArea
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRect
 from PyQt6.QtGui import QFont, QPalette, QColor, QPainter, QBrush, QPen, QPixmap
@@ -33,7 +35,14 @@ from typing import Optional
 import pyqtgraph as pg
 pg.setConfigOptions(antialias=False, useOpenGL=False)  # Disable for compatibility
 
-from config import Config, StrokeMode, BeatDetectionType
+from config import (
+    BEAT_RANGE_LIMITS,
+    BEAT_RESET_DEFAULTS,
+    BeatDetectionType,
+    Config,
+    StrokeMode,
+)
+from logging_utils import get_log_level, set_log_level
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from stroke_mapper import StrokeMapper
@@ -268,6 +277,43 @@ class SpectrumCanvas(pg.PlotWidget):
         self.sample_rate = 44100  # Will be updated
         self._updating = False  # Prevent recursion when setting bands
         
+        # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
+        # Positioned at negative X to be off to the left of main display
+        bar_width = 3.0  # Width of each bar (larger for waterfall scale)
+        bar_spacing = 0.5  # Gap between bars
+        bar_x_start = -12.0  # Start position (leftmost bar)
+        
+        # Bar 1: Actual Peak (green)
+        self.peak_actual_bar = pg.BarGraphItem(
+            x=[bar_x_start],
+            height=[0],
+            width=bar_width,
+            brush='#00FF00'
+        )
+        self.addItem(self.peak_actual_bar)
+        
+        # Bar 2: Peak Floor (yellow)
+        self.peak_floor_bar = pg.BarGraphItem(
+            x=[bar_x_start + bar_width + bar_spacing],
+            height=[0],
+            width=bar_width,
+            brush='#FFD700'
+        )
+        self.addItem(self.peak_floor_bar)
+        
+        # Bar 3: Peak Decay (orange)
+        self.peak_decay_bar = pg.BarGraphItem(
+            x=[bar_x_start + 2 * (bar_width + bar_spacing)],
+            height=[0],
+            width=bar_width,
+            brush='#FF8C00'
+        )
+        self.addItem(self.peak_decay_bar)
+        
+        # Store bar positions
+        self._bar_width = bar_width
+        self._bar_scale = self.history_len  # Scale heights to match Y range
+        
     def _hz_to_bin(self, hz: float) -> float:
         """Convert Hz to bin index (0 to num_bins)"""
         nyquist = self.sample_rate / 2
@@ -389,8 +435,20 @@ class SpectrumCanvas(pg.PlotWidget):
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Compatibility stub - waterfall doesn't use these lines"""
-        pass
+        """Update peak indicator bars - actual peak and peak decay"""
+        if hasattr(self, 'peak_actual_bar'):
+            # Scale to waterfall Y range (0 to history_len)
+            scale = getattr(self, '_bar_scale', self.history_len)
+            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value) * scale])
+        if hasattr(self, 'peak_decay_bar'):
+            scale = getattr(self, '_bar_scale', self.history_len)
+            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value) * scale])
+    
+    def set_peak_floor(self, peak_floor: float):
+        """Update peak floor bar height"""
+        if hasattr(self, 'peak_floor_bar'):
+            scale = getattr(self, '_bar_scale', self.history_len)
+            self.peak_floor_bar.setOpts(height=[peak_floor * scale])
     
     def set_indicators_visible(self, visible: bool):
         """Show or hide all frequency band indicators and labels"""
@@ -402,6 +460,13 @@ class SpectrumCanvas(pg.PlotWidget):
         self.depth_label.setVisible(visible)
         self.pulse_label.setVisible(visible)
         self.carrier_label.setVisible(visible)
+        # Also hide peak indicator bars when hiding indicators
+        if hasattr(self, 'peak_actual_bar'):
+            self.peak_actual_bar.setVisible(visible)
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setVisible(visible)
+        if hasattr(self, 'peak_decay_bar'):
+            self.peak_decay_bar.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update waterfall with new spectrum data - scrolls upward with rainbow frequency colors"""
@@ -457,6 +522,10 @@ class SpectrumCanvas(pg.PlotWidget):
         self.img_item.setImage(rgb_data.transpose(1, 0, 2), autoLevels=False)
         # Position image to fill the view exactly (must be after setImage)
         self.img_item.setRect(0, 0, self.num_bins, self.history_len)
+        
+        # Update peak indicator bars with current peak energy
+        if peak_energy is not None:
+            self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
 
 
 class MountainRangeCanvas(pg.PlotWidget):
@@ -569,6 +638,45 @@ class MountainRangeCanvas(pg.PlotWidget):
         self.sample_rate = 44100
         self._updating = False
         
+        # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
+        # These are positioned at negative X to be off to the left of the main spectrum display
+        bar_width = 1.2  # Width of each bar
+        bar_spacing = 0.3  # Gap between bars
+        bar_x_start = -6.0  # Start position (leftmost bar)
+        
+        # Bar 1: Actual Peak (green) - current band energy level
+        self.peak_actual_bar = pg.BarGraphItem(
+            x=[bar_x_start],
+            height=[0],
+            width=bar_width,
+            brush='#00FF00'  # Green
+        )
+        self.addItem(self.peak_actual_bar)
+        
+        # Bar 2: Peak Floor (yellow) - threshold setting
+        self.peak_floor_bar = pg.BarGraphItem(
+            x=[bar_x_start + bar_width + bar_spacing],
+            height=[0],
+            width=bar_width,
+            brush='#FFD700'  # Gold/Yellow
+        )
+        self.addItem(self.peak_floor_bar)
+        
+        # Bar 3: Peak Decay (orange) - decayed peak tracker
+        self.peak_decay_bar = pg.BarGraphItem(
+            x=[bar_x_start + 2 * (bar_width + bar_spacing)],
+            height=[0],
+            width=bar_width,
+            brush='#FF8C00'  # Dark orange
+        )
+        self.addItem(self.peak_decay_bar)
+        
+        # Store bar x positions for updates
+        self._bar_x_actual = bar_x_start
+        self._bar_x_floor = bar_x_start + bar_width + bar_spacing
+        self._bar_x_decay = bar_x_start + 2 * (bar_width + bar_spacing)
+        self._bar_width = bar_width
+        
         # Smoothing buffer for smoother animation
         self._smooth_spectrum = np.zeros(self.num_bins)
         self._smoothing = 0.3  # 0 = no smoothing, 1 = max smoothing
@@ -679,8 +787,19 @@ class MountainRangeCanvas(pg.PlotWidget):
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Not used in mountain view"""
-        pass
+        """Update peak indicator bars - actual peak and peak decay (tracked peak)"""
+        if hasattr(self, 'peak_actual_bar'):
+            # Update actual peak bar (green) - current band energy level
+            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value)])
+        if hasattr(self, 'peak_decay_bar'):
+            # Update peak decay bar (orange) - this shows the decayed/tracked peak
+            # flux_value here represents the tracked/decayed peak from audio engine
+            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value)])
+    
+    def set_peak_floor(self, peak_floor: float):
+        """Update peak floor bar height"""
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setOpts(height=[peak_floor])
     
     def set_indicators_visible(self, visible: bool):
         """Show or hide all frequency band indicators and labels"""
@@ -692,6 +811,13 @@ class MountainRangeCanvas(pg.PlotWidget):
         self.depth_label.setVisible(visible)
         self.pulse_label.setVisible(visible)
         self.carrier_label.setVisible(visible)
+        # Also hide peak indicator bars when hiding indicators
+        if hasattr(self, 'peak_actual_bar'):
+            self.peak_actual_bar.setVisible(visible)
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setVisible(visible)
+        if hasattr(self, 'peak_decay_bar'):
+            self.peak_decay_bar.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update mountain range with new spectrum data"""
@@ -755,6 +881,10 @@ class MountainRangeCanvas(pg.PlotWidget):
                 self.peak_scatter.setData([], [])
         else:
             self.peak_scatter.setData([], [])
+        
+        # Update peak tracker line with current peak energy
+        if peak_energy is not None:
+            self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
 
 
 class BarGraphCanvas(pg.PlotWidget):
@@ -858,6 +988,38 @@ class BarGraphCanvas(pg.PlotWidget):
         # Smoothing buffer
         self._smooth_heights = np.zeros(self.num_bars)
         self._smoothing = 0.4
+        
+        # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
+        bar_width = 1.0  # Width of each bar
+        bar_spacing = 0.3  # Gap between bars
+        bar_x_start = -5.0  # Start position (leftmost bar)
+        
+        # Bar 1: Actual Peak (green)
+        self.peak_actual_bar = pg.BarGraphItem(
+            x=[bar_x_start],
+            height=[0],
+            width=bar_width,
+            brush='#00FF00'
+        )
+        self.addItem(self.peak_actual_bar)
+        
+        # Bar 2: Peak Floor (yellow)
+        self.peak_floor_bar = pg.BarGraphItem(
+            x=[bar_x_start + bar_width + bar_spacing],
+            height=[0],
+            width=bar_width,
+            brush='#FFD700'
+        )
+        self.addItem(self.peak_floor_bar)
+        
+        # Bar 3: Peak Decay (orange)
+        self.peak_decay_bar = pg.BarGraphItem(
+            x=[bar_x_start + 2 * (bar_width + bar_spacing)],
+            height=[0],
+            width=bar_width,
+            brush='#FF8C00'
+        )
+        self.addItem(self.peak_decay_bar)
         
     def _hz_to_bin(self, hz: float) -> float:
         """Convert Hz to bar index"""
@@ -965,8 +1127,16 @@ class BarGraphCanvas(pg.PlotWidget):
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Not used in bar view"""
-        pass
+        """Update peak indicator bars - actual peak and peak decay"""
+        if hasattr(self, 'peak_actual_bar'):
+            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value)])
+        if hasattr(self, 'peak_decay_bar'):
+            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value)])
+    
+    def set_peak_floor(self, peak_floor: float):
+        """Update peak floor bar height"""
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setOpts(height=[peak_floor])
     
     def set_indicators_visible(self, visible: bool):
         """Show or hide all frequency band indicators and labels"""
@@ -978,6 +1148,13 @@ class BarGraphCanvas(pg.PlotWidget):
         self.depth_label.setVisible(visible)
         self.pulse_label.setVisible(visible)
         self.carrier_label.setVisible(visible)
+        # Also hide peak indicator bars when hiding indicators
+        if hasattr(self, 'peak_actual_bar'):
+            self.peak_actual_bar.setVisible(visible)
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setVisible(visible)
+        if hasattr(self, 'peak_decay_bar'):
+            self.peak_decay_bar.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update bars with new spectrum data"""
@@ -1005,6 +1182,10 @@ class BarGraphCanvas(pg.PlotWidget):
         
         # Update bar heights
         self.bar_item.setOpts(height=self._smooth_heights)
+        
+        # Update peak indicator bars with current peak energy
+        if peak_energy is not None:
+            self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
 
 
 class PhosphorCanvas(pg.PlotWidget):
@@ -1114,6 +1295,41 @@ class PhosphorCanvas(pg.PlotWidget):
         self.sample_rate = 44100
         self._updating = False
         
+        # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
+        bar_width = 3.0  # Width of each bar (larger for phosphor scale)
+        bar_spacing = 0.5  # Gap between bars
+        bar_x_start = -12.0  # Start position (leftmost bar)
+        
+        # Bar 1: Actual Peak (green)
+        self.peak_actual_bar = pg.BarGraphItem(
+            x=[bar_x_start],
+            height=[0],
+            width=bar_width,
+            brush='#00FF00'
+        )
+        self.addItem(self.peak_actual_bar)
+        
+        # Bar 2: Peak Floor (yellow)
+        self.peak_floor_bar = pg.BarGraphItem(
+            x=[bar_x_start + bar_width + bar_spacing],
+            height=[0],
+            width=bar_width,
+            brush='#FFD700'
+        )
+        self.addItem(self.peak_floor_bar)
+        
+        # Bar 3: Peak Decay (orange)
+        self.peak_decay_bar = pg.BarGraphItem(
+            x=[bar_x_start + 2 * (bar_width + bar_spacing)],
+            height=[0],
+            width=bar_width,
+            brush='#FF8C00'
+        )
+        self.addItem(self.peak_decay_bar)
+        
+        # Store scale for Y axis
+        self._bar_scale = self.num_mag_levels
+        
     def _hz_to_bin(self, hz: float) -> float:
         nyquist = self.sample_rate / 2
         return (hz / nyquist) * self.num_bins
@@ -1218,7 +1434,19 @@ class PhosphorCanvas(pg.PlotWidget):
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        pass
+        """Update peak indicator bars - actual peak and peak decay"""
+        if hasattr(self, 'peak_actual_bar'):
+            scale = getattr(self, '_bar_scale', self.num_mag_levels)
+            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value) * scale])
+        if hasattr(self, 'peak_decay_bar'):
+            scale = getattr(self, '_bar_scale', self.num_mag_levels)
+            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value) * scale])
+    
+    def set_peak_floor(self, peak_floor: float):
+        """Update peak floor bar height"""
+        if hasattr(self, 'peak_floor_bar'):
+            scale = getattr(self, '_bar_scale', self.num_mag_levels)
+            self.peak_floor_bar.setOpts(height=[peak_floor * scale])
     
     def set_indicators_visible(self, visible: bool):
         """Show or hide all frequency band indicators and labels"""
@@ -1230,6 +1458,13 @@ class PhosphorCanvas(pg.PlotWidget):
         self.depth_label.setVisible(visible)
         self.pulse_label.setVisible(visible)
         self.carrier_label.setVisible(visible)
+        # Also hide peak indicator bars when hiding indicators
+        if hasattr(self, 'peak_actual_bar'):
+            self.peak_actual_bar.setVisible(visible)
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setVisible(visible)
+        if hasattr(self, 'peak_decay_bar'):
+            self.peak_decay_bar.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update phosphor display with new spectrum - accumulate hits with decay"""
@@ -1268,6 +1503,10 @@ class PhosphorCanvas(pg.PlotWidget):
         # Update image (transpose for correct orientation)
         self.img_item.setImage(display_data.T, autoLevels=False, levels=(0, 1))
         self.img_item.setRect(0, 0, self.num_bins, self.num_mag_levels)
+        
+        # Update peak indicator bars with current peak energy
+        if peak_energy is not None:
+            self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
 
 
 def launch_projectm():
@@ -1725,6 +1964,20 @@ class TrafficLightWidget(QWidget):
         painter.end()
 
 
+class NoWheelScrollArea(QScrollArea):
+    """
+    Custom QScrollArea that ignores mouse wheel events.
+    Prevents scroll interference when adjusting parameter sliders.
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+    
+    def wheelEvent(self, event):
+        # Ignore wheel events - do not scroll the container
+        event.ignore()
+
+
 class BREadbeatsWindow(QMainWindow):
     """Main application window"""
     
@@ -1761,6 +2014,8 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
+        # Apply persisted log level early so downstream modules inherit
+        set_log_level(getattr(self.config, 'log_level', 'INFO'))
         self.signals = SignalBridge()
         
         # Command queue
@@ -1773,13 +2028,25 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize _auto_param_config BEFORE _setup_ui so spinbox signals can access it
         self._auto_param_config: dict = {
-            'sensitivity': (0.008, 1.0),     # 75% impact - small steps
-            'audio_amp': (0.04, 5.0),        # 75% impact - no limit when hunting
-            'flux_mult': (0.015, 5.0),       # 40% impact
-            'rise_sens': (0.008, 1.0),       # 30% impact
-            'peak_floor': (0.004, 0.0),      # 15% impact
-            'peak_decay': (0.002, 0.5),      # 10% impact
+            'sensitivity': (0.008, BEAT_RANGE_LIMITS['sensitivity'][1]),  # 75% impact - small steps
+            'audio_amp': (0.04, BEAT_RANGE_LIMITS['audio_amp'][1]),       # 75% impact - no limit when hunting
+            'flux_mult': (0.015, BEAT_RANGE_LIMITS['flux_mult'][1]),      # 40% impact
+            'rise_sens': (0.008, BEAT_RANGE_LIMITS['rise_sens'][1]),      # 30% impact
+            'peak_floor': (0.004, BEAT_RANGE_LIMITS['peak_floor'][1]),    # 15% impact
+            'peak_decay': (0.002, BEAT_RANGE_LIMITS['peak_decay'][1]),    # 10% impact
         }
+
+        # Persisted auto-adjust toggle state is needed before applying config to UI
+        enabled_cfg = getattr(self.config.auto_adjust, 'enabled_params', {}) or {}
+        self._auto_adjust_enabled: dict = {
+            'audio_amp': enabled_cfg.get('audio_amp', False),
+            'peak_floor': enabled_cfg.get('peak_floor', False),
+            'peak_decay': enabled_cfg.get('peak_decay', False),
+            'rise_sens': enabled_cfg.get('rise_sens', False),
+            'sensitivity': enabled_cfg.get('sensitivity', False),
+            'flux_mult': enabled_cfg.get('flux_mult', False),
+        }
+        self._auto_freq_enabled: bool = bool(getattr(self.config.auto_adjust, 'auto_freq_enabled', False))
         
         # Setup UI
         self._setup_ui()
@@ -1828,11 +2095,16 @@ class BREadbeatsWindow(QMainWindow):
         
         # P0/F0 sliding window averaging (250ms window for smoother, more readable signal)
         from collections import deque
+        import random
         self._p0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
         self._f0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
         self._freq_window_ms: float = 250.0  # Window size in milliseconds
         self._p0_last_send_time: float = 0.0  # For throttling P0 sends
         self._f0_last_send_time: float = 0.0  # For throttling F0 sends
+        self._f0_last_sent_tcode: Optional[int] = None  # Last F0 tcode value sent (for smoothing)
+        self._f0_duration_base_ms: float = 900.0  # Base F0 duration (ms)
+        self._f0_duration_variance_ms: float = 200.0  # ±variance for random duration
+        self._f0_max_change_per_send: int = 300  # Max ±300 tcode change per send
         self._last_freq_display_time: float = 0.0  # Throttle freq display updates to 100ms
         self._last_dot_alpha: float = 0.0
         self._last_dot_beta: float = 0.0
@@ -1845,15 +2117,7 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_to: float = 1.0
         self._volume_ramp_duration: float = 0.8  # 800ms
         
-        # Auto beat detection adjustment state
-        self._auto_adjust_enabled: dict = {
-            'audio_amp': False,
-            'peak_floor': False,
-            'peak_decay': False,
-            'rise_sens': False,
-            'sensitivity': False,
-            'flux_mult': False
-        }
+        # Auto beat detection adjustment state (persisted)
         self._last_beat_time_for_auto: float = 0.0  # Track last beat for auto-adjust
         self._auto_adjust_timer: Optional[QTimer] = None
         self._auto_adjust_interval_ms: int = 100  # Timer tick rate (just checks if cooldown elapsed)
@@ -1905,7 +2169,6 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_consec_beat_threshold: int = 8  # Consecutive beats in range required to lock
         
         # Auto-frequency band tracking (experimental)
-        self._auto_freq_enabled: bool = False  # Whether frequency band auto-ranging is enabled
         self._auto_freq_width: float = 300.0  # Width of frequency band to search (Hz)
         self._auto_freq_speed: float = 0.1  # Speed of frequency band adjustment (0.0-1.0, higher=faster)
         self._auto_freq_min: float = 30.0  # Minimum frequency to search (Hz)
@@ -2326,6 +2589,18 @@ class BREadbeatsWindow(QMainWindow):
         connection_action = options_menu.addAction("Connection...")
         assert connection_action is not None
         connection_action.triggered.connect(self._on_options_connection)
+
+        # Log level submenu
+        log_menu = options_menu.addMenu("Log Level")
+        assert log_menu is not None
+        self._log_level_actions = []
+        for level in ["DEBUG", "INFO", "WARNING", "ERROR"]:
+            action = log_menu.addAction(level)
+            assert action is not None
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked, lvl=level: self._on_log_level_change(lvl))
+            self._log_level_actions.append(action)
+        self._sync_log_level_menu(getattr(self.config, 'log_level', 'INFO'))
     
     def _on_options_audio_device(self):
         """Show Audio Device selection dialog"""
@@ -2605,6 +2880,8 @@ class BREadbeatsWindow(QMainWindow):
             self.global_auto_range_cb.blockSignals(True)
             self.global_auto_range_cb.setChecked(enable)
             self.global_auto_range_cb.blockSignals(False)
+        if hasattr(self.config, 'auto_adjust'):
+            self.config.auto_adjust.auto_range_enabled = enable
     
     def _on_load_presets(self):
         """Open file dialog to load a presets .json file"""
@@ -2677,6 +2954,36 @@ class BREadbeatsWindow(QMainWindow):
     def _on_menu_spectrum_change(self, index: int):
         """Handle spectrum update rate change from menu"""
         self._on_spectrum_skip_change(index)
+
+    def _on_log_level_change(self, level: str):
+        """Set global log level and persist selection."""
+        set_log_level(level)
+        self.config.log_level = level.upper()
+        self._sync_log_level_menu(self.config.log_level)
+
+    def _sync_log_level_menu(self, active_level: str):
+        """Update log level menu checkmarks."""
+        if not hasattr(self, '_log_level_actions'):
+            return
+        lvl_upper = (active_level or "INFO").upper()
+        for action in self._log_level_actions:
+            action.blockSignals(True)
+            action.setChecked(action.text().upper() == lvl_upper)
+            action.blockSignals(False)
+
+    @contextmanager
+    def _signals_blocked(self, *widgets):
+        """Temporarily block signals on provided widgets."""
+        blocked = []
+        for w in widgets:
+            if w is not None and hasattr(w, 'blockSignals'):
+                w.blockSignals(True)
+                blocked.append(w)
+        try:
+            yield
+        finally:
+            for w in blocked:
+                w.blockSignals(False)
     
     def _on_about(self):
         """Show About dialog"""
@@ -2696,95 +3003,180 @@ bREadfan_69@hotmail.com"""
     def _apply_config_to_ui(self):
         """Apply loaded config values to UI sliders"""
         try:
-            # Beat detection tab
-            self.detection_type_combo.setCurrentIndex(self.config.beat.detection_type - 1)
-            self.sensitivity_slider.setValue(self.config.beat.sensitivity)
-            self.peak_floor_slider.setValue(self.config.beat.peak_floor)
-            self.peak_decay_slider.setValue(self.config.beat.peak_decay)
-            self.rise_sens_slider.setValue(self.config.beat.rise_sensitivity)
-            self.flux_mult_slider.setValue(self.config.beat.flux_multiplier)
-            self.audio_gain_slider.setValue(self.config.audio.gain)
-            self.silence_reset_slider.setValue(self.config.beat.silence_reset_ms)
-            self.freq_range_slider.setLow(self.config.beat.freq_low)
-            self.freq_range_slider.setHigh(self.config.beat.freq_high)
-            
+            beats_to_index = {4: 0, 3: 1, 6: 2}
+            with self._signals_blocked(
+                self.detection_type_combo,
+                self.sensitivity_slider,
+                self.peak_floor_slider,
+                self.peak_decay_slider,
+                self.rise_sens_slider,
+                self.flux_mult_slider,
+                self.audio_gain_slider,
+                self.silence_reset_slider,
+                self.freq_range_slider,
+                getattr(self, 'global_auto_range_cb', None),
+                getattr(self, 'audio_gain_auto_cb', None),
+                getattr(self, 'peak_floor_auto_cb', None),
+                getattr(self, 'peak_decay_auto_cb', None),
+                getattr(self, 'rise_sens_auto_cb', None),
+                getattr(self, 'sensitivity_auto_cb', None),
+                getattr(self, 'flux_mult_auto_cb', None),
+                getattr(self, 'auto_freq_cb', None),
+                self.tempo_tracking_checkbox,
+                self.time_sig_combo,
+                self.stability_threshold_slider,
+                self.tempo_timeout_slider,
+                self.phase_snap_slider,
+                self.mode_combo,
+                self.stroke_range_slider,
+                self.min_interval_slider,
+                self.fullness_slider,
+                self.min_depth_slider,
+                self.freq_depth_slider,
+                self.depth_freq_range_slider,
+                self.flux_threshold_slider,
+                self.flux_scaling_slider,
+                self.phase_advance_slider,
+                self.jitter_enabled,
+                self.jitter_amplitude_slider,
+                self.jitter_intensity_slider,
+                self.creep_enabled,
+                self.creep_speed_slider,
+                self.alpha_weight_slider,
+                self.beta_weight_slider,
+                self.host_edit,
+                self.port_spin,
+                self.pulse_freq_range_slider,
+                self.tcode_freq_range_slider,
+                self.freq_weight_slider,
+                self.f0_freq_range_slider,
+                self.f0_tcode_range_slider,
+                self.f0_weight_slider,
+                self.volume_slider,
+                getattr(self, 'sensitivity_step_spin', None),
+                getattr(self, 'peak_floor_step_spin', None),
+                getattr(self, 'peak_decay_step_spin', None),
+                getattr(self, 'rise_sens_step_spin', None),
+                getattr(self, 'flux_mult_step_spin', None),
+                getattr(self, 'audio_amp_step_spin', None),
+                getattr(self, 'auto_threshold_spin', None),
+                getattr(self, 'auto_cooldown_spin', None),
+                getattr(self, 'auto_consec_beats_spin', None),
+            ):
+                # Beat detection tab
+                self.detection_type_combo.setCurrentIndex(self.config.beat.detection_type - 1)
+                self.sensitivity_slider.setValue(self.config.beat.sensitivity)
+                self.peak_floor_slider.setValue(self.config.beat.peak_floor)
+                self.peak_decay_slider.setValue(self.config.beat.peak_decay)
+                self.rise_sens_slider.setValue(self.config.beat.rise_sensitivity)
+                self.flux_mult_slider.setValue(self.config.beat.flux_multiplier)
+                self.audio_gain_slider.setValue(self.config.audio.gain)
+                self.silence_reset_slider.setValue(self.config.beat.silence_reset_ms)
+                self.freq_range_slider.setLow(self.config.beat.freq_low)
+                self.freq_range_slider.setHigh(self.config.beat.freq_high)
+
+                # Auto-range toggles (persisted)
+                auto_states = self._auto_adjust_enabled
+                if hasattr(self, 'global_auto_range_cb'):
+                    self.global_auto_range_cb.setChecked(getattr(self.config.auto_adjust, 'auto_range_enabled', False))
+                if hasattr(self, 'audio_gain_auto_cb'):
+                    self.audio_gain_auto_cb.setChecked(auto_states.get('audio_amp', False))
+                if hasattr(self, 'peak_floor_auto_cb'):
+                    self.peak_floor_auto_cb.setChecked(auto_states.get('peak_floor', False))
+                if hasattr(self, 'peak_decay_auto_cb'):
+                    self.peak_decay_auto_cb.setChecked(auto_states.get('peak_decay', False))
+                if hasattr(self, 'rise_sens_auto_cb'):
+                    self.rise_sens_auto_cb.setChecked(auto_states.get('rise_sens', False))
+                if hasattr(self, 'sensitivity_auto_cb'):
+                    self.sensitivity_auto_cb.setChecked(auto_states.get('sensitivity', False))
+                if hasattr(self, 'flux_mult_auto_cb'):
+                    self.flux_mult_auto_cb.setChecked(auto_states.get('flux_mult', False))
+                if hasattr(self, 'auto_freq_cb'):
+                    self.auto_freq_cb.setChecked(getattr(self.config.auto_adjust, 'auto_freq_enabled', False))
+
+                # Tempo tracking settings
+                self.tempo_tracking_checkbox.setChecked(self.config.beat.tempo_tracking_enabled)
+                self.time_sig_combo.setCurrentIndex(beats_to_index.get(self.config.beat.beats_per_measure, 0))
+                self.stability_threshold_slider.setValue(self.config.beat.stability_threshold)
+                self.tempo_timeout_slider.setValue(self.config.beat.tempo_timeout_ms)
+                self.phase_snap_slider.setValue(self.config.beat.phase_snap_weight)
+                self.mode_combo.setCurrentIndex(self.config.stroke.mode - 1)
+                self.stroke_range_slider.setLow(self.config.stroke.stroke_min)
+                self.stroke_range_slider.setHigh(self.config.stroke.stroke_max)
+                self.min_interval_slider.setValue(self.config.stroke.min_interval_ms)
+                self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
+                self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
+                self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
+                self.depth_freq_range_slider.setLow(int(self.config.stroke.depth_freq_low))
+                self.depth_freq_range_slider.setHigh(int(self.config.stroke.depth_freq_high))
+                self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
+                self.flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
+                self.phase_advance_slider.setValue(self.config.stroke.phase_advance)
+
+                # Jitter/Creep tab
+                self.jitter_enabled.setChecked(self.config.jitter.enabled)
+                self.jitter_amplitude_slider.setValue(self.config.jitter.amplitude)
+                self.jitter_intensity_slider.setValue(self.config.jitter.intensity)
+                self.creep_enabled.setChecked(self.config.creep.enabled)
+                self.creep_speed_slider.setValue(self.config.creep.speed)
+
+                # Axis weights tab
+                self.alpha_weight_slider.setValue(self.config.alpha_weight)
+                self.beta_weight_slider.setValue(self.config.beta_weight)
+
+                # Connection settings
+                self.host_edit.setText(self.config.connection.host)
+                self.port_spin.setValue(self.config.connection.port)
+
+                # Other tab (pulse freq settings)
+                self.pulse_freq_range_slider.setLow(self.config.pulse_freq.monitor_freq_min)
+                self.pulse_freq_range_slider.setHigh(self.config.pulse_freq.monitor_freq_max)
+                self.tcode_freq_range_slider.setLow(self.config.pulse_freq.tcode_freq_min)
+                self.tcode_freq_range_slider.setHigh(self.config.pulse_freq.tcode_freq_max)
+                self.freq_weight_slider.setValue(self.config.pulse_freq.freq_weight)
+
+                # Carrier freq (F0) settings
+                self.f0_freq_range_slider.setLow(self.config.carrier_freq.monitor_freq_min)
+                self.f0_freq_range_slider.setHigh(self.config.carrier_freq.monitor_freq_max)
+                self.f0_tcode_range_slider.setLow(self.config.carrier_freq.tcode_freq_min)
+                self.f0_tcode_range_slider.setHigh(self.config.carrier_freq.tcode_freq_max)
+                self.f0_weight_slider.setValue(self.config.carrier_freq.freq_weight)
+
+                # Volume (config stores 0-1, slider shows 0-100)
+                self.volume_slider.setValue(int(self.config.volume * 100))
+
+                # Auto-adjust step sizes and settings
+                if hasattr(self.config, 'auto_adjust'):
+                    self.sensitivity_step_spin.setValue(self.config.auto_adjust.step_sensitivity)
+                    self.peak_floor_step_spin.setValue(self.config.auto_adjust.step_peak_floor)
+                    self.peak_decay_step_spin.setValue(self.config.auto_adjust.step_peak_decay)
+                    self.rise_sens_step_spin.setValue(self.config.auto_adjust.step_rise_sens)
+                    self.flux_mult_step_spin.setValue(self.config.auto_adjust.step_flux_mult)
+                    self.audio_amp_step_spin.setValue(self.config.auto_adjust.step_audio_amp)
+                    self.auto_threshold_spin.setValue(self.config.auto_adjust.threshold_sec)
+                    self.auto_cooldown_spin.setValue(self.config.auto_adjust.cooldown_sec)
+                    self.auto_consec_beats_spin.setValue(self.config.auto_adjust.consec_beats)
+
             # Set spectrum canvas sample rate and update all 3 frequency bands
             self.spectrum_canvas.set_sample_rate(self.config.audio.sample_rate)
             if hasattr(self, 'mountain_canvas'):
                 self.mountain_canvas.set_sample_rate(self.config.audio.sample_rate)
             self._on_freq_band_change()  # Update beat detection band (red)
             
-            # Tempo tracking settings
-            self.tempo_tracking_checkbox.setChecked(self.config.beat.tempo_tracking_enabled)
-            self._on_tempo_tracking_toggle(2 if self.config.beat.tempo_tracking_enabled else 0)
-            beats_to_index = {4: 0, 3: 1, 6: 2}
-            self.time_sig_combo.setCurrentIndex(beats_to_index.get(self.config.beat.beats_per_measure, 0))
-            self.stability_threshold_slider.setValue(self.config.beat.stability_threshold)
-            self.tempo_timeout_slider.setValue(self.config.beat.tempo_timeout_ms)
-            self.phase_snap_slider.setValue(self.config.beat.phase_snap_weight)
-            
-            # Stroke settings tab
-            self.mode_combo.setCurrentIndex(self.config.stroke.mode - 1)
+            # Apply mode-dependent limits after sliders are set
             self._on_mode_change(self.config.stroke.mode - 1)  # Apply axis weight limits for this mode
-            self.stroke_range_slider.setLow(self.config.stroke.stroke_min)
-            self.stroke_range_slider.setHigh(self.config.stroke.stroke_max)
-            self.min_interval_slider.setValue(self.config.stroke.min_interval_ms)
-            self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
-            self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
-            self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
-            self.depth_freq_range_slider.setLow(int(self.config.stroke.depth_freq_low))
-            self.depth_freq_range_slider.setHigh(int(self.config.stroke.depth_freq_high))
             self._on_depth_band_change()  # Update stroke depth band (green)
-            self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
-            self.flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
-            self.phase_advance_slider.setValue(self.config.stroke.phase_advance)
-            
-            # Jitter/Creep tab
-            self.jitter_enabled.setChecked(self.config.jitter.enabled)
-            self.jitter_amplitude_slider.setValue(self.config.jitter.amplitude)
-            self.jitter_intensity_slider.setValue(self.config.jitter.intensity)
-            self.creep_enabled.setChecked(self.config.creep.enabled)
-            self.creep_speed_slider.setValue(self.config.creep.speed)
-            
-            # Axis weights tab
-            self.alpha_weight_slider.setValue(self.config.alpha_weight)
-            self.beta_weight_slider.setValue(self.config.beta_weight)
-            
-            # Connection settings
-            self.host_edit.setText(self.config.connection.host)
-            self.port_spin.setValue(self.config.connection.port)
-            
-            # Other tab (pulse freq settings)
-            self.pulse_freq_range_slider.setLow(self.config.pulse_freq.monitor_freq_min)
-            self.pulse_freq_range_slider.setHigh(self.config.pulse_freq.monitor_freq_max)
             self._on_p0_band_change()  # Update P0 TCode band (blue)
-            self.tcode_freq_range_slider.setLow(self.config.pulse_freq.tcode_freq_min)
-            self.tcode_freq_range_slider.setHigh(self.config.pulse_freq.tcode_freq_max)
-            self.freq_weight_slider.setValue(self.config.pulse_freq.freq_weight)
-            
-            # Carrier freq (F0) settings
-            self.f0_freq_range_slider.setLow(self.config.carrier_freq.monitor_freq_min)
-            self.f0_freq_range_slider.setHigh(self.config.carrier_freq.monitor_freq_max)
             self._on_f0_band_change()  # Update F0 TCode band (cyan)
-            self.f0_tcode_range_slider.setLow(self.config.carrier_freq.tcode_freq_min)
-            self.f0_tcode_range_slider.setHigh(self.config.carrier_freq.tcode_freq_max)
-            self.f0_weight_slider.setValue(self.config.carrier_freq.freq_weight)
-            
-            # Volume
-            self.volume_slider.setValue(self.config.volume)
-            
-            # Auto-adjust step sizes and settings
+
+            # Apply tempo tracking side effects after values are in place
+            self._on_tempo_tracking_toggle(2 if self.config.beat.tempo_tracking_enabled else 0)
+
+            # Log level menu (persisted)
+            self._sync_log_level_menu(getattr(self.config, 'log_level', get_log_level()))
+
+            # Update internal variables tied to spinboxes
             if hasattr(self.config, 'auto_adjust'):
-                self.sensitivity_step_spin.setValue(self.config.auto_adjust.step_sensitivity)
-                self.peak_floor_step_spin.setValue(self.config.auto_adjust.step_peak_floor)
-                self.peak_decay_step_spin.setValue(self.config.auto_adjust.step_peak_decay)
-                self.rise_sens_step_spin.setValue(self.config.auto_adjust.step_rise_sens)
-                self.flux_mult_step_spin.setValue(self.config.auto_adjust.step_flux_mult)
-                self.audio_amp_step_spin.setValue(self.config.auto_adjust.step_audio_amp)
-                self.auto_threshold_spin.setValue(self.config.auto_adjust.threshold_sec)
-                self.auto_cooldown_spin.setValue(self.config.auto_adjust.cooldown_sec)
-                self.auto_consec_beats_spin.setValue(self.config.auto_adjust.consec_beats)
-                # Update internal variables tied to spinboxes
                 self._auto_threshold_sec = self.config.auto_adjust.threshold_sec
                 self._auto_cooldown_sec = self.config.auto_adjust.cooldown_sec
                 self._auto_consec_beat_threshold = self.config.auto_adjust.consec_beats
@@ -2866,8 +3258,8 @@ bREadfan_69@hotmail.com"""
         self.play_btn.setFixedSize(100, 40)
         btn_layout.addWidget(self.play_btn, 0, 1)
         
-        # Volume slider (0.0 - 1.0) - uses compact label for control panel
-        self.volume_slider = SliderWithLabel("Vol", 0.0, 1.0, 1.0, decimals=2)
+        # Volume slider (0 - 100) - uses compact label for control panel
+        self.volume_slider = SliderWithLabel("Vol", 0, 100, 100, decimals=0)
         self.volume_slider.label.setFixedWidth(30)  # Compact label for controls box
         self.volume_slider.setFixedWidth(180)
         self.volume_slider.setContentsMargins(0, 0, 0, 0)
@@ -3470,21 +3862,25 @@ bREadfan_69@hotmail.com"""
         """Toggle auto-adjustment for a beat detection parameter"""
         enabled = state == 2
         self._auto_adjust_enabled[param] = enabled
-        # Reset this param's lock state when re-enabled so it starts hunting fresh
+        # Persist per-parameter auto state
+        if hasattr(self.config, 'auto_adjust') and hasattr(self.config.auto_adjust, 'enabled_params'):
+            self.config.auto_adjust.enabled_params[param] = enabled
+        
+        # ALWAYS release locks when toggled (both on and off)
+        # This ensures a fresh start when re-enabling
+        self._auto_param_state[param] = 'HUNTING'
+        if param == 'flux_mult':
+            self._auto_flux_lock_count = 0
+        # Reset downbeat counter for this param
+        if param in self._auto_consecutive_downbeats:
+            self._auto_consecutive_downbeats[param] = 0
+        # Reset beat counter for this param
+        if hasattr(self, '_auto_consecutive_beat_count') and param in self._auto_consecutive_beat_count:
+            self._auto_consecutive_beat_count[param] = 0
+        
         if enabled:
-            self._auto_param_state[param] = 'HUNTING'
-            if param == 'flux_mult':
-                self._auto_flux_lock_count = 0
-            # Reset downbeat counter for this param
-            if param in self._auto_consecutive_downbeats:
-                self._auto_consecutive_downbeats[param] = 0
-            # Set slider to reset value when enabling auto
-            # Inverted params (peak_floor, peak_decay, audio_amp) reset to MAX/hunting value (hunting lowers them)
-            # Normal params (rise_sens, sensitivity, flux_mult) reset to MIN (hunting raises them)
-            reset_values = {
-                'audio_amp': 0.15, 'peak_floor': 0.14, 'peak_decay': 0.999,
-                'rise_sens': 0.02, 'sensitivity': 0.1, 'flux_mult': 0.2
-            }
+            # Set slider to reset value when enabling auto (single source of truth)
+            reset_values = BEAT_RESET_DEFAULTS
             sliders = {
                 'audio_amp': self.audio_gain_slider, 'peak_floor': self.peak_floor_slider,
                 'peak_decay': self.peak_decay_slider, 'rise_sens': self.rise_sens_slider,
@@ -3493,7 +3889,8 @@ bREadfan_69@hotmail.com"""
             if param in sliders and param in reset_values:
                 sliders[param].setValue(reset_values[param])
                 print(f"[Auto] {param} slider set to reset value {reset_values[param]}")
-        print(f"[Auto] {param} auto-adjust {'enabled' if enabled else 'disabled'}")
+        
+        print(f"[Auto] {param} auto-adjust {'enabled' if enabled else 'disabled'} (lock released)")
         
         # Start/stop auto-adjust timer based on whether any auto is enabled (including auto-freq)
         any_enabled = any(self._auto_adjust_enabled.values()) or self._auto_freq_enabled
@@ -3524,6 +3921,8 @@ bREadfan_69@hotmail.com"""
         """Toggle auto-frequency band tracking"""
         enabled = (state == 2)
         self._auto_freq_enabled = enabled
+        if hasattr(self.config, 'auto_adjust'):
+            self.config.auto_adjust.auto_freq_enabled = enabled
         if enabled:
             # Initialize center to current band center
             current_low = self.config.beat.freq_low
@@ -3902,73 +4301,109 @@ bREadfan_69@hotmail.com"""
         
         if param == 'audio_amp':
             current = self.audio_gain_slider.value()
-            # hunt_max allows full range when hunting (5.0)
-            max_val = hunt_max if raise_sensitivity else 5.0
+            aa_min, aa_max = BEAT_RANGE_LIMITS['audio_amp']
+            max_val = hunt_max if raise_sensitivity else aa_max
             if raise_sensitivity:
                 new_val = min(max_val, current + step_size + osc_offset)
             else:
-                new_val = max(0.15, current - step_size + osc_offset)
-            new_val = max(0.15, min(5.0, new_val))
+                new_val = max(aa_min, current - step_size + osc_offset)
+            new_val = max(aa_min, min(aa_max, new_val))
             if abs(new_val - current) > 0.001:
                 self.audio_gain_slider.setValue(new_val)
                 return True
         elif param == 'peak_floor':
             current = self.peak_floor_slider.value()
+            pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
             # Lower floor = more sensitive (inverted)
             if raise_sensitivity:
                 new_val = current - step_size - osc_offset  # Lower
             else:
                 new_val = current + step_size - osc_offset  # Raise
-            new_val = max(0.01, min(0.14, new_val))
+            new_val = max(pf_min, min(pf_max, new_val))
             if abs(new_val - current) > 0.001:
                 self.peak_floor_slider.setValue(new_val)
                 return True
         elif param == 'peak_decay':
             current = self.peak_decay_slider.value()
+            pd_min, pd_max = BEAT_RANGE_LIMITS['peak_decay']
             # Lower decay = more sensitive (inverted)
             if raise_sensitivity:
                 new_val = current - step_size - osc_offset  # Lower
             else:
                 new_val = current + step_size - osc_offset  # Raise
-            new_val = max(0.2, min(0.999, new_val))
+            new_val = max(pd_min, min(pd_max, new_val))
             if abs(new_val - current) > 0.001:
                 self.peak_decay_slider.setValue(new_val)
                 return True
         elif param == 'rise_sens':
             current = self.rise_sens_slider.value()
+            rs_min, rs_max = BEAT_RANGE_LIMITS['rise_sens']
             # Rise sensitivity: higher = stricter threshold, so raise when hunting for beats
             if raise_sensitivity:
                 new_val = current + step_size + osc_offset  # Raise (stricter detection)
             else:
                 new_val = current - step_size + osc_offset  # Lower (more tolerant)
-            new_val = max(0.02, min(1.0, new_val))
+            new_val = max(rs_min, min(rs_max, new_val))
             if abs(new_val - current) > 0.001:
                 self.rise_sens_slider.setValue(new_val)
                 return True
         elif param == 'sensitivity':
             current = self.sensitivity_slider.value()
+            sens_min, sens_max = BEAT_RANGE_LIMITS['sensitivity']
             if raise_sensitivity:
                 new_val = current + step_size + osc_offset
             else:
                 new_val = current - step_size + osc_offset
-            new_val = max(0.1, min(1.0, new_val))  # Min 0.1 to avoid killing signal
+            new_val = max(sens_min, min(sens_max, new_val))
             if abs(new_val - current) > 0.001:
                 self.sensitivity_slider.setValue(new_val)
                 return True
         elif param == 'flux_mult':
             current = self.flux_mult_slider.value()
+            fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
             if raise_sensitivity:
                 new_val = current + step_size + osc_offset
             else:
                 new_val = current - step_size + osc_offset
-            new_val = max(0.1, min(5.0, new_val))
+            new_val = max(fm_min, min(fm_max, new_val))
             if abs(new_val - current) > 0.001:
                 self.flux_mult_slider.setValue(new_val)
                 return True
         return False
     
     def _create_beat_detection_tab(self) -> QWidget:
-        """Beat detection settings"""
+        """Beat detection settings with vertical scroll"""
+        # Outer scroll area (no wheel to prevent interference with parameter sliders)
+        scroll_area = NoWheelScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Thin minimal scrollbar style
+        scroll_area.setStyleSheet("""
+            QScrollBar:vertical {
+                background-color: transparent;
+                width: 4px;
+                border: none;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background-color: rgba(100, 100, 100, 0.5);
+                border-radius: 2px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: rgba(150, 150, 150, 0.7);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+                background: none;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+        """)
+        
+        # Content widget inside scroll area
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
@@ -4070,111 +4505,14 @@ bREadfan_69@hotmail.com"""
         
         layout.addWidget(freq_group)
         
-        # Sliders - with better defaults
-        # Sensitivity: higher = more beats detected (0.0=strict, 1.0=very sensitive) - with auto toggle
-        sens_row = QHBoxLayout()
-        self.sensitivity_slider = SliderWithLabel("Sensitivity", 0.0, 1.0, 0.7)
-        self.sensitivity_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'sensitivity', v))
-        sens_row.addWidget(self.sensitivity_slider, 1)
-        self.sensitivity_auto_cb = QCheckBox("auto")
-        self.sensitivity_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
-        self.sensitivity_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('sensitivity', state))
-        sens_row.addWidget(self.sensitivity_auto_cb)
-        self.sensitivity_step_spin = QDoubleSpinBox()
-        self.sensitivity_step_spin.setRange(0.0001, 0.1)
-        self.sensitivity_step_spin.setSingleStep(0.0001)
-        self.sensitivity_step_spin.setDecimals(4)
-        self.sensitivity_step_spin.setValue(0.008)
-        self.sensitivity_step_spin.setFixedWidth(85)
-        self.sensitivity_step_spin.setToolTip("Step size")
-        self.sensitivity_step_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', step=v))
-        sens_row.addWidget(self.sensitivity_step_spin)
-        layout.addLayout(sens_row)
-        
-        # Peak floor: minimum energy to consider (0 = disabled) - with auto toggle
-        # Range 0.01-0.15: typical band_energy is 0.08-0.15 with default gain
-        peak_floor_row = QHBoxLayout()
-        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.015, 0.14, 0.05, 3)
-        self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
-        peak_floor_row.addWidget(self.peak_floor_slider, 1)
-        self.peak_floor_auto_cb = QCheckBox("auto")
-        self.peak_floor_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
-        self.peak_floor_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_floor', state))
-        peak_floor_row.addWidget(self.peak_floor_auto_cb)
-        self.peak_floor_step_spin = QDoubleSpinBox()
-        self.peak_floor_step_spin.setRange(0.0001, 0.1)
-        self.peak_floor_step_spin.setSingleStep(0.0001)
-        self.peak_floor_step_spin.setDecimals(4)
-        self.peak_floor_step_spin.setValue(0.004)
-        self.peak_floor_step_spin.setFixedWidth(85)
-        self.peak_floor_step_spin.setToolTip("Step size")
-        self.peak_floor_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', step=v))
-        peak_floor_row.addWidget(self.peak_floor_step_spin)
-        layout.addLayout(peak_floor_row)
-        
-        # Peak decay - with auto toggle
-        peak_decay_row = QHBoxLayout()
-        self.peak_decay_slider = SliderWithLabel("Peak Decay", 0.230, 0.999, 0.9, 3)
-        self.peak_decay_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_decay', v))
-        peak_decay_row.addWidget(self.peak_decay_slider, 1)
-        self.peak_decay_auto_cb = QCheckBox("auto")
-        self.peak_decay_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
-        self.peak_decay_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_decay', state))
-        peak_decay_row.addWidget(self.peak_decay_auto_cb)
-        self.peak_decay_step_spin = QDoubleSpinBox()
-        self.peak_decay_step_spin.setRange(0.0001, 0.1)
-        self.peak_decay_step_spin.setSingleStep(0.0001)
-        self.peak_decay_step_spin.setDecimals(4)
-        self.peak_decay_step_spin.setValue(0.002)
-        self.peak_decay_step_spin.setFixedWidth(85)
-        self.peak_decay_step_spin.setToolTip("Step size")
-        self.peak_decay_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', step=v))
-        peak_decay_row.addWidget(self.peak_decay_step_spin)
-        layout.addLayout(peak_decay_row)
-        
-        # Rise sensitivity: 0 = disabled, higher = require more rise - with auto toggle
-        rise_sens_row = QHBoxLayout()
-        self.rise_sens_slider = SliderWithLabel("Rise Sensitivity", 0.02, 1.0, 0.02)
-        self.rise_sens_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'rise_sensitivity', v))
-        rise_sens_row.addWidget(self.rise_sens_slider, 1)
-        self.rise_sens_auto_cb = QCheckBox("auto")
-        self.rise_sens_auto_cb.setToolTip("Auto-lower when no beats detected (more sensitive), raise when too many")
-        self.rise_sens_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('rise_sens', state))
-        rise_sens_row.addWidget(self.rise_sens_auto_cb)
-        self.rise_sens_step_spin = QDoubleSpinBox()
-        self.rise_sens_step_spin.setRange(0.0001, 0.1)
-        self.rise_sens_step_spin.setSingleStep(0.0001)
-        self.rise_sens_step_spin.setDecimals(4)
-        self.rise_sens_step_spin.setValue(0.008)
-        self.rise_sens_step_spin.setFixedWidth(85)
-        self.rise_sens_step_spin.setToolTip("Step size")
-        self.rise_sens_step_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', step=v))
-        rise_sens_row.addWidget(self.rise_sens_step_spin)
-        layout.addLayout(rise_sens_row)
-        
-        # Flux Multiplier - with auto toggle
-        flux_mult_row = QHBoxLayout()
-        self.flux_mult_slider = SliderWithLabel("Flux Multiplier", 0.2, 5.0, 1.0, 1)
-        self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
-        flux_mult_row.addWidget(self.flux_mult_slider, 1)
-        self.flux_mult_auto_cb = QCheckBox("auto")
-        self.flux_mult_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
-        self.flux_mult_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('flux_mult', state))
-        flux_mult_row.addWidget(self.flux_mult_auto_cb)
-        self.flux_mult_step_spin = QDoubleSpinBox()
-        self.flux_mult_step_spin.setRange(0.0001, 0.5)
-        self.flux_mult_step_spin.setSingleStep(0.0001)
-        self.flux_mult_step_spin.setDecimals(4)
-        self.flux_mult_step_spin.setValue(0.015)
-        self.flux_mult_step_spin.setFixedWidth(85)
-        self.flux_mult_step_spin.setToolTip("Step size")
-        self.flux_mult_step_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', step=v))
-        flux_mult_row.addWidget(self.flux_mult_step_spin)
-        layout.addLayout(flux_mult_row)
+        # ===== LEVELS GROUP: Audio Amplification, Sensitivity, Flux Multiplier =====
+        levels_group = QGroupBox("Levels")
+        levels_layout = QVBoxLayout(levels_group)
         
         # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud) - with auto toggle
         audio_gain_row = QHBoxLayout()
-        self.audio_gain_slider = SliderWithLabel("Audio Amplification", 0.15, 5.0, 1.0, 2)
+        aa_min, aa_max = BEAT_RANGE_LIMITS['audio_amp']
+        self.audio_gain_slider = SliderWithLabel("Audio Amplification", aa_min, aa_max, self.config.audio.gain, 2)
         self.audio_gain_slider.valueChanged.connect(lambda v: setattr(self.config.audio, 'gain', v))
         audio_gain_row.addWidget(self.audio_gain_slider, 1)
         self.audio_gain_auto_cb = QCheckBox("auto")
@@ -4190,7 +4528,121 @@ bREadfan_69@hotmail.com"""
         self.audio_amp_step_spin.setToolTip("Step size")
         self.audio_amp_step_spin.valueChanged.connect(lambda v: self._update_param_config('audio_amp', step=v))
         audio_gain_row.addWidget(self.audio_amp_step_spin)
-        layout.addLayout(audio_gain_row)
+        levels_layout.addLayout(audio_gain_row)
+        
+        # Sensitivity: higher = more beats detected (0.0=strict, 1.0=very sensitive) - with auto toggle
+        sens_row = QHBoxLayout()
+        sens_min, sens_max = BEAT_RANGE_LIMITS['sensitivity']
+        self.sensitivity_slider = SliderWithLabel("Sensitivity", sens_min, sens_max, self.config.beat.sensitivity)
+        self.sensitivity_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'sensitivity', v))
+        sens_row.addWidget(self.sensitivity_slider, 1)
+        self.sensitivity_auto_cb = QCheckBox("auto")
+        self.sensitivity_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
+        self.sensitivity_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('sensitivity', state))
+        sens_row.addWidget(self.sensitivity_auto_cb)
+        self.sensitivity_step_spin = QDoubleSpinBox()
+        self.sensitivity_step_spin.setRange(0.0001, 0.1)
+        self.sensitivity_step_spin.setSingleStep(0.0001)
+        self.sensitivity_step_spin.setDecimals(4)
+        self.sensitivity_step_spin.setValue(0.008)
+        self.sensitivity_step_spin.setFixedWidth(85)
+        self.sensitivity_step_spin.setToolTip("Step size")
+        self.sensitivity_step_spin.valueChanged.connect(lambda v: self._update_param_config('sensitivity', step=v))
+        sens_row.addWidget(self.sensitivity_step_spin)
+        levels_layout.addLayout(sens_row)
+        
+        # Flux Multiplier - with auto toggle
+        flux_mult_row = QHBoxLayout()
+        fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
+        self.flux_mult_slider = SliderWithLabel("Flux Multiplier", fm_min, fm_max, self.config.beat.flux_multiplier, 1)
+        self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
+        flux_mult_row.addWidget(self.flux_mult_slider, 1)
+        self.flux_mult_auto_cb = QCheckBox("auto")
+        self.flux_mult_auto_cb.setToolTip("Auto-raise when no beats detected, lower when too many")
+        self.flux_mult_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('flux_mult', state))
+        flux_mult_row.addWidget(self.flux_mult_auto_cb)
+        self.flux_mult_step_spin = QDoubleSpinBox()
+        self.flux_mult_step_spin.setRange(0.0001, 0.5)
+        self.flux_mult_step_spin.setSingleStep(0.0001)
+        self.flux_mult_step_spin.setDecimals(4)
+        self.flux_mult_step_spin.setValue(0.015)
+        self.flux_mult_step_spin.setFixedWidth(85)
+        self.flux_mult_step_spin.setToolTip("Step size")
+        self.flux_mult_step_spin.valueChanged.connect(lambda v: self._update_param_config('flux_mult', step=v))
+        flux_mult_row.addWidget(self.flux_mult_step_spin)
+        levels_layout.addLayout(flux_mult_row)
+        
+        layout.addWidget(levels_group)
+        
+        # ===== PEAKS GROUP: Peak Floor, Peak Decay, Rise Sensitivity =====
+        peaks_group = QGroupBox("Peaks")
+        peaks_layout = QVBoxLayout(peaks_group)
+        
+        # Peak floor: minimum energy to consider (0 = disabled) - with auto toggle
+        # Range 0.01-0.15: typical band_energy is 0.08-0.15 with default gain
+        peak_floor_row = QHBoxLayout()
+        pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
+        self.peak_floor_slider = SliderWithLabel("Peak Floor", pf_min, pf_max, self.config.beat.peak_floor, 3)
+        self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
+        peak_floor_row.addWidget(self.peak_floor_slider, 1)
+        self.peak_floor_auto_cb = QCheckBox("auto")
+        self.peak_floor_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
+        self.peak_floor_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_floor', state))
+        peak_floor_row.addWidget(self.peak_floor_auto_cb)
+        self.peak_floor_step_spin = QDoubleSpinBox()
+        self.peak_floor_step_spin.setRange(0.0001, 0.1)
+        self.peak_floor_step_spin.setSingleStep(0.0001)
+        self.peak_floor_step_spin.setDecimals(4)
+        self.peak_floor_step_spin.setValue(0.004)
+        self.peak_floor_step_spin.setFixedWidth(85)
+        self.peak_floor_step_spin.setToolTip("Step size")
+        self.peak_floor_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_floor', step=v))
+        peak_floor_row.addWidget(self.peak_floor_step_spin)
+        peaks_layout.addLayout(peak_floor_row)
+        
+        # Peak decay - with auto toggle
+        peak_decay_row = QHBoxLayout()
+        pd_min, pd_max = BEAT_RANGE_LIMITS['peak_decay']
+        self.peak_decay_slider = SliderWithLabel("Peak Decay", pd_min, pd_max, self.config.beat.peak_decay, 3)
+        self.peak_decay_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_decay', v))
+        peak_decay_row.addWidget(self.peak_decay_slider, 1)
+        self.peak_decay_auto_cb = QCheckBox("auto")
+        self.peak_decay_auto_cb.setToolTip("Auto-lower when no beats detected, raise when too many")
+        self.peak_decay_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('peak_decay', state))
+        peak_decay_row.addWidget(self.peak_decay_auto_cb)
+        self.peak_decay_step_spin = QDoubleSpinBox()
+        self.peak_decay_step_spin.setRange(0.0001, 0.1)
+        self.peak_decay_step_spin.setSingleStep(0.0001)
+        self.peak_decay_step_spin.setDecimals(4)
+        self.peak_decay_step_spin.setValue(0.002)
+        self.peak_decay_step_spin.setFixedWidth(85)
+        self.peak_decay_step_spin.setToolTip("Step size")
+        self.peak_decay_step_spin.valueChanged.connect(lambda v: self._update_param_config('peak_decay', step=v))
+        peak_decay_row.addWidget(self.peak_decay_step_spin)
+        peaks_layout.addLayout(peak_decay_row)
+        
+        # Rise sensitivity: 0 = disabled, higher = require more rise - with auto toggle
+        rise_sens_row = QHBoxLayout()
+        rs_min, rs_max = BEAT_RANGE_LIMITS['rise_sens']
+        self.rise_sens_slider = SliderWithLabel("Rise Sensitivity", rs_min, rs_max, self.config.beat.rise_sensitivity)
+        self.rise_sens_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'rise_sensitivity', v))
+        rise_sens_row.addWidget(self.rise_sens_slider, 1)
+        self.rise_sens_auto_cb = QCheckBox("auto")
+        self.rise_sens_auto_cb.setToolTip("Auto-lower when no beats detected (more sensitive), raise when too many")
+        self.rise_sens_auto_cb.stateChanged.connect(lambda state: self._on_auto_toggle('rise_sens', state))
+        rise_sens_row.addWidget(self.rise_sens_auto_cb)
+        self.rise_sens_step_spin = QDoubleSpinBox()
+        self.rise_sens_step_spin.setRange(0.0001, 0.1)
+        self.rise_sens_step_spin.setSingleStep(0.0001)
+        self.rise_sens_step_spin.setDecimals(4)
+        self.rise_sens_step_spin.setValue(0.008)
+        self.rise_sens_step_spin.setFixedWidth(85)
+        self.rise_sens_step_spin.setToolTip("Step size")
+        self.rise_sens_step_spin.valueChanged.connect(lambda v: self._update_param_config('rise_sens', step=v))
+        rise_sens_row.addWidget(self.rise_sens_step_spin)
+        peaks_layout.addLayout(rise_sens_row)
+        
+        layout.addWidget(peaks_group)
         
         # Butterworth filter checkbox (requires restart)
         self.butterworth_checkbox = QCheckBox("Use Butterworth bandpass filter (better bass isolation)")
@@ -4199,7 +4651,8 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(self.butterworth_checkbox)
         
         layout.addStretch()
-        return widget
+        scroll_area.setWidget(widget)
+        return scroll_area
     
     def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""
@@ -4676,7 +5129,7 @@ bREadfan_69@hotmail.com"""
         self.stroke_range_slider.rangeChanged.connect(self._on_stroke_range_change)
         layout.addWidget(self.stroke_range_slider)
         
-        self.min_interval_slider = SliderWithLabel("Min Interval (ms)", 50, 500, 100, 0)
+        self.min_interval_slider = SliderWithLabel("Min Interval (ms)", 50, 5000, 100, 0)
         self.min_interval_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'min_interval_ms', int(v)))
         layout.addWidget(self.min_interval_slider)
         
@@ -4688,7 +5141,7 @@ bREadfan_69@hotmail.com"""
         self.min_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'minimum_depth', v))
         layout.addWidget(self.min_depth_slider)
         
-        self.freq_depth_slider = SliderWithLabel("Freq Depth Factor", 0.0, 1.0, 0.3)
+        self.freq_depth_slider = SliderWithLabel("Freq Depth Factor", 0.0, 2.0, 0.3)
         self.freq_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'freq_depth_factor', v))
         layout.addWidget(self.freq_depth_slider)
         
@@ -4701,6 +5154,35 @@ bREadfan_69@hotmail.com"""
         depth_freq_layout.addWidget(self.depth_freq_range_slider)
         
         layout.addWidget(depth_freq_group)
+        
+        # Silence Threshold Controls
+        silence_group = QGroupBox("Silence Thresholds")
+        silence_layout = QVBoxLayout(silence_group)
+        
+        # Lock checkbox
+        lock_layout = QHBoxLayout()
+        self.silence_lock_checkbox = QCheckBox("Lock Silence Thresholds")
+        self.silence_lock_checkbox.setChecked(True)  # Locked by default on startup
+        self.silence_lock_checkbox.stateChanged.connect(self._on_silence_lock_toggle)
+        lock_layout.addWidget(self.silence_lock_checkbox)
+        lock_layout.addStretch()
+        silence_layout.addLayout(lock_layout)
+        
+        # Flux multiplier slider
+        self.silence_flux_mult_slider = SliderWithLabel("Flux Multiplier", 0.01, 1.0, 0.15, 2)
+        self.silence_flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'silence_flux_multiplier', v))
+        self.silence_flux_mult_slider.setEnabled(False)  # Disabled when locked
+        silence_layout.addWidget(self.silence_flux_mult_slider)
+        
+        # Energy multiplier slider
+        self.silence_energy_mult_slider = SliderWithLabel("Energy Multiplier", 0.1, 2.0, 0.7, 2)
+        self.silence_energy_mult_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'silence_energy_multiplier', v))
+        self.silence_energy_mult_slider.setEnabled(False)  # Disabled when locked
+        silence_layout.addWidget(self.silence_energy_mult_slider)
+        
+        silence_layout.addWidget(QLabel("Higher = more sensitive to silence (louder minimum volume)"))
+        
+        layout.addWidget(silence_group)
         
         layout.addStretch()
         return widget
@@ -4877,23 +5359,14 @@ bREadfan_69@hotmail.com"""
             self.play_btn.setChecked(False)
             self.play_btn.setText("▶ Play")  # Reset play button text
             self.is_sending = False
-            # Reset all beat tracking locks to HUNTING on Stop
-            for p in self._auto_param_state:
-                self._auto_param_state[p] = 'HUNTING'
-            self._auto_flux_lock_count = 0
-            self._auto_no_beat_since = 0.0
-            self._auto_no_beat_count = 0
-            self._auto_param_index = 0
-            for p in self._auto_consecutive_beats:
-                self._auto_consecutive_beats[p] = 0  # Reset beat counters
-            print("[Auto] Stop pressed - all beat tracking locks reset to HUNTING")
+            # Note: Auto-range state is preserved across stop/start - no reset here
     
     def _on_play_pause(self, checked: bool):
         """Play/pause sending commands"""
         self.is_sending = checked
         if checked:
             # Re-instantiate StrokeMapper with current config (for live mode switching)
-            self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value(), audio_engine=self.audio_engine)
+            self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
             # Start volume ramp from 0 to 1 over 800ms
             self._volume_ramp_active = True
             self._volume_ramp_start_time = time.time()
@@ -4938,6 +5411,13 @@ bREadfan_69@hotmail.com"""
             self.alpha_weight_slider.max_val = new_max
             self.beta_weight_slider.max_val = new_max
     
+    def _on_silence_lock_toggle(self, state: int):
+        """Toggle silence threshold sliders locked/unlocked"""
+        is_locked = state == 2  # Qt.Checked
+        self.silence_flux_mult_slider.setEnabled(not is_locked)
+        self.silence_energy_mult_slider.setEnabled(not is_locked)
+        self.config.stroke.silence_multiplier_locked = is_locked
+    
     def _start_engines(self):
         """Initialize and start all engines"""
         # Reset all auto-adjust state on Start (fresh hunt every time)
@@ -4965,7 +5445,7 @@ bREadfan_69@hotmail.com"""
         self.audio_engine = AudioEngine(self.config, self._audio_callback)
         self.audio_engine.start()
 
-        self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value(), audio_engine=self.audio_engine)
+        self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
 
         # Network engine is already started on program launch via _auto_connect_tcp
         # Only create if somehow missing
@@ -4984,7 +5464,7 @@ bREadfan_69@hotmail.com"""
             if self._cached_f0_enabled and self._cached_f0_val is not None:
                 if cmd.tcode_tags is None:
                     cmd.tcode_tags = {}
-                cmd.tcode_tags['F0'] = self._cached_f0_val
+                cmd.tcode_tags['C0'] = self._cached_f0_val  # restim uses C0 for carrier
             # Apply volume ramp multiplier (don't override volume - stroke mapper computed it)
             if self._volume_ramp_active:
                 elapsed = time.time() - self._volume_ramp_start_time
@@ -5179,13 +5659,32 @@ bREadfan_69@hotmail.com"""
             f0_tcode_max = int((self._cached_f0_tcode_max - 500) * 10)
             f0_tcode_min = max(0, min(9999, f0_tcode_min))
             f0_tcode_max = max(0, min(9999, f0_tcode_max))
-            f0_val = int(f0_tcode_min + f0_avg_norm * (f0_tcode_max - f0_tcode_min))
+            f0_val_raw = int(f0_tcode_min + f0_avg_norm * (f0_tcode_max - f0_tcode_min))
+            f0_val_raw = max(0, min(9999, f0_val_raw))
+            
+            # Smooth F0: limit change to ±300 tcode per send for smoother transitions
+            if self._f0_last_sent_tcode is not None:
+                delta = f0_val_raw - self._f0_last_sent_tcode
+                if abs(delta) > self._f0_max_change_per_send:
+                    if delta > 0:
+                        f0_val = self._f0_last_sent_tcode + self._f0_max_change_per_send
+                    else:
+                        f0_val = self._f0_last_sent_tcode - self._f0_max_change_per_send
+                else:
+                    f0_val = f0_val_raw
+            else:
+                f0_val = f0_val_raw
             f0_val = max(0, min(9999, f0_val))
+            self._f0_last_sent_tcode = f0_val
+            
+            # Generate random duration: 900ms ±200ms
+            f0_duration = int(self._f0_duration_base_ms + random.uniform(-self._f0_duration_variance_ms, self._f0_duration_variance_ms))
+            f0_duration = max(100, f0_duration)  # Minimum 100ms
             
             if cmd.tcode_tags is None:
                 cmd.tcode_tags = {}
-            cmd.tcode_tags['F0'] = f0_val
-            cmd.tcode_tags['F0_duration'] = int(self._freq_window_ms)  # 250ms duration
+            cmd.tcode_tags['C0'] = f0_val  # restim uses C0 for carrier frequency, not F0
+            cmd.tcode_tags['C0_duration'] = f0_duration
             self._cached_f0_val = f0_val
             display_f0 = f0_val / 10 + 500  # Convert TCode to display units (500-1500)
             self._cached_carrier_display = f"Carrier: {display_f0:.0f}"
@@ -5193,12 +5692,13 @@ bREadfan_69@hotmail.com"""
             self._cached_f0_val = None
             self._cached_carrier_display = "Carrier: off"
             self._f0_freq_window.clear()  # Clear window when disabled
+            self._f0_last_sent_tcode = None  # Reset smoothing state when disabled
         
         # Log
         p0_str = f"P0={cmd.pulse_freq:04d}" if cmd.pulse_freq is not None else "P0=off"
-        f0_tag = cmd.tcode_tags.get('F0', None) if cmd.tcode_tags else None
-        f0_str = f"F0={f0_tag:04d}" if f0_tag is not None else "F0=off"
-        print(f"[Main] Cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} {p0_str} {f0_str}")
+        c0_tag = cmd.tcode_tags.get('C0', None) if cmd.tcode_tags else None
+        c0_str = f"C0={c0_tag:04d}" if c0_tag is not None else "C0=off"
+        print(f"[Main] Cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} {p0_str} {c0_str}")
     
     def _network_status_callback(self, message: str, connected: bool):
         """Called from network thread on status change"""
@@ -5305,41 +5805,39 @@ bREadfan_69@hotmail.com"""
             self.beta_label.setText(f"β: {beta:.2f}")
 
         # Sync widget states to cached values for thread-safe reading by audio thread
-        # and update freq display labels — throttled to 100ms
+        # P0/F0 enable state MUST be synced IMMEDIATELY (every frame) for instant response
+        new_p0_enabled = self.pulse_enabled_checkbox.isChecked()
+        new_f0_enabled = self.f0_enabled_checkbox.isChecked()
+        
+        # Handle P0/C0 checkboxes being unchecked (enabled→disabled transition)
+        # Simply stop sending the axis — do NOT send 0 value, which still affects device
+        if self._prev_p0_enabled and not new_p0_enabled:
+            # P0 just got disabled — stop sending, give control back to restim
+            self._cached_p0_val = None
+            self._cached_pulse_display = "Pulse: off"
+            self._p0_freq_window.clear()
+            print("[Main] P0 disabled — stopped sending")
+        if self._prev_f0_enabled and not new_f0_enabled:
+            # C0 just got disabled — stop sending, give control back to restim
+            self._cached_f0_val = None
+            self._cached_carrier_display = "Carrier: off"
+            self._f0_freq_window.clear()
+            self._f0_last_sent_tcode = None
+            print("[Main] C0 disabled — stopped sending")
+        
+        self._prev_p0_enabled = new_p0_enabled
+        self._prev_f0_enabled = new_f0_enabled
+        self._cached_p0_enabled = new_p0_enabled
+        self._cached_f0_enabled = new_f0_enabled
+        
+        # Update freq display labels — throttled to 100ms
         now = time.time()
         if now - self._last_freq_display_time > 0.1:
             self._last_freq_display_time = now
             # Update freq display labels from cached strings (written by audio thread)
             self.pulse_freq_label.setText(self._cached_pulse_display)
             self.carrier_freq_label.setText(self._cached_carrier_display)
-            # Sync checkbox/combo states to cached vars for audio thread
-            new_p0_enabled = self.pulse_enabled_checkbox.isChecked()
-            new_f0_enabled = self.f0_enabled_checkbox.isChecked()
-            
-            # Send 0000 once when P0/F0 checkboxes are unchecked (enabled→disabled transition)
-            if self._prev_p0_enabled and not new_p0_enabled:
-                # P0 just got disabled — send P00000 once
-                if self.network_engine and self.is_sending:
-                    zero_cmd = TCodeCommand(0.0, 0.0, 100, 0.0)
-                    zero_cmd.pulse_freq = 0
-                    self.network_engine.send_command(zero_cmd)
-                    print("[Main] P0 disabled — sent P00000")
-                self._cached_p0_val = None
-                self._cached_pulse_display = "Pulse: off"
-            if self._prev_f0_enabled and not new_f0_enabled:
-                # F0 just got disabled — send F00000 once
-                if self.network_engine and self.is_sending:
-                    zero_cmd = TCodeCommand(0.0, 0.0, 100, 0.0)
-                    zero_cmd.tcode_tags = {'F0': 0}
-                    self.network_engine.send_command(zero_cmd)
-                    print("[Main] F0 disabled — sent F00000")
-                self._cached_f0_val = None
-                self._cached_carrier_display = "Carrier: off"
-            
-            self._prev_p0_enabled = new_p0_enabled
-            self._prev_f0_enabled = new_f0_enabled
-            self._cached_p0_enabled = new_p0_enabled
-            self._cached_f0_enabled = new_f0_enabled
+            # Sync other combo/checkbox states for audio thread (throttled is fine)
             self._cached_pulse_mode = self.pulse_mode_combo.currentIndex()
             self._cached_pulse_invert = self.pulse_invert_checkbox.isChecked()
             self._cached_f0_mode = self.f0_mode_combo.currentIndex()
@@ -5367,6 +5865,14 @@ bREadfan_69@hotmail.com"""
                 else:
                     # Auto-range off: all lights off
                     self.auto_traffic_light.all_off()
+            
+            # Update peak floor bars on all visualizers
+            peak_floor = self.config.beat.peak_floor
+            for canvas_name in ['mountain_canvas', 'spectrum_canvas', 'bar_canvas', 'phosphor_canvas']:
+                if hasattr(self, canvas_name):
+                    canvas = getattr(self, canvas_name)
+                    if hasattr(canvas, 'set_peak_floor'):
+                        canvas.set_peak_floor(peak_floor)
 
         # Handle volume ramp completion
         if self._volume_ramp_active:
@@ -5425,7 +5931,7 @@ bREadfan_69@hotmail.com"""
         self.config.carrier_freq.tcode_freq_max = self.f0_tcode_range_slider.high()
         self.config.carrier_freq.freq_weight = self.f0_weight_slider.value()
         
-        self.config.volume = self.volume_slider.value()
+        self.config.volume = self.volume_slider.value() / 100.0
         
         # Save tempo tracking settings
         self.config.beat.tempo_tracking_enabled = self.tempo_tracking_checkbox.isChecked()
@@ -5445,6 +5951,9 @@ bREadfan_69@hotmail.com"""
         self.config.auto_adjust.threshold_sec = self.auto_threshold_spin.value()
         self.config.auto_adjust.cooldown_sec = self.auto_cooldown_spin.value()
         self.config.auto_adjust.consec_beats = self.auto_consec_beats_spin.value()
+        self.config.auto_adjust.enabled_params = dict(self._auto_adjust_enabled)
+        self.config.auto_adjust.auto_range_enabled = self.global_auto_range_cb.isChecked() if hasattr(self, 'global_auto_range_cb') else False
+        self.config.auto_adjust.auto_freq_enabled = self._auto_freq_enabled
         
         # Save config before closing
         save_config(self.config)
