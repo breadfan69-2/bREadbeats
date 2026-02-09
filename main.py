@@ -5029,6 +5029,10 @@ bREadfan_69@hotmail.com"""
         
         self.config.volume = self.volume_slider.value() / 100.0
         
+        # Save axis weights from Effects tab
+        self.config.alpha_weight = self.alpha_weight_slider.value()
+        self.config.beta_weight = self.beta_weight_slider.value()
+        
         # Save tempo tracking settings
         self.config.beat.tempo_tracking_enabled = self.tempo_tracking_checkbox.isChecked()
         beats_map = {0: 4, 1: 3, 2: 6}
