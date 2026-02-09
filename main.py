@@ -1771,6 +1771,16 @@ class BREadbeatsWindow(QMainWindow):
         self.network_engine = None
         self.stroke_mapper = None
         
+        # Initialize _auto_param_config BEFORE _setup_ui so spinbox signals can access it
+        self._auto_param_config: dict = {
+            'sensitivity': (0.008, 1.0),     # 75% impact - small steps
+            'audio_amp': (0.04, 5.0),        # 75% impact - no limit when hunting
+            'flux_mult': (0.015, 5.0),       # 40% impact
+            'rise_sens': (0.008, 1.0),       # 30% impact
+            'peak_floor': (0.004, 0.0),      # 15% impact
+            'peak_decay': (0.002, 0.5),      # 10% impact
+        }
+        
         # Setup UI
         self._setup_ui()
         
@@ -1885,19 +1895,14 @@ class BREadbeatsWindow(QMainWindow):
             'audio_amp': 0, 'peak_floor': 0, 'peak_decay': 0,
             'rise_sens': 0, 'sensitivity': 0, 'flux_mult': 0,
         }
+        self._auto_consecutive_downbeats: dict = {  # Count of consecutive downbeats per param
+            'peak_floor': 0, 'peak_decay': 0, 'rise_sens': 0, 'flux_mult': 0,
+        }
+        self._auto_downbeat_lock_threshold_5: int = 5  # Downbeats needed to lock peak_floor/peak_decay/rise_sens
+        self._auto_downbeat_lock_threshold_2: int = 2  # Downbeats needed to lock flux_mult
         self._auto_acceptable_bpm_min: float = 60.0  # Minimum acceptable BPM
         self._auto_acceptable_bpm_max: float = 180.0  # Maximum acceptable BPM
         self._auto_consec_beat_threshold: int = 8  # Consecutive beats in range required to lock
-        # Impact-based step sizes: (hunt_step, max_limit_when_hunting)
-        # Oscillation amplitude is always 3/4 of step_size (computed in _adjust_single_param)
-        self._auto_param_config: dict = {
-            'sensitivity': (0.008, 1.0),     # 75% impact - small steps
-            'audio_amp': (0.04, 5.0),        # 75% impact - no limit when hunting
-            'flux_mult': (0.015, 5.0),       # 40% impact
-            'rise_sens': (0.008, 1.0),       # 30% impact
-            'peak_floor': (0.004, 0.0),      # 15% impact
-            'peak_decay': (0.002, 0.5),      # 10% impact
-        }
         
         # State
         self.is_running = False
@@ -3456,11 +3461,14 @@ bREadfan_69@hotmail.com"""
             self._auto_param_state[param] = 'HUNTING'
             if param == 'flux_mult':
                 self._auto_flux_lock_count = 0
+            # Reset downbeat counter for this param
+            if param in self._auto_consecutive_downbeats:
+                self._auto_consecutive_downbeats[param] = 0
             # Set slider to reset value when enabling auto
             # Inverted params (peak_floor, peak_decay, audio_amp) reset to MAX/hunting value (hunting lowers them)
             # Normal params (rise_sens, sensitivity, flux_mult) reset to MIN (hunting raises them)
             reset_values = {
-                'audio_amp': 0.15, 'peak_floor': 0.08, 'peak_decay': 0.999,
+                'audio_amp': 0.15, 'peak_floor': 0.14, 'peak_decay': 0.999,
                 'rise_sens': 0.02, 'sensitivity': 0.1, 'flux_mult': 0.2
             }
             sliders = {
@@ -3557,6 +3565,8 @@ bREadfan_69@hotmail.com"""
                 self._auto_no_beat_count = 0  # Reset beathunting counter
                 for p in self._auto_consecutive_beats:
                     self._auto_consecutive_beats[p] = 0  # Reset beat counters
+                for p in self._auto_consecutive_downbeats:
+                    self._auto_consecutive_downbeats[p] = 0  # Reset downbeat counters
                 print(f"[Auto] Silence - all params reset to HUNTING")
             return
         
@@ -3604,6 +3614,8 @@ bREadfan_69@hotmail.com"""
                 for p in self._auto_param_state:
                     self._auto_param_state[p] = 'HUNTING'
                     self._auto_consecutive_beats[p] = 0  # Reset beat counter
+                for p in self._auto_consecutive_downbeats:
+                    self._auto_consecutive_downbeats[p] = 0  # Reset downbeat counter
                 self._auto_flux_lock_count = 0
                 print(f"[Auto] ⬇ BEATHUNTING triggered after {self._auto_no_beat_count} no-beat cycles - ALL params reset to HUNTING")
             self._auto_no_beat_count = 0  # Reset counter after triggering
@@ -3626,14 +3638,20 @@ bREadfan_69@hotmail.com"""
                 print(f"[Auto] audio_amp resumed HUNTING (sensitivity hunting + no beat for {no_beat_duration:.1f}s)")
         
         # sensitivity: lock after N consecutive beats in acceptable range (after warmup)
+        # Pre-compute REVERSING conditions: 1) motion being generated, 2) beat rate >= 1.5x target BPM after halving
+        target_bpm_halved = self._auto_acceptable_bpm_max / 2  # e.g. 180/2 = 90
+        beats_fast_enough = bpm >= (1.5 * target_bpm_halved)  # e.g. bpm >= 135
+        motion_active = hasattr(self, 'is_sending') and self.is_sending
+        
         if self._auto_param_state['sensitivity'] == 'HUNTING' and beat_in_acceptable_range and warmup_complete:
             if self._auto_consecutive_beats['sensitivity'] >= self._auto_consec_beat_threshold:
                 self._auto_param_state['sensitivity'] = 'LOCKED'
                 print(f"[Auto] sensitivity LOCKED ({self._auto_consec_beat_threshold} consecutive beats at {bpm:.0f} BPM)")
         # When downbeat found, reverse sensitivity to find minimum
-        elif self._auto_param_state['sensitivity'] == 'LOCKED' and has_downbeat:
+        # Require: 1) motion is being generated, 2) beat rate >= 1.5x target BPM after halving
+        elif self._auto_param_state['sensitivity'] == 'LOCKED' and has_downbeat and motion_active and beats_fast_enough:
             self._auto_param_state['sensitivity'] = 'REVERSING'
-            print(f"[Auto] sensitivity REVERSING (downbeat conf={downbeat_conf:.2f})")
+            print(f"[Auto] sensitivity REVERSING (downbeat conf={downbeat_conf:.2f}, motion={motion_active}, bpm={bpm:.0f}>={1.5*target_bpm_halved:.0f})")
         # When downbeat lost during reversal, re-lock
         elif self._auto_param_state['sensitivity'] == 'REVERSING' and not has_downbeat:
             self._auto_param_state['sensitivity'] = 'LOCKED'
@@ -3644,28 +3662,32 @@ bREadfan_69@hotmail.com"""
             self._auto_consecutive_beats['sensitivity'] = 0  # Reset counter
             print(f"[Auto] sensitivity resumed HUNTING (beat out of acceptable range)")
         
-        # peak_floor, peak_decay, rise_sens: hunt until downbeat, resume if lost
+        # peak_floor, peak_decay, rise_sens: hunt until 5 consecutive downbeats, resume if lost
         for p in ['peak_floor', 'peak_decay', 'rise_sens']:
             if self._auto_param_state[p] == 'HUNTING' and has_downbeat and warmup_complete:
-                self._auto_param_state[p] = 'LOCKED'
-                print(f"[Auto] {p} LOCKED (downbeat detected)")
-            elif self._auto_param_state[p] == 'LOCKED' and not has_downbeat and beat_in_acceptable_range:
+                self._auto_consecutive_downbeats[p] += 1
+                if self._auto_consecutive_downbeats[p] >= self._auto_downbeat_lock_threshold_5:
+                    self._auto_param_state[p] = 'LOCKED'
+                    print(f"[Auto] {p} LOCKED ({self._auto_consecutive_downbeats[p]} downbeats)")
+                else:
+                    print(f"[Auto] {p} downbeat {self._auto_consecutive_downbeats[p]}/{self._auto_downbeat_lock_threshold_5}")
+            elif self._auto_param_state[p] == 'LOCKED' and not has_downbeat:
                 self._auto_param_state[p] = 'HUNTING'
-                self._auto_consecutive_beats[p] = 0  # Reset counter
+                self._auto_consecutive_downbeats[p] = 0  # Reset counter
                 print(f"[Auto] {p} resumed HUNTING (downbeat lost)")
         
-        # flux_mult: hunt until downbeat, lock permanently on 2nd detection (after warmup)
+        # flux_mult: lock after 2 consecutive downbeats, unlock when lost (no permanent lock)
         if self._auto_param_state['flux_mult'] == 'HUNTING' and has_downbeat and warmup_complete:
-            self._auto_flux_lock_count += 1
-            self._auto_param_state['flux_mult'] = 'LOCKED'
-            permanent = " (PERMANENT)" if self._auto_flux_lock_count >= 2 else ""
-            print(f"[Auto] flux_mult LOCKED{permanent} (count={self._auto_flux_lock_count})")
-        elif self._auto_param_state['flux_mult'] == 'LOCKED' and not has_downbeat and beat_in_acceptable_range:
-            if self._auto_flux_lock_count < 2:
-                self._auto_param_state['flux_mult'] = 'HUNTING'
-                self._auto_consecutive_beats['flux_mult'] = 0  # Reset counter
-                print(f"[Auto] flux_mult resumed HUNTING (downbeat lost)")
-            # If >= 2, stay LOCKED permanently
+            self._auto_consecutive_downbeats['flux_mult'] += 1
+            if self._auto_consecutive_downbeats['flux_mult'] >= self._auto_downbeat_lock_threshold_2:
+                self._auto_param_state['flux_mult'] = 'LOCKED'
+                print(f"[Auto] flux_mult LOCKED ({self._auto_consecutive_downbeats['flux_mult']} downbeats)")
+            else:
+                print(f"[Auto] flux_mult downbeat {self._auto_consecutive_downbeats['flux_mult']}/{self._auto_downbeat_lock_threshold_2}")
+        elif self._auto_param_state['flux_mult'] == 'LOCKED' and not has_downbeat:
+            self._auto_param_state['flux_mult'] = 'HUNTING'
+            self._auto_consecutive_downbeats['flux_mult'] = 0  # Reset counter
+            print(f"[Auto] flux_mult resumed HUNTING (downbeat lost)")
         
         # === HANDLE TOO-FAST: reverse all non-locked params ===
         if too_fast:
@@ -3926,7 +3948,7 @@ bREadfan_69@hotmail.com"""
         # Peak floor: minimum energy to consider (0 = disabled) - with auto toggle
         # Range 0.01-0.15: typical band_energy is 0.08-0.15 with default gain
         peak_floor_row = QHBoxLayout()
-        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.01, 0.14, 0.05, 3)
+        self.peak_floor_slider = SliderWithLabel("Peak Floor", 0.015, 0.14, 0.05, 3)
         self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
         peak_floor_row.addWidget(self.peak_floor_slider, 1)
         self.peak_floor_auto_cb = QCheckBox("auto")
@@ -3946,7 +3968,7 @@ bREadfan_69@hotmail.com"""
         
         # Peak decay - with auto toggle
         peak_decay_row = QHBoxLayout()
-        self.peak_decay_slider = SliderWithLabel("Peak Decay", 0.2, 0.999, 0.9, 3)
+        self.peak_decay_slider = SliderWithLabel("Peak Decay", 0.230, 0.999, 0.9, 3)
         self.peak_decay_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_decay', v))
         peak_decay_row.addWidget(self.peak_decay_slider, 1)
         self.peak_decay_auto_cb = QCheckBox("auto")

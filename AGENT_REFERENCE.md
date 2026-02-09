@@ -363,8 +363,8 @@ reset_values = {
 | Parameter | Min | Max | Reset | Why Changed |
 |-----------|-----|-----|-------|-------------|
 | audio_amp | 0.15 | 5.0 | 0.15 | Reset to min; hunting raises it |
-| peak_floor | 0.01 | 0.14 | 0.08 | Valley height threshold between peaks; band_energy ≈ 0.08-0.14 |
-| peak_decay | 0.2 | 0.999 | 0.9 | Was 0.5-0.999; allow faster decay <0.5 |
+| peak_floor | 0.015 | 0.14 | 0.14 | Reset to max; hunting lowers it; min raised to 0.015 |
+| peak_decay | 0.230 | 0.999 | 0.999 | Reset to max; hunting lowers it; min raised to 0.230 |
 | rise_sens | 0.02 | 1.0 | 0.02 | Rise height threshold; min 0.02 to prevent user issues |
 | sensitivity | 0.01 | 1.0 | 0.1 | Unchanged |
 | flux_mult | 0.2 | 5.0 | 0.2 | Min raised to 0.2 to prevent stroke disconnect |
