@@ -3946,6 +3946,141 @@ bREadfan_69@hotmail.com"""
             self._auto_hunt_start_time = 0.0
             print("[Auto] Stopped auto-adjust timer")
     
+    def _on_metric_toggle(self, metric: str, enabled: bool):
+        """Toggle metric-based auto-ranging for a parameter.
+        
+        This is the NEW metric system (separate from timer-based auto-adjust).
+        Uses real-time feedback with PD control for smooth convergence.
+        """
+        if not hasattr(self, '_metric_enabled'):
+            self._metric_enabled = {}
+        
+        self._metric_enabled[metric] = enabled
+        
+        # Update status label
+        active_metrics = [m for m, e in self._metric_enabled.items() if e]
+        if active_metrics:
+            display_names = {
+                'peak_floor': 'FloorMargin',
+                'beat_consistency': 'BeatConsis',
+                'downbeat_ratio': 'DBRatio',
+                'audio_gain': 'AudioGain',
+                'rise_sens': 'RiseSens'
+            }
+            names = [display_names.get(m, m) for m in active_metrics]
+            self.metric_status_label.setText(f"Metrics: [{', '.join(names)}]")
+            self.metric_status_label.setStyleSheet("color: #0f0; font-style: normal;")
+        else:
+            self.metric_status_label.setText("Metrics: [idle]")
+            self.metric_status_label.setStyleSheet("color: #888; font-style: italic;")
+        
+        # Initialize metric state if needed
+        if not hasattr(self, '_metric_history'):
+            self._metric_history = {
+                'peak_floor': [],      # Energy margin history
+                'beat_consistency': [], # Autocorrelation history
+                'downbeat_ratio': [],   # Downbeat energy ratio history  
+                'audio_gain': [],       # Intensity history
+                'rise_sens': []         # Beat rate history
+            }
+            self._metric_last_values = {}
+            self._metric_last_adjustment_time = {}
+        
+        # Clear history when toggling
+        if metric in self._metric_history:
+            self._metric_history[metric] = []
+        
+        print(f"[Metric] {metric} {'enabled' if enabled else 'disabled'}")
+    
+    def _on_metric_feedback(self, metric: str, value: float, target_low: float, target_high: float):
+        """Process metric feedback and adjust parameters with PD control.
+        
+        Uses dual-time constants: fast when far from zone, slow when near.
+        """
+        if not getattr(self, '_metric_enabled', {}).get(metric, False):
+            return
+        
+        now = time.time()
+        
+        # Debounce - don't adjust faster than every 100ms
+        last_time = self._metric_last_adjustment_time.get(metric, 0)
+        if now - last_time < 0.1:
+            return
+        
+        history = self._metric_history.get(metric, [])
+        history.append(value)
+        if len(history) > 16:
+            history.pop(0)
+        self._metric_history[metric] = history
+        
+        if len(history) < 3:
+            return  # Need some history for PD control
+        
+        # Compute PD adjustment
+        avg_value = np.mean(history)
+        derivative = value - self._metric_last_values.get(metric, value)
+        self._metric_last_values[metric] = value
+        
+        # Target zone check
+        in_zone = target_low <= avg_value <= target_high
+        
+        # PD gains
+        kp = 0.1  # Proportional
+        kd = 0.3  # Derivative (damping)
+        
+        # Dual time constants: 5x faster when far from zone, 0.5x slower when near
+        if in_zone:
+            step_mult = 0.5
+        else:
+            step_mult = 5.0
+        
+        # Compute error and adjustment
+        center = (target_low + target_high) / 2
+        error = avg_value - center
+        adjustment = -(kp * error + kd * derivative) * step_mult
+        
+        # Clamp adjustment
+        adjustment = max(-0.01, min(0.01, adjustment))
+        
+        # Apply adjustment based on metric type
+        slider = None
+        current_val = 0
+        min_val = 0
+        max_val = 1
+        
+        if metric == 'peak_floor':
+            slider = self.peak_floor_slider
+            current_val = slider.value()
+            min_val, max_val = 0.01, 0.3
+        elif metric == 'audio_gain':
+            slider = self.audio_gain_slider
+            current_val = slider.value()
+            min_val, max_val = 0.15, 10.0
+        elif metric == 'rise_sens':
+            slider = self.rise_sens_slider
+            current_val = slider.value()
+            min_val, max_val = 1, 100
+            adjustment *= 10  # Scale for integer slider
+        elif metric == 'beat_consistency':
+            # Tighten sensitivity when beats are scattered
+            slider = self.sensitivity_slider
+            current_val = slider.value()
+            min_val, max_val = 0.01, 0.5
+        elif metric == 'downbeat_ratio':
+            # Fine-tune peak_floor based on downbeat prominence
+            slider = self.peak_floor_slider
+            current_val = slider.value()
+            min_val, max_val = 0.01, 0.3
+        
+        if slider:
+            new_val = current_val + adjustment
+            new_val = max(min_val, min(max_val, new_val))
+            slider.setValue(int(new_val) if isinstance(current_val, int) else new_val)
+            self._metric_last_adjustment_time[metric] = now
+            
+            zone_marker = "✓" if in_zone else "↔"
+            print(f"[Metric] {metric}: val={avg_value:.3f} {zone_marker} adj={adjustment:+.4f} → {new_val:.3f}")
+
     def _update_param_config(self, param: str, step: Optional[float] = None):
         """Update step size for an auto-adjust parameter from spinbox"""
         print(f"[Spinbox] _update_param_config called: param={param}, step={step}")
@@ -4679,6 +4814,12 @@ bREadfan_69@hotmail.com"""
         self.metric_audio_gain_cb.setToolTip("Real-time intensity normalization - adjusts audio_amp automatically")
         self.metric_audio_gain_cb.stateChanged.connect(lambda state: self._on_metric_toggle('audio_gain', state == 2))
         metric_checkboxes_layout.addWidget(self.metric_audio_gain_cb)
+        
+        self.metric_rise_sens_cb = QCheckBox("Enable Rise Sensitivity Metric (beat rate feedback)")
+        self.metric_rise_sens_cb.setChecked(False)
+        self.metric_rise_sens_cb.setToolTip("Adjusts rise_sensitivity based on beat rate - targets 1-3 beats per second")
+        self.metric_rise_sens_cb.stateChanged.connect(lambda state: self._on_metric_toggle('rise_sens', state == 2))
+        metric_checkboxes_layout.addWidget(self.metric_rise_sens_cb)
         
         metric_layout.addLayout(metric_checkboxes_layout)
         
@@ -5793,6 +5934,64 @@ bREadfan_69@hotmail.com"""
             if hasattr(self, 'bpm_label') and self.bpm_label is not None:
                 self.bpm_label.setText("BPM: ---")
             print("[GUI] Beat counter/tempo reset due to silence.")
+        
+        # ===== METRIC-BASED AUTO-RANGING (NEW SYSTEM) =====
+        # Process real-time metrics for enabled metric auto-ranging
+        if event.is_beat and hasattr(self, '_metric_enabled'):
+            now = time.time()
+            
+            # Track beat times for beat rate metric
+            if not hasattr(self, '_metric_beat_times'):
+                self._metric_beat_times = []
+            self._metric_beat_times.append(now)
+            # Keep only last 16 beats
+            if len(self._metric_beat_times) > 16:
+                self._metric_beat_times.pop(0)
+            
+            # 1. Peak Floor Metric - energy margin feedback
+            if self._metric_enabled.get('peak_floor', False):
+                energy_margin = event.peak_energy - self.config.beat.peak_floor
+                self._on_metric_feedback('peak_floor', energy_margin, 0.02, 0.05)
+            
+            # 2. Audio Gain Metric - intensity normalization
+            if self._metric_enabled.get('audio_gain', False):
+                # Compute intensity: current energy vs peak envelope
+                if hasattr(self, 'audio_engine') and self.audio_engine and self.audio_engine.peak_envelope > 0:
+                    intensity = event.peak_energy / self.audio_engine.peak_envelope
+                    self._on_metric_feedback('audio_gain', intensity, 0.3, 0.4)
+            
+            # 3. Beat Consistency Metric - autocorrelation of beat intervals
+            if self._metric_enabled.get('beat_consistency', False):
+                if len(self._metric_beat_times) >= 4:
+                    intervals = np.diff(self._metric_beat_times[-8:])
+                    if len(intervals) >= 3:
+                        # Autocorrelation at lag 1
+                        autocorr = np.corrcoef(intervals[:-1], intervals[1:])[0, 1]
+                        if not np.isnan(autocorr):
+                            # High autocorr = consistent, low = scattered
+                            self._on_metric_feedback('beat_consistency', autocorr, 0.7, 0.9)
+            
+            # 4. Rise Sensitivity Metric - beat rate feedback
+            if self._metric_enabled.get('rise_sens', False):
+                if len(self._metric_beat_times) >= 2:
+                    # Calculate beats per second over last 8 beats
+                    recent_times = self._metric_beat_times[-8:]
+                    if len(recent_times) >= 2:
+                        duration = recent_times[-1] - recent_times[0]
+                        if duration > 0:
+                            beat_rate = (len(recent_times) - 1) / duration
+                            # Target: 1-3 beats per second (60-180 BPM)
+                            self._on_metric_feedback('rise_sens', beat_rate, 1.0, 3.0)
+            
+            # 5. Downbeat Ratio Metric - processes on downbeats only
+            if self._metric_enabled.get('downbeat_ratio', False):
+                if hasattr(self, 'audio_engine') and self.audio_engine:
+                    tempo_info = self.audio_engine.get_tempo_info()
+                    if tempo_info.get('is_downbeat', False):
+                        # Compare downbeat energy to average energy
+                        db_conf = tempo_info.get('downbeat_confidence', 0.5)
+                        # Target downbeat ratio: 1.8 - 2.2 (downbeats should be 2x avg energy)
+                        self._on_metric_feedback('downbeat_ratio', db_conf * 2.0, 1.8, 2.2)
     
     def _turn_off_beat_indicator(self):
         """Turn off beat indicator after minimum duration"""

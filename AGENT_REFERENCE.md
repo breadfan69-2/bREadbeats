@@ -438,14 +438,15 @@ The new metric-based auto-ranging system replaces timer-based hunting cycles wit
 4. **Autocorrelation-Based Regularity** - More robust than coefficient of variation for tempo consistency
 5. **Parameter Freeze** - Prevents related parameters from oscillating when adjusting one
 
-**Four Independent Metrics:**
+**Five Independent Metrics:**
 
 | Metric | Target Zone | Adjusts | Trigger |
 |--------|-------------|---------|---------|
 | Peak Floor (Energy Margin) | 0.02-0.05 | peak_floor | Every beat |
-| Beat Consistency (Autocorr) | 0.05-0.15 | sensitivity, rise_sens | Every beat (after 8+ beats) |
+| Beat Consistency (Autocorr) | 0.7-0.9 | sensitivity | Every beat (after 4+ beats) |
 | Downbeat Ratio | 1.8-2.2 | peak_floor (fine) | Every downbeat |
 | Audio Gain (Intensity) | 0.30-0.40 | audio_amp | Every beat |
+| Rise Sensitivity (Beat Rate) | 1.0-3.0 bps | rise_sens | Every beat (after 2+ beats) |
 
 **Dual Time Constants:**
 ```python
@@ -491,31 +492,24 @@ def compute_beat_regularity_autocorr():
 ```
 High autocorr (>0.6) = consistent tempo, low (<0.3) = scattered beats
 
-**Audio Engine Methods (NEW):**
+**Main.py Methods (Metric System):**
 ```python
-# Master toggle
-audio_engine.enable_metric_system(True/False)
+# Toggle individual metric (called by UI checkboxes)
+_on_metric_toggle('peak_floor', True)
+_on_metric_toggle('beat_consistency', True)
+_on_metric_toggle('downbeat_ratio', True)
+_on_metric_toggle('audio_gain', True)
+_on_metric_toggle('rise_sens', True)
 
-# Individual metric toggles
-audio_engine.enable_metric_autoranging('peak_floor', True)
-audio_engine.enable_metric_autoranging('beat_consistency', True)
-audio_engine.enable_metric_autoranging('downbeat_ratio', True)
-audio_engine.enable_metric_autoranging('audio_gain', True)
+# Process metric feedback with PD control
+_on_metric_feedback(metric, value, target_low, target_high)
 
-# Set callback for UI updates
-audio_engine.set_metric_callback(callback_func)
-
-# Called on every frame (for trough detection)
-audio_engine.process_metric_on_frame(band_energy, intensity)
-
-# Called on every beat
-audio_engine.process_metric_on_beat(band_energy, intensity, beat_time)
-
-# Called on every downbeat
-audio_engine.process_metric_on_downbeat(downbeat_confidence)
-
-# Get status for UI display
-audio_engine.get_metric_status() -> dict
+# Metrics are computed in _on_beat():
+# - peak_floor: energy_margin = peak_energy - config.beat.peak_floor
+# - audio_gain: intensity = peak_energy / peak_envelope
+# - beat_consistency: autocorrelation of beat intervals
+# - rise_sens: beats per second over last 8 beats
+# - downbeat_ratio: downbeat_confidence * 2.0
 ```
 
 **UI Integration:**
@@ -524,8 +518,9 @@ Checkboxes in GUI control individual metrics:
 - `metric_beat_consistency_cb` → BeatConsis  
 - `metric_downbeat_ratio_cb` → DBRatio
 - `metric_audio_gain_cb` → AudioGain
+- `metric_rise_sens_cb` → RiseSens
 
-Status label shows active metrics: `Metrics: [FloorMargin, BeatConsis]`
+Status label shows active metrics: `Metrics: [FloorMargin, BeatConsis, RiseSens]`
 
 ---
 
