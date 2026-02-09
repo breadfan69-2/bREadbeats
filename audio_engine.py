@@ -789,6 +789,58 @@ class AudioEngine:
         """Get current spectrum data for visualization"""
         with self.spectrum_lock:
             return self.spectrum_data.copy() if self.spectrum_data is not None else None
+    
+    def find_peak_frequency_band(self, min_freq: float = 30.0, max_freq: float = 2000.0, 
+                                  band_width: float = 300.0) -> tuple[float, float, float]:
+        """
+        Find the most powerful frequency band of specified width within the given range.
+        
+        Args:
+            min_freq: Minimum frequency to search (Hz)
+            max_freq: Maximum frequency to search (Hz)
+            band_width: Width of the band to find (Hz)
+            
+        Returns:
+            Tuple of (center_freq, low_freq, high_freq) of the most powerful band.
+            Returns (0, 0, 0) if no spectrum data available.
+        """
+        with self.spectrum_lock:
+            if self.spectrum_data is None or len(self.spectrum_data) == 0:
+                return (0.0, 0.0, 0.0)
+            
+            spectrum = self.spectrum_data.copy()
+        
+        sr = self.config.audio.sample_rate
+        num_bins = len(spectrum)
+        freq_per_bin = sr / (2 * num_bins)
+        
+        # Convert Hz to bin indices
+        min_bin = max(1, int(min_freq / freq_per_bin))
+        max_bin = min(num_bins - 1, int(max_freq / freq_per_bin))
+        band_bins = max(1, int(band_width / freq_per_bin))
+        
+        if max_bin - min_bin < band_bins:
+            # Range too narrow for the band width
+            center = (min_freq + max_freq) / 2
+            return (center, min_freq, max_freq)
+        
+        # Sliding window: find the band with maximum total energy
+        best_energy = 0.0
+        best_start_bin = min_bin
+        
+        for start_bin in range(min_bin, max_bin - band_bins + 1):
+            end_bin = start_bin + band_bins
+            band_energy = np.sum(spectrum[start_bin:end_bin] ** 2)
+            if band_energy > best_energy:
+                best_energy = band_energy
+                best_start_bin = start_bin
+        
+        # Convert best bin range back to Hz
+        low_freq = best_start_bin * freq_per_bin
+        high_freq = (best_start_bin + band_bins) * freq_per_bin
+        center_freq = (low_freq + high_freq) / 2
+        
+        return (center_freq, low_freq, high_freq)
             
     def list_devices(self) -> list[dict]:
         """List available audio devices"""

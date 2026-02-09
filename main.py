@@ -1904,6 +1904,15 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_acceptable_bpm_max: float = 180.0  # Maximum acceptable BPM
         self._auto_consec_beat_threshold: int = 8  # Consecutive beats in range required to lock
         
+        # Auto-frequency band tracking (experimental)
+        self._auto_freq_enabled: bool = False  # Whether frequency band auto-ranging is enabled
+        self._auto_freq_width: float = 300.0  # Width of frequency band to search (Hz)
+        self._auto_freq_speed: float = 0.1  # Speed of frequency band adjustment (0.0-1.0, higher=faster)
+        self._auto_freq_min: float = 30.0  # Minimum frequency to search (Hz)
+        self._auto_freq_max: float = 2000.0  # Maximum frequency to search (Hz)
+        self._auto_freq_last_update: float = 0.0  # Last time we updated the frequency band
+        self._auto_freq_current_center: float = 100.0  # Current center frequency of beat detection band
+        
         # State
         self.is_running = False
         self.is_sending = False
@@ -3267,6 +3276,11 @@ bREadfan_69@hotmail.com"""
             'tcode_freq_min': self.tcode_freq_range_slider.low(),
             'tcode_freq_max': self.tcode_freq_range_slider.high(),
             'freq_weight': self.freq_weight_slider.value(),
+            
+            # Auto-frequency band tracking (experimental)
+            'auto_freq_enabled': self.auto_freq_cb.isChecked(),
+            'auto_freq_width': self.auto_freq_width_spin.value(),
+            'auto_freq_speed': self.auto_freq_speed_spin.value(),
         }
     
     def _revert_preset(self):
@@ -3506,6 +3520,19 @@ bREadfan_69@hotmail.com"""
         self._auto_cooldown_sec = value
         print(f"[Auto] Cooldown changed to {value:.2f}s")
     
+    def _on_auto_freq_toggle(self, state: int):
+        """Toggle auto-frequency band tracking"""
+        enabled = (state == 2)
+        self._auto_freq_enabled = enabled
+        if enabled:
+            # Initialize center to current band center
+            current_low = self.config.beat.freq_low
+            current_high = self.config.beat.freq_high
+            self._auto_freq_current_center = (current_low + current_high) / 2
+            print(f"[AutoFreq] Enabled - starting from center={self._auto_freq_current_center:.0f}Hz")
+        else:
+            print(f"[AutoFreq] Disabled")
+    
     def _update_param_config(self, param: str, step: Optional[float] = None):
         """Update step size for an auto-adjust parameter from spinbox"""
         print(f"[Spinbox] _update_param_config called: param={param}, step={step}")
@@ -3569,6 +3596,78 @@ bREadfan_69@hotmail.com"""
                     self._auto_consecutive_downbeats[p] = 0  # Reset downbeat counters
                 print(f"[Auto] Silence - all params reset to HUNTING")
             return
+        
+        # === AUTO-FREQUENCY BAND TRACKING (experimental) ===
+        # Only active during HUNTING phase when enabled
+        if self._auto_freq_enabled:
+            # Check if any param is in HUNTING state (frequency tracking only during hunting)
+            any_hunting = any(s == 'HUNTING' for s in self._auto_param_state.values())
+            
+            if any_hunting:
+                # Find the most powerful frequency band
+                if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+                    center, low, high = self.audio_engine.find_peak_frequency_band(
+                        min_freq=self._auto_freq_min,
+                        max_freq=self._auto_freq_max,
+                        band_width=self._auto_freq_width
+                    )
+                    
+                    if center > 0:
+                        # Smooth transition using speed parameter
+                        speed = self._auto_freq_speed
+                        self._auto_freq_current_center = (1 - speed) * self._auto_freq_current_center + speed * center
+                        
+                        # Calculate new band boundaries
+                        half_width = self._auto_freq_width / 2
+                        new_low = max(30, self._auto_freq_current_center - half_width)
+                        new_high = min(22050, self._auto_freq_current_center + half_width)
+                        
+                        # Update config and slider if changed significantly (>5Hz)
+                        old_low = self.config.beat.freq_low
+                        old_high = self.config.beat.freq_high
+                        if abs(new_low - old_low) > 5 or abs(new_high - old_high) > 5:
+                            self.config.beat.freq_low = new_low
+                            self.config.beat.freq_high = new_high
+                            # Update slider (block signals to avoid feedback)
+                            if hasattr(self, 'freq_range_slider'):
+                                self.freq_range_slider.blockSignals(True)
+                                self.freq_range_slider.setLow(int(new_low))
+                                self.freq_range_slider.setHigh(int(new_high))
+                                self.freq_range_slider.blockSignals(False)
+                            print(f"[AutoFreq] HUNTING: band={new_low:.0f}-{new_high:.0f}Hz (center={self._auto_freq_current_center:.0f}Hz)")
+            else:
+                # REVERSING/LOCKED phase: allow range to expand (find wider band)
+                if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+                    # Use wider search width during REVERSING
+                    expanded_width = self._auto_freq_width * 1.5
+                    center, low, high = self.audio_engine.find_peak_frequency_band(
+                        min_freq=self._auto_freq_min,
+                        max_freq=self._auto_freq_max,
+                        band_width=expanded_width
+                    )
+                    
+                    if center > 0:
+                        # Very slow expansion
+                        speed = self._auto_freq_speed * 0.3  # 30% of normal speed
+                        self._auto_freq_current_center = (1 - speed) * self._auto_freq_current_center + speed * center
+                        
+                        # Calculate expanded band boundaries
+                        half_width = expanded_width / 2
+                        new_low = max(30, self._auto_freq_current_center - half_width)
+                        new_high = min(22050, self._auto_freq_current_center + half_width)
+                        
+                        # Update only if expanding the range
+                        old_low = self.config.beat.freq_low
+                        old_high = self.config.beat.freq_high
+                        if new_low < old_low or new_high > old_high:
+                            self.config.beat.freq_low = min(new_low, old_low)
+                            self.config.beat.freq_high = max(new_high, old_high)
+                            if hasattr(self, 'freq_range_slider'):
+                                self.freq_range_slider.blockSignals(True)
+                                self.freq_range_slider.setLow(int(self.config.beat.freq_low))
+                                self.freq_range_slider.setHigh(int(self.config.beat.freq_high))
+                                self.freq_range_slider.blockSignals(False)
+                            print(f"[AutoFreq] EXPANDING: band={self.config.beat.freq_low:.0f}-{self.config.beat.freq_high:.0f}Hz")
         
         # Threshold BPM from spinbox
         lower_threshold_bpm = 60.0 / self._auto_threshold_sec if self._auto_threshold_sec > 0 else 140
@@ -3872,6 +3971,11 @@ bREadfan_69@hotmail.com"""
         self.global_auto_range_cb.setToolTip("Toggle all auto-adjustment functions for beat detection")
         self.global_auto_range_cb.stateChanged.connect(lambda state: self._enable_all_auto_beat_detection(state == 2))
         type_layout.addWidget(self.global_auto_range_cb)
+        # Experimental label
+        exp_label = QLabel("{experimental}")
+        exp_label.setStyleSheet("color: #FFD700; font-style: italic; font-size: 10px;")
+        exp_label.setToolTip("Auto-range features are experimental and may behave unexpectedly")
+        type_layout.addWidget(exp_label)
         # Traffic light indicator: Red=LOCKED, Yellow=REVERSING, Green=HUNTING
         self.auto_traffic_light = TrafficLightWidget()
         self.auto_traffic_light.setToolTip("Red=Beat Locked, Yellow=Reversing, Green=Hunting")
@@ -3908,6 +4012,34 @@ bREadfan_69@hotmail.com"""
         self.auto_consec_beats_spin.valueChanged.connect(lambda v: setattr(self, '_auto_consec_beat_threshold', v))
         type_layout.addWidget(self.auto_consec_beats_spin)
         layout.addLayout(type_layout)
+        
+        # Auto-frequency band tracking row (experimental)
+        auto_freq_layout = QHBoxLayout()
+        self.auto_freq_cb = QCheckBox("auto-freq band")
+        self.auto_freq_cb.setToolTip("Automatically find and track the most powerful frequency band for beat detection")
+        self.auto_freq_cb.stateChanged.connect(self._on_auto_freq_toggle)
+        auto_freq_layout.addWidget(self.auto_freq_cb)
+        auto_freq_layout.addWidget(QLabel("width:"))
+        self.auto_freq_width_spin = QSpinBox()
+        self.auto_freq_width_spin.setRange(50, 1000)
+        self.auto_freq_width_spin.setSingleStep(50)
+        self.auto_freq_width_spin.setValue(300)
+        self.auto_freq_width_spin.setFixedWidth(60)
+        self.auto_freq_width_spin.setToolTip("Width of frequency band to track (Hz)")
+        self.auto_freq_width_spin.valueChanged.connect(lambda v: setattr(self, '_auto_freq_width', float(v)))
+        auto_freq_layout.addWidget(self.auto_freq_width_spin)
+        auto_freq_layout.addWidget(QLabel("speed:"))
+        self.auto_freq_speed_spin = QDoubleSpinBox()
+        self.auto_freq_speed_spin.setRange(0.01, 1.00)
+        self.auto_freq_speed_spin.setSingleStep(0.05)
+        self.auto_freq_speed_spin.setDecimals(2)
+        self.auto_freq_speed_spin.setValue(0.10)
+        self.auto_freq_speed_spin.setFixedWidth(60)
+        self.auto_freq_speed_spin.setToolTip("Speed of frequency band tracking (0=slow, 1=instant)")
+        self.auto_freq_speed_spin.valueChanged.connect(lambda v: setattr(self, '_auto_freq_speed', v))
+        auto_freq_layout.addWidget(self.auto_freq_speed_spin)
+        auto_freq_layout.addStretch()
+        layout.addLayout(auto_freq_layout)
         
         # Frequency band selection
         freq_group = QGroupBox("Frequency Band (Hz) - red overlay on spectrum")
@@ -4284,14 +4416,7 @@ bREadfan_69@hotmail.com"""
             'tcode_freq_max': self.tcode_freq_range_slider.high(),
             'freq_weight': self.freq_weight_slider.value(),
 
-            # Auto-adjust toggle states
-            'auto_audio_amp': self.audio_gain_auto_cb.isChecked(),
-            'auto_peak_floor': self.peak_floor_auto_cb.isChecked(),
-            'auto_peak_decay': self.peak_decay_auto_cb.isChecked(),
-            'auto_rise_sens': self.rise_sens_auto_cb.isChecked(),
-            'auto_sensitivity': self.sensitivity_auto_cb.isChecked(),
-            'auto_flux_mult': self.flux_mult_auto_cb.isChecked(),
-            'auto_global': self.global_auto_range_cb.isChecked(),
+            # Auto-adjust parameters (NOT checkbox states - excluded to prevent auto from re-enabling)
             'auto_threshold_sec': self._auto_threshold_sec,
             'auto_cooldown_sec': self._auto_cooldown_sec,
             
@@ -4305,6 +4430,10 @@ bREadfan_69@hotmail.com"""
             
             # Consecutive beats lock threshold
             'auto_consec_beats': self.auto_consec_beats_spin.value(),
+            
+            # Auto-frequency band tracking (experimental, parameters only - checkbox state not saved)
+            'auto_freq_width': self.auto_freq_width_spin.value(),
+            'auto_freq_speed': self.auto_freq_speed_spin.value(),
         }
         
         # Add custom name if provided
@@ -4409,23 +4538,7 @@ bREadfan_69@hotmail.com"""
             if 'freq_weight' in preset_data:
                 self.freq_weight_slider.setValue(preset_data['freq_weight'])
 
-            # Auto-adjust toggle states
-            if 'auto_audio_amp' in preset_data:
-                self.audio_gain_auto_cb.setChecked(preset_data['auto_audio_amp'])
-            if 'auto_peak_floor' in preset_data:
-                self.peak_floor_auto_cb.setChecked(preset_data['auto_peak_floor'])
-            if 'auto_peak_decay' in preset_data:
-                self.peak_decay_auto_cb.setChecked(preset_data['auto_peak_decay'])
-            if 'auto_rise_sens' in preset_data:
-                self.rise_sens_auto_cb.setChecked(preset_data['auto_rise_sens'])
-            if 'auto_sensitivity' in preset_data:
-                self.sensitivity_auto_cb.setChecked(preset_data['auto_sensitivity'])
-            if 'auto_flux_mult' in preset_data:
-                self.flux_mult_auto_cb.setChecked(preset_data['auto_flux_mult'])
-            if 'auto_global' in preset_data:
-                self.global_auto_range_cb.blockSignals(True)
-                self.global_auto_range_cb.setChecked(preset_data['auto_global'])
-                self.global_auto_range_cb.blockSignals(False)
+            # Auto-adjust parameters (NOT checkbox states - those are excluded from presets)
             if 'auto_threshold_sec' in preset_data:
                 self.auto_threshold_spin.setValue(preset_data['auto_threshold_sec'])
             if 'auto_cooldown_sec' in preset_data:
@@ -4448,6 +4561,14 @@ bREadfan_69@hotmail.com"""
             # Consecutive beats lock threshold
             if 'auto_consec_beats' in preset_data:
                 self.auto_consec_beats_spin.setValue(preset_data['auto_consec_beats'])
+            
+            # Auto-frequency band tracking (experimental, parameters only - checkbox state not loaded)
+            if 'auto_freq_width' in preset_data:
+                self.auto_freq_width_spin.setValue(preset_data['auto_freq_width'])
+                self._auto_freq_width = float(preset_data['auto_freq_width'])
+            if 'auto_freq_speed' in preset_data:
+                self.auto_freq_speed_spin.setValue(preset_data['auto_freq_speed'])
+                self._auto_freq_speed = preset_data['auto_freq_speed']
 
             # --- Sync config object with UI (especially enum) ---
             self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)

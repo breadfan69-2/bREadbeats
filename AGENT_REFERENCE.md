@@ -401,6 +401,29 @@ self._freq_window_ms: float = 250.0    # milliseconds
 ```
 Removes samples older than 250ms, averages remaining. Reduces jitter while keeping real-time responsiveness.
 
+**Auto-Frequency Band Tracking (Experimental):**
+Automatically finds and tracks the most powerful frequency band within 30-2000Hz for beat detection.
+```python
+self._auto_freq_enabled: bool = False  # Toggle via "auto-freq band" checkbox
+self._auto_freq_width: float = 300.0   # Width of band to search (Hz) - "width:" spinbox
+self._auto_freq_speed: float = 0.1     # Tracking speed 0-1 (higher=faster) - "speed:" spinbox
+```
+**HUNTING mode behavior:**
+- Finds peak ~300Hz band within 30-2000Hz using sliding window FFT energy
+- Smoothly transitions current center toward peak using speed parameter
+- Updates beat detection freq_low/freq_high config and slider
+
+**REVERSING/LOCKED mode behavior:**
+- Uses 1.5× wider band (expanded_width = _auto_freq_width * 1.5)
+- Only EXPANDS range (never shrinks) at 30% of normal speed
+- Allows locked parameters to capture more frequency content
+
+**Audio Engine Method:**
+```python
+def find_peak_frequency_band(min_freq, max_freq, band_width) -> (center, low, high)
+```
+Returns the center and bounds of the most powerful frequency band.
+
 ---
 
 ## Real-Time Data Requirement ⚠️ CRITICAL
