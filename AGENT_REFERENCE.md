@@ -7,7 +7,7 @@ This document serves as a canonical reference for future AI agents working on bR
 
 ## Program Overview
 
-**bREadbeats** is a real-time audio-reactive TCode generator for restim devices. It captures system audio, detects beats and tempo, and generates smooth circular/arc stroke patterns in the alpha/beta plane. Additionally, it monitors dominant audio frequencies and translates them to TCode values for pulse frequency (P0) and carrier frequency (F0), and feeds the same dominant frequency into StrokeMapper to scale stroke depth (bass → deeper, treble → shallower).
+**bREadbeats** is a real-time audio-reactive TCode generator for restim devices. It captures system audio, detects beats and tempo, and generates smooth circular/arc stroke patterns in the alpha/beta plane. Additionally, it monitors dominant audio frequencies and translates them to TCode values for pulse frequency (P0) and carrier frequency (C0), and feeds the same dominant frequency into StrokeMapper to scale stroke depth (bass → deeper, treble → shallower).
 
 ### Core Signal Flow
 
@@ -23,13 +23,13 @@ This document serves as a canonical reference for future AI agents working on bR
         │
         ▼
 ┌─────────────────┐
-│  P0/F0 TCode    │──▶ Pulse & Carrier frequency commands
+│  P0/C0 TCode    │──▶ Pulse & Carrier frequency commands
 │  Frequency Map  │
 └─────────────────┘
 ```
 
 ### Key Files
-- **main.py** - GUI (PyQt6), wiring, P0/F0 computation, visualizers
+- **main.py** - GUI (PyQt6), wiring, P0/C0 computation, visualizers
 - **audio_engine.py** - Audio capture, FFT, beat/tempo detection, downbeat tracking, dominant-frequency estimation per frame
 - **stroke_mapper.py** - Beat→stroke conversion, 4 stroke modes, jitter/creep, depth scaling from dominant frequency via `_freq_to_factor`
 - **network_engine.py** - TCP connection to restim, TCodeCommand class
@@ -219,17 +219,18 @@ quiet_energy_thresh = beat_cfg.peak_floor * 0.3
 - Reset tempo/downbeat after `silence_reset_ms` (default 400ms)
 - Idle motion suppressed when `_fade_intensity < 0.01`
 
-### 7. Frequency Detection → P0/F0 TCode & Stroke Depth
+### 7. Frequency Detection → P0/C0 TCode & Stroke Depth
 
 **Reference commit:** `710d63e` (range slider wiring), `097fea9` (Hz*67 formula)
 
-**P0/F0 Pipeline:**
+**P0/C0 Pipeline:**
 1. Monitor dominant frequency in configurable Hz range (30-22050 Hz sliders)
 2. Normalize to 0-1 based on monitor min/max
 3. Apply freq_weight to scale effect (0.5 + (norm - 0.5) * weight)
 4. Convert to TCode:
    - **P0**: `tcode_val = int(freq_hz * 67)` (0-150 Hz → 0-9999 TCode)
-   - **F0**: `tcode_val = int((display - 500) * 10)` (500-1500 display → 0-9999 TCode)
+   - **C0**: `tcode_val = int((display - 500) * 10)` (500-1500 display → 0-9999 TCode)
+     - Note: restim uses C0 for carrier frequency (not F0)
 
 **Stroke Depth Frequency Mapping:**
 1. **depth_freq_range_slider** (30-22050 Hz) defines which frequencies affect stroke depth
@@ -249,7 +250,7 @@ quiet_energy_thresh = beat_cfg.peak_floor * 0.3
 - Red (50% height): Beat detection band
 - Green (40% height): Stroke depth band  
 - Blue (33% height): P0 TCode band
-- Cyan (25% height): F0 TCode band
+- Cyan (25% height): C0 TCode band (carrier frequency)
 
 ---
 
@@ -307,8 +308,8 @@ Dual-handle sliders for min/max pairs:
 - **Stroke depth freq** (30-22050 Hz) → Green band on visualizer → Controls stroke depth based on bass/treble content  
 - **Pulse monitor freq** (30-22050 Hz) → Blue band on visualizer → Audio range for P0 TCode generation
 - **Pulse TCode freq** (0-150 Hz) → P0 output range (Hz*67 → TCode 0-9999)
-- **Carrier monitor freq** (30-22050 Hz) → Cyan band on visualizer → Audio range for F0 TCode generation  
-- **Carrier TCode freq** (500-1500) → F0 output range ((display-500)*10 → TCode 0-9999)
+- **Carrier monitor freq** (30-22050 Hz) → Cyan band on visualizer → Audio range for C0 TCode generation  
+- **Carrier TCode freq** (500-1500) → C0 output range ((display-500)*10 → TCode 0-9999)
 
 ### Preset System
 5-slot custom presets storing all settings:
@@ -362,18 +363,18 @@ reset_values = {
 **Slider Ranges (Control Hunting Search Space):**
 | Parameter | Min | Max | Reset | Why Changed |
 |-----------|-----|-----|-------|-------------|
-| audio_amp | 0.15 | 5.0 | 0.15 | Reset to min; hunting raises it |
-| peak_floor | 0.015 | 0.14 | 0.14 | Reset to max; hunting lowers it; min raised to 0.015 |
+| audio_amp | 0.15 | 10.0 | 0.15 | Reset to min; hunting raises it |
+| peak_floor | 0.015 | 0.28 | 0.14 | Reset to max; hunting lowers it; min raised to 0.015 |
 | peak_decay | 0.230 | 0.999 | 0.999 | Reset to max; hunting lowers it; min raised to 0.230 |
 | rise_sens | 0.02 | 1.0 | 0.02 | Rise height threshold; min 0.02 to prevent user issues |
 | sensitivity | 0.01 | 1.0 | 0.1 | Unchanged |
-| flux_mult | 0.2 | 5.0 | 0.2 | Min raised to 0.2 to prevent stroke disconnect |
+| flux_mult | 0.2 | 10.0 | 0.2 | Min raised to 0.2 to prevent stroke disconnect |
 
 **Parameter Definitions:**
 - **rise_sens (Rise Sensitivity)**: Distance between peak and valley that triggers beat detection. Higher = needs bigger rise = fewer false positives. Hunts UP during auto-adjust.
 - **peak_floor**: Valley height threshold in spectrum. Audio energy below this floor is ignored. Higher = only strong beats detected.
 
-**CRITICAL:** Narrower ranges enable faster convergence. DO NOT widen peak_floor above 0.14.
+**CRITICAL:** Narrower ranges enable faster convergence. DO NOT widen peak_floor above 0.28.
 
 **Beathunting Emergency Trigger:**
 If 3+ consecutive no-beat cycles occur while audio is playing:
@@ -392,11 +393,11 @@ if self._auto_no_beat_count >= self._auto_beathunting_threshold and has_audio:
 - Width: 85px (was 75px; accommodates 4 decimals)
 - Allows fine tuning of small parameters without rounding errors
 
-**P0/F0 Sliding Window Averaging (250ms Rolling Window):**
+**P0/C0 Sliding Window Averaging (250ms Rolling Window):**
 Smooth frequency display by accumulating time-weighted samples:
 ```python
 self._p0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
-self._f0_freq_window: deque = deque()
+self._c0_freq_window: deque = deque()
 self._freq_window_ms: float = 250.0    # milliseconds
 ```
 Removes samples older than 250ms, averages remaining. Reduces jitter while keeping real-time responsiveness.
@@ -496,7 +497,7 @@ queued_commands.append(pre_computed_p0)  # NEVER queue commands
     - Lower values (~1.1) won't feel emphatic
     - Code in stroke_mapper.py ~line 229
 
-13. **Removing P0/F0 sliding window**
+13. **Removing P0/C0 sliding window**
     - Window smoothing prevents jittery Hz display
     - Removing causes values to jump erratically
     - 250ms window balances smoothness + responsiveness
@@ -520,7 +521,7 @@ Before committing changes:
 - [ ] Jitter creates small circles (not random jumps)
 - [ ] Creep rotates smoothly (not jerky)
 - [ ] Downbeat detection triggers extended strokes
-- [ ] P0/F0 display shows correct Hz values
+- [ ] P0/C0 display shows correct Hz values
 - [ ] Preset load/save works for all settings and checkboxes in all tabs
 - [ ] Range slider dragging updates visualizer bands
 - [ ] Silence properly fades out and resets tempo
@@ -575,7 +576,7 @@ Before committing changes:
    - Enable creep, verify slow rotation follows tempo
    - Should rotate smoothly, not jerkily
 
-9. **P0/F0 Display**
+9. **P0/C0 Display**
    - Enable pulse checkbox
    - Verify Hz display is smooth (not jittery)
    - 250ms sliding window should prevent value jumps
@@ -623,14 +624,18 @@ When downbeat timing matches predicted pattern for 3+ consecutive downbeats:
 - After 3 accepted consecutive downbeats: tempo LOCKED
 - Log shows acceptance/rejection with phase error
 
-### 5. P0/F0 Sliding Window Averaging (Smooth Display)
+### 5. P0/C0 Sliding Window Averaging (Smooth Display)
 250ms rolling window averages samples for smooth Hz display, reducing jitter by ~80% while keeping <250ms response.
 
 ### 6. Slider Range Adjustments (Optimize Search Space)
-- peak_floor: 0.01-0.14 (was 0.0-0.8), reset=0.08
-- peak_decay: 0.2-0.999 (was 0.5-0.999)
-- audio_amp: 0.15-5.0 (was 0.1-10.0, removed 1.0 hunting limit)
+- peak_floor: 0.015-0.28 (was 0.0-0.8), reset=0.08
+- peak_decay: 0.23-0.999 (was 0.5-0.999)
+- audio_amp: 0.15-10.0 (widened max for more headroom)
+- flux_mult: 0.2-10.0 (widened max for more headroom)
 - freq_weight: 0.0-5.0 (was 0.0-2.0)
+- min_interval: 50-5000ms (was 50-500ms)
+- freq_depth_factor: 0.0-2.0 (was 0.0-1.0)
+- volume: 0-100 (display scale, internally 0-1)
 
 Narrower ranges = Faster hunting convergence (50% faster parameter detection).
 

@@ -12,6 +12,7 @@ from typing import Optional, Callable
 from dataclasses import dataclass, field
 
 from config import Config
+from logging_utils import log_event
 
 
 @dataclass
@@ -48,7 +49,7 @@ class TCodeCommand:
         # Volume to 0..9999
         v0_val = int(max(0.0, min(1.0, self.volume)) * 9999)
 
-        # Build command string: L0xxxxIyyy L1xxxxIyyy V0xxxxIyyy [P0xxxx] [F0xxxx]
+        # Build command string: L0xxxxIyyy L1xxxxIyyy V0xxxxIyyy [P0xxxx] [C0xxxx]
         cmd = f"L0{l0_val:04d}I{self.duration_ms} L1{l1_val:04d}I{self.duration_ms} V0{v0_val:04d}I{self.duration_ms}"
         
         # Add P0xxxxIyyy if present (4 digits, 0000-9999)
@@ -60,12 +61,12 @@ class TCodeCommand:
         # Add any other tcode_tags if present (with interpolation time)
         tcode_tags = getattr(self, 'tcode_tags', {})
         for tag, val in tcode_tags.items():
-            if tag == 'F0_duration':
+            if tag == 'C0_duration':
                 continue  # Skip duration tag itself
             if tag != 'P0':
-                # Use F0_duration for F0 if available
-                f0_dur = tcode_tags.get('F0_duration', None) if tag == 'F0' else None
-                dur = f0_dur or self.duration_ms
+                # Use C0_duration for C0 if available
+                c0_dur = tcode_tags.get('C0_duration', None) if tag == 'C0' else None
+                dur = c0_dur or self.duration_ms
                 cmd += f" {tag}{int(val):04d}I{dur}"
         
         cmd += "\n"
@@ -103,7 +104,7 @@ class NetworkEngine:
         # Worker thread
         self.worker_thread: Optional[threading.Thread] = None
         
-    def start(self):
+    def start(self) -> None:
         """Start the network engine"""
         if self.running:
             return
@@ -111,13 +112,13 @@ class NetworkEngine:
         self.running = True
         self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker_thread.start()
-        print("[NetworkEngine] Started")
+        log_event("INFO", "NetworkEngine", "Started")
         
         # Auto-connect if configured
         if self.config.connection.auto_connect:
             self.connect()
             
-    def stop(self):
+    def stop(self) -> None:
         """Stop the network engine"""
         self.running = False
         self.disconnect()
@@ -129,7 +130,7 @@ class NetworkEngine:
             except queue.Empty:
                 break
                 
-        print("[NetworkEngine] Stopped")
+        log_event("INFO", "NetworkEngine", "Stopped")
         
     def connect(self) -> bool:
         """Connect to restim"""
@@ -148,7 +149,7 @@ class NetworkEngine:
             self.connected = True
             self._was_connected = True  # Track that we've successfully connected before
             self._notify_status(f"Connected to restim at {self.config.connection.host}:{self.config.connection.port}", True)
-            print(f"[NetworkEngine] Connected to restim")
+            log_event("INFO", "NetworkEngine", "Connected", host=self.config.connection.host, port=self.config.connection.port)
             return True
             
         except Exception as e:
@@ -157,12 +158,12 @@ class NetworkEngine:
             if len(err_str) > 40:
                 err_str = err_str[:40] + "..."
             self._notify_status(f"Connection failed: {err_str}", False)
-            print(f"[NetworkEngine] Connection failed: {e}")
+            log_event("ERROR", "NetworkEngine", "Connection failed", error=err_str)
             self.socket = None
             self.connected = False
             return False
             
-    def disconnect(self):
+    def disconnect(self) -> None:
         """Disconnect from restim"""
         if self.socket:
             try:
@@ -173,24 +174,24 @@ class NetworkEngine:
             
         self.connected = False
         self._notify_status("Disconnected", False)
-        print("[NetworkEngine] Disconnected")
+        log_event("INFO", "NetworkEngine", "Disconnected")
         
-    def user_disconnect(self):
+    def user_disconnect(self) -> None:
         """User explicitly disconnected - do NOT auto-reconnect"""
         self._user_disconnected = True
         self.disconnect()
     
-    def user_connect(self):
+    def user_connect(self) -> None:
         """User explicitly clicked connect - clear disconnect flag and connect"""
         self._user_disconnected = False
         self.connect()
     
-    def send_command(self, cmd: TCodeCommand):
+    def send_command(self, cmd: TCodeCommand) -> None:
         """Queue a command to send"""
         if self.running:
             self.cmd_queue.put(cmd)
             
-    def send_test(self):
+    def send_test(self) -> None:
         """Send a test pattern to verify connection"""
         if not self.connected:
             print("[NetworkEngine] Cannot test - not connected")
@@ -229,13 +230,13 @@ class NetworkEngine:
         # Run in separate thread to not block
         threading.Thread(target=send_sequence, daemon=True).start()
             
-    def set_sending_enabled(self, enabled: bool):
+    def set_sending_enabled(self, enabled: bool) -> None:
         """Enable/disable sending commands (play/pause)"""
         self.sending_enabled = enabled
         status = "Playing" if enabled else "Paused"
-        print(f"[NetworkEngine] {status}")
+        log_event("INFO", "NetworkEngine", status)
         
-    def _worker_loop(self):
+    def _worker_loop(self) -> None:
         """Background worker that sends queued commands"""
         reconnect_timer = 0
         
@@ -262,9 +263,9 @@ class NetworkEngine:
             except queue.Empty:
                 pass
             except Exception as e:
-                print(f"[NetworkEngine] Worker error: {e}")
+                log_event("ERROR", "NetworkEngine", "Worker error", error=e)
                 
-    def _send_tcode(self, cmd: TCodeCommand):
+    def _send_tcode(self, cmd: TCodeCommand) -> None:
         """Send a T-code command over the socket"""
         if not self.socket:
             return
@@ -275,12 +276,12 @@ class NetworkEngine:
             self.socket.sendall(tcode.encode('utf-8'))
             # print(f"[NetworkEngine] Sent: {tcode.strip()}")  # Debug
         except socket.timeout:
-            print("[NetworkEngine] Send timeout")
+            log_event("WARN", "NetworkEngine", "Send timeout")
         except Exception as e:
-            print(f"[NetworkEngine] Send error: {e}")
+            log_event("ERROR", "NetworkEngine", "Send error", error=e)
             self.disconnect()
             
-    def _notify_status(self, message: str, connected: bool):
+    def _notify_status(self, message: str, connected: bool) -> None:
         """Notify status callback"""
         if self.status_callback:
             self.status_callback(message, connected)

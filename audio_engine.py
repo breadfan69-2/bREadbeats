@@ -11,20 +11,22 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 import time
 
+from logging_utils import log_event
+
 # Scipy for Butterworth bandpass filter
 try:
     from scipy.signal import butter, sosfilt
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
-    print("[AudioEngine] Warning: scipy not found, using FFT-based frequency filtering")
+    log_event("WARN", "AudioEngine", "scipy not found, using FFT-based frequency filtering")
 
 try:
     import aubio
     HAS_AUBIO = True
 except ImportError:
     HAS_AUBIO = False
-    print("[AudioEngine] Warning: aubio not found, using fallback beat detection")
+    log_event("WARN", "AudioEngine", "aubio not found, using fallback beat detection")
 
 from config import Config, BeatDetectionType
 
@@ -46,7 +48,7 @@ class BeatEvent:
 
 
 class AudioEngine:
-    def reset_tempo_tracking(self):
+    def reset_tempo_tracking(self) -> None:
         """Public method to reset tempo and downbeat tracking immediately."""
         self.last_known_tempo = self.smoothed_tempo
         self.beat_intervals.clear()
@@ -173,12 +175,12 @@ class AudioEngine:
             # Initialize filter state for smooth continuous filtering
             from scipy.signal import sosfilt_zi
             self._butter_zi = sosfilt_zi(self._butter_sos)
-            print(f"[AudioEngine] Butterworth bandpass filter initialized: {low_freq:.0f}-{high_freq:.0f} Hz")
+            log_event("INFO", "AudioEngine", "Butterworth bandpass initialized", low=f"{low_freq:.0f}", high=f"{high_freq:.0f}")
         except Exception as e:
-            print(f"[AudioEngine] Failed to initialize Butterworth filter: {e}")
+            log_event("ERROR", "AudioEngine", "Failed to initialize Butterworth filter", error=e)
             self._butter_sos = None
         
-    def start(self):
+    def start(self) -> None:
         """Start audio capture and beat detection"""
         if self.running:
             return
@@ -220,7 +222,7 @@ class AudioEngine:
             self._init_butterworth_filter()
                 
         except Exception as e:
-            print(f"[AudioEngine] Failed to start: {e}")
+            log_event("ERROR", "AudioEngine", "Failed to start", error=e)
             self.running = False
             if self.pyaudio:
                 self.pyaudio.terminate()
@@ -248,8 +250,8 @@ class AudioEngine:
                         device_info = loopback
                         break
         
-        print(f"[AudioEngine] Using WASAPI loopback: {device_info['name']}")
-        print(f"[AudioEngine] Channels: {device_info['maxInputChannels']}, SR: {int(device_info['defaultSampleRate'])}Hz")
+        log_event("INFO", "AudioEngine", "Using WASAPI loopback", device=device_info['name'])
+        log_event("INFO", "AudioEngine", "Loopback format", channels=device_info['maxInputChannels'], sample_rate=int(device_info['defaultSampleRate']))
         
         # Update config with actual sample rate
         self.config.audio.sample_rate = int(device_info['defaultSampleRate'])
@@ -267,7 +269,7 @@ class AudioEngine:
         )
         
         self.stream.start_stream()
-        print("[AudioEngine] WASAPI loopback capture started successfully!")
+        log_event("INFO", "AudioEngine", "WASAPI loopback capture started")
     
     def _start_input_capture(self, device_index):
         """Start regular input capture (microphone)"""
@@ -278,8 +280,8 @@ class AudioEngine:
         
         device_info = self.pyaudio.get_device_info_by_index(device_index)
         
-        print(f"[AudioEngine] Using input device: {device_info['name']}")
-        print(f"[AudioEngine] Channels: {device_info['maxInputChannels']}, SR: {int(device_info['defaultSampleRate'])}Hz")
+        log_event("INFO", "AudioEngine", "Using input device", device=device_info['name'])
+        log_event("INFO", "AudioEngine", "Input format", channels=device_info['maxInputChannels'], sample_rate=int(device_info['defaultSampleRate']))
         
         # Update config with actual sample rate
         self.config.audio.sample_rate = int(device_info['defaultSampleRate'])
@@ -297,10 +299,10 @@ class AudioEngine:
         )
         
         self.stream.start_stream()
-        print("[AudioEngine] Input capture started successfully!")
+        log_event("INFO", "AudioEngine", "Input capture started")
 
         
-    def stop(self):
+    def stop(self) -> None:
         """Stop audio capture"""
         self.running = False
         if self.stream:
@@ -310,7 +312,7 @@ class AudioEngine:
         if self.pyaudio:
             self.pyaudio.terminate()
             self.pyaudio = None
-        print("[AudioEngine] Stopped")
+        log_event("INFO", "AudioEngine", "Stopped")
     
     def _audio_callback_pyaudio(self, in_data, frame_count, time_info, status):
         """PyAudio callback - process incoming audio data"""
@@ -378,7 +380,16 @@ class AudioEngine:
             # Log raw audio level too
             raw_rms = np.sqrt(np.mean(mono ** 2))
             full_spectrum_energy = np.sqrt(np.mean(spectrum ** 2)) if len(spectrum) > 0 else 0
-            print(f"[Audio] raw_rms={raw_rms:.6f} full_spectrum={full_spectrum_energy:.6f} band_energy={band_energy:.6f} flux={spectral_flux:.4f} peak_env={self.peak_envelope:.6f}")
+            log_event(
+                "INFO",
+                "Audio",
+                "Levels",
+                raw_rms=f"{raw_rms:.6f}",
+                spectrum=f"{full_spectrum_energy:.6f}",
+                band_energy=f"{band_energy:.6f}",
+                flux=f"{spectral_flux:.4f}",
+                peak_env=f"{self.peak_envelope:.6f}"
+            )
         
         # Track peak envelope with decay (using band energy)
         decay = self.config.beat.peak_decay
@@ -394,7 +405,13 @@ class AudioEngine:
         tempo_reset_flag = False
         if time_since_last_beat > self.tempo_timeout_ms and len(self.beat_intervals) > 0:
             # Timeout reached - reset tempo tracking but preserve last known tempo
-            print(f"[Tempo] No beats for {time_since_last_beat:.0f}ms - resetting tempo tracker (keeping BPM={self.smoothed_tempo:.1f})")
+            log_event(
+                "INFO",
+                "Tempo",
+                "No beats detected, resetting tracker",
+                idle_ms=f"{time_since_last_beat:.0f}",
+                bpm=f"{self.smoothed_tempo:.1f}"
+            )
             self.last_known_tempo = self.smoothed_tempo  # Preserve current tempo
             self.beat_intervals.clear()
             self.beat_times.clear()
@@ -542,7 +559,15 @@ class AudioEngine:
         if is_beat:
             self._last_beat_time = current_time
             self._update_tempo_tracking(current_time, energy)
-            print(f"[Beat] energy={energy:.4f} (thresh={energy_threshold:.4f}) flux={flux:.4f} bpm={self.smoothed_tempo:.1f}")
+            log_event(
+                "INFO",
+                "BEAT",
+                "Beat detected",
+                energy=f"{energy:.4f}",
+                threshold=f"{energy_threshold:.4f}",
+                flux=f"{flux:.4f}",
+                bpm=f"{self.smoothed_tempo:.1f}"
+            )
         
         return is_beat
     
@@ -570,18 +595,18 @@ class AudioEngine:
                 # Auto-halve: if BPM > 180, double the interval (halve BPM)
                 while 60.0 / adjusted_interval > max_bpm and adjusted_interval < 2.0:
                     adjusted_interval *= 2
-                    print(f"[Tempo] Auto-halved BPM: {60.0/interval:.1f} -> {60.0/adjusted_interval:.1f}")
+                    log_event("INFO", "Tempo", "Auto-halved BPM", original=f"{60.0/interval:.1f}", adjusted=f"{60.0/adjusted_interval:.1f}")
                 
                 # Auto-double: if BPM < 60, halve the interval (double BPM)
                 while 60.0 / adjusted_interval < min_bpm and adjusted_interval > 0.1:
                     adjusted_interval /= 2
-                    print(f"[Tempo] Auto-doubled BPM: {60.0/interval:.1f} -> {60.0/adjusted_interval:.1f}")
+                    log_event("INFO", "Tempo", "Auto-doubled BPM", original=f"{60.0/interval:.1f}", adjusted=f"{60.0/adjusted_interval:.1f}")
                 
                 interval = adjusted_interval
             
             # Reject intervals still outside reasonable range after adjustment
             if interval < 0.15 or interval > 2.0:
-                print(f"[Tempo] Interval rejected: {interval:.3f}s (BPM would be {60.0/interval:.1f})")
+                log_event("INFO", "Tempo", "Interval rejected", interval=f"{interval:.3f}s", bpm=f"{60.0/interval:.1f}")
                 return
             if interval > 0.2:
                 # Outlier rejection: if interval is way off from average, it might be a false beat
@@ -589,7 +614,7 @@ class AudioEngine:
                     avg_interval = np.mean(self.beat_intervals)
                     # Accept if within 0.5x to 2.0x of average (allows tempo changes but rejects glitches)
                     if interval < (0.5 * avg_interval) or interval > (2.0 * avg_interval):
-                        print(f"[Tempo] Outlier interval rejected: {interval:.3f}s (avg: {avg_interval:.3f}s)")
+                        log_event("INFO", "Tempo", "Outlier interval rejected", interval=f"{interval:.3f}s", avg=f"{avg_interval:.3f}s")
                         return
                 
                 # Phase snap: if we have a stable tempo, nudge detected interval toward predicted
@@ -600,7 +625,7 @@ class AudioEngine:
                     if abs(interval - predicted_interval) / predicted_interval < 0.2:
                         old_interval = interval
                         interval = interval * (1 - self.phase_snap_weight) + predicted_interval * self.phase_snap_weight
-                        print(f"[Tempo] Phase snap: {old_interval:.3f}s -> {interval:.3f}s (predicted: {predicted_interval:.3f}s)")
+                        log_event("INFO", "Tempo", "Phase snap", old=f"{old_interval:.3f}s", new=f"{interval:.3f}s", predicted=f"{predicted_interval:.3f}s")
                 
                 # Add to interval history
                 self.beat_intervals.append(interval)
@@ -634,9 +659,9 @@ class AudioEngine:
                     # Only commit to stable_tempo when stability is high enough
                     if cv < self.stability_threshold:
                         self.stable_tempo = self.smoothed_tempo
-                        print(f"[Tempo] Stable BPM committed: {self.stable_tempo:.1f} (CV={cv:.3f}, stability={self.beat_stability:.2f})")
+                        log_event("INFO", "Tempo", "Stable BPM committed", bpm=f"{self.stable_tempo:.1f}", cv=f"{cv:.3f}", stability=f"{self.beat_stability:.2f}")
                     else:
-                        print(f"[Tempo] BPM unstable: {self.smoothed_tempo:.1f} (CV={cv:.3f}, stability={self.beat_stability:.2f})")
+                        log_event("INFO", "Tempo", "BPM unstable", bpm=f"{self.smoothed_tempo:.1f}", cv=f"{cv:.3f}", stability=f"{self.beat_stability:.2f}")
                 else:
                     self.beat_stability = 0.0
                 
@@ -686,17 +711,38 @@ class AudioEngine:
                     
                     if pattern_matches:
                         self.consecutive_matching_downbeats += 1
-                        print(f"[Downbeat] Position {pos_idx+1}/{self.beats_per_measure} (confidence={self.downbeat_confidence:.2f}, "
-                              f"pattern_match=YES, consecutive={self.consecutive_matching_downbeats}/{self.consecutive_match_threshold}, "
-                              f"error={self.phase_error_ms:.1f}ms, energies={[f'{e:.2f}' for e in avg_energies]})")
+                        log_event(
+                            "INFO",
+                            "Downbeat",
+                            "Accepted",
+                            position=f"{pos_idx+1}/{self.beats_per_measure}",
+                            confidence=f"{self.downbeat_confidence:.2f}",
+                            consecutive=f"{self.consecutive_matching_downbeats}/{self.consecutive_match_threshold}",
+                            error_ms=f"{self.phase_error_ms:.1f}",
+                            energies="[" + ", ".join(f"{e:.2f}" for e in avg_energies) + "]"
+                        )
                     else:
                         self.consecutive_matching_downbeats = 0
-                        print(f"[Downbeat REJECTED] Position {pos_idx+1}/{self.beats_per_measure} (confidence={self.downbeat_confidence:.2f}, "
-                              f"pattern_match=NO, error={self.phase_error_ms:.1f}ms exceeds tolerance, energies={[f'{e:.2f}' for e in avg_energies]})")
+                        log_event(
+                            "INFO",
+                            "Downbeat",
+                            "Rejected",
+                            position=f"{pos_idx+1}/{self.beats_per_measure}",
+                            confidence=f"{self.downbeat_confidence:.2f}",
+                            error_ms=f"{self.phase_error_ms:.1f}",
+                            energies="[" + ", ".join(f"{e:.2f}" for e in avg_energies) + "]"
+                        )
                 else:
                     self.is_downbeat = is_energy_downbeat
                     if self.is_downbeat:
-                        print(f"[Downbeat] Position {pos_idx+1}/{self.beats_per_measure} (confidence={self.downbeat_confidence:.2f}, energies={[f'{e:.2f}' for e in avg_energies]})")
+                        log_event(
+                            "INFO",
+                            "Downbeat",
+                            "Energy downbeat",
+                            position=f"{pos_idx+1}/{self.beats_per_measure}",
+                            confidence=f"{self.downbeat_confidence:.2f}",
+                            energies="[" + ", ".join(f"{e:.2f}" for e in avg_energies) + "]"
+                        )
         
         self.last_beat_time = current_time
     
@@ -858,16 +904,16 @@ if __name__ == "__main__":
     
     def on_beat(event: BeatEvent):
         if event.is_beat:
-            print(f"BEAT! intensity={event.intensity:.2f} freq={event.frequency:.0f}Hz")
+            log_event("INFO", "BEAT", "Test beat", intensity=f"{event.intensity:.2f}", freq_hz=f"{event.frequency:.0f}")
             
     config = Config()
     engine = AudioEngine(config, on_beat)
     
-    print("Available devices:")
+    log_event("INFO", "AudioEngine", "Available devices")
     for d in engine.list_devices():
-        print(f"  [{d['index']}] {d['name']} ({d['inputs']} ch)")
+        log_event("INFO", "AudioEngine", "Device", index=d['index'], name=d['name'], inputs=d['inputs'])
         
-    print("\nStarting audio capture (Ctrl+C to stop)...")
+    log_event("INFO", "AudioEngine", "Starting audio capture (Ctrl+C to stop)...")
     engine.start()
     
     try:
