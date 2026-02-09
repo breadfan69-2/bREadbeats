@@ -3992,6 +3992,31 @@ bREadfan_69@hotmail.com"""
         
         print(f"[Metric] {metric} {'enabled' if enabled else 'disabled'}")
     
+    def _on_metric_bps_change(self, _value=None):
+        """Update target BPS range for rise_sens metric"""
+        if not hasattr(self, '_metric_bps_targets'):
+            self._metric_bps_targets = (1.0, 3.0)
+        
+        bps_min = self.metric_bps_min_spin.value()
+        bps_max = self.metric_bps_max_spin.value()
+        
+        # Ensure min < max
+        if bps_min >= bps_max:
+            bps_max = bps_min + 0.5
+            self.metric_bps_max_spin.blockSignals(True)
+            self.metric_bps_max_spin.setValue(bps_max)
+            self.metric_bps_max_spin.blockSignals(False)
+        
+        self._metric_bps_targets = (bps_min, bps_max)
+        
+        # Update BPM display label
+        bpm_min = int(bps_min * 60)
+        bpm_max = int(bps_max * 60)
+        if hasattr(self, 'metric_bps_bpm_label'):
+            self.metric_bps_bpm_label.setText(f"(= {bpm_min}-{bpm_max} BPM)")
+        
+        print(f"[Metric] Target BPS: {bps_min:.1f}-{bps_max:.1f} ({bpm_min}-{bpm_max} BPM)")
+
     def _on_metric_feedback(self, metric: str, value: float, target_low: float, target_high: float):
         """Process metric feedback and adjust parameters with PD control.
         
@@ -4817,11 +4842,48 @@ bREadfan_69@hotmail.com"""
         
         self.metric_rise_sens_cb = QCheckBox("Enable Rise Sensitivity Metric (beat rate feedback)")
         self.metric_rise_sens_cb.setChecked(False)
-        self.metric_rise_sens_cb.setToolTip("Adjusts rise_sensitivity based on beat rate - targets 1-3 beats per second")
+        self.metric_rise_sens_cb.setToolTip("Adjusts rise_sensitivity based on beat rate")
         self.metric_rise_sens_cb.stateChanged.connect(lambda state: self._on_metric_toggle('rise_sens', state == 2))
         metric_checkboxes_layout.addWidget(self.metric_rise_sens_cb)
         
         metric_layout.addLayout(metric_checkboxes_layout)
+        
+        # Target BPS controls for rise_sens metric
+        bps_row = QHBoxLayout()
+        bps_label = QLabel("Target BPS:")
+        bps_label.setToolTip("Target beats per second range for rise sensitivity metric")
+        bps_row.addWidget(bps_label)
+        
+        self.metric_bps_min_spin = QDoubleSpinBox()
+        self.metric_bps_min_spin.setRange(0.5, 5.0)
+        self.metric_bps_min_spin.setSingleStep(0.1)
+        self.metric_bps_min_spin.setDecimals(1)
+        self.metric_bps_min_spin.setValue(1.0)
+        self.metric_bps_min_spin.setFixedWidth(60)
+        self.metric_bps_min_spin.setToolTip("Minimum beats per second (lower = slower tempo)")
+        self.metric_bps_min_spin.valueChanged.connect(self._on_metric_bps_change)
+        bps_row.addWidget(self.metric_bps_min_spin)
+        
+        bps_dash = QLabel("-")
+        bps_row.addWidget(bps_dash)
+        
+        self.metric_bps_max_spin = QDoubleSpinBox()
+        self.metric_bps_max_spin.setRange(1.0, 8.0)
+        self.metric_bps_max_spin.setSingleStep(0.1)
+        self.metric_bps_max_spin.setDecimals(1)
+        self.metric_bps_max_spin.setValue(3.0)
+        self.metric_bps_max_spin.setFixedWidth(60)
+        self.metric_bps_max_spin.setToolTip("Maximum beats per second (higher = faster tempo)")
+        self.metric_bps_max_spin.valueChanged.connect(self._on_metric_bps_change)
+        bps_row.addWidget(self.metric_bps_max_spin)
+        
+        bps_bpm_label = QLabel("(= 60-180 BPM)")
+        bps_bpm_label.setStyleSheet("color: #888;")
+        self.metric_bps_bpm_label = bps_bpm_label
+        bps_row.addWidget(bps_bpm_label)
+        bps_row.addStretch()
+        
+        metric_layout.addLayout(bps_row)
         
         # Info label
         info_label = QLabel("💡 Tip: Enable metrics one at a time initially. Each metric uses PD control for smooth convergence.")
@@ -5980,8 +6042,9 @@ bREadfan_69@hotmail.com"""
                         duration = recent_times[-1] - recent_times[0]
                         if duration > 0:
                             beat_rate = (len(recent_times) - 1) / duration
-                            # Target: 1-3 beats per second (60-180 BPM)
-                            self._on_metric_feedback('rise_sens', beat_rate, 1.0, 3.0)
+                            # Use configurable BPS targets from UI
+                            bps_min, bps_max = getattr(self, '_metric_bps_targets', (1.0, 3.0))
+                            self._on_metric_feedback('rise_sens', beat_rate, bps_min, bps_max)
             
             # 5. Downbeat Ratio Metric - processes on downbeats only
             if self._metric_enabled.get('downbeat_ratio', False):
