@@ -425,6 +425,108 @@ def find_peak_frequency_band(min_freq, max_freq, band_width) -> (center, low, hi
 ```
 Returns the center and bounds of the most powerful frequency band.
 
+### Dual-Time Metric Auto-Ranging System (NEW)
+
+**Branch:** `feature/metric-autoranging`
+
+The new metric-based auto-ranging system replaces timer-based hunting cycles with real-time feedback-driven parameter optimization. Instead of blind adjustments on a fixed schedule, it measures actual audio metrics and adjusts parameters proportionally.
+
+**Core Features:**
+1. **Proportional-Derivative (PD) Control** - Smooth convergence without oscillation
+2. **Dual Time Constants** - Fast adaptation when far from optimal, slow fine-tuning when near
+3. **Trough Detection** - Fast recalibration when audio envelope hits minimum (silence between beats)
+4. **Autocorrelation-Based Regularity** - More robust than coefficient of variation for tempo consistency
+5. **Parameter Freeze** - Prevents related parameters from oscillating when adjusting one
+
+**Four Independent Metrics:**
+
+| Metric | Target Zone | Adjusts | Trigger |
+|--------|-------------|---------|---------|
+| Peak Floor (Energy Margin) | 0.02-0.05 | peak_floor | Every beat |
+| Beat Consistency (Autocorr) | 0.05-0.15 | sensitivity, rise_sens | Every beat (after 8+ beats) |
+| Downbeat Ratio | 1.8-2.2 | peak_floor (fine) | Every downbeat |
+| Audio Gain (Intensity) | 0.30-0.40 | audio_amp | Every beat |
+
+**Dual Time Constants:**
+```python
+_fast_step_mult = 5.0   # Far from optimal: 5× normal step
+_slow_step_mult = 0.5   # Near optimal: 0.5× normal step
+```
+When metric is outside optimal zone by more than zone width → fast mode
+When metric is within or near optimal zone → slow mode
+
+**PD Control Gains:**
+```python
+_pd_kp = 0.1   # Proportional gain (adjust based on error magnitude)
+_pd_kd = 0.3   # Derivative gain (dampen oscillation by considering rate of change)
+```
+
+**Parameter Freeze Logic:**
+When adjusting one parameter, freeze related parameters for 500ms to prevent interaction-based oscillation:
+```python
+_param_related = {
+    'peak_floor': ['sensitivity', 'rise_sens'],
+    'sensitivity': ['peak_floor'],
+    'peak_decay': ['rise_sens'],
+    'rise_sens': ['peak_decay'],
+    'audio_amp': ['peak_floor'],
+    'flux_mult': ['sensitivity']
+}
+```
+
+**Trough Detection (Fast Recalibration):**
+Detects energy envelope minima using smoothed first derivative:
+- Derivative crosses from negative to positive → trough detected
+- Triggers percentile-based peak_floor recalibration
+- Debounced to 500ms minimum between trough events
+- Uses 85th percentile of recent energy (only top 15% are beats)
+
+**Autocorrelation-Based Beat Regularity:**
+Replaces coefficient of variation with autocorrelation at lag 1:
+```python
+def compute_beat_regularity_autocorr():
+    intervals = np.diff(beat_times)
+    autocorr_1 = np.corrcoef(intervals[:-1], intervals[1:])[0, 1]
+    return max(0.0, min(1.0, autocorr_1))
+```
+High autocorr (>0.6) = consistent tempo, low (<0.3) = scattered beats
+
+**Audio Engine Methods (NEW):**
+```python
+# Master toggle
+audio_engine.enable_metric_system(True/False)
+
+# Individual metric toggles
+audio_engine.enable_metric_autoranging('peak_floor', True)
+audio_engine.enable_metric_autoranging('beat_consistency', True)
+audio_engine.enable_metric_autoranging('downbeat_ratio', True)
+audio_engine.enable_metric_autoranging('audio_gain', True)
+
+# Set callback for UI updates
+audio_engine.set_metric_callback(callback_func)
+
+# Called on every frame (for trough detection)
+audio_engine.process_metric_on_frame(band_energy, intensity)
+
+# Called on every beat
+audio_engine.process_metric_on_beat(band_energy, intensity, beat_time)
+
+# Called on every downbeat
+audio_engine.process_metric_on_downbeat(downbeat_confidence)
+
+# Get status for UI display
+audio_engine.get_metric_status() -> dict
+```
+
+**UI Integration:**
+Checkboxes in GUI control individual metrics:
+- `metric_peak_floor_cb` → FloorMargin
+- `metric_beat_consistency_cb` → BeatConsis  
+- `metric_downbeat_ratio_cb` → DBRatio
+- `metric_audio_gain_cb` → AudioGain
+
+Status label shows active metrics: `Metrics: [FloorMargin, BeatConsis]`
+
 ---
 
 ## Real-Time Data Requirement ⚠️ CRITICAL

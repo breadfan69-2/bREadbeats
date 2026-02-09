@@ -4644,6 +4644,52 @@ bREadfan_69@hotmail.com"""
         
         layout.addWidget(peaks_group)
         
+        # ===== METRIC AUTO-RANGING (NEW SYSTEM) =====
+        metric_group = QGroupBox("Real-Time Metric Auto-Ranging (Experimental)")
+        metric_layout = QVBoxLayout(metric_group)
+        
+        # Status label
+        self.metric_status_label = QLabel("Metrics: [idle]")
+        self.metric_status_label.setStyleSheet("color: #888; font-style: italic;")
+        metric_layout.addWidget(self.metric_status_label)
+        
+        # Metric checkboxes
+        metric_checkboxes_layout = QVBoxLayout()
+        
+        self.metric_peak_floor_cb = QCheckBox("Enable Peak Floor Metric (energy margin feedback)")
+        self.metric_peak_floor_cb.setChecked(False)
+        self.metric_peak_floor_cb.setToolTip("Real-time energy margin (0.02-0.05) - adjusts peak_floor automatically")
+        self.metric_peak_floor_cb.stateChanged.connect(lambda state: self._on_metric_toggle('peak_floor', state == 2))
+        metric_checkboxes_layout.addWidget(self.metric_peak_floor_cb)
+        
+        self.metric_beat_consistency_cb = QCheckBox("Enable Beat Consistency Metric (autocorrelation)")
+        self.metric_beat_consistency_cb.setChecked(False)
+        self.metric_beat_consistency_cb.setToolTip("Uses autocorrelation to detect scattered beats - tightens sensitivity automatically")
+        self.metric_beat_consistency_cb.stateChanged.connect(lambda state: self._on_metric_toggle('beat_consistency', state == 2))
+        metric_checkboxes_layout.addWidget(self.metric_beat_consistency_cb)
+        
+        self.metric_downbeat_ratio_cb = QCheckBox("Enable Downbeat Ratio Metric (1.8-2.2)")
+        self.metric_downbeat_ratio_cb.setChecked(False)
+        self.metric_downbeat_ratio_cb.setToolTip("Optimizes downbeat prominence - adjusts peak_floor on downbeats")
+        self.metric_downbeat_ratio_cb.stateChanged.connect(lambda state: self._on_metric_toggle('downbeat_ratio', state == 2))
+        metric_checkboxes_layout.addWidget(self.metric_downbeat_ratio_cb)
+        
+        self.metric_audio_gain_cb = QCheckBox("Enable Audio Gain Metric (intensity 0.3-0.4)")
+        self.metric_audio_gain_cb.setChecked(False)
+        self.metric_audio_gain_cb.setToolTip("Real-time intensity normalization - adjusts audio_amp automatically")
+        self.metric_audio_gain_cb.stateChanged.connect(lambda state: self._on_metric_toggle('audio_gain', state == 2))
+        metric_checkboxes_layout.addWidget(self.metric_audio_gain_cb)
+        
+        metric_layout.addLayout(metric_checkboxes_layout)
+        
+        # Info label
+        info_label = QLabel("💡 Tip: Enable metrics one at a time initially. Each metric uses PD control for smooth convergence.")
+        info_label.setStyleSheet("color: #666; font-size: 9pt; margin-top: 8px;")
+        info_label.setWordWrap(True)
+        metric_layout.addWidget(info_label)
+        
+        layout.addWidget(metric_group)
+        
         # Butterworth filter checkbox (requires restart)
         self.butterworth_checkbox = QCheckBox("Use Butterworth bandpass filter (better bass isolation)")
         self.butterworth_checkbox.setChecked(getattr(self.config.audio, 'use_butterworth', True))
