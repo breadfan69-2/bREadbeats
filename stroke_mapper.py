@@ -59,13 +59,13 @@ class StrokeMapper:
         self.motion_intensity: float = 1.0
         
         # Band-based scaling tables:
-        # Volume: high bands get quieter (cymbal taps shouldn't blast)
+        # Volume: subtle scaling (0.95-1.0 range) for slight tonal shaping only
         # Speed: low bands get faster strokes (kick drum = punchy, cymbals = gentle)
         self._band_volume_scale = {
-            'sub_bass': 1.0,
-            'low_mid':  0.90,
-            'mid':      0.70,
-            'high':     0.50,
+            'sub_bass': 1.00,
+            'low_mid':  0.98,
+            'mid':      0.97,
+            'high':     0.95,
         }
         self._band_speed_scale = {
             'sub_bass': 0.70,   # fastest (shortest duration)
