@@ -528,7 +528,7 @@ class AudioEngine:
             band_energy = band_energy * self.config.audio.gain  # Apply audio gain
             # Still compute spectral flux from filtered signal's spectrum
             beat_windowed = beat_mono * self._hanning_window
-            beat_spectrum = np.abs(np.fft.rfft(beat_windowed))
+            beat_spectrum = np.abs(np.fft.rfft(beat_windowed)) * self.config.audio.gain
             spectral_flux = self._compute_spectral_flux(beat_spectrum)
         else:
             # Fallback: FFT-based frequency band filtering (spectrum already computed above)

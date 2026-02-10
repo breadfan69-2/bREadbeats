@@ -212,7 +212,8 @@ class SpectrumCanvas(pg.PlotWidget):
         self.img_item.setLookupTable(lut)  # type: ignore
         
         # Set view range: X = freq bins, Y = time samples
-        self.setXRange(0, self.num_bins)
+        # Left margin includes peak indicator bars at negative X
+        self.setXRange(-14, self.num_bins)
         self.setYRange(0, self.history_len)
         
         # 4 Frequency band indicators (vertical regions with different heights)
@@ -280,9 +281,9 @@ class SpectrumCanvas(pg.PlotWidget):
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
         # Positioned at negative X to be off to the left of main display
-        bar_width = 3.0  # Width of each bar (larger for waterfall scale)
-        bar_spacing = 0.5  # Gap between bars
-        bar_x_start = -12.0  # Start position (leftmost bar)
+        bar_width = 5.0  # Width of each bar (larger for waterfall scale)
+        bar_spacing = 0.8  # Gap between bars
+        bar_x_start = -18.0  # Start position (leftmost bar)
         
         # Bar 1: Actual Peak (green)
         self.peak_actual_bar = pg.BarGraphItem(
@@ -549,8 +550,8 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Frequency values for x-axis (will be updated with sample rate)
         self.freq_values = np.linspace(0, self.num_bins, self.num_bins)
         
-        # Set view range
-        self.setXRange(0, self.num_bins)
+        # Set view range (left margin includes peak indicator bars at negative X)
+        self.setXRange(-9, self.num_bins)
         self.setYRange(0, 1.2)
         
         # Main spectrum curve (mountain peaks) - cyan fill with bright outline
@@ -641,9 +642,9 @@ class MountainRangeCanvas(pg.PlotWidget):
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
         # These are positioned at negative X to be off to the left of the main spectrum display
-        bar_width = 1.2  # Width of each bar
-        bar_spacing = 0.3  # Gap between bars
-        bar_x_start = -6.0  # Start position (leftmost bar)
+        bar_width = 2.0  # Width of each bar
+        bar_spacing = 0.4  # Gap between bars
+        bar_x_start = -8.0  # Start position (leftmost bar)
         
         # Bar 1: Actual Peak (green) - current band energy level
         self.peak_actual_bar = pg.BarGraphItem(
@@ -905,8 +906,8 @@ class BarGraphCanvas(pg.PlotWidget):
         # Spectrum dimensions - use fewer bars for cleaner look
         self.num_bars = 64
         
-        # Set view range
-        self.setXRange(-0.5, self.num_bars - 0.5)
+        # Set view range (left margin includes peak indicator bars at negative X)
+        self.setXRange(-9, self.num_bars - 0.5)
         self.setYRange(0, 1.2)
         
         # Create bar items - each bar is a separate BarGraphItem for individual colors
@@ -991,9 +992,9 @@ class BarGraphCanvas(pg.PlotWidget):
         self._smoothing = 0.4
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        bar_width = 1.0  # Width of each bar
-        bar_spacing = 0.3  # Gap between bars
-        bar_x_start = -5.0  # Start position (leftmost bar)
+        bar_width = 1.8  # Width of each bar
+        bar_spacing = 0.4  # Gap between bars
+        bar_x_start = -7.5  # Start position (leftmost bar)
         
         # Bar 1: Actual Peak (green)
         self.peak_actual_bar = pg.BarGraphItem(
@@ -1229,8 +1230,8 @@ class PhosphorCanvas(pg.PlotWidget):
         lut = self.colormap.getLookupTable(0.0, 1.0, 256)
         self.img_item.setLookupTable(lut)  # type: ignore
         
-        # Set view range
-        self.setXRange(0, self.num_bins)
+        # Set view range (left margin includes peak indicator bars at negative X)
+        self.setXRange(-19, self.num_bins)
         self.setYRange(0, self.num_mag_levels)
         
         # Decay factor: lower = longer persistence
@@ -1297,9 +1298,9 @@ class PhosphorCanvas(pg.PlotWidget):
         self._updating = False
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        bar_width = 3.0  # Width of each bar (larger for phosphor scale)
-        bar_spacing = 0.5  # Gap between bars
-        bar_x_start = -12.0  # Start position (leftmost bar)
+        bar_width = 5.0  # Width of each bar (larger for phosphor scale)
+        bar_spacing = 0.8  # Gap between bars
+        bar_x_start = -18.0  # Start position (leftmost bar)
         
         # Bar 1: Actual Peak (green)
         self.peak_actual_bar = pg.BarGraphItem(
@@ -1987,18 +1988,18 @@ class CollapsibleGroupBox(QGroupBox):
     def _update_title(self):
         arrow = "▶" if self._collapsed else "▼"
         self.setTitle(f"{arrow} {self._base_title_text}")
-        # Bigger clickable title text with visible arrow
+        # Large clickable title with prominent arrow
         self.setStyleSheet(self.styleSheet() + """
             CollapsibleGroupBox::title {
-                font-size: 12px;
+                font-size: 16px;
                 font-weight: bold;
-                padding: 4px 8px;
+                padding: 6px 10px;
             }
         """)
 
     def mousePressEvent(self, event):
-        # Toggle collapse only when clicking in the title-bar area (top ~30px)
-        if event.position().y() <= 30:
+        # Toggle collapse only when clicking in the title-bar area (top ~40px)
+        if event.position().y() <= 40:
             self.setCollapsed(not self._collapsed)
             event.accept()
         else:
@@ -2113,8 +2114,8 @@ class BREadbeatsWindow(QMainWindow):
         # Load config values into UI sliders
         self._apply_config_to_ui()
         
-        # Hide range indicators by default (user can enable via Options menu)
-        self._on_hide_indicators_toggle(2)  # 2 = Qt.Checked = hide
+        # Show range indicators by default
+        self._on_hide_indicators_toggle(0)  # 0 = Qt.Unchecked = show
         
         # Load presets from disk
         self._load_presets_from_disk()
@@ -2527,7 +2528,11 @@ class BREadbeatsWindow(QMainWindow):
         main_layout.addWidget(splitter, stretch=1)
 
         # Bottom row: Presets + projectM launcher (LOCKED, never squishes)
-        bottom_layout = QHBoxLayout()
+        bottom_widget = QWidget()
+        bottom_widget.setMinimumHeight(48)
+        bottom_widget.setMaximumHeight(64)
+        bottom_layout = QHBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
         bottom_layout.addWidget(self._create_presets_panel())
         
         bottom_layout.addStretch()  # Gap before Whip the Llama button
@@ -2539,7 +2544,7 @@ class BREadbeatsWindow(QMainWindow):
         self.projectm_btn.setMaximumWidth(120)
         bottom_layout.addWidget(self.projectm_btn)
 
-        main_layout.addLayout(bottom_layout)
+        main_layout.addWidget(bottom_widget)
     
     def _create_menu_bar(self):
         """Create menu bar with Menu, Options, and Help"""
@@ -2640,11 +2645,11 @@ class BREadbeatsWindow(QMainWindow):
 
         # Show/Hide range indicators
         self.hide_indicators_checkbox = QCheckBox()  # Hidden checkbox for state tracking
-        self.hide_indicators_checkbox.setChecked(True)  # Default: hidden
+        self.hide_indicators_checkbox.setChecked(False)  # Default: visible
         self.show_indicators_action = options_menu.addAction("Show Range Indicators")
         assert self.show_indicators_action is not None
         self.show_indicators_action.setCheckable(True)
-        self.show_indicators_action.setChecked(False)  # Default: hidden (unchecked = hidden)
+        self.show_indicators_action.setChecked(True)  # Default: visible (checked = show)
         self.show_indicators_action.triggered.connect(self._on_show_indicators_menu_toggle)
 
         options_menu.addSeparator()
@@ -2790,6 +2795,9 @@ class BREadbeatsWindow(QMainWindow):
                                       QPushButton, QHBoxLayout, QGridLayout, QGroupBox, QCheckBox)
         
         dialog = QDialog(self)
+        dialog.setWindowFlags(
+            dialog.windowFlags() | Qt.WindowType.WindowStaysOnTopHint
+        )
         dialog.setWindowTitle("Device Output Limits")
         dialog.setMinimumWidth(400)
         layout = QVBoxLayout(dialog)
@@ -2928,6 +2936,8 @@ class BREadbeatsWindow(QMainWindow):
         btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
         
+        dialog.raise_()
+        dialog.activateWindow()
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.config.device_limits.p0_freq_min = p0_min.value()
             self.config.device_limits.p0_freq_max = p0_max.value()
