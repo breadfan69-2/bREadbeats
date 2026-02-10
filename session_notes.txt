@@ -1,0 +1,54 @@
+Session Notes — UI Polish & Visual Refinements
+================================================
+Date: Feb 10, 2026
+Branch: main
+Starting commit: 86e5b63 (Remove obsolete hunt order.txt)
+Ending commit: 3c4ea03
+
+Summary
+-------
+This session focused on UI polish: renaming TCode tags to human-readable labels,
+visual improvements to the window and visualizers, and layout tuning.
+
+Commits Made (chronological)
+-----------------------------
+1. 444737d — UI: Replace TCode axis tags with human-readable names
+   - P0→Pulse Freq, C0→Carrier Freq, P1→Pulse Width, P3→Rise Time
+   - All UI labels, checkboxes, slider names, CollapsibleGroupBox titles updated
+   - "Enable P0" → "Enable", "Sent TCode" → "Sent Value"
+   - Added UI Naming Convention section to AGENT_REFERENCE.md
+
+2. 0c0fc5d — Add reminder: Always commit and push AGENT_REFERENCE.md
+   - Warning added after Purpose section
+
+3. 2832891 — UI: widen default window, rotate position viz, ghost background
+   - Window: setMinimumSize(400, 300) + resize(1100, 950)
+   - Position visualizer: 90° CCW rotation (x_display = -y_rot, y_display = x_rot)
+   - Position viz background: #3d3d3d (matches window), softened circle/crosshair
+
+4. 3c4ea03 — UI: remove visualizer groupboxes, adjust splitter ratio, update presets
+   - _create_spectrum_panel: QGroupBox("Frequency Selection") → plain QWidget
+   - _create_position_panel: QGroupBox("Position (α/β)") → plain QWidget
+   - Both panels: setContentsMargins(0, 0, 0, 0)
+   - Splitter stretch factors: 3:2 (60/40) → 5:2 (72/28) for more viz space
+   - presets.json updated with current user presets
+
+Key Areas Modified
+-------------------
+- main.py: All UI changes (labels, window size, viz rotation, groupbox removal, splitter)
+- config.py: No changes this session
+- AGENT_REFERENCE.md: UI naming convention, commit reminder
+- presets.json: Preset data updated
+
+Pending / Not Done
+-------------------
+- nextinstruction.txt has new items: min height for visualizers, smushing tabs instead
+- Miniplayer noted as future branch work
+
+Notes for Next Agent
+---------------------
+- All TCode axis tags are now banned from user-facing UI (see AGENT_REFERENCE.md)
+- Position visualizer has a 90° CCW rotation applied AFTER the user rotation transform
+- Visualizer panels are plain QWidgets now (no groupbox titles)
+- QSplitter uses stretch factors 5:2 (top viz : bottom tabs)
+- The nextinstruction.txt file contains the next tasks to implement
