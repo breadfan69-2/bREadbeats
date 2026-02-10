@@ -747,7 +747,221 @@ Once beats stabilize and 3+ downbeats match predicted timing, tempo becomes LOCK
 
 ---
 
+## Research & Recommended Future Improvements
+
+### Peak Detection Optimization Research
+
+The following academic and engineering resources provide pathways for improved beat detection and frequency band selection:
+
+#### Source 1: Smoothed Z-Score Algorithm (Brakel, 2014) — HIGH PRIORITY
+**Source:** https://stackoverflow.com/a/22640362
+
+**Algorithm Overview:**
+```python
+# Parameters:
+#   lag       = rolling window size (number of past samples)
+#   threshold = number of std devs to trigger signal (e.g., 3.5)
+#   influence = how much peaks affect rolling stats (0=ignore, 1=full)
+
+# For each new data point:
+if abs(new_value - rolling_mean) > threshold * rolling_std:
+    signal = +1 (peak) or -1 (valley)
+    filtered_value = influence * new_value + (1 - influence) * prev_filtered
+else:
+    signal = 0
+    filtered_value = new_value
+
+rolling_mean = mean(filtered_values[i-lag:i])
+rolling_std  = std(filtered_values[i-lag:i])
+```
+
+**Recommended Integration Paths:**
+
+**Option A — Band Quality Scoring** (low risk, improves band selection)
+1. For each candidate band (scanning in 50Hz steps across 30-22050Hz):
+   - Maintain a z-score detector on that band's energy history
+   - Count how many z-score signals (peaks) it produces over the last N samples
+   - Score = signal_count / total_samples (regularity metric)
+2. Band with highest regular signal rate = best for beat detection
+3. Parameters: `lag=16` (half our 32-sample history), `threshold=2.5`, `influence=0`
+4. **Impact:** Would replace CV-based scoring in `find_consistent_frequency_band()`; drops from 2-3 frames to detect best band to <1 frame
+
+**Option B — Self-Tuning Beat Detection** (higher risk, replaces core peak_floor)
+1. Feed `band_energy` values into a single z-score detector each frame
+2. When `signal == +1`: that's a beat (energy spike above adaptive threshold)
+3. The rolling mean/std automatically adapts to current audio level
+4. `peak_floor` becomes unnecessary — z-score threshold replaces it
+5. Parameters: `lag=30` (~0.5s at 60fps), `threshold=3.0`, `influence=0.1`
+6. **Impact:** Eliminates manual peak_floor tuning; system self-adjusts to any audio level
+
+**Streaming Implementation (available for both options):**
+```python
+class ZScorePeakDetector:
+    """Real-time z-score peak detector for streaming data."""
+    def __init__(self, lag=30, threshold=3.0, influence=0.1):
+        self.lag = lag
+        self.threshold = threshold
+        self.influence = influence
+        self.buffer = []
+        self.filtered = []
+        self.mean = 0.0
+        self.std = 0.0
+        self.initialized = False
+    
+    def update(self, value: float) -> int:
+        """Feed one value, returns +1 (peak), -1 (valley), or 0."""
+        self.buffer.append(value)
+        if len(self.buffer) < self.lag:
+            self.filtered.append(value)
+            return 0
+        if not self.initialized:
+            self.mean = np.mean(self.buffer[:self.lag])
+            self.std = np.std(self.buffer[:self.lag])
+            self.filtered.append(value)
+            self.initialized = True
+            return 0
+        
+        if abs(value - self.mean) > self.threshold * self.std:
+            signal = 1 if value > self.mean else -1
+            filt = self.influence * value + (1 - self.influence) * self.filtered[-1]
+        else:
+            signal = 0
+            filt = value
+        
+        self.filtered.append(filt)
+        # Update rolling stats from filtered buffer
+        window = self.filtered[-self.lag:]
+        self.mean = np.mean(window)
+        self.std = np.std(window)
+        
+        # Keep memory bounded
+        if len(self.buffer) > self.lag * 3:
+            self.buffer = self.buffer[-self.lag * 2:]
+            self.filtered = self.filtered[-self.lag * 2:]
+        
+        return signal
+```
+
+#### Source 2: Derivative-Based Peak Detection (UMD) — MEDIUM PRIORITY
+**Source:** https://terpconnect.umd.edu/~toh/spectrum/PeakFindingandMeasurement.htm
+
+**Key Concepts:**
+- Smooth the first derivative, then find downward zero-crossings
+- Two thresholds: **SlopeThreshold** (rejects broad/narrow features) and **AmpThreshold** (rejects small peaks)
+- Optimal SlopeThreshold ≈ `0.7 × WidthPoints^-2`
+
+**Integration Strategy:**
+- **Auto-calculate `rise_sens`:** Compute optimal rise_sens from typical beat width in samples: `0.7 / width_samples²`
+- **Segmented detection:** Use different parameters for different frequency ranges (low frequencies need wider smoothing, high frequencies need narrower)
+- **Improve `find_consistent_frequency_band()`:** Use derivative zero-crossings to count peaks per band instead of raw energy variance
+
+#### Source 3: NI Quadratic Fit Peak Detection — LOW PRIORITY (validational)
+**Source:** https://www.ni.com/en/support/documentation/supplemental/06/peak-detection-using-labview-and-measurement-studio.html
+
+**Key Takeaways:**
+- Fits parabola to groups of `width` points, checks concavity for peak/valley
+- Returns fractional index locations (sub-sample accuracy)
+- Multi-block processing with retained internal state between calls
+- **Key advice:** "Smooth first, then detect with width=3" — validates our Butterworth-filter-first approach
+- **Potential:** Interpolation before detection improves accuracy; could interpolate FFT bins for finer frequency resolution
+
+**Note:** Not worth implementing separately — our current Butterworth + threshold approach is already similar in principle.
+
+#### Source 4: MathWorks Trough Detection — VALIDATIONAL ONLY
+**Source:** https://www.mathworks.com/matlabcentral/answers/2042461
+
+Validates windowed smoothing + first derivative sign change is standard for real-time trough/peak detection in streaming signals. No novel techniques beyond Sources 1-2.
+
+---
+
+### Implementation Roadmap (Recommended Order)
+
+1. **Phase 1 — Z-Score Band Scoring (Option A)** — LOW RISK
+   - Drop-in replacement for `find_consistent_frequency_band()` scoring
+   - Test baseline: Should reduce band detection time by ~50%
+   - Minimal testing required; new metric doesn't affect existing beat detection
+
+2. **Phase 2 — Z-Score Beat Detection (Option B)** — HIGH RISK (major refactor)
+   - More invasive: Replaces `peak_floor` entirely with adaptive threshold
+   - High reward: Eliminates manual tuning, self-adjusts to any audio level
+   - Requires extensive testing of all audio scenarios
+
+3. **Phase 3 — Auto-tuned rise_sens** — MEDIUM PRIORITY
+   - Use derivative-based formula to compute optimal rise_sens from beat width
+   - Could integrate with existing auto-adjust hunting system
+   - Incremental improvement; lower priority than Phases 1-2
+
+---
+
+## Latest Session Changes (2026-02-09 Continued)
+
+### Critical Fix: Beat Detector Refractory Period
+**Problem:** Beat detector was firing 4-6 detections per musical beat within 250ms (old 50ms cooldown), causing:
+- 77% stroke loss rate (strokes skipped due to min_interval guard)
+- Inflated BPS metrics (reports 2.4 when real rate is 0.08)
+- Metrics receiving garbage data, unable to tune correctly
+
+**Solution Implemented:**
+```python
+# In audio_engine._detect_beat(), line ~620
+refractory_s = self.config.stroke.min_interval_ms / 1000.0  # e.g. 300ms → 0.3s
+if current_time - self._last_beat_time < refractory_s:
+    return False
+```
+Changed from hardcoded `min_beat_interval = 0.05s` (max 20 BPS) to dynamic `min_interval_ms` (default 300ms = max 3.3 BPS).
+
+**Impact:** Beat clusters eliminated at the source. Strokes now fire consistently at musical intervals (~600ms for 100 BPM). No more rapid cascades. Real BPS metrics now match observed stroke rate.
+
+### Metric Settling System & Traffic Light
+**Traffic Light Widget (re-added)**
+- Red = Metrics actively adjusting (HUNTING)
+- Yellow = Mixed state (some settled, some adjusting)
+- Green = All enabled metrics LOCKED (stable for N consecutive checks)
+
+**Per-Metric Settled Detection**
+- Each metric tracks consecutive "in-zone" checks
+- After 12 consecutive in-zone checks (~30s), metric transitions to SETTLED state
+- When metric goes out-of-zone: decrement counter by 3 (not hard reset to 0) → recovers faster
+- Hysteresis: require 2 consecutive out-of-zone checks before triggering adjustment
+- Check intervals increased: 1100ms → 2500ms for sensitivity/audio_amp, 500ms → 1000ms for flux_balance
+
+**Auto-Range Enable Bug Fixed**
+- New `_sync_metric_checkboxes_to_engine()` method syncs checkbox states to engine after engine creation
+- Metrics now enable on startup without requiring manual toggle
+
+### Amplitude Proportionality
+Two critical clamps added to prevent parameters from dropping too low when gain increases:
+
+1. **Peak Floor Clamp** (in `compute_energy_margin_feedback`, line ~1177)
+   ```python
+   avg_valley = np.mean(self.valley_history)
+   peak_floor = max(avg_valley, self.config.audio.audio_amp * 0.10)  # At least 10% of gain
+   ```
+   Max raised from 0.28 → 1.2 → 2.0 to match expected valleys (~1.9)
+
+2. **Flux Mult Clamp** (in main.py metric callback, line ~3761)
+   ```python
+   flux_mult = max(value, self.config.audio.audio_amp * 0.15)  # At least 15% of gain
+   ```
+   Prevents flux_mult from dropping excessively when audio_amp increases
+
+**Purpose:** When audio_amp cranks up to 3.7+, these clamps ensure peak_floor and flux_mult scale proportionally, preventing beat detection from becoming over-sensitive.
+
+### Stability Threshold Relaxed
+- Changed from 0.15 → 0.28 in config.py
+- Real music with humanistic beat variations naturally has CV ~0.20-0.30
+- At 0.15, tempo never reached "stable" state and never locked
+- At 0.28, BPM locks properly, enabling sensitivity excess suppression and downbeat boost
+
+### Metric Behavior Improvements
+1. **Reversed Prevention** — target_bps lowering of peak_floor suppressed when valley tracking wants it raised (at >80% of avg valley)
+2. **Audio Amp De-escalation** — if BPS > 2× target for 2 consecutive checks, lowers audio_amp at half the raise rate
+3. **Predicted Beat Matching** — sensitivity excess suppressed if tempo is locked (beats match predictions, so current sensitivity is correct)
+
+---
+
 *Document created: 2026-02-07*  
-*Last comprehensive update: 2026-02-09*  
-*Reference for recent changes: Commit 30224a7 (auto-freq gradual widen) + tempo lock boost system*
-*All implementations verified with running program - beat detection working, hunting cycle active, tempo lock functional, auto-freq band tracking with beat loss handling.*
+*Last comprehensive update: 2026-02-09 Part 2 (refractory period, metric settling, amplitude proportionality)*  
+*Reference for recent changes: Commit ab0ad5d (settling + hysteresis) + current (refractory period + clamps)*
+*All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow.*
+*Current branch: feature/metric-autoranging — metric autoranging with refractory period and adaptive thresholds.*
