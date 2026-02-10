@@ -1910,6 +1910,60 @@ class SliderWithLabel(QWidget):
         self.slider.setValue(int(value * self.multiplier))
 
 
+class TrafficLightWidget(QWidget):
+    """
+    Horizontal traffic light indicator for metric auto-range state:
+    - Red = any metric actively ADJUSTING (hunting for good values)
+    - Yellow = metrics SETTLED (some stable, some adjusting)
+    - Green = all active metrics LOCKED (stable for N consecutive checks)
+    All lights off when no metrics are enabled.
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(54, 18)  # 3 circles of 14px diameter + spacing
+        self._green_on = False
+        self._yellow_on = False
+        self._red_on = False
+        
+    def set_state(self, green: bool, yellow: bool, red: bool):
+        """Set which lights are on"""
+        self._green_on = green
+        self._yellow_on = yellow
+        self._red_on = red
+        self.update()
+        
+    def all_off(self):
+        """Turn all lights off"""
+        self.set_state(False, False, False)
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Draw 3 circles: Green, Yellow, Red (left to right)
+        colors = [
+            (self._green_on, QColor(0, 200, 0), QColor(0, 60, 0)),      # Green
+            (self._yellow_on, QColor(255, 200, 0), QColor(80, 60, 0)),  # Yellow
+            (self._red_on, QColor(255, 50, 50), QColor(80, 20, 20)),    # Red
+        ]
+        
+        for i, (is_on, on_color, off_color) in enumerate(colors):
+            x = 2 + i * 18  # 18px spacing between circles
+            y = 2
+            diameter = 14
+            
+            # Draw circle
+            painter.setPen(QPen(QColor(60, 60, 60), 1))
+            if is_on:
+                painter.setBrush(QBrush(on_color))
+            else:
+                painter.setBrush(QBrush(off_color))
+            painter.drawEllipse(x, y, diameter, diameter)
+        
+        painter.end()
+
+
 class NoWheelScrollArea(QScrollArea):
     """
     Custom QScrollArea that ignores mouse wheel events.
@@ -3950,10 +4004,17 @@ bREadfan_69@hotmail.com"""
         autofreq_layout.addStretch()
         metric_layout.addLayout(autofreq_layout)
         
-        # Metric status label
+        # Traffic light indicator + metric status label
+        status_row = QHBoxLayout()
+        self.metric_traffic_light = TrafficLightWidget()
+        self.metric_traffic_light.setToolTip("Red=Adjusting, Yellow=Some Settled, Green=All Locked")
+        status_row.addWidget(self.metric_traffic_light)
+        
         self.metric_status_label = QLabel("Metrics: [idle]")
         self.metric_status_label.setStyleSheet("color: #AAA; font-size: 9px;")
-        metric_layout.addWidget(self.metric_status_label)
+        status_row.addWidget(self.metric_status_label)
+        status_row.addStretch()
+        metric_layout.addLayout(status_row)
         
         layout.addWidget(metric_group)
         
@@ -5299,33 +5360,58 @@ bREadfan_69@hotmail.com"""
             self.audio_engine.compute_audio_amp_feedback(now, callback=self._on_metric_feedback)
             self.audio_engine.compute_sensitivity_feedback(now, callback=self._on_metric_feedback)
             self.audio_engine.compute_flux_balance_feedback(now, callback=self._on_metric_feedback)
+            
+            # ===== TRAFFIC LIGHT UPDATE =====
+            if hasattr(self, 'metric_traffic_light'):
+                states = self.audio_engine.get_metric_states()
+                if not states:
+                    # No metrics enabled
+                    self.metric_traffic_light.all_off()
+                else:
+                    any_adjusting = any(s == 'ADJUSTING' for s in states.values())
+                    any_settled = any(s == 'SETTLED' for s in states.values())
+                    all_settled = all(s == 'SETTLED' for s in states.values())
+                    # Red = actively adjusting, Yellow = some settled, Green = all settled/locked
+                    self.metric_traffic_light.set_state(
+                        green=all_settled,
+                        yellow=any_settled and not all_settled,
+                        red=any_adjusting
+                    )
 
     def _log_experimental_spinbox_shutdown_values(self):
         """Log final experimental spinbox values at shutdown for documentation"""
-        print("\n" + "="*70)
-        print("EXPERIMENTAL SPINBOX SHUTDOWN VALUES")
-        print("="*70)
-        
-        print("\nParameter        │ Step Size")
-        print("-" * 35)
-        params = [
-            ("sensitivity", self.sensitivity_step_spin),
-            ("peak_floor", self.peak_floor_step_spin),
-            ("peak_decay", self.peak_decay_step_spin),
-            ("rise_sens", self.rise_sens_step_spin),
-            ("flux_mult", self.flux_mult_step_spin),
-            ("audio_amp", self.audio_amp_step_spin),
-        ]
-        
-        for param_name, step_spin in params:
-            step_val = step_spin.value()
-            print(f"{param_name:16} │ {step_val:.4f}")
-        
-        print("-" * 35)
-        consec_beat_val = self.auto_consec_beats_spin.value()
-        print(f"Consecutive-beat lock threshold: {consec_beat_val:.0f} beats (in 60-180 BPM range)")
-        print(f"Oscillation rule: 3/4 of step size (automatic)")
-        print("="*70 + "\n")
+        try:
+            print("\n" + "="*70)
+            print("EXPERIMENTAL SPINBOX SHUTDOWN VALUES")
+            print("="*70)
+            
+            # These spinboxes may not exist in current build
+            spinbox_names = [
+                "sensitivity_step_spin", "peak_floor_step_spin", "peak_decay_step_spin",
+                "rise_sens_step_spin", "flux_mult_step_spin", "audio_amp_step_spin"
+            ]
+            found_any = False
+            print("\nParameter        │ Step Size")
+            print("-" * 35)
+            for name in spinbox_names:
+                if hasattr(self, name):
+                    step_spin = getattr(self, name)
+                    step_val = step_spin.value()
+                    param = name.replace("_step_spin", "")
+                    print(f"{param:16} │ {step_val:.4f}")
+                    found_any = True
+            
+            if not found_any:
+                print("(No experimental spinboxes found)")
+            
+            print("-" * 35)
+            if hasattr(self, 'auto_consec_beats_spin'):
+                consec_beat_val = self.auto_consec_beats_spin.value()
+                print(f"Consecutive-beat lock threshold: {consec_beat_val:.0f} beats (in 60-180 BPM range)")
+            print(f"Oscillation rule: 3/4 of step size (automatic)")
+            print("="*70 + "\n")
+        except Exception as e:
+            print(f"[Shutdown] Could not log spinbox values: {e}")
 
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
