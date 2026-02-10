@@ -101,21 +101,39 @@ class ConnectionConfig:
 
 @dataclass
 class PulseFreqConfig:
-    """Pulse frequency mapping settings (Other tab)"""
+    """Pulse frequency mapping settings (P0 TCode)"""
     monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
     monitor_freq_max: float = 200.0   # Max frequency to monitor (Hz)
-    tcode_freq_min: float = 30.0      # Min sent frequency (Hz, converted to TCode)
-    tcode_freq_max: float = 105.0     # Max sent frequency (Hz, converted to TCode)
+    tcode_min: int = 2010             # Min sent TCode value (0-9999)
+    tcode_max: int = 7035             # Max sent TCode value (0-9999)
     freq_weight: float = 1.0          # How much frequency affects P0 (0=none, 1=full)
 
 @dataclass
 class CarrierFreqConfig:
-    """Carrier frequency (F0 TCode) mapping settings"""
+    """Carrier frequency (C0 TCode) mapping settings"""
     monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
     monitor_freq_max: float = 200.0   # Max frequency to monitor (Hz)
-    tcode_freq_min: float = 500.0     # Min sent frequency (display 500-1500, converted to TCode 0-9999)
-    tcode_freq_max: float = 1000.0    # Max sent frequency (display 500-1500, converted to TCode 0-9999)
-    freq_weight: float = 1.0          # How much frequency affects F0 (0=none, 1=full)
+    tcode_min: int = 0                # Min sent TCode value (0-9999)
+    tcode_max: int = 5000             # Max sent TCode value (0-9999)
+    freq_weight: float = 1.0          # How much frequency affects C0 (0=none, 1=full)
+
+@dataclass
+class DeviceLimitsConfig:
+    """User-defined device output ranges for TCode conversion display.
+    When configured (non-zero), displays show converted values alongside TCode.
+    P0/C0 = frequency in Hz. P1 = pulse width in carrier cycles.
+    P2 = pulse interval random (0-1). P3 = rise time in carrier cycles."""
+    p0_freq_min: float = 0.0          # Device P0 min frequency (Hz), 0 = not set
+    p0_freq_max: float = 0.0          # Device P0 max frequency (Hz), 0 = not set
+    c0_freq_min: float = 0.0          # Device C0 min frequency (Hz), 0 = not set
+    c0_freq_max: float = 0.0          # Device C0 max frequency (Hz), 0 = not set
+    p1_cycles_min: float = 0.0        # Device P1 min pulse width (cycles), 0 = not set
+    p1_cycles_max: float = 0.0        # Device P1 max pulse width (cycles), 0 = not set
+    p2_range_min: float = 0.0         # Device P2 min interval random, 0 = not set
+    p2_range_max: float = 0.0         # Device P2 max interval random, 0 = not set
+    p3_cycles_min: float = 0.0        # Device P3 min rise time (cycles), 0 = not set
+    p3_cycles_max: float = 0.0        # Device P3 max rise time (cycles), 0 = not set
+    prompted: bool = False            # Whether user has been prompted on first run
 
 @dataclass
 class PulseWidthConfig:
@@ -193,6 +211,7 @@ class Config:
     carrier_freq: CarrierFreqConfig = field(default_factory=CarrierFreqConfig)
     pulse_width: PulseWidthConfig = field(default_factory=PulseWidthConfig)
     rise_time: RiseTimeConfig = field(default_factory=RiseTimeConfig)
+    device_limits: DeviceLimitsConfig = field(default_factory=DeviceLimitsConfig)
     auto_adjust: AutoAdjustConfig = field(default_factory=AutoAdjustConfig)
     
     # Global
