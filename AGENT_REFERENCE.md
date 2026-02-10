@@ -3,6 +3,8 @@
 ## Purpose
 This document serves as a canonical reference for future AI agents working on bREadbeats. It explains the core architecture, key features, and their intended behaviors. **Review this document before making changes** to avoid accidentally breaking critical functionality.
 
+⚠️ **IMPORTANT:** This document is part of the codebase. **Always commit and push AGENT_REFERENCE.md** whenever you update it during feature work. Keeping it in sync with code changes ensures future agents have accurate information.
+
 ---
 
 ## Program Overview
