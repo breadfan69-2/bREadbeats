@@ -34,7 +34,7 @@ class BeatDetectionConfig:
     
     # Tempo tracking parameters
     tempo_tracking_enabled: bool = True  # Enable/disable tempo & downbeat tracking
-    stability_threshold: float = 0.15    # Max CV to consider tempo "stable" (lower = stricter)
+    stability_threshold: float = 0.28    # Max CV to consider tempo "stable" (lower = stricter)
     tempo_timeout_ms: int = 2000         # How long no beats before resetting tempo tracking (ms)
     beats_per_measure: int = 4           # Time signature: 4 = 4/4, 3 = 3/4, 6 = 6/8
     phase_snap_weight: float = 0.3       # How much to snap detected beats toward predicted time (0=off, 1=full)
@@ -68,6 +68,12 @@ class StrokeConfig:
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
+
+    # Volume reduction limit: max % volume can be reduced by effects (subtractive clamp)
+    vol_reduction_limit: float = 10.0  # 0-20, default 10 means max 10% reduction (floor = 0.90)
+
+    # Flux-rise depth factor: modulates stroke depth by spectral flux rise over 250ms
+    flux_depth_factor: float = 0.0     # 0-5, 0=disabled
 
     # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
     phase_advance: float = 0.25
@@ -112,6 +118,24 @@ class CarrierFreqConfig:
     freq_weight: float = 1.0          # How much frequency affects F0 (0=none, 1=full)
 
 @dataclass
+class PulseWidthConfig:
+    """Pulse Width (P1 TCode) mapping settings — higher = stronger/smoother feeling"""
+    monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
+    monitor_freq_max: float = 4000.0  # Max frequency to monitor (Hz)
+    tcode_min: int = 1000             # Min sent TCode value (0-9999)
+    tcode_max: int = 8000             # Max sent TCode value (0-9999)
+    weight: float = 1.0               # How much audio affects P1 (0=none, 1=full)
+
+@dataclass
+class RiseTimeConfig:
+    """Rise Time (P3 TCode) mapping settings — higher = smoother/gentler feeling"""
+    monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
+    monitor_freq_max: float = 4000.0  # Max frequency to monitor (Hz)
+    tcode_min: int = 1000             # Min sent TCode value (0-9999)
+    tcode_max: int = 8000             # Max sent TCode value (0-9999)
+    weight: float = 1.0               # How much audio affects P3 (0=none, 1=full)
+
+@dataclass
 class AutoAdjustConfig:
     """Auto-adjust (hunting) step sizes and related settings"""
     # Step sizes for each parameter
@@ -127,6 +151,7 @@ class AutoAdjustConfig:
     cooldown_sec: float = 0.10        # Cooldown between adjustments
     consec_beats: int = 8             # Consecutive beats required to lock
     auto_range_enabled: bool = False  # Global auto-range toggle persistence
+    metrics_global_enabled: bool = True  # Master toggle for all metric auto-adjust
     enabled_params: Dict[str, bool] = field(default_factory=lambda: {
         'audio_amp': False,
         'peak_floor': False,
@@ -135,7 +160,6 @@ class AutoAdjustConfig:
         'sensitivity': False,
         'flux_mult': False,
     })
-    auto_freq_enabled: bool = False   # Persist auto-frequency tracking toggle
 
 @dataclass
 class AudioConfig:
@@ -167,6 +191,8 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     pulse_freq: PulseFreqConfig = field(default_factory=PulseFreqConfig)
     carrier_freq: CarrierFreqConfig = field(default_factory=CarrierFreqConfig)
+    pulse_width: PulseWidthConfig = field(default_factory=PulseWidthConfig)
+    rise_time: RiseTimeConfig = field(default_factory=RiseTimeConfig)
     auto_adjust: AutoAdjustConfig = field(default_factory=AutoAdjustConfig)
     
     # Global
@@ -191,9 +217,9 @@ BEAT_RESET_DEFAULTS = {
 
 BEAT_RANGE_LIMITS = {
     'audio_amp': (0.15, 10.0),
-    'peak_floor': (0.015, 0.28),
+    'peak_floor': (0.015, 2.0),
     'peak_decay': (0.230, 0.999),
     'rise_sens': (0.02, 1.0),
-    'sensitivity': (0.01, 1.0),
+    'sensitivity': (0.10, 1.0),
     'flux_mult': (0.2, 10.0),
 }

@@ -90,8 +90,6 @@
     "step_flux_mult": 0.1013,
     "step_audio_amp": 0.1599,
     "auto_consec_beats": 1,
-    "auto_freq_width": 300,
-    "auto_freq_speed": 0.1,
     "preset_name": "Preset 5"
   },
   "3": {
@@ -143,8 +141,6 @@
     "step_flux_mult": 0.1013,
     "step_audio_amp": 0.1599,
     "auto_consec_beats": 1,
-    "auto_freq_width": 300,
-    "auto_freq_speed": 0.1,
     "preset_name": "UNUSED"
   },
   "1": {
