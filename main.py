@@ -452,8 +452,17 @@ class SpectrumCanvas(pg.PlotWidget):
             scale = getattr(self, '_bar_scale', self.history_len)
             self.peak_floor_bar.setOpts(height=[peak_floor * scale])
     
-    def set_indicators_visible(self, visible: bool):
-        """Show or hide all frequency band indicators and labels"""
+    def set_peak_indicators_visible(self, visible: bool):
+        """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
+        if hasattr(self, 'peak_actual_bar'):
+            self.peak_actual_bar.setVisible(visible)
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setVisible(visible)
+        if hasattr(self, 'peak_decay_bar'):
+            self.peak_decay_bar.setVisible(visible)
+
+    def set_range_indicators_visible(self, visible: bool):
+        """Show or hide frequency range band indicators and labels"""
         self.beat_band.setVisible(visible)
         self.depth_band.setVisible(visible)
         self.p0_band.setVisible(visible)
@@ -462,13 +471,6 @@ class SpectrumCanvas(pg.PlotWidget):
         self.depth_label.setVisible(visible)
         self.pulse_label.setVisible(visible)
         self.carrier_label.setVisible(visible)
-        # Also hide peak indicator bars when hiding indicators
-        if hasattr(self, 'peak_actual_bar'):
-            self.peak_actual_bar.setVisible(visible)
-        if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setVisible(visible)
-        if hasattr(self, 'peak_decay_bar'):
-            self.peak_decay_bar.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update waterfall with new spectrum data - scrolls upward with rainbow frequency colors"""
@@ -803,8 +805,17 @@ class MountainRangeCanvas(pg.PlotWidget):
         if hasattr(self, 'peak_floor_bar'):
             self.peak_floor_bar.setOpts(height=[peak_floor])
     
-    def set_indicators_visible(self, visible: bool):
-        """Show or hide all frequency band indicators and labels"""
+    def set_peak_indicators_visible(self, visible: bool):
+        """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
+        if hasattr(self, 'peak_actual_bar'):
+            self.peak_actual_bar.setVisible(visible)
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setVisible(visible)
+        if hasattr(self, 'peak_decay_bar'):
+            self.peak_decay_bar.setVisible(visible)
+
+    def set_range_indicators_visible(self, visible: bool):
+        """Show or hide frequency range band indicators and labels"""
         self.beat_band.setVisible(visible)
         self.depth_band.setVisible(visible)
         self.p0_band.setVisible(visible)
@@ -813,13 +824,6 @@ class MountainRangeCanvas(pg.PlotWidget):
         self.depth_label.setVisible(visible)
         self.pulse_label.setVisible(visible)
         self.carrier_label.setVisible(visible)
-        # Also hide peak indicator bars when hiding indicators
-        if hasattr(self, 'peak_actual_bar'):
-            self.peak_actual_bar.setVisible(visible)
-        if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setVisible(visible)
-        if hasattr(self, 'peak_decay_bar'):
-            self.peak_decay_bar.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update mountain range with new spectrum data"""
@@ -1140,8 +1144,17 @@ class BarGraphCanvas(pg.PlotWidget):
         if hasattr(self, 'peak_floor_bar'):
             self.peak_floor_bar.setOpts(height=[peak_floor])
     
-    def set_indicators_visible(self, visible: bool):
-        """Show or hide all frequency band indicators and labels"""
+    def set_peak_indicators_visible(self, visible: bool):
+        """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
+        if hasattr(self, 'peak_actual_bar'):
+            self.peak_actual_bar.setVisible(visible)
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setVisible(visible)
+        if hasattr(self, 'peak_decay_bar'):
+            self.peak_decay_bar.setVisible(visible)
+
+    def set_range_indicators_visible(self, visible: bool):
+        """Show or hide frequency range band indicators and labels"""
         self.beat_band.setVisible(visible)
         self.depth_band.setVisible(visible)
         self.p0_band.setVisible(visible)
@@ -1150,13 +1163,6 @@ class BarGraphCanvas(pg.PlotWidget):
         self.depth_label.setVisible(visible)
         self.pulse_label.setVisible(visible)
         self.carrier_label.setVisible(visible)
-        # Also hide peak indicator bars when hiding indicators
-        if hasattr(self, 'peak_actual_bar'):
-            self.peak_actual_bar.setVisible(visible)
-        if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setVisible(visible)
-        if hasattr(self, 'peak_decay_bar'):
-            self.peak_decay_bar.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update bars with new spectrum data"""
@@ -1450,8 +1456,17 @@ class PhosphorCanvas(pg.PlotWidget):
             scale = getattr(self, '_bar_scale', self.num_mag_levels)
             self.peak_floor_bar.setOpts(height=[peak_floor * scale])
     
-    def set_indicators_visible(self, visible: bool):
-        """Show or hide all frequency band indicators and labels"""
+    def set_peak_indicators_visible(self, visible: bool):
+        """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
+        if hasattr(self, 'peak_actual_bar'):
+            self.peak_actual_bar.setVisible(visible)
+        if hasattr(self, 'peak_floor_bar'):
+            self.peak_floor_bar.setVisible(visible)
+        if hasattr(self, 'peak_decay_bar'):
+            self.peak_decay_bar.setVisible(visible)
+
+    def set_range_indicators_visible(self, visible: bool):
+        """Show or hide frequency range band indicators and labels"""
         self.beat_band.setVisible(visible)
         self.depth_band.setVisible(visible)
         self.p0_band.setVisible(visible)
@@ -1460,13 +1475,6 @@ class PhosphorCanvas(pg.PlotWidget):
         self.depth_label.setVisible(visible)
         self.pulse_label.setVisible(visible)
         self.carrier_label.setVisible(visible)
-        # Also hide peak indicator bars when hiding indicators
-        if hasattr(self, 'peak_actual_bar'):
-            self.peak_actual_bar.setVisible(visible)
-        if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setVisible(visible)
-        if hasattr(self, 'peak_decay_bar'):
-            self.peak_decay_bar.setVisible(visible)
         
     def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
         """Update phosphor display with new spectrum - accumulate hits with decay"""
@@ -2114,8 +2122,9 @@ class BREadbeatsWindow(QMainWindow):
         # Load config values into UI sliders
         self._apply_config_to_ui()
         
-        # Show range indicators by default
-        self._on_hide_indicators_toggle(0)  # 0 = Qt.Unchecked = show
+        # Initialize indicator visibility: peak visible, range hidden
+        self._on_show_peak_indicators_toggle(True)
+        self._on_show_range_indicators_toggle(False)
         
         # Load presets from disk
         self._load_presets_from_disk()
@@ -2643,14 +2652,18 @@ class BREadbeatsWindow(QMainWindow):
             action.triggered.connect(lambda checked, idx=i: self._on_viz_menu_change(idx))
             self._viz_type_actions.append(action)
 
-        # Show/Hide range indicators
-        self.hide_indicators_checkbox = QCheckBox()  # Hidden checkbox for state tracking
-        self.hide_indicators_checkbox.setChecked(False)  # Default: visible
-        self.show_indicators_action = options_menu.addAction("Show Range Indicators")
-        assert self.show_indicators_action is not None
-        self.show_indicators_action.setCheckable(True)
-        self.show_indicators_action.setChecked(True)  # Default: visible (checked = show)
-        self.show_indicators_action.triggered.connect(self._on_show_indicators_menu_toggle)
+        # Show/Hide indicators - split into peak and range
+        self.show_peak_indicators_action = options_menu.addAction("Show Peak Indicators")
+        assert self.show_peak_indicators_action is not None
+        self.show_peak_indicators_action.setCheckable(True)
+        self.show_peak_indicators_action.setChecked(True)  # Peak visible by default
+        self.show_peak_indicators_action.triggered.connect(self._on_show_peak_indicators_menu_toggle)
+
+        self.show_range_indicators_action = options_menu.addAction("Show Range Indicators")
+        assert self.show_range_indicators_action is not None
+        self.show_range_indicators_action.setCheckable(True)
+        self.show_range_indicators_action.setChecked(False)  # Range hidden by default
+        self.show_range_indicators_action.triggered.connect(self._on_show_range_indicators_menu_toggle)
 
         options_menu.addSeparator()
 
@@ -3741,13 +3754,25 @@ bREadfan_69@hotmail.com"""
         if hasattr(self, 'pulse_freq_range_slider'):
             self._on_p0_band_change()
     
-    def _on_hide_indicators_toggle(self, state: int):
-        """Toggle visibility of frequency range indicators on all visualizers"""
-        hide = state == 2  # Qt.Checked = 2
-        # Apply to all visualizer canvases
+    def _on_show_peak_indicators_toggle(self, checked: bool):
+        """Toggle visibility of peak indicator bars on all visualizers"""
         for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
-            if hasattr(canvas, 'set_indicators_visible'):
-                canvas.set_indicators_visible(not hide)
+            if hasattr(canvas, 'set_peak_indicators_visible'):
+                canvas.set_peak_indicators_visible(checked)
+
+    def _on_show_range_indicators_toggle(self, checked: bool):
+        """Toggle visibility of range indicator bands on all visualizers"""
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+            if hasattr(canvas, 'set_range_indicators_visible'):
+                canvas.set_range_indicators_visible(checked)
+
+    def _on_show_peak_indicators_menu_toggle(self, checked: bool):
+        """Handle Show Peak Indicators toggle from Options menu"""
+        self._on_show_peak_indicators_toggle(checked)
+
+    def _on_show_range_indicators_menu_toggle(self, checked: bool):
+        """Handle Show Range Indicators toggle from Options menu"""
+        self._on_show_range_indicators_toggle(checked)
 
     def _on_viz_menu_change(self, index: int):
         """Handle spectrum type change from Options menu"""
@@ -3757,12 +3782,6 @@ bREadfan_69@hotmail.com"""
         # Sync hidden combo (for preset save/load compatibility)
         self.visualizer_type_combo.setCurrentIndex(index)
         self._on_visualizer_type_change(index)
-
-    def _on_show_indicators_menu_toggle(self, checked: bool):
-        """Handle Show Range Indicators toggle from Options menu"""
-        # Sync hidden checkbox (inverted: menu checked = show = checkbox unchecked)
-        self.hide_indicators_checkbox.setChecked(not checked)
-        self._on_hide_indicators_toggle(0 if checked else 2)
     
     def _create_position_panel(self) -> QWidget:
         """Alpha/Beta position display"""
