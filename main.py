@@ -4151,16 +4151,25 @@ bREadfan_69@hotmail.com"""
         print(f"[Config] Motion intensity set to {value:.2f}")
 
     def _set_motion_preset(self, preset: str):
-        """Apply a quick motion preset: gentle / normal / intense."""
+        """Apply a quick motion preset: gentle / normal / intense.
+        
+        Adjusts motion intensity (stroke size), z-score threshold,
+        PATH 1 sensitivity, and rise sensitivity together to create
+        coherent feel profiles — from smooth to jerky micro-motions.
+        """
         presets = {
-            'gentle':  {'motion': 0.50, 'zscore': 3.5},
-            'normal':  {'motion': 1.00, 'zscore': 2.5},
-            'intense': {'motion': 1.50, 'zscore': 1.8},
+            'gentle':  {'motion': 0.50, 'zscore': 3.5, 'sensitivity': 0.30, 'rise_sens': 0.70},
+            'normal':  {'motion': 1.00, 'zscore': 2.5, 'sensitivity': 0.50, 'rise_sens': 0.40},
+            'intense': {'motion': 1.50, 'zscore': 1.8, 'sensitivity': 0.80, 'rise_sens': 0.10},
         }
         p = presets.get(preset, presets['normal'])
-        self.motion_intensity_slider.setValue(p['motion'])
+        # Motion intensity slider is independent — user controls stroke size separately
         self.zscore_threshold_slider.setValue(p['zscore'])
-        print(f"[Config] Motion preset '{preset}': intensity={p['motion']}, z-score={p['zscore']}")
+        self.sensitivity_slider.setValue(p['sensitivity'])
+        self.rise_sens_slider.setValue(p['rise_sens'])
+        print(f"[Config] Motion preset '{preset}': "
+              f"z-score={p['zscore']}, sensitivity={p['sensitivity']}, "
+              f"rise_sens={p['rise_sens']}")
 
     def _on_tempo_tracking_toggle(self, state):
         """Enable/disable tempo tracking"""

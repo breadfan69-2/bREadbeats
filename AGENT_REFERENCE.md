@@ -30,7 +30,7 @@ This document serves as a canonical reference for future AI agents working on bR
 
 ### Key Files
 - **main.py** - GUI (PyQt6), wiring, P0/C0 computation, visualizers
-- **audio_engine.py** - Audio capture, FFT, beat/tempo detection, downbeat tracking, dominant-frequency estimation per frame
+- **audio_engine.py** - Audio capture, FFT, beat/tempo detection (classic + z-score dual-path), downbeat tracking, dominant-frequency estimation per frame; contains `ZScorePeakDetector` class
 - **stroke_mapper.py** - Beat→stroke conversion, 4 stroke modes, jitter/creep, depth scaling from dominant frequency via `_freq_to_factor`
 - **network_engine.py** - TCP connection to restim, TCodeCommand class
 - **config.py** - All configuration dataclasses and defaults
@@ -179,11 +179,63 @@ If gain is NOT applied in Butterworth path, beat detection will fail completely 
 - **If reset > 0.08, beats won't be detected initially because peak_floor > band_energy**
 
 **Beat Detection Features:**
+- **Two-path detection system** (classic + z-score, see below)
 - Combined spectral flux + peak energy detection
 - Butterworth bandpass filter for bass isolation (30-200Hz default)
 - Weighted tempo averaging (recent beats weighted 0.5-1.5)
 - Exponential smoothing (factor 0.7) for stable BPM
 - 2000ms timeout resets tempo tracking (preserves last known BPM)
+
+**Z-Score Adaptive Peak Detection (Brakel, 2014) — Multi-Band:**
+`_detect_beat()` uses two parallel detection paths — a beat fires if EITHER triggers:
+
+| Path | How it works | Strengths |
+|------|-------------|-----------|
+| **Classic** | peak_floor + rise_sens + threshold multiplier | User-tunable, works with auto-ranging metrics |
+| **Z-Score (multi-band)** | 4 sub-band z-score detectors, OR logic | Self-adapting, tracks instrument hopping |
+
+**Multi-Band Z-Score System (4 sub-bands):**
+
+Each band gets its own `ZScorePeakDetector(lag=30, threshold=2.5, influence=0.05)`:
+
+| Band | Frequency Range | Typical Source |
+|------|----------------|----------------|
+| `sub_bass` | 30–100 Hz | Kick drum, sub-bass |
+| `low_mid` | 100–500 Hz | Bass guitar, toms |
+| `mid` | 500–2000 Hz | Snare, vocals |
+| `high` | 2000–16000 Hz | Hi-hats, cymbals |
+
+```python
+# Per-band state (created in __init__)
+self._zscore_bands = [('sub_bass',30,100), ('low_mid',100,500), ('mid',500,2000), ('high',2000,16000)]
+self._zscore_detectors = {name: ZScorePeakDetector(...) for name, _, _ in self._zscore_bands}
+self._band_energies = {name: 0.0 ...}        # Current RMS energy per band
+self._band_zscore_signals = {name: 0 ...}     # 1=fired, 0=quiet per band
+self._band_fire_history = {name: [] ...}      # Rolling fire count (60 frames ≈ 1s)
+self._primary_beat_band = 'sub_bass'          # The "winning" band
+```
+
+**`_update_multiband_zscore(spectrum)`** — called every audio frame:
+1. Extracts per-band RMS energy from FFT spectrum bins
+2. Applies audio gain to each band's energy
+3. Feeds each band's energy to its `ZScorePeakDetector`
+4. Appends fire/quiet to rolling history (60 frames ≈ 1s window)
+5. Selects primary band = highest fire count with hysteresis (+2 fires to switch)
+
+**How the paths now combine:**
+1. Multi-band z-score runs on EVERY frame via `_update_multiband_zscore(spectrum)`
+2. Classic path: peak_floor → rise_sens → threshold check → fires if energy exceeds
+3. Z-score path: fires if **ANY** band's z-score signals +1 AND overall energy > 1.1× avg
+4. Beat detected if **either** path fires (after refractory guard)
+5. Log shows source + band info: `[Z] bands=band=high fired=high,sub_bass`
+6. All band detectors reset on tempo reset (silence) for fresh baseline
+
+**Band Switching Behavior:**
+- Primary band tracks whichever instrument is most rhythmically consistent
+- Example: hi-hats fire `high` band steadily → primary = `high`
+- When kick drum enters, `sub_bass` fires more → primary switches to `sub_bass`
+- Hysteresis: new band must have 2+ more fires than current to switch
+- Log: `[MultiBand] Primary band switched | band=sub_bass fires=8`
 
 **Downbeat Pattern Matching (Tempo Lock System):**
 New strict validation ensures downbeats match predicted tempo:
@@ -404,64 +456,10 @@ self._freq_window_ms: float = 250.0    # milliseconds
 ```
 Removes samples older than 250ms, averages remaining. Reduces jitter while keeping real-time responsiveness.
 
-**Auto-Frequency Band Tracking:**
-Automatically finds and tracks the most consistent frequency band for beat detection.
-Band width animates smoothly: **narrows when beats arrive** (15% per update toward spinbox target),
-**widens when beats are missed** (10% per update toward full 22050 Hz range).
-
-```python
-self._auto_freq_enabled: bool = False           # Toggle via "auto-freq band" checkbox
-self._auto_freq_width: float = 300.0            # Target band width (Hz) - "width:" spinbox
-self._auto_freq_current_width: float = 22050.0  # Animated display width
-self._auto_freq_current_center: float = 0.0     # Tracked center frequency (Hz)
-self._auto_freq_phase: str = 'scanning'         # 'scanning', 'widening', 'tracking'
-self._auto_freq_missed_threshold: int = 3       # Expand + UNLOCK after this many misses
-```
-
-**State Machine (driven by beat arrivals):**
-1. **SCANNING** (no beats): Full 30-22050 Hz range used for beat detection.
-   Continuously finds bands with consistent peak/valley patterns using
-   `find_consistent_frequency_band()`. Center smoothly tracks the best band (30% blend when unlocked).
-2. **WIDENING** (beats missed): Width gradually expands toward full range at 10% per 100ms update.
-   Center position freezes during widening to prevent oscillation. Label shows `⚡[WIDEN]`.
-3. **TRACKING** (beats arriving, tempo locked): Width gradually narrows toward spinbox target at 15% per 100ms update.
-   Center tracks detected peaks (10% blend when locked, 30% when scanning). Label shows `🔒[TRACK]`.
-
-**Missed Beat Detection & Unlock Mechanism:**
-When beats are expected but don't arrive within 2× expected interval:
-- Increment `_auto_freq_missed_count` (tracks consecutive misses)
-- Width begins expanding immediately (WIDENING phase starts)
-- After 3+ consecutive missed beats:
-  - `audio_engine.consecutive_matching_downbeats` reset to 0 (UNLOCKS tempo lock)
-  - `_band_energy_history` cleared for fresh scan
-  - Missed count reset to prevent re-triggering
-  - Console logs: `[AutoFreq] ⚡ 3 missed beats → UNLOCKED tempo`
-- Width continues expanding, center frozen until next beat arrives
-
-**Width Animation Rules:**
-- On beat arrival: `width += (target_width - width) * 0.15` (narrows 15% per update)
-- On missed beat: `width += (22050 - width) * 0.10` (widens 10% per update)
-- Center updates: Only when NOT widening and score > 0.1 (no tracking during widen phase)
-- Band display: Centered on `_auto_freq_current_center ± (current_width / 2)`
-
 **Butterworth Filter Re-initialization:**
-When `_on_freq_band_change()` is called (by auto-freq or manual slider), the Butterworth
+When `_on_freq_band_change()` is called (by manual slider), the Butterworth
 bandpass filter is re-initialized via `audio_engine._init_butterworth_filter()` so the
 actual beat detection filter matches the displayed band.
-
-**Audio Engine Methods:**
-```python
-def find_consistent_frequency_band(min_freq, max_freq, band_width) -> (center, low, high, score)
-  # Returns center frequency, low/high bounds, and consistency score (0-1)
-```
-
-**GUI Updates (all react in real-time):**
-- Beat detection freq range slider moves to show current auto-freq band
-- All visualizer canvases (spectrum, mountain, bar, phosphor) red band overlay updates
-- Auto-freq label shows phase + lock icon + band range:
-  - `🔓[SCAN] 30-22050 Hz` (no beats detected yet)
-  - `⚡[WIDEN] (expanding)` (missing beats, width expanding)
-  - `🔒[TRACK] (narrowed)` (beats locked, width narrowed)
 
 ---
 
@@ -550,24 +548,6 @@ queued_commands.append(pre_computed_p0)  # NEVER queue commands
     - New: Uses full 0.15-5.0 range
     - DO NOT re-add 1.0 limit; breaks audio amp scaling
 
-16. **Modifying auto-freq width animation rates**
-    - Narrow rate: MUST stay at 15% per update (when beats arrive)
-    - Widen rate: MUST stay at 10% per update (when beats missed)
-    - Changing these breaks the balance between responsiveness and stability
-    - Lower widen rate → band gets stuck narrow when music changes
-    - Higher narrow rate → band snaps too fast, not enough scan time
-
-17. **Removing center freezing during WIDENING phase**
-    - Center MUST freeze when `is_missing_beats` is True
-    - Unfreezing causes oscillation/drift when beats are lost
-    - Center should only update when score > 0.1 AND NOT widening
-
-18. **Changing missed beat threshold**
-    - MUST stay at 3 consecutive misses before unlock
-    - Lower (e.g., 1-2) causes excessive unlocks on tempo variations
-    - Higher (e.g., 5+) prevents quick recovery when music changes
-    - Threshold of 3 balances stability with adaptability
-
 ---
 
 ## Testing Checklist
@@ -642,16 +622,6 @@ Before committing changes:
     - Verify slider resets to 0.08 (NOT 0.2 or higher)
     - If reset wrong, auto-adjust icon shows but beats don't appear
 
-11. **Auto-Frequency Band Tracking**
-    - Enable "auto-freq band" checkbox
-    - Play music with steady beat
-    - Observe console: `[AutoFreq] ⚡ 3 missed beats → UNLOCKED tempo` should NOT appear immediately
-    - Band should narrow (get tighter) as beats are detected
-    - Mute audio or change tempo: Band should widen (expand toward full range)
-    - Label should show: `🔓[SCAN]` (searching), `⚡[WIDEN]` (beat loss), `🔒[TRACK]` (locked)
-    - Red frequency band overlay on visualizer should move and resize smoothly (not jitter)
-    - Downbeat strokes should be 25% larger when tempo locked (BOOST active)
-
 ---
 
 ## Recent Major Changes (Latest Commit)
@@ -717,33 +687,6 @@ If 3+ consecutive no-beat cycles while audio plays, all locks clear and all para
 - Global "beats:" spinbox controls threshold for all parameters
 - Individual slider lock_spin widgets removed (6 total removed)
 - Simpler `_auto_param_config` tuple: (step_size, max_limit) instead of (step, lock_time, max)
-
-### 10. Auto-Frequency Band Tracking (Animated Width with Beat Loss Handling)
-**New Behavior:** Band width animates smoothly based on beat arrivals, replacing rigid 3-phase state machine.
-
-**Key Features:**
-- **Animated width** starts at full 22050 Hz, gradually narrows (15%/update) toward spinbox target when beats arrive
-- **Missed beat detection** counts consecutive missing beats; on 3+ misses, width expands (10%/update) back toward full range
-- **Center freezing** during WIDENING phase prevents band oscillation/drift
-- **Tempo unlock on threshold** - after 3+ consecutive missed beats, tempo lock is cleared, history flushed, system resumes scanning
-- **Three phase labels:** `🔓[SCAN]` (searching), `⚡[WIDEN]` (beats lost, expanding), `🔒[TRACK]` (beats active, narrowed)
-
-**Impact on Beat Detection:**
-When beats are lost (music changes, tempo shift, or detection drift):
-1. Width begins expanding at 10% per 100ms update
-2. Center position freezes to prevent oscillation  
-3. Display label changes to `⚡[WIDEN]` for visual feedback
-4. After 3 consecutive expected beats missed, tempo is UNLOCKED:
-   - `consecutive_matching_downbeats` reset to 0
-   - Band energy history cleared for fresh analysis
-   - Search becomes more aggressive over full spectrum
-
-**Integration with Tempo Lock Boost (25% amplification):**
-Once beats stabilize and 3+ downbeats match predicted timing, tempo becomes LOCKED:
-- Downbeat strokes receive 25% amplitude boost (1.25× multiplier)
-- Center tracking switches to 10% blend (more stable)
-- Width continues narrowing toward spinbox target
-- System provides visual/tactile feedback of confidence through larger strokes
 
 ---
 
@@ -961,7 +904,76 @@ Two critical clamps added to prevent parameters from dropping too low when gain 
 ---
 
 *Document created: 2026-02-07*  
-*Last comprehensive update: 2026-02-09 Part 2 (refractory period, metric settling, amplitude proportionality)*  
-*Reference for recent changes: Commit ab0ad5d (settling + hysteresis) + current (refractory period + clamps)*
+*Last comprehensive update: 2026-02-10 (dead code cleanup, enhanced presets)*  
+*Reference for recent changes: Commit 74926fe (dead code cleanup) + current (enhanced presets)*
 *All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow.*
 *Current branch: feature/metric-autoranging — metric autoranging with refractory period and adaptive thresholds.*
+*Branch URL: https://github.com/breadfan69-2/bREadbeats/tree/feature/metric-autoranging*
+
+---
+
+## Session Summary: 2026-02-10
+
+### Work Branch
+**`feature/metric-autoranging`** — All development for metric autoranging and multi-band z-score detection happens here.
+
+### Changes Made This Session
+
+**1. Dead Code Cleanup (Commit 74926fe)**
+
+Removed obsolete code that was no longer functional or referenced:
+
+| File | Removed | Reason |
+|------|---------|--------|
+| audio_engine.py | `import aubio` / `HAS_AUBIO` flag + all aubio blocks | Entire aubio code path was `pass` (no-op) |
+| audio_engine.py | `find_peak_frequency_band()` method | Leftover from removed auto-frequency feature |
+| audio_engine.py | `list_devices()` method | Broken — referenced `sd` module that isn't imported |
+| audio_engine.py | `self.tempo_detector` / `self.beat_detector` | Aubio object placeholders |
+| main.py | `QSizePolicy, QRect, QFont, QPalette` imports | Verified zero usages via grep |
+| config.py | `auto_freq_enabled: bool = False` | Declared but never read |
+
+**2. BPS Tolerance Default Widened**
+- Changed `bps_tolerance_spin.setValue()` from 0.2 to 0.5 in main.py
+- Gives tempo tracker a wider ±0.5 BPS tolerance window on startup
+
+**3. Enhanced Preset Buttons (Gentle/Normal/Intense)**
+
+Previously: Presets only set motion intensity (stroke size) and z-score threshold.
+
+Now: Presets control jerkiness via **three detection parameters** (motion intensity slider is independent):
+
+| Preset | Z-Score Threshold | Sensitivity | Rise Sensitivity | Effect |
+|--------|------------------|-------------|-----------------|--------|
+| Gentle | 3.5 (few z-score beats) | 0.30 (strict PATH 1) | 0.70 (filters small rises) | Smooth, only strong beats |
+| Normal | 2.5 | 0.50 | 0.40 | Balanced |
+| Intense | 1.8 (many z-score beats) | 0.80 (sensitive PATH 1) | 0.10 (passes nearly all) | Jerky micro-motions |
+
+**How this works:**
+- Z-Score Threshold: Lower = more multi-band z-score beats fire
+- Sensitivity: Higher = lower PATH 1 threshold_mult = quieter transients trigger classic beats
+- Rise Sensitivity: Lower = small fluctuations pass through as beats
+
+Both PATH 1 and PATH 2 fire more aggressively on "Intense", creating the rapid direction changes / micro-motions effect.
+
+### Items Confirmed Still Active (NOT dead code)
+- **Frequency Range slider** → Butterworth bandpass filter for PATH 1
+- **Sensitivity slider** → PATH 1 threshold multiplier
+- **Peak Floor** → PATH 1 energy gate
+- **Rise Sensitivity** → PATH 1 transient gate
+- **Peak Decay** → peak envelope decay rate
+- **Detection Type combo** → PATH 1 mode selection
+- **Flux Multiplier** → spectral flux scaling
+
+### Volume Slider Investigation
+User reported Volume slider didn't track V0 changes. **Finding: Working as designed.**
+- Volume slider is the master volume SOURCE
+- Band-based scaling, fade-out, and ramp multipliers are applied DOWNSTREAM
+- Making the slider follow V0 changes would create feedback loop
+- `v=` in logs shows effective V0 after all multipliers
+
+### For Next Agent
+- Multi-band z-score with 4 sub-bands is fully working
+- Gentle/Normal/Intense presets now control jerkiness, not just stroke size
+- Motion intensity slider is independent (stroke size only)
+- All enabled metrics can reach SETTLED state with current thresholds
+- Branch `feature/metric-autoranging` has all recent commits
