@@ -1,1 +1,0 @@
-did you see how the circles[strokes] were smaller on 'gentle' mode?  i don't want that...which parameter is tied to [stroke depth]?  i don't want the modes to prevent full stroke, only prevent/encourage the fast returns/stops.   can you find what we determined was actually causing the jerky motions earlier in our documents?  may be some clues in commit notes too, not sure.

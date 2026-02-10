@@ -1964,6 +1964,66 @@ class TrafficLightWidget(QWidget):
         painter.end()
 
 
+class CollapsibleGroupBox(QGroupBox):
+    """
+    A QGroupBox that can be collapsed/expanded by clicking the title.
+    When collapsed, only the title bar is visible (windowshade effect).
+    """
+    
+    def __init__(self, title: str = "", parent=None, collapsed: bool = False):
+        super().__init__(title, parent)
+        self._collapsed = collapsed
+        self._content_widgets: list[QWidget] = []
+        self._content_layouts: list[QWidget] = []  # wrapped layout widgets
+        self.setCheckable(True)
+        self.setChecked(not collapsed)
+        self.toggled.connect(self._on_toggled)
+        # Override checkbox indicator to show ▼/▶ arrows
+        self._update_style()
+    
+    def _update_style(self):
+        arrow = "▼" if self.isChecked() else "▶"
+        self.setTitle(f"{arrow} {self._base_title}")
+    
+    @property
+    def _base_title(self):
+        t = self.title()
+        if t.startswith("▼ ") or t.startswith("▶ "):
+            return t[2:]
+        return t
+    
+    def _on_toggled(self, checked: bool):
+        self._collapsed = not checked
+        # Show/hide all direct children of the layout
+        layout = self.layout()
+        if layout:
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                widget = item.widget()
+                if widget:
+                    widget.setVisible(checked)
+                inner_layout = item.layout()
+                if inner_layout:
+                    self._set_layout_visible(inner_layout, checked)
+        self._update_style()
+    
+    def _set_layout_visible(self, layout, visible: bool):
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            widget = item.widget()
+            if widget:
+                widget.setVisible(visible)
+            inner = item.layout()
+            if inner:
+                self._set_layout_visible(inner, visible)
+    
+    def setCollapsed(self, collapsed: bool):
+        self.setChecked(not collapsed)
+    
+    def isCollapsed(self) -> bool:
+        return self._collapsed
+
+
 class NoWheelScrollArea(QScrollArea):
     """
     Custom QScrollArea that ignores mouse wheel events.
@@ -2275,6 +2335,11 @@ class BREadbeatsWindow(QMainWindow):
                 subcontrol-origin: margin;
                 left: 10px;
                 padding: 0 3px 0 3px;
+            }
+
+            QGroupBox::indicator {
+                width: 0px;
+                height: 0px;
             }
 
             /* Tabs */
@@ -3415,8 +3480,7 @@ bREadfan_69@hotmail.com"""
         tabs.addTab(self._create_stroke_settings_tab(), "Stroke Settings")
         tabs.addTab(self._create_jitter_creep_tab(), "Effects / Axis")
         tabs.addTab(self._create_tempo_tracking_tab(), "Tempo Tracking")
-        tabs.addTab(self._create_pulse_freq_tab(), "Pulse Freq")
-        tabs.addTab(self._create_carrier_freq_tab(), "Carrier Freq")
+        tabs.addTab(self._create_tcode_freq_tab(), "TCode Freq")
         return tabs
     
     def _create_presets_panel(self) -> QGroupBox:
@@ -3596,29 +3660,25 @@ bREadfan_69@hotmail.com"""
         
         print("[Config] Reverted to previous settings")
 
-    def _create_pulse_freq_tab(self) -> QWidget:
-        """Pulse Frequency (P0 TCode) controls"""
+    def _create_tcode_freq_tab(self) -> QWidget:
+        """Combined Pulse (P0) and Carrier (F0) frequency controls"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        freq_group = QGroupBox("Pulse Frequency Controls - blue overlay on spectrum")
-        freq_layout = QVBoxLayout(freq_group)
+        # ===== PULSE FREQUENCY (P0) =====
+        pulse_group = CollapsibleGroupBox("Pulse Frequency (P0) - blue overlay on spectrum")
+        pulse_layout = QVBoxLayout(pulse_group)
 
-        # Monitor frequency range (single range slider with two handles)
         self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
         self.pulse_freq_range_slider.rangeChanged.connect(self._on_p0_band_change)
-        freq_layout.addWidget(self.pulse_freq_range_slider)
+        pulse_layout.addWidget(self.pulse_freq_range_slider)
 
-        # TCode output range slider (in Hz, same scale as Pulse display: Hz = TCode/67)
-        # TCode range 0-9999 maps to ~0-150Hz via /67
         self.tcode_freq_range_slider = RangeSliderWithLabel("Sent Freq (Hz)", 0, 150, 30, 105, 0)
-        freq_layout.addWidget(self.tcode_freq_range_slider)
+        pulse_layout.addWidget(self.tcode_freq_range_slider)
 
-        # Frequency weight slider - 0=no freq influence, 1=full tracking, 5=strongly exaggerated
         self.freq_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 5.0, 1.0, 2)
-        freq_layout.addWidget(self.freq_weight_slider)
+        pulse_layout.addWidget(self.freq_weight_slider)
 
-        # Mode toggle (Hz vs Speed) and Invert checkbox for Pulse
         pulse_mode_layout = QHBoxLayout()
         pulse_mode_layout.addWidget(QLabel("Mode:"))
         self.pulse_mode_combo = QComboBox()
@@ -3632,35 +3692,24 @@ bREadfan_69@hotmail.com"""
         self.pulse_enabled_checkbox.setChecked(True)
         pulse_mode_layout.addWidget(self.pulse_enabled_checkbox)
         pulse_mode_layout.addStretch()
-        freq_layout.addLayout(pulse_mode_layout)
+        pulse_layout.addLayout(pulse_mode_layout)
 
-        layout.addWidget(freq_group)
-        layout.addStretch()
-        return widget
+        layout.addWidget(pulse_group)
 
-    def _create_carrier_freq_tab(self) -> QWidget:
-        """Carrier Frequency (F0 TCode) controls - frequency axis"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        # ===== CARRIER FREQUENCY (F0) =====
+        carrier_group = CollapsibleGroupBox("Carrier Frequency (F0)")
+        carrier_layout = QVBoxLayout(carrier_group)
 
-        # F0 Frequency Controls group (same structure as Pulse)
-        f0_group = QGroupBox("Frequency Controls (F0)")
-        f0_layout = QVBoxLayout(f0_group)
-
-        # Monitor frequency range for F0
         self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
         self.f0_freq_range_slider.rangeChanged.connect(self._on_f0_band_change)
-        f0_layout.addWidget(self.f0_freq_range_slider)
+        carrier_layout.addWidget(self.f0_freq_range_slider)
 
-        # TCode output range slider for F0 (display 500-1500 maps to TCode 0-9999)
         self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Freq", 500, 1500, 500, 1000, 0)
-        f0_layout.addWidget(self.f0_tcode_range_slider)
+        carrier_layout.addWidget(self.f0_tcode_range_slider)
 
-        # Frequency weight slider for F0 - 0=no freq influence, 1=full tracking, 5=strongly exaggerated
         self.f0_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 5.0, 1.0, 2)
-        f0_layout.addWidget(self.f0_weight_slider)
+        carrier_layout.addWidget(self.f0_weight_slider)
 
-        # Mode toggle (Hz vs Speed) and Invert checkbox for F0
         f0_mode_layout = QHBoxLayout()
         f0_mode_layout.addWidget(QLabel("Mode:"))
         self.f0_mode_combo = QComboBox()
@@ -3674,9 +3723,10 @@ bREadfan_69@hotmail.com"""
         self.f0_enabled_checkbox.setChecked(True)
         f0_mode_layout.addWidget(self.f0_enabled_checkbox)
         f0_mode_layout.addStretch()
-        f0_layout.addLayout(f0_mode_layout)
+        carrier_layout.addLayout(f0_mode_layout)
 
-        layout.addWidget(f0_group)
+        layout.addWidget(carrier_group)
+
         layout.addStretch()
         return widget
     
@@ -3794,7 +3844,7 @@ bREadfan_69@hotmail.com"""
             new_val = current + adjustment
             fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
             # Amplitude proportionality: flux_mult must always be >= 15% of audio_amp
-            amp_floor = self.config.beat.amplification * 0.15
+            amp_floor = self.config.audio.gain * 0.15
             new_val = max(max(fm_min, amp_floor), min(fm_max, new_val))
             if abs(new_val - current) > 0.005:
                 self.flux_mult_slider.setValue(new_val)
@@ -3867,10 +3917,14 @@ bREadfan_69@hotmail.com"""
         self.detection_type_combo.currentIndexChanged.connect(self._on_detection_type_change)
         type_layout.addWidget(self.detection_type_combo)
         type_layout.addStretch()
-        layout.addLayout(type_layout)
+        # Wrap detection type in a groupbox
+        detect_group = QGroupBox("Detection")
+        detect_layout = QVBoxLayout(detect_group)
+        detect_layout.addLayout(type_layout)
+        layout.addWidget(detect_group)
         
         # ===== REAL-TIME METRIC-BASED AUTO-RANGING CONTROLS =====
-        metric_group = QGroupBox("Real-Time Metrics (Experimental - No Timer Cycle)")
+        metric_group = CollapsibleGroupBox("Real-Time Metrics (Experimental)")
         metric_layout = QVBoxLayout(metric_group)
         
         # Metric controls row
@@ -3962,7 +4016,7 @@ bREadfan_69@hotmail.com"""
         print("[Config] Auto-enabled 4 core metrics on startup: peak_floor, audio_amp, flux_balance, target_bps")
         
         # Frequency band selection
-        freq_group = QGroupBox("Frequency Band (Hz) - red overlay on spectrum")
+        freq_group = CollapsibleGroupBox("Frequency Band (Hz) - red overlay", collapsed=True)
         freq_layout = QVBoxLayout(freq_group)
         
         # Full range up to ~20kHz (Nyquist for 44100 Hz)
@@ -4030,11 +4084,14 @@ bREadfan_69@hotmail.com"""
         
         layout.addWidget(peaks_group)
         
-        # Butterworth filter checkbox (requires restart)
+        # Advanced options
+        advanced_group = CollapsibleGroupBox("Advanced", collapsed=True)
+        advanced_layout = QVBoxLayout(advanced_group)
         self.butterworth_checkbox = QCheckBox("Use Butterworth bandpass filter (better bass isolation)")
         self.butterworth_checkbox.setChecked(getattr(self.config.audio, 'use_butterworth', True))
         self.butterworth_checkbox.stateChanged.connect(self._on_butterworth_toggle)
-        layout.addWidget(self.butterworth_checkbox)
+        advanced_layout.addWidget(self.butterworth_checkbox)
+        layout.addWidget(advanced_group)
         
         layout.addStretch()
         scroll_area.setWidget(widget)
@@ -4539,33 +4596,38 @@ bREadfan_69@hotmail.com"""
         motion_layout.addLayout(motion_btn_layout)
         layout.addWidget(motion_group)
         
-        # Sliders
+        # ===== STROKE PARAMETERS =====
+        params_group = CollapsibleGroupBox("Stroke Parameters")
+        params_layout = QVBoxLayout(params_group)
+        
         self.stroke_range_slider = RangeSliderWithLabel("Stroke Min/Max", 0.0, 1.0, 0.2, 1.0, 2)
         self.stroke_range_slider.rangeChanged.connect(self._on_stroke_range_change)
-        layout.addWidget(self.stroke_range_slider)
+        params_layout.addWidget(self.stroke_range_slider)
         
         self.min_interval_slider = SliderWithLabel("Min Interval (ms)", 50, 5000, 100, 0)
         self.min_interval_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'min_interval_ms', int(v)))
-        layout.addWidget(self.min_interval_slider)
+        params_layout.addWidget(self.min_interval_slider)
         
         self.fullness_slider = SliderWithLabel("Stroke Fullness", 0.0, 1.0, 0.7)
         self.fullness_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'stroke_fullness', v))
-        layout.addWidget(self.fullness_slider)
+        params_layout.addWidget(self.fullness_slider)
         
         self.min_depth_slider = SliderWithLabel("Minimum Depth", 0.0, 1.0, 0.0)
         self.min_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'minimum_depth', v))
-        layout.addWidget(self.min_depth_slider)
+        params_layout.addWidget(self.min_depth_slider)
         
         self.freq_depth_slider = SliderWithLabel("Freq Depth Factor", 0.0, 2.0, 0.3)
         self.freq_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'freq_depth_factor', v))
-        layout.addWidget(self.freq_depth_slider)
+        params_layout.addWidget(self.freq_depth_slider)
         
         self.flux_depth_slider = SliderWithLabel("Flux Rise Depth Factor", 0.0, 5.0, 0.0)
         self.flux_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_depth_factor', v))
-        layout.addWidget(self.flux_depth_slider)
+        params_layout.addWidget(self.flux_depth_slider)
+        
+        layout.addWidget(params_group)
         
         # Frequency range for stroke depth - shown as green overlay on spectrum
-        depth_freq_group = QGroupBox("Depth Frequency Range (Hz) - green overlay on spectrum")
+        depth_freq_group = CollapsibleGroupBox("Depth Frequency Range (Hz) - green overlay", collapsed=True)
         depth_freq_layout = QVBoxLayout(depth_freq_group)
         
         self.depth_freq_range_slider = RangeSliderWithLabel("Depth Freq (Hz)", 30, 22050, 30, 4000, 0)
@@ -4573,35 +4635,6 @@ bREadfan_69@hotmail.com"""
         depth_freq_layout.addWidget(self.depth_freq_range_slider)
         
         layout.addWidget(depth_freq_group)
-        
-        # Silence Threshold Controls
-        silence_group = QGroupBox("Silence Thresholds")
-        silence_layout = QVBoxLayout(silence_group)
-        
-        # Lock checkbox
-        lock_layout = QHBoxLayout()
-        self.silence_lock_checkbox = QCheckBox("Lock Silence Thresholds")
-        self.silence_lock_checkbox.setChecked(True)  # Locked by default on startup
-        self.silence_lock_checkbox.stateChanged.connect(self._on_silence_lock_toggle)
-        lock_layout.addWidget(self.silence_lock_checkbox)
-        lock_layout.addStretch()
-        silence_layout.addLayout(lock_layout)
-        
-        # Flux multiplier slider
-        self.silence_flux_mult_slider = SliderWithLabel("Flux Multiplier", 0.01, 1.0, 0.15, 2)
-        self.silence_flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'silence_flux_multiplier', v))
-        self.silence_flux_mult_slider.setEnabled(False)  # Disabled when locked
-        silence_layout.addWidget(self.silence_flux_mult_slider)
-        
-        # Energy multiplier slider
-        self.silence_energy_mult_slider = SliderWithLabel("Energy Multiplier", 0.1, 2.0, 0.7, 2)
-        self.silence_energy_mult_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'silence_energy_multiplier', v))
-        self.silence_energy_mult_slider.setEnabled(False)  # Disabled when locked
-        silence_layout.addWidget(self.silence_energy_mult_slider)
-        
-        silence_layout.addWidget(QLabel("Higher = more sensitive to silence (louder minimum volume)"))
-        
-        layout.addWidget(silence_group)
         
         layout.addStretch()
         return widget
@@ -4680,11 +4713,15 @@ bREadfan_69@hotmail.com"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
+        # ===== TEMPO SETTINGS =====
+        tempo_group = QGroupBox("Tempo Settings")
+        tempo_layout = QVBoxLayout(tempo_group)
+        
         # Enable/disable checkbox
         self.tempo_tracking_checkbox = QCheckBox("Enable Tempo Tracking")
         self.tempo_tracking_checkbox.setChecked(True)
         self.tempo_tracking_checkbox.stateChanged.connect(self._on_tempo_tracking_toggle)
-        layout.addWidget(self.tempo_tracking_checkbox)
+        tempo_layout.addWidget(self.tempo_tracking_checkbox)
         
         # Time signature dropdown
         sig_layout = QHBoxLayout()
@@ -4694,30 +4731,32 @@ bREadfan_69@hotmail.com"""
         self.time_sig_combo.currentIndexChanged.connect(self._on_time_sig_change)
         sig_layout.addWidget(self.time_sig_combo)
         sig_layout.addStretch()
-        layout.addLayout(sig_layout)
+        tempo_layout.addLayout(sig_layout)
         
         # Stability threshold: lower = stricter (requires more consistent intervals before locking BPM)
         self.stability_threshold_slider = SliderWithLabel("Stability Threshold", 0.05, 0.4, 0.15, 2)
         self.stability_threshold_slider.valueChanged.connect(self._on_stability_threshold_change)
-        layout.addWidget(self.stability_threshold_slider)
+        tempo_layout.addWidget(self.stability_threshold_slider)
         
         # Tempo timeout: how long no beats before resetting tempo tracking
         self.tempo_timeout_slider = SliderWithLabel("Tempo Timeout (ms)", 500, 5000, 2000, 0)
         self.tempo_timeout_slider.valueChanged.connect(self._on_tempo_timeout_change)
-        layout.addWidget(self.tempo_timeout_slider)
+        tempo_layout.addWidget(self.tempo_timeout_slider)
         
         # Phase snap: how much to nudge detected beats toward predicted time
         self.phase_snap_slider = SliderWithLabel("Phase Snap", 0.0, 0.8, 0.3, 2)
         self.phase_snap_slider.valueChanged.connect(self._on_phase_snap_change)
-        layout.addWidget(self.phase_snap_slider)
+        tempo_layout.addWidget(self.phase_snap_slider)
         
         # Silence reset threshold (moved from Beat Detection)
         self.silence_reset_slider = SliderWithLabel("Silence Reset (ms)", 100, 3000, 400, 0)
         self.silence_reset_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'silence_reset_ms', int(v)))
-        layout.addWidget(self.silence_reset_slider)
+        tempo_layout.addWidget(self.silence_reset_slider)
         
-        # Spectral flux control group (moved from Stroke Settings)
-        flux_group = QGroupBox("Spectral Flux Control")
+        layout.addWidget(tempo_group)
+        
+        # Spectral flux control group
+        flux_group = CollapsibleGroupBox("Spectral Flux Control")
         flux_layout = QVBoxLayout(flux_group)
         flux_layout.addWidget(QLabel("Low flux→downbeats only, High flux→every beat"))
         
@@ -4841,13 +4880,6 @@ bREadfan_69@hotmail.com"""
             self.beta_weight_slider.slider.setMaximum(int(new_max * self.beta_weight_slider.multiplier))
             self.alpha_weight_slider.max_val = new_max
             self.beta_weight_slider.max_val = new_max
-    
-    def _on_silence_lock_toggle(self, state: int):
-        """Toggle silence threshold sliders locked/unlocked"""
-        is_locked = state == 2  # Qt.Checked
-        self.silence_flux_mult_slider.setEnabled(not is_locked)
-        self.silence_energy_mult_slider.setEnabled(not is_locked)
-        self.config.stroke.silence_multiplier_locked = is_locked
     
     def _start_engines(self):
         """Initialize and start all engines"""
