@@ -118,6 +118,24 @@ class CarrierFreqConfig:
     freq_weight: float = 1.0          # How much frequency affects F0 (0=none, 1=full)
 
 @dataclass
+class PulseWidthConfig:
+    """Pulse Width (P1 TCode) mapping settings — higher = stronger/smoother feeling"""
+    monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
+    monitor_freq_max: float = 4000.0  # Max frequency to monitor (Hz)
+    tcode_min: int = 1000             # Min sent TCode value (0-9999)
+    tcode_max: int = 8000             # Max sent TCode value (0-9999)
+    weight: float = 1.0               # How much audio affects P1 (0=none, 1=full)
+
+@dataclass
+class RiseTimeConfig:
+    """Rise Time (P3 TCode) mapping settings — higher = smoother/gentler feeling"""
+    monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
+    monitor_freq_max: float = 4000.0  # Max frequency to monitor (Hz)
+    tcode_min: int = 1000             # Min sent TCode value (0-9999)
+    tcode_max: int = 8000             # Max sent TCode value (0-9999)
+    weight: float = 1.0               # How much audio affects P3 (0=none, 1=full)
+
+@dataclass
 class AutoAdjustConfig:
     """Auto-adjust (hunting) step sizes and related settings"""
     # Step sizes for each parameter
@@ -173,6 +191,8 @@ class Config:
     audio: AudioConfig = field(default_factory=AudioConfig)
     pulse_freq: PulseFreqConfig = field(default_factory=PulseFreqConfig)
     carrier_freq: CarrierFreqConfig = field(default_factory=CarrierFreqConfig)
+    pulse_width: PulseWidthConfig = field(default_factory=PulseWidthConfig)
+    rise_time: RiseTimeConfig = field(default_factory=RiseTimeConfig)
     auto_adjust: AutoAdjustConfig = field(default_factory=AutoAdjustConfig)
     
     # Global
