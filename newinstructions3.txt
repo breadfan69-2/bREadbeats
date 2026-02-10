@@ -1,3 +1,11 @@
+hELLO claude!  you have helped me building this program from scratch for a week now!   we are close....
+
+please take a look at the code, and check out any old instructions/ documentations and[agent_reference]- get an understanding....and look at recent commits in this experimental branch which we are working in:https://github.com/breadfan69-2/bREadbeats/tree/feature/metric-autoranging
+
+so you can see where we are at.
+
+
+
 lets work on the effects/axis tab now
 
 consolodate vibration/creep to a single groupbox labeled "effects"
@@ -6,3 +14,6 @@ consolodate vibration/creep to a single groupbox labeled "effects"
 no need for any () explaining what they are, simply jitter and creep please for labels
 
 can the "modes 1-3, mode 4 be put in a tooltip when mouse over those sliders?   appropriate tooltip for the current mode?
+
+
+oh by the way, there seems to be a bit of a bug where the windowshade opens the groupbox and draws the controls but doesn't connect them.  froaze! closing/opening the windowshade makes them work. please investigate.
