@@ -69,6 +69,12 @@ class StrokeConfig:
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
 
+    # Volume reduction limit: max % volume can be reduced by effects (subtractive clamp)
+    vol_reduction_limit: float = 10.0  # 0-20, default 10 means max 10% reduction (floor = 0.90)
+
+    # Flux-rise depth factor: modulates stroke depth by spectral flux rise over 250ms
+    flux_depth_factor: float = 0.0     # 0-5, 0=disabled
+
     # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
     phase_advance: float = 0.25
 

@@ -2951,6 +2951,7 @@ bREadfan_69@hotmail.com"""
                 self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
                 self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
                 self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
+                self.flux_depth_slider.setValue(self.config.stroke.flux_depth_factor)
                 self.depth_freq_range_slider.setLow(int(self.config.stroke.depth_freq_low))
                 self.depth_freq_range_slider.setHigh(int(self.config.stroke.depth_freq_high))
                 self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
@@ -2967,6 +2968,9 @@ bREadfan_69@hotmail.com"""
                 # Axis weights tab
                 self.alpha_weight_slider.setValue(self.config.alpha_weight)
                 self.beta_weight_slider.setValue(self.config.beta_weight)
+
+                # Effects tab
+                self.vol_reduction_limit_slider.setValue(self.config.stroke.vol_reduction_limit)
 
                 # Connection settings
                 self.host_edit.setText(self.config.connection.host)
@@ -3473,6 +3477,7 @@ bREadfan_69@hotmail.com"""
             'stroke_fullness': self.fullness_slider.value(),
             'minimum_depth': self.min_depth_slider.value(),
             'freq_depth_factor': self.freq_depth_slider.value(),
+            'flux_depth_factor': self.flux_depth_slider.value(),
             'depth_freq_low': self.depth_freq_range_slider.low(),
             'depth_freq_high': self.depth_freq_range_slider.high(),
             'flux_threshold': self.flux_threshold_slider.value(),
@@ -3489,6 +3494,9 @@ bREadfan_69@hotmail.com"""
             # Axis Weights Tab
             'alpha_weight': self.alpha_weight_slider.value(),
             'beta_weight': self.beta_weight_slider.value(),
+
+            # Effects Tab
+            'vol_reduction_limit': self.vol_reduction_limit_slider.value(),
 
             # Pulse Freq Tab
             'pulse_freq_low': self.pulse_freq_range_slider.low(),
@@ -3545,6 +3553,8 @@ bREadfan_69@hotmail.com"""
         self.fullness_slider.setValue(preset_data['stroke_fullness'])
         self.min_depth_slider.setValue(preset_data['minimum_depth'])
         self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
+        if 'flux_depth_factor' in preset_data:
+            self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
         self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
         self.depth_freq_range_slider.setHigh(preset_data['depth_freq_high'])
         self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
@@ -3561,6 +3571,10 @@ bREadfan_69@hotmail.com"""
         # Axis Weights Tab
         self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
         self.beta_weight_slider.setValue(preset_data['beta_weight'])
+        
+        # Effects Tab
+        if 'vol_reduction_limit' in preset_data:
+            self.vol_reduction_limit_slider.setValue(preset_data['vol_reduction_limit'])
         
         # Pulse Freq Tab
         self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
@@ -4289,6 +4303,7 @@ bREadfan_69@hotmail.com"""
             'stroke_fullness': self.fullness_slider.value(),
             'minimum_depth': self.min_depth_slider.value(),
             'freq_depth_factor': self.freq_depth_slider.value(),
+            'flux_depth_factor': self.flux_depth_slider.value(),
             'depth_freq_low': self.depth_freq_range_slider.low(),
             'depth_freq_high': self.depth_freq_range_slider.high(),
             'flux_threshold': self.flux_threshold_slider.value(),
@@ -4305,6 +4320,9 @@ bREadfan_69@hotmail.com"""
             # Axis Weights Tab
             'alpha_weight': self.alpha_weight_slider.value(),
             'beta_weight': self.beta_weight_slider.value(),
+
+            # Effects Tab
+            'vol_reduction_limit': self.vol_reduction_limit_slider.value(),
 
             # Other Tab
             'pulse_freq_low': self.pulse_freq_range_slider.low(),
@@ -4390,6 +4408,8 @@ bREadfan_69@hotmail.com"""
             self.fullness_slider.setValue(preset_data['stroke_fullness'])
             self.min_depth_slider.setValue(preset_data['minimum_depth'])
             self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
+            if 'flux_depth_factor' in preset_data:
+                self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
             if 'depth_freq_low' in preset_data:
                 self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
             if 'depth_freq_high' in preset_data:
@@ -4408,6 +4428,10 @@ bREadfan_69@hotmail.com"""
             # Axis Weights Tab
             self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
             self.beta_weight_slider.setValue(preset_data['beta_weight'])
+
+            # Effects Tab
+            if 'vol_reduction_limit' in preset_data:
+                self.vol_reduction_limit_slider.setValue(preset_data['vol_reduction_limit'])
 
             # Other Tab
             if 'pulse_freq_low' in preset_data:
@@ -4561,6 +4585,10 @@ bREadfan_69@hotmail.com"""
         self.freq_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'freq_depth_factor', v))
         layout.addWidget(self.freq_depth_slider)
         
+        self.flux_depth_slider = SliderWithLabel("Flux Rise Depth Factor", 0.0, 5.0, 0.0)
+        self.flux_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_depth_factor', v))
+        layout.addWidget(self.flux_depth_slider)
+        
         # Frequency range for stroke depth - shown as green overlay on spectrum
         depth_freq_group = QGroupBox("Depth Frequency Range (Hz) - green overlay on spectrum")
         depth_freq_layout = QVBoxLayout(depth_freq_group)
@@ -4657,6 +4685,17 @@ bREadfan_69@hotmail.com"""
         axis_layout.addWidget(self.beta_weight_slider)
         
         layout.addWidget(axis_group)
+        
+        # Volume Reduction Limit
+        vol_limit_group = QGroupBox("Volume Reduction Limit")
+        vol_limit_layout = QVBoxLayout(vol_limit_group)
+        vol_limit_layout.addWidget(QLabel("Max % volume can be reduced by band/fade/creep effects"))
+        
+        self.vol_reduction_limit_slider = SliderWithLabel("Max Reduction %", 0, 20, 10, 0)
+        self.vol_reduction_limit_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'vol_reduction_limit', v))
+        vol_limit_layout.addWidget(self.vol_reduction_limit_slider)
+        
+        layout.addWidget(vol_limit_group)
         
         layout.addStretch()
         return widget
