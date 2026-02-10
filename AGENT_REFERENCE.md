@@ -428,10 +428,13 @@ TCode tags are fine in code comments, log output, and agent/developer docs — j
 
 ### Window & Layout
 - **Default size:** `resize(1100, 950)`, minimum `setMinimumSize(400, 300)`
-- **Main layout:** Vertical `QSplitter` — top half is visualizers, bottom half is settings tabs + presets
+- **Main layout:** Vertical `QSplitter` — top half is visualizers (min 220px), bottom half is settings tabs only
+- **Presets row** (presets panel + "Whip the Llama" button) is **outside** the splitter, locked at the bottom of `main_layout` — never compresses
 - **Splitter ratio:** Stretch factors `5:2` (~72% visualizers, ~28% tabs)
 - **Visualizer panels** (`_create_spectrum_panel`, `_create_position_panel`) are plain `QWidget` containers with zero margins — NOT `QGroupBox` (groupboxes were removed for cleaner look)
-- **Settings panels** use `CollapsibleGroupBox` (custom windowshade widget) inside `NoWheelScrollArea` tabs
+- **Connection/Controls panels** are also plain `QWidget` (no `QGroupBox` borders) for minimal chrome
+- **Controls layout:** Grid row 0 has Start/Play buttons, volume slider, freq display stack (110px), then a right-side vertical stack (100px) with traffic light → BPM label → beat/downbeat indicators
+- **Settings panels** use `CollapsibleGroupBox` (custom windowshade widget, 12px bold title, 30px click area) inside `NoWheelScrollArea` tabs
 
 ### Position Visualizer
 - **PositionCanvas** displays alpha/beta as a dot on a circular field
@@ -471,13 +474,15 @@ The metric auto-ranging system uses feedback-driven parameter adjustment. Each m
 | Flux Balance | flux_mult | `compute_flux_balance_feedback()` — balances spectral flux scaling |
 | Target BPS | peak_floor (indirect) | `compute_bps_feedback()` — raises/lowers floor to match target beats-per-second |
 
+**Note:** The UI displays BPM (beats per minute) but the audio engine works in BPS internally. Conversion happens at the GUI layer in `_on_target_bpm_change()` (÷60) and `_on_bpm_tolerance_change()` (÷60). Widget names: `target_bpm_spin` (range 30–240), `bpm_tolerance_spin` (range 3–60), `bpm_actual_label`.
+
 **Settling System:**
 - Each metric tracks consecutive "in-zone" checks
 - After 12 consecutive in-zone checks (~30s), metric transitions to SETTLED state
 - Out-of-zone: decrement counter by 3 (not hard reset) for faster recovery
 - Hysteresis: 2 consecutive out-of-zone checks before triggering adjustment
 
-**Traffic Light Widget:**
+**Traffic Light Widget** (located in the Controls panel, right-side vertical stack above BPM display):
 - 🔴 Red = Metrics actively adjusting
 - 🟡 Yellow = Mixed state (some settled, some adjusting)
 - 🟢 Green = All enabled metrics settled
