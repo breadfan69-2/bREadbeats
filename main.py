@@ -2095,25 +2095,6 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_to: float = 1.0
         self._volume_ramp_duration: float = 0.8  # 800ms
         
-        # Auto-frequency band tracking state
-        self._auto_freq_enabled: bool = False
-        self._auto_freq_width: float = 300.0      # Target width in Hz (from spinbox)
-        self._auto_freq_speed: float = 0.1        # Not used for close-down timing
-        self._auto_freq_current_center: float = 0.0  # Current tracked center frequency (Hz)
-        self._auto_freq_last_update: float = 0.0  # Timestamp of last update
-        
-        # Gradual close-down state (1500ms to narrow from full range to target width)
-        self._auto_freq_closedown_start: float = 0.0     # When close-down started
-        self._auto_freq_closedown_duration: float = 1.5  # 1500ms = 1.5 seconds
-        self._auto_freq_current_width: float = 22050.0   # Current width (starts full range)
-        self._auto_freq_phase: str = 'scanning'          # 'scanning', 'closing', 'tracking'
-        
-        # Missed beat tracking for auto-expand
-        self._auto_freq_last_beat_time: float = 0.0      # When last beat was detected
-        self._auto_freq_expected_interval: float = 0.5   # Expected beat interval (from BPM)
-        self._auto_freq_missed_count: int = 0            # Consecutive missed beats
-        self._auto_freq_missed_threshold: int = 3        # Expand after this many misses
-        
         # State
         self.is_running = False
         self.is_sending = False
@@ -3829,32 +3810,6 @@ bREadfan_69@hotmail.com"""
             speed_label = "Fine" if speed < 0.3 else "Aggressive" if speed > 0.7 else "Normal"
             print(f"[Config] BPS adjustment speed: {speed_label} ({speed:.2f})")
     
-    def _on_auto_freq_toggle(self, state: int):
-        """Toggle auto-frequency band tracking"""
-        enabled = (state == 2)  # Qt.Checked
-        self._auto_freq_enabled = enabled
-        if enabled:
-            # Reset state for fresh scan
-            self._auto_freq_phase = 'scanning'
-            self._auto_freq_current_width = 22050.0  # Start with full range
-            self._auto_freq_current_center = 0.0
-            self._auto_freq_missed_count = 0
-            self._auto_freq_closedown_start = 0.0
-            print(f"[AutoFreq] Enabled - scanning full range for consistent peaks/valleys")
-        else:
-            print(f"[AutoFreq] Disabled")
-    
-    def _on_auto_freq_width_change(self, value: int):
-        """Handle auto-freq width spinbox change - target width for narrowing"""
-        self._auto_freq_width = float(value)
-        print(f"[Config] Auto-freq band width target set to {value} Hz")
-    
-    def _on_auto_freq_speed_change(self, value: int):
-        """Handle auto-freq speed slider change"""
-        self._auto_freq_speed = value / 100.0  # 0-100 to 0.0-1.0
-        speed_label = "Slow" if self._auto_freq_speed < 0.3 else "Fast" if self._auto_freq_speed > 0.7 else "Normal"
-        print(f"[Config] Auto-freq tracking speed: {speed_label} ({self._auto_freq_speed:.2f})")
-    
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings with vertical scroll"""
         # Outer scroll area (no wheel to prevent interference with parameter sliders)
@@ -3983,41 +3938,6 @@ bREadfan_69@hotmail.com"""
         bps_layout.addStretch()
         metric_layout.addLayout(bps_layout)
         
-        # ===== AUTO-FREQUENCY BAND TRACKING CONTROLS =====
-        autofreq_layout = QHBoxLayout()
-        
-        self.auto_freq_cb = QCheckBox("Auto-Freq Band")
-        self.auto_freq_cb.setToolTip("Automatically find and track the most powerful frequency band for beat detection")
-        self.auto_freq_cb.stateChanged.connect(self._on_auto_freq_toggle)
-        autofreq_layout.addWidget(self.auto_freq_cb)
-        
-        autofreq_layout.addWidget(QLabel("Width:"))
-        self.auto_freq_width_spin = QSpinBox()
-        self.auto_freq_width_spin.setRange(50, 20000)  # Full searchable range (30-22050 Hz)
-        self.auto_freq_width_spin.setSingleStep(50)
-        self.auto_freq_width_spin.setValue(300)
-        self.auto_freq_width_spin.setSuffix(" Hz")
-        self.auto_freq_width_spin.setFixedWidth(80)
-        self.auto_freq_width_spin.setToolTip("Target band width (scanning searches full 20kHz, then narrows)")
-        self.auto_freq_width_spin.valueChanged.connect(self._on_auto_freq_width_change)
-        autofreq_layout.addWidget(self.auto_freq_width_spin)
-        
-        autofreq_layout.addWidget(QLabel("Speed:"))
-        self.auto_freq_speed_slider = QSlider(Qt.Orientation.Horizontal)
-        self.auto_freq_speed_slider.setRange(0, 100)
-        self.auto_freq_speed_slider.setValue(10)
-        self.auto_freq_speed_slider.setFixedWidth(80)
-        self.auto_freq_speed_slider.setToolTip("Tracking speed: Slow (stable) ↔ Fast (responsive)")
-        self.auto_freq_speed_slider.valueChanged.connect(self._on_auto_freq_speed_change)
-        autofreq_layout.addWidget(self.auto_freq_speed_slider)
-        
-        self.auto_freq_label = QLabel("Band: --")
-        self.auto_freq_label.setStyleSheet("color: #AAA; font-size: 9px;")
-        autofreq_layout.addWidget(self.auto_freq_label)
-        
-        autofreq_layout.addStretch()
-        metric_layout.addLayout(autofreq_layout)
-        
         # Traffic light indicator + metric status label
         status_row = QHBoxLayout()
         self.metric_traffic_light = TrafficLightWidget()
@@ -4031,6 +3951,13 @@ bREadfan_69@hotmail.com"""
         metric_layout.addLayout(status_row)
         
         layout.addWidget(metric_group)
+        
+        # Auto-enable key metrics on startup for better user experience
+        self.metric_peak_floor_cb.setChecked(True)      # Essential for valley tracking 
+        self.metric_audio_amp_cb.setChecked(True)       # Essential for beat detection
+        self.metric_flux_balance_cb.setChecked(True)    # Balances flux with energy bars
+        self.metric_target_bps_cb.setChecked(True)      # Maintains target beats per second
+        print("[Config] Auto-enabled 4 core metrics on startup: peak_floor, audio_amp, flux_balance, target_bps")
         
         # Frequency band selection
         freq_group = QGroupBox("Frequency Band (Hz) - red overlay on spectrum")
@@ -5296,101 +5223,6 @@ bREadfan_69@hotmail.com"""
             elapsed = time.time() - self._volume_ramp_start_time
             if elapsed >= self._volume_ramp_duration:
                 self._volume_ramp_active = False
-        
-        # ===== AUTO-FREQUENCY BAND TRACKING =====
-        # Scans full FFT range to find [spinbox width]Hz band with most consistent
-        # peaks/valleys. Band width gradually narrows to spinbox value when beats
-        # arrive, and slowly widens back toward full range when beats are missed.
-        if self._auto_freq_enabled and hasattr(self, 'audio_engine') and self.audio_engine is not None:
-            now = time.time()
-            # Update every 100ms (10 Hz)
-            if now - self._auto_freq_last_update > 0.1:
-                self._auto_freq_last_update = now
-                
-                # Check tempo lock state from audio engine
-                tempo_is_locked = (self.audio_engine.consecutive_matching_downbeats 
-                                   >= self.audio_engine.consecutive_match_threshold)
-                
-                # ---- MISSED BEAT TRACKING (only when we have tempo) ----
-                is_missing_beats = False
-                if self.audio_engine.smoothed_tempo > 0:
-                    expected_interval = 60.0 / self.audio_engine.smoothed_tempo
-                    self._auto_freq_expected_interval = expected_interval
-                    
-                    # Track beat arrivals to detect misses
-                    time_since_beat = now - self.audio_engine.last_beat_time
-                    if self.audio_engine.last_beat_time != self._auto_freq_last_beat_time:
-                        # New beat arrived
-                        if time_since_beat < expected_interval * 1.5:
-                            self._auto_freq_missed_count = 0
-                        self._auto_freq_last_beat_time = self.audio_engine.last_beat_time
-                    elif time_since_beat > expected_interval * 2.0:
-                        missed_intervals = int(time_since_beat / expected_interval) - 1
-                        self._auto_freq_missed_count = max(self._auto_freq_missed_count, missed_intervals)
-                    
-                    is_missing_beats = self._auto_freq_missed_count > 0
-                    
-                    # UNLOCK tempo on threshold misses (but don't snap width)
-                    if self._auto_freq_missed_count >= self._auto_freq_missed_threshold:
-                        self.audio_engine.consecutive_matching_downbeats = 0
-                        self.audio_engine._band_energy_history.clear()
-                        self._auto_freq_missed_count = 0  # Reset to stop re-triggering
-                        print(f"[AutoFreq] ⚡ {self._auto_freq_missed_threshold} missed beats → UNLOCKED tempo")
-                
-                # ---- WIDTH CONTROL: widen slowly on misses, narrow on beats ----
-                if is_missing_beats:
-                    # Gradually widen toward full range (10% of remaining per 100ms update)
-                    self._auto_freq_current_width += (22050.0 - self._auto_freq_current_width) * 0.10
-                    self._auto_freq_phase = 'widening'
-                else:
-                    # Gradually narrow toward spinbox target width (15% per 100ms update)
-                    self._auto_freq_current_width += (self._auto_freq_width - self._auto_freq_current_width) * 0.15
-                    self._auto_freq_phase = 'tracking' if tempo_is_locked else 'scanning'
-                
-                # ---- ALWAYS search full FFT range for best [width]Hz band ----
-                center, low, high, score = self.audio_engine.find_consistent_frequency_band(
-                    min_freq=30.0,
-                    max_freq=22050.0,
-                    band_width=self._auto_freq_width  # Search with spinbox target width
-                )
-                
-                # Only track center when NOT widening — freeze center during widen
-                if center > 0 and score > 0.1 and not is_missing_beats:
-                    if self._auto_freq_current_center <= 0:
-                        self._auto_freq_current_center = center  # First detection — snap
-                    else:
-                        blend = 0.3 if not tempo_is_locked else 0.1
-                        self._auto_freq_current_center += (center - self._auto_freq_current_center) * blend
-                
-                # ---- Compute band: current width centered on detected peak ----
-                if self._auto_freq_current_center > 0:
-                    half_width = self._auto_freq_current_width / 2  # Animated width
-                    new_low = max(30, self._auto_freq_current_center - half_width)
-                    new_high = min(22050, self._auto_freq_current_center + half_width)
-                else:
-                    # No peak found yet — full range until first detection
-                    new_low = 30
-                    new_high = 22050
-                
-                # Update the freq range slider
-                self.freq_range_slider.setLow(int(new_low))
-                self.freq_range_slider.setHigh(int(new_high))
-                
-                # Trigger config + visualizer + Butterworth filter update
-                self._on_freq_band_change(int(new_low), int(new_high))
-                
-                # Update display label
-                if hasattr(self, 'auto_freq_label'):
-                    if is_missing_beats:
-                        phase_str = 'WIDEN'
-                        lock_str = '⚡'
-                    elif tempo_is_locked:
-                        phase_str = 'TRACK'
-                        lock_str = '🔒'
-                    else:
-                        phase_str = 'SCAN'
-                        lock_str = '🔓'
-                    self.auto_freq_label.setText(f"{lock_str}[{phase_str}] {int(new_low)}-{int(new_high)} Hz")
     
         # ===== TIMER-DRIVEN METRIC FEEDBACK: Audio Amp & Sensitivity =====
         # These fire from the display timer (not from _on_beat) so they can

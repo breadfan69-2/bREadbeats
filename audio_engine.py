@@ -31,6 +31,85 @@ except ImportError:
 from config import Config, BeatDetectionType
 
 
+class ZScorePeakDetector:
+    """
+    Real-time z-score peak detector for streaming data (Brakel, 2014).
+    
+    Processes one value at a time. A peak is detected when a value deviates
+    from the rolling mean by more than `threshold` standard deviations.
+    The `influence` parameter controls how much detected peaks/valleys
+    affect the rolling statistics (0 = ignore peaks entirely, 1 = treat
+    peaks like normal data).
+    
+    Used in beat detection to provide an adaptive threshold that automatically
+    adjusts to the current audio level — eliminates the need for manual
+    peak_floor tuning in many cases.
+    """
+    __slots__ = ('lag', 'threshold', 'influence', 'buffer', 'filtered',
+                 'mean', 'std', 'initialized', '_buf_len')
+
+    def __init__(self, lag: int = 30, threshold: float = 3.0, influence: float = 0.1):
+        self.lag = lag
+        self.threshold = threshold
+        self.influence = influence
+        self.buffer: list[float] = []
+        self.filtered: list[float] = []
+        self.mean: float = 0.0
+        self.std: float = 0.0
+        self.initialized: bool = False
+        self._buf_len: int = 0  # cached len for hot path
+
+    def update(self, value: float) -> int:
+        """Feed one value. Returns +1 (peak), -1 (valley), or 0 (normal)."""
+        self.buffer.append(value)
+        self._buf_len += 1
+
+        if self._buf_len < self.lag:
+            self.filtered.append(value)
+            return 0
+
+        if not self.initialized:
+            window = self.buffer[:self.lag]
+            self.mean = float(np.mean(window))
+            self.std = float(np.std(window))
+            self.filtered.append(value)
+            self.initialized = True
+            return 0
+
+        deviation = value - self.mean
+        if self.std > 1e-10 and abs(deviation) > self.threshold * self.std:
+            signal = 1 if deviation > 0 else -1
+            filt = self.influence * value + (1.0 - self.influence) * self.filtered[-1]
+        else:
+            signal = 0
+            filt = value
+
+        self.filtered.append(filt)
+
+        # Update rolling stats from filtered window
+        window = self.filtered[-self.lag:]
+        self.mean = float(np.mean(window))
+        self.std = float(np.std(window))
+
+        # Bound memory — keep ~2× lag
+        max_keep = self.lag * 2
+        if self._buf_len > self.lag * 3:
+            self.buffer = self.buffer[-max_keep:]
+            self.filtered = self.filtered[-max_keep:]
+            self._buf_len = len(self.buffer)
+
+        return signal
+
+    def reset(self):
+        """Clear all state for a fresh start."""
+        self.buffer.clear()
+        self.filtered.clear()
+        self.mean = 0.0
+        self.std = 0.0
+        self.initialized = False
+        self._buf_len = 0
+
+
 @dataclass
 class BeatEvent:
     """Represents a detected beat"""
@@ -63,6 +142,9 @@ class AudioEngine:
         self.downbeat_confidence = 0.0
         # Reset pattern matching state
         self._reset_downbeat_pattern()
+        # Reset z-score detector so it gets a fresh baseline
+        if hasattr(self, '_zscore_detector'):
+            self._zscore_detector.reset()
     """
     Engine 1: The Ears
     Captures system audio and detects beats in real-time.
@@ -149,6 +231,15 @@ class AudioEngine:
         # Visualizer toggle
         self._visualizer_enabled = getattr(config.audio, 'visualizer_enabled', True)
         
+        # ===== Z-SCORE ADAPTIVE PEAK DETECTOR =====
+        # Runs on band_energy stream inside _detect_beat.  When z-score fires +1
+        # (energy spike significantly above rolling mean), the frame is classified
+        # as a strong beat candidate regardless of the manual peak_floor setting.
+        # lag ~30 frames ≈ 0.5 s history at 60 fps; threshold 2.5 σ balances
+        # sensitivity with false-positive rejection; influence 0.05 keeps peaks
+        # from polluting the rolling baseline.
+        self._zscore_detector = ZScorePeakDetector(lag=30, threshold=2.5, influence=0.05)
+        
         # ===== REAL-TIME METRIC-BASED AUTO-RANGING (NEW SYSTEM) =====
         # Tracks margins and metrics in real-time to drive parameter adjustments
         # No timer cycle - pure feedback-based optimization
@@ -227,12 +318,6 @@ class AudioEngine:
         self._bps_beat_times: list[float] = []          # Timestamps of recent beats
         self._bps_adjustment_speed: float = 0.5         # 0.0=fine, 1.0=aggressive (scales step size)
         self._bps_base_step: float = 0.002              # Base step for peak_floor adjustment
-        
-        # ===== AUTO-FREQUENCY BAND TRACKING (Consistency-Based) =====
-        # Stores band energy history to find bands with consistent peaks/valleys
-        self._band_energy_history: dict[int, list[float]] = {}  # center_bin -> [energy samples]
-        self._band_history_max_samples: int = 32                # Keep last 32 samples per band
-        self._last_spectrum_time: float = 0.0                   # For timing consistency checks
         
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""
@@ -584,7 +669,16 @@ class AudioEngine:
         return flux * self.config.beat.flux_multiplier
         
     def _detect_beat(self, energy: float, flux: float) -> bool:
-        """Detect if current frame is a beat"""
+        """Detect if current frame is a beat.
+        
+        Uses a two-path system:
+          Path 1 (classic): peak_floor + sensitivity + rise checks + threshold
+          Path 2 (z-score): adaptive rolling-mean detector fires on +1 signal
+        
+        A beat is detected if EITHER path triggers (after refractory guard).
+        Z-score adapts automatically to any audio level, so it catches beats
+        that the manual peak_floor setting would miss — and vice-versa.
+        """
         cfg = self.config.beat
         
         # Track valley detection (local minima) for peak_floor metric
@@ -598,6 +692,10 @@ class AudioEngine:
                     self._valley_history.pop(0)
         self._energy_was_falling = energy < self._prev_energy_for_valley
         self._prev_energy_for_valley = energy
+        
+        # --- Z-Score detector: feed EVERY frame to maintain rolling stats ---
+        zscore_signal = self._zscore_detector.update(energy)
+        zscore_peak = (zscore_signal == 1)  # +1 = energy spike above adaptive threshold
         
         # Use aubio if available
         if HAS_AUBIO and self.beat_detector:
@@ -616,13 +714,15 @@ class AudioEngine:
         if len(self.energy_history) < 5:
             return False
         
-        # Add cooldown to prevent too many beats
+        # Refractory period — suppress re-triggers within min_interval_ms
+        # This prevents burst clusters (4-6 detections within 250ms) from a single musical beat.
+        # Uses the same min_interval_ms that guards strokes, so BPS metrics count only real beats.
         if not hasattr(self, '_last_beat_time'):
             self._last_beat_time = 0
         
         current_time = time.time()
-        min_beat_interval = 0.05  # Max 20 beats per second
-        if current_time - self._last_beat_time < min_beat_interval:
+        refractory_s = self.config.stroke.min_interval_ms / 1000.0  # e.g. 300ms → 0.3s
+        if current_time - self._last_beat_time < refractory_s:
             return False
             
         # Compute adaptive thresholds
@@ -635,34 +735,45 @@ class AudioEngine:
         energy_threshold = avg_energy * threshold_mult
         flux_threshold = avg_flux * threshold_mult
         
-        # Peak floor - only check if set above 0
-        if cfg.peak_floor > 0 and energy < cfg.peak_floor:
-            return False
+        # --- PATH 1: Classic detection (peak_floor + rise + threshold) ---
+        classic_beat = False
+        passes_floor = (cfg.peak_floor <= 0) or (energy >= cfg.peak_floor)
+        
+        if passes_floor:
+            # Rise sensitivity check - configurable now
+            # rise_sensitivity 0 = disabled, 1.0 = must rise significantly
+            passes_rise = True
+            if cfg.rise_sensitivity > 0 and len(self.energy_history) >= 2:
+                rise = energy - self.energy_history[-2]
+                min_rise = avg_energy * cfg.rise_sensitivity * 0.5
+                if rise < min_rise:
+                    passes_rise = False
             
-        # Rise sensitivity check - configurable now
-        # rise_sensitivity 0 = disabled, 1.0 = must rise significantly
-        if cfg.rise_sensitivity > 0 and len(self.energy_history) >= 2:
-            rise = energy - self.energy_history[-2]
-            min_rise = avg_energy * cfg.rise_sensitivity * 0.5
-            if rise < min_rise:
-                return False
-                
-        # Detect based on mode
-        is_beat = False
-        if cfg.detection_type == BeatDetectionType.PEAK_ENERGY:
-            is_beat = energy > energy_threshold
-        elif cfg.detection_type == BeatDetectionType.SPECTRAL_FLUX:
-            is_beat = flux > flux_threshold
-        else:  # COMBINED - need EITHER to trigger (more sensitive)
-            is_beat = (energy > energy_threshold) or (flux > flux_threshold * 1.2)
+            if passes_rise:
+                if cfg.detection_type == BeatDetectionType.PEAK_ENERGY:
+                    classic_beat = energy > energy_threshold
+                elif cfg.detection_type == BeatDetectionType.SPECTRAL_FLUX:
+                    classic_beat = flux > flux_threshold
+                else:  # COMBINED - need EITHER to trigger (more sensitive)
+                    classic_beat = (energy > energy_threshold) or (flux > flux_threshold * 1.2)
+        
+        # --- PATH 2: Z-Score adaptive detection ---
+        # Z-score already fired above (every frame).  Accept the peak only if
+        # the energy also exceeds the average (sanity check prevents firing on
+        # tiny absolute values that happen to be > mean during very quiet audio).
+        zscore_beat = zscore_peak and (energy > avg_energy * 1.1)
+        
+        # --- COMBINE: either path triggers a beat ---
+        is_beat = classic_beat or zscore_beat
         
         if is_beat:
             self._last_beat_time = current_time
             self._update_tempo_tracking(current_time, energy)
+            src = "Z+C" if (classic_beat and zscore_beat) else ("Z" if zscore_beat else "C")
             log_event(
                 "INFO",
                 "BEAT",
-                "Beat detected",
+                f"Beat detected [{src}]",
                 energy=f"{energy:.4f}",
                 threshold=f"{energy_threshold:.4f}",
                 flux=f"{flux:.4f}",
@@ -992,131 +1103,6 @@ class AudioEngine:
         
         return (center_freq, low_freq, high_freq)
     
-    def find_consistent_frequency_band(self, min_freq: float = 30.0, max_freq: float = 22050.0,
-                                        band_width: float = 300.0) -> tuple[float, float, float, float]:
-        """
-        Find the frequency band with most consistent peak/valley variation.
-        Looks for bands where amplitude varies regularly (like a drum beat).
-        
-        Args:
-            min_freq: Minimum frequency to search (Hz)
-            max_freq: Maximum frequency to search (Hz)
-            band_width: Width of the band to evaluate (Hz)
-            
-        Returns:
-            Tuple of (center_freq, low_freq, high_freq, consistency_score).
-            Consistency score: 0.0 = chaotic, 1.0 = perfectly consistent variation.
-            Returns (0, 0, 0, 0) if no data available.
-        """
-        import time as time_module
-        
-        with self.spectrum_lock:
-            if self.spectrum_data is None or len(self.spectrum_data) == 0:
-                return (0.0, 0.0, 0.0, 0.0)
-            spectrum = self.spectrum_data.copy()
-        
-        now = time_module.time()
-        sr = self.config.audio.sample_rate
-        num_bins = len(spectrum)
-        freq_per_bin = sr / (2 * num_bins)
-        
-        # Convert Hz to bin indices
-        min_bin = max(1, int(min_freq / freq_per_bin))
-        max_bin = min(num_bins - 1, int(max_freq / freq_per_bin))
-        band_bins = max(1, int(band_width / freq_per_bin))
-        
-        if max_bin - min_bin < band_bins:
-            center = (min_freq + max_freq) / 2
-            return (center, min_freq, max_freq, 0.0)
-        
-        # Step size for scanning (50Hz steps to reduce computation)
-        step_bins = max(1, int(50.0 / freq_per_bin))
-        
-        # Update band energy history and compute consistency scores
-        best_score = 0.0
-        best_center_bin = min_bin + band_bins // 2
-        
-        for center_bin in range(min_bin + band_bins // 2, max_bin - band_bins // 2, step_bins):
-            start_bin = center_bin - band_bins // 2
-            end_bin = center_bin + band_bins // 2
-            
-            # Current band energy
-            band_energy = np.sqrt(np.mean(spectrum[start_bin:end_bin] ** 2))
-            
-            # Store in history
-            if center_bin not in self._band_energy_history:
-                self._band_energy_history[center_bin] = []
-            history = self._band_energy_history[center_bin]
-            history.append(band_energy)
-            
-            # Keep only last N samples
-            if len(history) > self._band_history_max_samples:
-                history.pop(0)
-            
-            # Need at least 8 samples to evaluate consistency
-            if len(history) < 8:
-                continue
-            
-            # Compute consistency score:
-            # 1. Find peaks and valleys in the history
-            # 2. Measure variance of peak-valley heights
-            # 3. Lower variance = more consistent = higher score
-            
-            arr = np.array(history)
-            mean_val = np.mean(arr)
-            
-            # Find local peaks and valleys (simple sign-change detection)
-            peaks = []
-            valleys = []
-            for i in range(1, len(arr) - 1):
-                if arr[i] > arr[i-1] and arr[i] > arr[i+1]:
-                    peaks.append(arr[i])
-                elif arr[i] < arr[i-1] and arr[i] < arr[i+1]:
-                    valleys.append(arr[i])
-            
-            # Need at least 3 peaks and 3 valleys for meaningful consistency
-            if len(peaks) < 3 or len(valleys) < 3:
-                continue
-            
-            # Peak-valley height variations
-            avg_peak = np.mean(peaks)
-            avg_valley = np.mean(valleys)
-            height = avg_peak - avg_valley
-            
-            if height < 0.001:  # Nearly flat - not useful for beat detection
-                continue
-            
-            # Consistency = inverse of coefficient of variation of peaks and valleys
-            peak_cv = np.std(peaks) / (avg_peak + 1e-6)
-            valley_cv = np.std(valleys) / (avg_valley + 1e-6)
-            combined_cv = (peak_cv + valley_cv) / 2
-            
-            # Score: 1.0 when CV is 0, decreasing as CV increases
-            # Also weight by height (prefer bands with good amplitude swing)
-            consistency = 1.0 / (1.0 + combined_cv * 10)
-            height_factor = min(1.0, height / 0.1)  # Normalize height 0-0.1 to 0-1
-            score = consistency * 0.7 + height_factor * 0.3  # 70% consistency, 30% height
-            
-            if score > best_score:
-                best_score = score
-                best_center_bin = center_bin
-        
-        # Clean up old band histories (bands we haven't seen recently)
-        if len(self._band_energy_history) > 100:
-            # Keep only bands we've updated recently
-            current_keys = set(range(min_bin + band_bins // 2, max_bin - band_bins // 2, step_bins))
-            old_keys = [k for k in self._band_energy_history if k not in current_keys]
-            for k in old_keys[:50]:  # Remove up to 50 old keys
-                del self._band_energy_history[k]
-        
-        # Convert best bin to Hz
-        low_freq = (best_center_bin - band_bins // 2) * freq_per_bin
-        high_freq = (best_center_bin + band_bins // 2) * freq_per_bin
-        center_freq = (low_freq + high_freq) / 2
-        
-        self._last_spectrum_time = now
-        return (center_freq, low_freq, high_freq, best_score)
-            
     def list_devices(self) -> list[dict]:
         """List available audio devices"""
         devices = sd.query_devices()
