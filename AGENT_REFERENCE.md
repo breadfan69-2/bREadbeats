@@ -34,7 +34,6 @@ This document serves as a canonical reference for future AI agents working on bR
 - **stroke_mapper.py** - Beat→stroke conversion, 4 stroke modes, jitter/creep, depth scaling from dominant frequency via `_freq_to_factor`
 - **network_engine.py** - TCP connection to restim, TCodeCommand class
 - **config.py** - All configuration dataclasses and defaults
-- **hunt order.txt** - Auto-adjust hunting cycle sequence (14 steps with strategic flux_mult repetition)
 
 ### Dependencies
 
@@ -102,8 +101,8 @@ Example: `L04999I100 L14999I100 V09999I100 P00500I250 C05000I900\n`
 - ✅ **V0** — Volume (from audio RMS)
 - ✅ **P0** — Pulse frequency (music-reactive via dominant frequency or dot speed)
 - ✅ **C0** — Carrier frequency (music-reactive, same input modes as P0)
-- 🔲 **P1** — Pulse width (planned: music-reactive)
-- 🔲 **P3** — Rise time (planned: music-reactive)
+- ✅ **P1** — Pulse width (music-reactive, maps RMS energy to pulse width)
+- ✅ **P3** — Rise time (music-reactive, maps spectral centroid to rise time)
 
 ### Music→Parameter Mapping Philosophy
 
@@ -119,8 +118,8 @@ Each TCode axis maps an audio feature to a physical sensation. The goal is **mus
 ### Input Modes (shared across frequency-reactive axes)
 1. **Hz (dominant freq)** — Extracts dominant frequency from a configurable frequency band via FFT peak detection
 2. **Speed (dot movement)** — Uses the velocity of the stroke pattern dot in alpha/beta space
-3. **Volume (RMS energy)** — Uses audio loudness level (planned for P1)
-4. **Brightness (spectral centroid)** — Uses spectral centroid as brightness measure (planned for P3)
+3. **Volume (RMS energy)** — Uses audio loudness level
+4. **Brightness (spectral centroid)** — Uses spectral centroid as brightness measure
 
 All modes use **250ms sliding window averaging** for smooth transitions, with configurable weight and invert options.
 
@@ -426,81 +425,41 @@ Dual-handle sliders for min/max pairs:
 - Blue button = has saved preset
 - Green border = currently active
 
-### Auto-Adjust (Hunting & Ranging) System
+### Metric Auto-Ranging System
 
-**Hunting Cycle (1/8 interval = 12.5ms during HUNTING phase):**
-14-step optimized cycle that strategically repeats flux_mult (appears 4×):
-```python
-_auto_hunting_cycle = [
-    'audio_amp', 'flux_mult', 'sensitivity', 'peak_decay', 'flux_mult',
-    'rise_sens', 'peak_floor', 'flux_mult', 'peak_decay', 'flux_mult',
-    'peak_floor', 'rise_sens', 'flux_mult', 'sensitivity'
-]
-```
-**Why flux_mult repeats 4×?** It has fastest convergence speed; frequent adjustment significantly reduces overall hunting time (~50% faster).
+The metric auto-ranging system uses feedback-driven parameter adjustment. Each metric monitors a specific audio characteristic and adjusts its parameter to optimize beat detection.
 
-**Reversing Cycle (100ms interval after downbeat detected):**
-Reversed order of hunting cycle, used to fine-tune when downbeat exists.
+**Enabled Metrics (toggled via Auto-Adjust checkboxes in GUI):**
 
-**Beat-Count Lock System (Replaces Time-Based Locks):**
-Parameters lock after 8 consecutive beats where BPM stays within 60-180 range:
-```python
-_auto_beats_lock_threshold = 8  # Consecutive beats required to lock
-_auto_bpm_min = 60.0            # Min BPM for valid beat
-_auto_bpm_max = 180.0           # Max BPM for valid beat
-_auto_consecutive_beat_count = {}  # Per-param beat counters
-```
-When a parameter's counter reaches threshold, it transitions from HUNTING → LOCKED.
-Global "beats:" spinbox (default 8) controls this threshold for all parameters.
-Individual slider lock_spin widgets were removed - only global beat-count lock exists now.
+| Metric | Parameter Adjusted | Feedback Method |
+|--------|-------------------|-----------------|
+| Energy Margin | peak_floor | `compute_energy_margin_feedback()` — tracks valley history, adjusts floor relative to average valley |
+| Audio Amp | audio_amp | `compute_audio_amp_feedback()` — scales gain to keep energy in optimal detection range |
+| Flux Balance | flux_mult | `compute_flux_balance_feedback()` — balances spectral flux scaling |
+| Target BPS | peak_floor (indirect) | `compute_bps_feedback()` — raises/lowers floor to match target beats-per-second |
 
-**Auto-Reset Slider on Enable:**
-When user toggles auto-adjust ON for a parameter, slider automatically resets to initial value:
-```python
-reset_values = {
-    'audio_amp': 0.15,     # Hunts DOWN from max (inverted param)
-    'peak_floor': 0.08,    # Hunts DOWN from max ← MUST stay 0.08!
-    'peak_decay': 0.999,   # Hunts DOWN from max (inverted param)
-    'rise_sens': 0.02,     # Hunts UP from min (normal param)
-    'sensitivity': 0.1,    # Hunts UP from min (normal param)
-    'flux_mult': 0.2       # Hunts UP from min (normal param)
-}
-```
-**If peak_floor reset changed to 0.2, beats won't detect because 0.2 > band_energy (0.08-0.15)**
+**Settling System:**
+- Each metric tracks consecutive "in-zone" checks
+- After 12 consecutive in-zone checks (~30s), metric transitions to SETTLED state
+- Out-of-zone: decrement counter by 3 (not hard reset) for faster recovery
+- Hysteresis: 2 consecutive out-of-zone checks before triggering adjustment
 
-**Slider Ranges (Control Hunting Search Space):**
-| Parameter | Min | Max | Reset | Why Changed |
-|-----------|-----|-----|-------|-------------|
-| audio_amp | 0.15 | 10.0 | 0.15 | Reset to min; hunting raises it |
-| peak_floor | 0.015 | 0.28 | 0.14 | Reset to max; hunting lowers it; min raised to 0.015 |
-| peak_decay | 0.230 | 0.999 | 0.999 | Reset to max; hunting lowers it; min raised to 0.230 |
-| rise_sens | 0.02 | 1.0 | 0.02 | Rise height threshold; min 0.02 to prevent user issues |
-| sensitivity | 0.01 | 1.0 | 0.1 | Unchanged |
-| flux_mult | 0.2 | 10.0 | 0.2 | Min raised to 0.2 to prevent stroke disconnect |
+**Traffic Light Widget:**
+- 🔴 Red = Metrics actively adjusting
+- 🟡 Yellow = Mixed state (some settled, some adjusting)
+- 🟢 Green = All enabled metrics settled
+
+**Global Toggle:** Master "Enable Auto-Adjust" checkbox controls all 4 individual metric checkboxes via `_on_metrics_global_toggle()`.
 
 **Parameter Definitions:**
-- **flux_mult (Flux Multiplier)**: Controls overall beat sensitivity by scaling spectral flux threshold. Lower = less sensitive (fewer false beats). Best used when downbeat and expected beats are both above detection threshold but background noise/artifacts cause extra beats.
-- **peak_decay**: Exponential decay rate applied to spectrum peaks frame-to-frame. Lower = faster decay = easier differentiation between troughs and peaks. Faster decay (lower values) makes beat detection more responsive to sudden energy changes.
-- **rise_sens (Rise Sensitivity)**: Size of the rise (amplitude distance between peak and valley) that the system considers significant for beat detection. Lower = smaller rise triggers detection = more sensitive. Best used when overall beats are excessive but downbeats are missing (reduces false positives while keeping real beats).
+- **flux_mult (Flux Multiplier)**: Controls overall beat sensitivity by scaling spectral flux threshold. Lower = less sensitive (fewer false beats).
+- **peak_decay**: Exponential decay rate applied to spectrum peaks frame-to-frame. Lower = faster decay = easier differentiation between troughs and peaks.
+- **rise_sens (Rise Sensitivity)**: Size of the rise (amplitude distance between peak and valley) considered significant for beat detection. Lower = more sensitive.
 - **peak_floor**: Valley height threshold in spectrum. Audio energy below this floor is ignored. Higher = only strong beats detected; lower = catches quieter beats.
-
-**CRITICAL:** Narrower ranges enable faster convergence. DO NOT widen peak_floor above 0.28.
-
-**Beathunting Emergency Trigger:**
-If 3+ consecutive no-beat cycles occur while audio is playing:
-```python
-if self._auto_no_beat_count >= self._auto_beathunting_threshold and has_audio:
-    # All locks cleared, all params reset to HUNTING
-    for p in self._auto_param_state:
-        self._auto_param_state[p] = 'HUNTING'
-        self._auto_consecutive_beat_count[p] = 0  # Reset beat counters
-    print(f"[Auto] ⚡ç BEATHUNTING triggered after {count} cycles")
-```
-**Purpose:** Prevents system from getting stuck with all params locked but zero beats detected.
 
 **Step Spinbox Precision:**
 - 4 decimal places (enables 0.0001 step size)
-- Width: 85px (was 75px; accommodates 4 decimals)
+- Width: 85px (accommodates 4 decimals)
 - Allows fine tuning of small parameters without rounding errors
 
 **P0/C0 Sliding Window Averaging (250ms Rolling Window):**
@@ -549,7 +508,7 @@ actual beat detection filter matches the displayed band.
 | P2 | PULSE_INTERVAL_RANDOM | 0 to 1 | Randomize inter-pulse interval |
 | P3 | PULSE_RISE_TIME | 2 to 20 cycles | Pulse rise time in carrier cycles |
 
-**bREadbeats currently sends:** L0, L1, V0, P0, C0 (all correct).
+**bREadbeats currently sends:** L0, L1, V0, P0, C0, P1, P3 (all correct).
 
 ### Range Mismatch Notes ⚠️
 
@@ -591,9 +550,7 @@ Even if we send V0=9999, restim's master/ramp/inactivity still apply.
 
 | Axis | What It Does | Integration Idea |
 |------|-------------|-----------------|
-| **P1** (Pulse Width) | Carrier cycles per pulse (4-10). Lower = sharper, higher = smoother | Map to beat intensity: strong beats → wider pulses |
 | **P2** (Pulse Interval Random) | Randomize inter-pulse interval (0-1). "Tingly sensation, less painful on fast moves, slows numbing" | Map to flux variance or constant low value |
-| **P3** (Pulse Rise Time) | Envelope ramp in carrier cycles (2-20). Lower = abrupt, higher = gradual | Map to stroke mode: teardrop → longer rise, circle → shorter |
 
 ### Restim's Built-in FunscriptExpander
 
@@ -664,35 +621,25 @@ queued_commands.append(pre_computed_p0)  # NEVER queue commands
 
 9. **Breaking creep radius** - Must be `0.98 - jitter_r` to prevent clipping
 
-10. **Modifying hunting cycle order or flux_mult repetitions**
-    - flux_mult APPEARS 4 TIMES strategically
-    - Removing repetitions breaks convergence speed optimization
-    - Order is tuned for fastest bailout
-
-11. **Disabling downbeat pattern matching**
+10. **Disabling downbeat pattern matching**
     - Keep `downbeat_pattern_enabled = True` in config
     - Disabling breaks entire tempo lock system
     - Pattern matching requires tolerance (default 100ms)
 
-12. **Changing tempo lock boost factor**
+11. **Changing tempo lock boost factor**
     - Currently 1.25 (25% stronger on downbeats)
     - Lower values (~1.1) won't feel emphatic
     - Code in stroke_mapper.py ~line 229
 
-13. **Removing P0/C0 sliding window**
+12. **Removing P0/C0 sliding window**
     - Window smoothing prevents jittery Hz display
     - Removing causes values to jump erratically
     - 250ms window balances smoothness + responsiveness
 
-14. **Modifying step spinbox decimals**
+13. **Modifying step spinbox decimals**
     - Keep at 4 decimals (was 3)
     - 3 decimals loses fine-tuning precision
     - 4 decimals allows 0.0001 step size
-
-15. **Changing audio_amp hunting limit**
-    - Old: Limited to 1.0 during hunting
-    - New: Uses full 0.15-5.0 range
-    - DO NOT re-add 1.0 limit; breaks audio amp scaling
 
 ---
 
@@ -738,101 +685,24 @@ Before committing changes:
    - Once tempo locks, downbeat strokes appear noticeably larger/more emphatic
    - Log shows `tempo=LOCKED+BOOST` in downbeat messages
 
-5. **Hunting Cycle**
-   - Enable auto-adjust on any parameter
-   - Watch console: `[Auto] ↑ param (HUNTING, BPM=X, db=Y, interval=12ms)`
-   - Should show 12ms interval during HUNTING phase
-   - Once downbeat detected, interval changes to 100ms (REVERSING phase)
-
-6. **Beathunting Trigger**
-   - Mute audio while music plays
-   - After ~3 updates with no beats, should see `[Auto] ⚡ç BEATHUNTING triggered`
-   - All params reset to HUNTING state
-
-7. **Jitter**
+5. **Jitter**
    - Let audio go quiet, enable jitter
    - Observe smooth micro-circles (NOT random jumps)
    - Circles should be sinusoidal, ~0.01-0.1 amplitude
 
-8. **Creep**
+6. **Creep**
    - Enable creep, verify slow rotation follows tempo
    - Should rotate smoothly, not jerkily
 
-9. **P0/C0 Display**
+7. **P0/C0 Display**
    - Enable pulse checkbox
    - Verify Hz display is smooth (not jittery)
    - 250ms sliding window should prevent value jumps
 
-10. **Peak Floor Reset**
+8. **Peak Floor Reset**
     - Enable auto-adjust on peak_floor
     - Verify slider resets to 0.08 (NOT 0.2 or higher)
     - If reset wrong, auto-adjust icon shows but beats don't appear
-
----
-
-## Recent Major Changes (Latest Commit)
-
-### 1. Beat Detection Gain Fix (CRITICAL ISSUE RESOLVED)
-**Problem Encountered:** Audio gain was only applied in FFT fallback path, not in the primary Butterworth filter path, causing **zero beats detected** even with audio present.
-
-**Solution Implemented:**
-```python
-# audio_engine.py line ~360 (in Butterworth filter section)
-band_energy = np.sqrt(np.mean(beat_mono ** 2))
-band_energy = band_energy * self.config.audio.gain  # ← CRITICAL: Apply gain HERE
-```
-
-**Impact:** Program went from "ZERO BEATS DETECTED" to normal beat detection in ~1 second.
-
-### 2. Hunting Cycle Overhaul (14-Step with Strategic Repetition)
-**New Approach:** 14-step cycle with flux_mult appearing 4× strategically, running at 1/8 interval (12.5ms) during HUNTING phase.
-
-**Why It Works:**
-- flux_mult has fastest convergence (controls stroke appearance)
-- Repeating it 4× reduces overall hunting time by ~50%
-- Oscillation amplitude reduced to 3/4 of step_size for smoother convergence
-
-### 3. Tempo Lock Boost System (Confidence Indicator)
-When downbeat timing matches predicted pattern for 3+ consecutive downbeats:
-- Tempo marked as LOCKED
-- Downbeat strokes get 25% amplitude boost (1.25× multiplier)
-- Log shows `tempo=LOCKED+BOOST`
-
-**Purpose:** Creates more emphatic feel when tempo detection is stable.
-
-### 4. Downbeat Pattern Matching (Strict Tempo Validation)
-- Energy-based detection finds downbeat candidate
-- Check if timing matches predicted downbeat (±100ms tolerance)
-- After 3 accepted consecutive downbeats: tempo LOCKED
-- Log shows acceptance/rejection with phase error
-
-### 5. P0/C0 Sliding Window Averaging (Smooth Display)
-250ms rolling window averages samples for smooth Hz display, reducing jitter by ~80% while keeping <250ms response.
-
-### 6. Slider Range Adjustments (Optimize Search Space)
-- peak_floor: 0.015-0.28 (was 0.0-0.8), reset=0.08
-- peak_decay: 0.23-0.999 (was 0.5-0.999)
-- audio_amp: 0.15-10.0 (widened max for more headroom)
-- flux_mult: 0.2-10.0 (widened max for more headroom)
-- freq_weight: 0.0-5.0 (was 0.0-2.0)
-- min_interval: 50-5000ms (was 50-500ms)
-- freq_depth_factor: 0.0-2.0 (was 0.0-1.0)
-- volume: 0-100 (display scale, internally 0-1)
-
-Narrower ranges = Faster hunting convergence (50% faster parameter detection).
-
-### 7. Auto-Reset Slider on Enable
-When user toggles auto-adjust ON, slider automatically returns to reset value (peak_floor resets to 0.08, not 0.2).
-
-### 8. Beathunting Emergency Trigger
-If 3+ consecutive no-beat cycles while audio plays, all locks clear and all params reset to HUNTING. Prevents stuck states.
-
-### 9. Beat-Count Lock (Replaces Time-Based Locks)
-- Old system: Parameters locked after X milliseconds in REVERSING state
-- New system: Parameters lock after 8 consecutive beats within valid BPM range (60-180)
-- Global "beats:" spinbox controls threshold for all parameters
-- Individual slider lock_spin widgets removed (6 total removed)
-- Simpler `_auto_param_config` tuple: (step_size, max_limit) instead of (step, lock_time, max)
 
 ---
 
@@ -965,19 +835,17 @@ Validates windowed smoothing + first derivative sign change is standard for real
 
 ### Implementation Roadmap (Recommended Order)
 
-1. **Phase 1 — Z-Score Band Scoring (Option A)** — LOW RISK
-   - Drop-in replacement for `find_consistent_frequency_band()` scoring
-   - Test baseline: Should reduce band detection time by ~50%
-   - Minimal testing required; new metric doesn't affect existing beat detection
+1. **Phase 1 — Z-Score Band Scoring (Option A)** — ✅ IMPLEMENTED
+   - `ZScorePeakDetector` class in audio_engine.py
+   - Multi-band z-score detection with 4 sub-bands
 
-2. **Phase 2 — Z-Score Beat Detection (Option B)** — HIGH RISK (major refactor)
-   - More invasive: Replaces `peak_floor` entirely with adaptive threshold
-   - High reward: Eliminates manual tuning, self-adjusts to any audio level
-   - Requires extensive testing of all audio scenarios
+2. **Phase 2 — Z-Score Beat Detection (Option B)** — ✅ IMPLEMENTED
+   - Dual-path detection: classic threshold (PATH 1) + z-score (PATH 2)
+   - Metric auto-ranging replaces manual peak_floor tuning
 
 3. **Phase 3 — Auto-tuned rise_sens** — MEDIUM PRIORITY
    - Use derivative-based formula to compute optimal rise_sens from beat width
-   - Could integrate with existing auto-adjust hunting system
+   - Could integrate with existing metric auto-ranging system
    - Incremental improvement; lower priority than Phases 1-2
 
 ---
@@ -1003,9 +871,9 @@ Changed from hardcoded `min_beat_interval = 0.05s` (max 20 BPS) to dynamic `min_
 
 ### Metric Settling System & Traffic Light
 **Traffic Light Widget (re-added)**
-- Red = Metrics actively adjusting (HUNTING)
+- Red = Metrics actively adjusting
 - Yellow = Mixed state (some settled, some adjusting)
-- Green = All enabled metrics LOCKED (stable for N consecutive checks)
+- Green = All enabled metrics settled (stable for N consecutive checks)
 
 **Per-Metric Settled Detection**
 - Each metric tracks consecutive "in-zone" checks
@@ -1050,331 +918,7 @@ Two critical clamps added to prevent parameters from dropping too low when gain 
 ---
 
 *Document created: 2026-02-07*  
-*Last comprehensive update: 2026-02-10 (dead code cleanup, enhanced presets; GUI refactor with CollapsibleGroupBox)*  
-*Reference for recent changes: Commit 74926fe (dead code cleanup) + enhanced presets + GUI refactor with Auto-Adjust group*
+*Last updated: 2026-02-11 (merged to main, removed old hunting system docs, updated P1/P3 to implemented)*  
 *All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow.*
-*Current branch: feature/metric-autoranging — metric autoranging with refractory period, adaptive thresholds, and refactored GUI with collapsible groupboxes.*
-*Branch URL: https://github.com/breadfan69-2/bREadbeats/tree/feature/metric-autoranging*
-
-## Session Summary: 2026-02-10 (EARLIER - Dead Code & Presets)
-
-### Work Branch
-**`feature/metric-autoranging`** — All development for metric autoranging and multi-band z-score detection happens here.
-
-### Changes Made This Session
-
-**1. Dead Code Cleanup (Commit 74926fe)**
-
-Removed obsolete code that was no longer functional or referenced:
-
-| File | Removed | Reason |
-|------|---------|--------|
-| audio_engine.py | `import aubio` / `HAS_AUBIO` flag + all aubio blocks | Entire aubio code path was `pass` (no-op) |
-| audio_engine.py | `find_peak_frequency_band()` method | Leftover from removed auto-frequency feature |
-| audio_engine.py | `list_devices()` method | Broken — referenced `sd` module that isn't imported |
-| audio_engine.py | `self.tempo_detector` / `self.beat_detector` | Aubio object placeholders |
-| main.py | `QSizePolicy, QRect, QFont, QPalette` imports | Verified zero usages via grep |
-| config.py | `auto_freq_enabled: bool = False` | Declared but never read |
-
-**2. BPS Tolerance Default Widened**
-- Changed `bps_tolerance_spin.setValue()` from 0.2 to 0.5 in main.py
-- Gives tempo tracker a wider ±0.5 BPS tolerance window on startup
-
-**3. Enhanced Preset Buttons (Gentle/Normal/Intense)**
-
-Previously: Presets only set motion intensity (stroke size) and z-score threshold.
-
-Now: Presets control jerkiness via **three detection parameters** (motion intensity slider is independent):
-
-| Preset | Z-Score Threshold | Sensitivity | Rise Sensitivity | Effect |
-|--------|------------------|-------------|-----------------|--------|
-| Gentle | 3.5 (few z-score beats) | 0.30 (strict PATH 1) | 0.70 (filters small rises) | Smooth, only strong beats |
-| Normal | 2.5 | 0.50 | 0.40 | Balanced |
-| Intense | 1.8 (many z-score beats) | 0.80 (sensitive PATH 1) | 0.10 (passes nearly all) | Jerky micro-motions |
-
-**How this works:**
-- Z-Score Threshold: Lower = more multi-band z-score beats fire
-- Sensitivity: Higher = lower PATH 1 threshold_mult = quieter transients trigger classic beats
-- Rise Sensitivity: Lower = small fluctuations pass through as beats
-
-Both PATH 1 and PATH 2 fire more aggressively on "Intense", creating the rapid direction changes / micro-motions effect.
-
-### Items Confirmed Still Active (NOT dead code)
-- **Frequency Range slider** → Butterworth bandpass filter for PATH 1
-- **Sensitivity slider** → PATH 1 threshold multiplier
-- **Peak Floor** → PATH 1 energy gate
-- **Rise Sensitivity** → PATH 1 transient gate
-- **Peak Decay** → peak envelope decay rate
-- **Detection Type combo** → PATH 1 mode selection
-- **Flux Multiplier** → spectral flux scaling
-
-### Volume Slider Investigation
-User reported Volume slider didn't track V0 changes. **Finding: Working as designed.**
-- Volume slider is the master volume SOURCE
-- Band-based scaling, fade-out, and ramp multipliers are applied DOWNSTREAM
-- Making the slider follow V0 changes would create feedback loop
-- `v=` in logs shows effective V0 after all multipliers
-
-### For Next Agent
-- Multi-band z-score with 4 sub-bands is fully working
-- Gentle/Normal/Intense presets now control jerkiness, not just stroke size
-- Motion intensity slider is independent (stroke size only)
-- All enabled metrics can reach SETTLED state with current thresholds
-- Branch `feature/metric-autoranging` has all recent commits
-
----
-
-## Session Summary: 2026-02-10 (LATER - GUI Refactor with CollapsibleGroupBox)
-
-### Work Branch
-**`feature/metric-autoranging`** — All development continues on this branch.
-
-### Changes Made This Session
-
-**1. Comprehensive Slider Audit**
-
-Performed detailed analysis of all sliders in Beat Detection, Stroke Settings, and Advanced tabs to identify obsolete controls.
-
-**Finding: No truly dead sliders found.**
-- All enabled sliders have functional code paths
-- Motion intensity slider scales circle size (confirmed via stroke_mapper.py `_freq_to_factor`)
-- Frequency band slider gates Butterworth bandpass filter for PATH 1
-- Rise sensitivity and sensitivity sliders control PATH 1 beat detection thresholds
-
-**2. Created CollapsibleGroupBox Custom Widget**
-
-Added new `CollapsibleGroupBox` class to main.py (lines ~1980-2020):
-
-```python
-class CollapsibleGroupBox(QGroupBox):
-    """QGroupBox with checkbox-toggled collapse/expand via ▼/▶ display."""
-    
-    def __init__(self, title, parent=None):
-        super().__init__(title, parent)
-        self.setCheckable(True)
-        self.setChecked(True)  # Expanded by default
-        self.toggled.connect(self._on_toggled)
-        
-    def _on_toggled(self, is_checked):
-        """Show/hide all child widgets when toggled."""
-        for child in self.findChildren(QWidget):
-            if child.parent() == self:
-                child.setVisible(is_checked)
-```
-
-**Key feature:** Clicking the checkbox hides/shows all child widgets via `setVisible()`. Arrow display (▼/▶) added via `setStyleSheet()`.
-
-**3. Tab Consolidation: Pulse/Carrier Frequency Merge**
-
-**Before:** Two separate tabs with duplicate sliders for Pulse and Carrier frequency band control.
-
-**After:** Single "Pulse & Carrier" tab with one Frequency Band slider controlling both → reduced UI clutter, clearer intent.
-
-**4. Tab Wrapping: Loose Elements Organized**
-
-Each tab had scattered controls outside groupboxes. Added wrapper groupboxes:
-- Beat Detection tab: Grouped all loose sliders into logical sections
-- Stroke Settings tab: Wrapped motion controls into collapsible groups  
-- Advanced tab: All settings now in groupboxes (no floating controls)
-
-**5. Auto-Adjust Group Implementation**
-
-**Before:** "Real-Time Metrics (Experimental)" static groupbox with 4 checkboxes (peak_floor, audio_amp, flux_balance, target_bps).
-
-**After:** 
-- Renamed to "Auto-Adjust"
-- Converted to `CollapsibleGroupBox` with **collapsed default** (`setChecked(False)`)
-- Added global "Enable Auto-Adjust" master checkbox at top
-- Master toggle wires to enable/disable all 4 individual metric checkboxes via `_on_metrics_global_toggle()`
-- Config persistence: `metrics_global_enabled` field added to `AutoAdjustConfig` in config.py
-- On startup: `_apply_config_to_ui()` restores toggle state from config
-
-**Rationale:** Users reported metric auto-adjust runs passively; collapsing by default hides it from casual users while keeping it functional for advanced tuning.
-
-**6. Butterworth Filter Relocation**
-
-**Before:** Butterworth bandpass filter checkbox was in "Advanced" group.
-
-**After:** Moved inside "Auto-Adjust" group for cleaner organization (frequency band filtering is part of PATH 1 beat detection, which is a metric).
-
-**7. Frequency Band Slider & Levels Group Consolidation**
-
-**Before:** Orphaned frequency band slider at top; separate "Levels" groupbox.
-
-**After:** 
-- Moved frequency band slider INTO the "Levels" groupbox (conceptually grouped with Level min/max thresholds)
-- Removed orphaned "Frequency Band" groupbox wrapper
-- "Levels" groupbox now contains: Freq Band slider + Level min/max spinboxes
-
-**8. Made Levels & Peaks GroupBoxes Collapsible**
-
-**Before:** Static groupboxes for Levels and Peaks.
-
-**After:** Converted both to `CollapsibleGroupBox` with expanded default.
-- **Rationale:** Users can now hide verbose metric ranges if not actively tuning
-- Both retain expanded default (`setChecked(True)`) since they're less frequently adjusted than Auto-Adjust
-
-**9. Fixed Amplification Bug**
-
-**Issue:** Audio amplification was applying incorrectly on first playback.
-
-**Root cause:** `stream_audio()` initialization not properly seeding the amplitude ramp state.
-
-**Fix:** Ensured amplitude envelope is reset on stream start (1-line fix in audio_engine.py).
-
-### Code Changes Summary
-
-| File | Lines Changed | Changes |
-|------|---------------|---------|
-| main.py | ~81 | Added CollapsibleGroupBox class, consolidated tabs, wrapped elements, implemented global metric toggle, wired config persistence |
-| config.py | 1 | Added `metrics_global_enabled: bool = True` to AutoAdjustConfig |
-| audio_engine.py | 0 | No changes (investigation only; no freezing code found) |
-
-### Validation & Testing
-
-- **Import tests:** All modules import cleanly (main.py, audio_engine.py, config.py, stroke_mapper.py)
-- **Runtime test:** App launches successfully with `python run.py`
-- **Config persistence:** metrics_global_enabled saves/loads correctly via JSON config
-- **UI rendering:** All collapsible groupboxes toggle correctly; hidden widgets re-appear when expanded
-- **Audio processing:** Beat detection, tempo tracking, and metrics auto-adjust all function normally
-
-### Git Status
-- **Branch:** feature/metric-autoranging
-- **Recent commits:** Multiple commits for GUI refactor + dead code cleanup
-- **Pushed to remote:** All changes pushed to GitHub feature branch
-
-### For Next Agent
-
-**What's different now:**
-1. Auto-Adjust groupbox is **collapsed by default**, reducing visual clutter
-2. Global "Enable Auto-Adjust" master toggle provides one-click control over all 4 metrics
-3. Frequency band slider is now logically grouped in Levels (not orphaned)
-4. Butterworth filter moved into Auto-Adjust (cleaner organization)
-5. Levels and Peaks groupboxes are collapsible for advanced users
-6. Tabs are consolidated (Pulse/Carrier merged) and wrapped (no loose controls)
-
-**Known behaviors (NOT bugs):**
-- When Auto-Adjust groupbox is collapsed on startup, controls are hidden via `setVisible(False)` but remain functional
-- When expanded, all controls re-appear and work normally
-- Frequency band slider range is locked to [30, 1827] Hz based on user config (appears frozen at edges due to config defaults, not code)
-- BPS speed slider is inside Auto-Adjust group; when Auto-Adjust is collapsed, BPS controls are hidden (not frozen)
-
-**If issues arise with collapsible groupboxes:**
-- Check `CollapsibleGroupBox._on_toggled()` method for widget visibility logic
-- Verify config `metrics_global_enabled` is being saved/loaded (check JSON config file)
-- Test groupbox expand/collapse manually via checkbox in running app
-
-**Next recommended work:**
-- Stroke Settings tab cleanup (similar GUI wrapping + collapsible groups for presets/jitter section)
-- Advanced tab further consolidation (remove unused imports per newinstructions2.txt)
-- Test full workflow: launch app → collapse Auto-Adjust → expand Auto-Adjust → verify BPS slider appears
-
----
-
-## Session Summary - February 10, 2026
-
-**Working Branch:** `feature/metric-autoranging`  
-**GitHub URL:** https://github.com/breadfan69-2/bREadbeats/tree/feature/metric-autoranging
-
-### Session Objectives Completed
-
-This chat session focused on **GUI improvements and code cleanup** after the core metric auto-ranging functionality was complete. The user provided task files (`instructions.txt`, `instructions2.txt`, `instructions3.txt`, `instructions4.txt`) with specific requests.
-
-### Key Changes Made
-
-#### 1. Miniplayer Revert & Branch Management
-- **Preserved miniplayer work** on separate `feature/miniplayer` branch (commits 8c8ffc8 through 16cb2e6)
-- **Reset `feature/metric-autoranging`** to commit `ddc5340` (pre-miniplayer state) 
-- **Cherry-picked GUI improvements** from miniplayer branch back to metric-autoranging
-
-#### 2. Major GUI Improvements (Commit: c068d38)
-
-**CollapsibleGroupBox Fix (Critical)**
-- **Problem:** Qt's built-in `setCheckable(True)` + `toggled` signal caused child widgets to become permanently disabled after expand/collapse
-- **Solution:** Rewrote `CollapsibleGroupBox` to use `mousePressEvent` instead of checkbox behavior
-- **New behavior:** Click title area (top ~25px) to toggle, maintains full widget functionality
-- **Features:** `_base_title_text` storage, `showEvent` for first-show collapsed state, `_apply_visibility()` method
-
-**QSplitter Between Visualizers & Tabs**
-- Added `QSplitter(Qt.Orientation.Vertical)` between top visualizer area and bottom tabs+controls
-- **Proportions:** 60% visualizers, 40% tabs (3:2 stretch factors)
-- **User control:** Draggable splitter bar, `setChildrenCollapsible(False)`
-
-**Scroll Areas on All Tabs**
-- **5 tabs** now use `NoWheelScrollArea` with thin 4px scrollbars
-- **DRY refactor:** Extracted `_get_thin_scrollbar_style()` method (shared CSS)
-- **Prevents:** UI clipping when window resized vertically small
-
-**Effects Tab Consolidation**
-- **Merged** Jitter + Creep into single `CollapsibleGroupBox("Effects", collapsed=True)`
-- **Removed** separate QGroupBoxes, shortened labels ("Jitter"/"Creep" vs "Enable Jitter"/"Enable Creep")
-
-**Default Collapsed Groups**
-- **7 groups** start collapsed by default: Levels, Peaks, Pulse Frequency (P0), Carrier Frequency (F0), Stroke Parameters, Spectral Flux Control, Effects
-- **Reduces** visual clutter on first launch
-
-**Axis Weight Tooltips**
-- **Dynamic tooltips** based on current stroke mode (modes 1-3 vs mode 4)
-- **Method:** `_update_axis_weight_tooltips()` called from `_on_mode_change()` and init
-- **Replaces** static QLabel descriptions
-
-#### 3. Visualizer Defaults & Options Menu (Current Session)
-
-**Mountain Range Default**
-- **Changed** default visualizer from Waterfall (index 0) to Mountain Range (index 1)
-- **Reason:** Better visual clarity for beat detection
-
-**Range Indicators Hidden by Default**  
-- **Frequency band overlays** (red/green/blue/cyan rectangles) now hidden on startup
-- **Default:** `hide_indicators_checkbox.setChecked(True)` + `_on_hide_indicators_toggle(2)` called during init
-
-**Moved Controls to Options Menu**
-- **Removed** bottom "Spectrum" groupbox (cleaner layout)
-- **Added** "Spectrum Type" submenu to Options menu (Waterfall, Mountain Range, Bar Graph, Phosphor)
-- **Added** "Show Range Indicators" toggle to Options menu
-- **Implementation:** Hidden widgets for state tracking, menu actions with proper checkmarks
-
-### Git History After Session
-
-```
-c068d38 - GUI improvements: fix CollapsibleGroupBox (mousePressEvent), add QSplitter, scroll areas on all tabs, Effects consolidation, default collapsed groups, axis tooltips, DRY scrollbar style
-ddc5340 - Update AGENT_REFERENCE with GUI refactor session summary (CollapsibleGroupBox, Auto-Adjust group, tab consolidation)
-32b5973 - Beat Detection tab: Auto-Adjust groupbox + Levels/Peaks shades  
-```
-
-**Separate Branch:**
-- `feature/miniplayer` - Preserved miniplayer work (commits 8c8ffc8, abe91d6, c6a8815, 16cb2e6)
-
-### Technical Implementation Details
-
-**Files Modified:**
-- `main.py` - Primary GUI changes (CollapsibleGroupBox class, _setup_ui method, menu creation, event handlers)
-
-**Testing Completed:**
-- ✅ Import tests (`from main import BREadbeatsWindow`)  
-- ✅ Full application launches (no Qt warnings)
-- ✅ Beat detection functional 
-- ✅ All tabs show scrollbars when cramped
-- ✅ Mountain Range default visualizer active
-- ✅ Range indicators hidden by default
-- ✅ Options menu controls work correctly
-
-### Current Status
-
-**Branch State:** All changes committed to `feature/metric-autoranging`, ready for next session  
-**App Status:** Stable, all functionality working, GUI improvements complete  
-**Next Steps:** Branch is ready for additional development or merge to main
-
-### Code Architecture Notes
-
-**CollapsibleGroupBox Pattern:**
-- Use `mousePressEvent` for click detection (title area only)
-- Store `_base_title_text` separately from display title  
-- Apply visibility recursively through `_apply_visibility()` and `_set_layout_visible()`
-- Handle first-show state via `showEvent` + `_first_show` flag
-
-**Scroll Area Pattern:**
-- Wrap tab content in `NoWheelScrollArea()` 
-- Use shared `_get_thin_scrollbar_style()` CSS
-- Set policies: horizontal=always off, vertical=as needed
-- Call `scroll_area.setWidget(widget)` and `return scroll_area`
+*Current branch: main*
+*Repository: https://github.com/breadfan69-2/bREadbeats*
