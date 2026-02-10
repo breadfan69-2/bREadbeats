@@ -40,6 +40,7 @@ from config import (
     BEAT_RESET_DEFAULTS,
     BeatDetectionType,
     Config,
+    DeviceLimitsConfig,
     StrokeMode,
 )
 from logging_utils import get_log_level, set_log_level
@@ -2105,6 +2106,10 @@ class BREadbeatsWindow(QMainWindow):
         # Load presets from disk
         self._load_presets_from_disk()
         
+        # First-run device limits prompt (delayed so window is visible first)
+        if not self.config.device_limits.prompted:
+            QTimer.singleShot(500, lambda: self._on_device_limits(first_run=True))
+        
         # Connect signals
         self.signals.beat_detected.connect(self._on_beat)
         self.signals.spectrum_ready.connect(self._on_spectrum)
@@ -2130,13 +2135,13 @@ class BREadbeatsWindow(QMainWindow):
         self._cached_pulse_invert: bool = False
         self._cached_f0_mode: int = 0
         self._cached_f0_invert: bool = False
-        self._cached_pulse_display: str = "Pulse: off"
-        self._cached_carrier_display: str = "Carrier: off"
-        # Cached TCode Sent Freq slider values (Hz) for thread-safe P0/F0 computation
-        self._cached_tcode_freq_min: float = 30.0
-        self._cached_tcode_freq_max: float = 105.0
-        self._cached_f0_tcode_min: float = 500.0
-        self._cached_f0_tcode_max: float = 1000.0
+        self._cached_pulse_display: str = "Pulse Freq: off"
+        self._cached_carrier_display: str = "Carrier Freq: off"
+        # Cached TCode Sent slider values (0-9999) for thread-safe P0/C0 computation
+        self._cached_tcode_freq_min: int = 2010
+        self._cached_tcode_freq_max: int = 7035
+        self._cached_f0_tcode_min: int = 0
+        self._cached_f0_tcode_max: int = 5000
         # Track previous enabled state for send-zero-once logic
         self._prev_p0_enabled: bool = False
         self._prev_f0_enabled: bool = False
@@ -2146,7 +2151,7 @@ class BREadbeatsWindow(QMainWindow):
         self._cached_p1_val: Optional[int] = None
         self._cached_p1_mode: int = 0  # 0=Volume(RMS), 1=Hz, 2=Speed
         self._cached_p1_invert: bool = False
-        self._cached_p1_display: str = "PWidth: off"
+        self._cached_p1_display: str = "Pulse Width: off"
         self._cached_p1_tcode_min: int = 1000
         self._cached_p1_tcode_max: int = 8000
         self._prev_p1_enabled: bool = False
@@ -2156,7 +2161,7 @@ class BREadbeatsWindow(QMainWindow):
         self._cached_p3_val: Optional[int] = None
         self._cached_p3_mode: int = 0  # 0=Brightness(centroid), 1=Hz, 2=Speed
         self._cached_p3_invert: bool = False
-        self._cached_p3_display: str = "Rise: off"
+        self._cached_p3_display: str = "Rise Time: off"
         self._cached_p3_tcode_min: int = 1000
         self._cached_p3_tcode_max: int = 8000
         self._prev_p3_enabled: bool = False
@@ -2584,11 +2589,6 @@ class BREadbeatsWindow(QMainWindow):
         assert about_action is not None
         about_action.triggered.connect(self._on_about)
         
-        # Help menu item
-        help_action = main_menu.addAction("Help")
-        assert help_action is not None
-        help_action.triggered.connect(self._on_help)
-        
         # Options menu (separate top-level menu)
         options_menu = menubar.addMenu("Options")
         assert options_menu is not None
@@ -2602,6 +2602,11 @@ class BREadbeatsWindow(QMainWindow):
         connection_action = options_menu.addAction("Connection...")
         assert connection_action is not None
         connection_action.triggered.connect(self._on_options_connection)
+
+        # Device Limits option
+        device_limits_action = options_menu.addAction("Device Limits...")
+        assert device_limits_action is not None
+        device_limits_action.triggered.connect(self._on_device_limits)
 
         # Spectrum visualizer type submenu
         viz_menu = options_menu.addMenu("Spectrum Type")
@@ -2640,6 +2645,14 @@ class BREadbeatsWindow(QMainWindow):
             action.triggered.connect(lambda checked, lvl=level: self._on_log_level_change(lvl))
             self._log_level_actions.append(action)
         self._sync_log_level_menu(getattr(self.config, 'log_level', 'INFO'))
+        
+        # Help menu (separate top-level menu)
+        help_menu = menubar.addMenu("Help")
+        assert help_menu is not None
+        
+        help_action = help_menu.addAction("Troubleshooting...")
+        assert help_action is not None
+        help_action.triggered.connect(self._on_help)
     
     def _on_options_audio_device(self):
         """Show Audio Device selection dialog"""
@@ -2754,6 +2767,173 @@ class BREadbeatsWindow(QMainWindow):
             if hasattr(self, 'network_engine') and self.network_engine:
                 self._on_connect()
     
+    def _on_device_limits(self, first_run: bool = False):
+        """Show Device Limits dialog for value-to-real-units conversion.
+        Pulse Freq/Carrier Freq (Hz) are always shown. Pulse Width/Interval Random/Rise Time are optional.
+        Called from Options menu or on first startup if not yet prompted."""
+        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QDoubleSpinBox,
+                                      QPushButton, QHBoxLayout, QGridLayout, QGroupBox, QCheckBox)
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Device Output Limits")
+        dialog.setMinimumWidth(400)
+        layout = QVBoxLayout(dialog)
+        
+        info = QLabel(
+            "Please enter the limits you have configured in Restim:\n"
+            "When set, displays will also show the converted real-world values.\n"
+            "Leave at 0 to disable conversion for that axis."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        
+        dl = self.config.device_limits
+        
+        # --- Pulse Freq / Carrier Freq group (always visible) ---
+        main_group = QGroupBox("Pulse Freq / Carrier Freq  —  Hz")
+        grid = QGridLayout(main_group)
+        grid.addWidget(QLabel("Pulse Freq Min Hz:"), 0, 0)
+        p0_min = QDoubleSpinBox()
+        p0_min.setRange(0, 99999)
+        p0_min.setDecimals(1)
+        p0_min.setValue(dl.p0_freq_min)
+        p0_min.setSpecialValueText("not set")
+        grid.addWidget(p0_min, 0, 1)
+        
+        grid.addWidget(QLabel("Pulse Freq Max Hz:"), 0, 2)
+        p0_max = QDoubleSpinBox()
+        p0_max.setRange(0, 99999)
+        p0_max.setDecimals(1)
+        p0_max.setValue(dl.p0_freq_max)
+        p0_max.setSpecialValueText("not set")
+        grid.addWidget(p0_max, 0, 3)
+        
+        grid.addWidget(QLabel("Carrier Freq Min Hz:"), 1, 0)
+        c0_min = QDoubleSpinBox()
+        c0_min.setRange(0, 99999)
+        c0_min.setDecimals(1)
+        c0_min.setValue(dl.c0_freq_min)
+        c0_min.setSpecialValueText("not set")
+        grid.addWidget(c0_min, 1, 1)
+        
+        grid.addWidget(QLabel("Carrier Freq Max Hz:"), 1, 2)
+        c0_max = QDoubleSpinBox()
+        c0_max.setRange(0, 99999)
+        c0_max.setDecimals(1)
+        c0_max.setValue(dl.c0_freq_max)
+        c0_max.setSpecialValueText("not set")
+        grid.addWidget(c0_max, 1, 3)
+        layout.addWidget(main_group)
+        
+        # --- Pulse Width / Interval Random / Rise Time group (optional, collapsed by default) ---
+        has_extra = (dl.p1_cycles_max > 0 or dl.p2_range_max > 0 or dl.p3_cycles_max > 0)
+        show_extra = QCheckBox("Show Pulse Width / Interval Random / Rise Time limits")
+        show_extra.setChecked(has_extra)
+        layout.addWidget(show_extra)
+        
+        extra_group = QGroupBox("Pulse Width / Interval Random / Rise Time")
+        extra_grid = QGridLayout(extra_group)
+        
+        # Pulse Width in carrier cycles
+        extra_grid.addWidget(QLabel("Pulse Width Min (cycles):"), 0, 0)
+        p1_min = QDoubleSpinBox()
+        p1_min.setRange(0, 99999)
+        p1_min.setDecimals(1)
+        p1_min.setValue(dl.p1_cycles_min)
+        p1_min.setSpecialValueText("not set")
+        extra_grid.addWidget(p1_min, 0, 1)
+        
+        extra_grid.addWidget(QLabel("Pulse Width Max (cycles):"), 0, 2)
+        p1_max = QDoubleSpinBox()
+        p1_max.setRange(0, 99999)
+        p1_max.setDecimals(1)
+        p1_max.setValue(dl.p1_cycles_max)
+        p1_max.setSpecialValueText("not set")
+        extra_grid.addWidget(p1_max, 0, 3)
+        
+        # Interval Random (0-1 range typically)
+        extra_grid.addWidget(QLabel("Interval Random Min:"), 1, 0)
+        p2_min = QDoubleSpinBox()
+        p2_min.setRange(0, 99999)
+        p2_min.setDecimals(2)
+        p2_min.setValue(dl.p2_range_min)
+        p2_min.setSpecialValueText("not set")
+        p2_min.setToolTip("Pulse interval randomization — 0 to 1 on most devices")
+        extra_grid.addWidget(p2_min, 1, 1)
+        
+        extra_grid.addWidget(QLabel("Interval Random Max:"), 1, 2)
+        p2_max = QDoubleSpinBox()
+        p2_max.setRange(0, 99999)
+        p2_max.setDecimals(2)
+        p2_max.setValue(dl.p2_range_max)
+        p2_max.setSpecialValueText("not set")
+        p2_max.setToolTip("Pulse interval randomization — 0 to 1 on most devices")
+        extra_grid.addWidget(p2_max, 1, 3)
+        
+        # Rise Time in carrier cycles
+        extra_grid.addWidget(QLabel("Rise Time Min (cycles):"), 2, 0)
+        p3_min = QDoubleSpinBox()
+        p3_min.setRange(0, 99999)
+        p3_min.setDecimals(1)
+        p3_min.setValue(dl.p3_cycles_min)
+        p3_min.setSpecialValueText("not set")
+        extra_grid.addWidget(p3_min, 2, 1)
+        
+        extra_grid.addWidget(QLabel("Rise Time Max (cycles):"), 2, 2)
+        p3_max = QDoubleSpinBox()
+        p3_max.setRange(0, 99999)
+        p3_max.setDecimals(1)
+        p3_max.setValue(dl.p3_cycles_max)
+        p3_max.setSpecialValueText("not set")
+        extra_grid.addWidget(p3_max, 2, 3)
+        
+        extra_group.setVisible(has_extra)
+        show_extra.toggled.connect(extra_group.setVisible)
+        layout.addWidget(extra_group)
+        
+        # OK / Cancel / Clear
+        btn_row = QHBoxLayout()
+        clear_btn = QPushButton("Clear All")
+        def _clear_all():
+            for spin in [p0_min, p0_max, c0_min, c0_max, p1_min, p1_max, p2_min, p2_max, p3_min, p3_max]:
+                spin.setValue(0)
+        clear_btn.clicked.connect(_clear_all)
+        btn_row.addWidget(clear_btn)
+        btn_row.addStretch()
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        if first_run:
+            skip_btn = QPushButton("Skip")
+            skip_btn.setToolTip("Skip for now — you can set this later in Options → Device Limits")
+            skip_btn.clicked.connect(dialog.reject)
+            btn_row.addWidget(skip_btn)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.config.device_limits.p0_freq_min = p0_min.value()
+            self.config.device_limits.p0_freq_max = p0_max.value()
+            self.config.device_limits.c0_freq_min = c0_min.value()
+            self.config.device_limits.c0_freq_max = c0_max.value()
+            self.config.device_limits.p1_cycles_min = p1_min.value()
+            self.config.device_limits.p1_cycles_max = p1_max.value()
+            self.config.device_limits.p2_range_min = p2_min.value()
+            self.config.device_limits.p2_range_max = p2_max.value()
+            self.config.device_limits.p3_cycles_min = p3_min.value()
+            self.config.device_limits.p3_cycles_max = p3_max.value()
+            self.config.device_limits.prompted = True
+            print(f"[Config] Device limits updated: P0={p0_min.value()}-{p0_max.value()}Hz, "
+                  f"C0={c0_min.value()}-{c0_max.value()}Hz, "
+                  f"P1={p1_min.value()}-{p1_max.value()}cyc, "
+                  f"P2={p2_min.value()}-{p2_max.value()}, "
+                  f"P3={p3_min.value()}-{p3_max.value()}cyc")
+        else:
+            # Mark as prompted even if skipped/cancelled so we don't ask again
+            self.config.device_limits.prompted = True
+
     def _on_help(self):
         """Show Help/Troubleshooting dialog with reset buttons (non-modal)"""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QScrollArea, QGroupBox, QPushButton, QHBoxLayout
@@ -3103,15 +3283,15 @@ bREadfan_69@hotmail.com"""
                 # Other tab (pulse freq settings)
                 self.pulse_freq_range_slider.setLow(self.config.pulse_freq.monitor_freq_min)
                 self.pulse_freq_range_slider.setHigh(self.config.pulse_freq.monitor_freq_max)
-                self.tcode_freq_range_slider.setLow(self.config.pulse_freq.tcode_freq_min)
-                self.tcode_freq_range_slider.setHigh(self.config.pulse_freq.tcode_freq_max)
+                self.tcode_freq_range_slider.setLow(self.config.pulse_freq.tcode_min)
+                self.tcode_freq_range_slider.setHigh(self.config.pulse_freq.tcode_max)
                 self.freq_weight_slider.setValue(self.config.pulse_freq.freq_weight)
 
                 # Carrier freq (F0) settings
                 self.f0_freq_range_slider.setLow(self.config.carrier_freq.monitor_freq_min)
                 self.f0_freq_range_slider.setHigh(self.config.carrier_freq.monitor_freq_max)
-                self.f0_tcode_range_slider.setLow(self.config.carrier_freq.tcode_freq_min)
-                self.f0_tcode_range_slider.setHigh(self.config.carrier_freq.tcode_freq_max)
+                self.f0_tcode_range_slider.setLow(self.config.carrier_freq.tcode_min)
+                self.f0_tcode_range_slider.setHigh(self.config.carrier_freq.tcode_max)
                 self.f0_weight_slider.setValue(self.config.carrier_freq.freq_weight)
 
                 # Volume (config stores 0-1, slider shows 0-100)
@@ -3223,26 +3403,26 @@ bREadfan_69@hotmail.com"""
         freq_display_layout = QVBoxLayout()
         freq_display_layout.setSpacing(0)
         
-        # Carrier Freq display (shows sent F0 TCode value)
-        self.carrier_freq_label = QLabel("Carrier: off")
+        # Carrier Freq display
+        self.carrier_freq_label = QLabel("Carrier Freq: off")
         self.carrier_freq_label.setStyleSheet("color: #0af; font-size: 11px; font-weight: bold;")
         self.carrier_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.carrier_freq_label)
         
-        # Pulse Freq display (shows sent P0 TCode value)
-        self.pulse_freq_label = QLabel("Pulse: off")
+        # Pulse Freq display
+        self.pulse_freq_label = QLabel("Pulse Freq: off")
         self.pulse_freq_label.setStyleSheet("color: #f80; font-size: 11px; font-weight: bold;")
         self.pulse_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.pulse_freq_label)
         
-        # Pulse Width display (P1)
-        self.p1_display_label = QLabel("PWidth: off")
+        # Pulse Width display
+        self.p1_display_label = QLabel("Pulse Width: off")
         self.p1_display_label.setStyleSheet("color: #fa0; font-size: 10px;")
         self.p1_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.p1_display_label)
         
-        # Rise Time display (P3)
-        self.p3_display_label = QLabel("Rise: off")
+        # Rise Time display
+        self.p3_display_label = QLabel("Rise Time: off")
         self.p3_display_label.setStyleSheet("color: #af0; font-size: 10px;")
         self.p3_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.p3_display_label)
@@ -3651,8 +3831,8 @@ bREadfan_69@hotmail.com"""
             # Pulse Freq Tab
             'pulse_freq_low': self.pulse_freq_range_slider.low(),
             'pulse_freq_high': self.pulse_freq_range_slider.high(),
-            'tcode_freq_min': self.tcode_freq_range_slider.low(),
-            'tcode_freq_max': self.tcode_freq_range_slider.high(),
+            'tcode_min': int(self.tcode_freq_range_slider.low()),
+            'tcode_max': int(self.tcode_freq_range_slider.high()),
             'freq_weight': self.freq_weight_slider.value(),
         }
     
@@ -3729,8 +3909,16 @@ bREadfan_69@hotmail.com"""
         # Pulse Freq Tab
         self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
         self.pulse_freq_range_slider.setHigh(preset_data['pulse_freq_high'])
-        self.tcode_freq_range_slider.setLow(preset_data['tcode_freq_min'])
-        self.tcode_freq_range_slider.setHigh(preset_data['tcode_freq_max'])
+        # Support both new (tcode_min) and old (tcode_freq_min) preset keys
+        p0_tcode_min = preset_data.get('tcode_min', preset_data.get('tcode_freq_min', 2010))
+        p0_tcode_max = preset_data.get('tcode_max', preset_data.get('tcode_freq_max', 7035))
+        # Backward compat: old presets stored Hz values (typically < 200), convert to TCode
+        if p0_tcode_min < 200:
+            p0_tcode_min = int(p0_tcode_min * 67)
+        if p0_tcode_max < 200:
+            p0_tcode_max = int(p0_tcode_max * 67)
+        self.tcode_freq_range_slider.setLow(p0_tcode_min)
+        self.tcode_freq_range_slider.setHigh(p0_tcode_max)
         self.freq_weight_slider.setValue(preset_data['freq_weight'])
         
         # Sync config
@@ -3783,15 +3971,15 @@ bREadfan_69@hotmail.com"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # ===== PULSE FREQUENCY (P0) =====
-        pulse_group = CollapsibleGroupBox("Pulse Frequency (P0) - blue overlay on spectrum", collapsed=True)
+        # ===== PULSE FREQUENCY =====
+        pulse_group = CollapsibleGroupBox("Pulse Frequency - blue overlay on spectrum", collapsed=True)
         pulse_layout = QVBoxLayout(pulse_group)
 
         self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
         self.pulse_freq_range_slider.rangeChanged.connect(self._on_p0_band_change)
         pulse_layout.addWidget(self.pulse_freq_range_slider)
 
-        self.tcode_freq_range_slider = RangeSliderWithLabel("Sent Freq (Hz)", 0, 150, 30, 105, 0)
+        self.tcode_freq_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 2010, 7035, 0)
         pulse_layout.addWidget(self.tcode_freq_range_slider)
 
         self.freq_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 5.0, 1.0, 2)
@@ -3806,7 +3994,7 @@ bREadfan_69@hotmail.com"""
         self.pulse_invert_checkbox = QCheckBox("Invert")
         self.pulse_invert_checkbox.setChecked(False)
         pulse_mode_layout.addWidget(self.pulse_invert_checkbox)
-        self.pulse_enabled_checkbox = QCheckBox("Enable P0")
+        self.pulse_enabled_checkbox = QCheckBox("Enable")
         self.pulse_enabled_checkbox.setChecked(False)
         pulse_mode_layout.addWidget(self.pulse_enabled_checkbox)
         pulse_mode_layout.addStretch()
@@ -3814,15 +4002,15 @@ bREadfan_69@hotmail.com"""
 
         layout.addWidget(pulse_group)
 
-        # ===== CARRIER FREQUENCY (F0) =====
-        carrier_group = CollapsibleGroupBox("Carrier Frequency (F0)", collapsed=True)
+        # ===== CARRIER FREQUENCY =====
+        carrier_group = CollapsibleGroupBox("Carrier Frequency", collapsed=True)
         carrier_layout = QVBoxLayout(carrier_group)
 
         self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
         self.f0_freq_range_slider.rangeChanged.connect(self._on_f0_band_change)
         carrier_layout.addWidget(self.f0_freq_range_slider)
 
-        self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Freq", 500, 1500, 500, 1000, 0)
+        self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 0, 5000, 0)
         carrier_layout.addWidget(self.f0_tcode_range_slider)
 
         self.f0_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 5.0, 1.0, 2)
@@ -3837,7 +4025,7 @@ bREadfan_69@hotmail.com"""
         self.f0_invert_checkbox = QCheckBox("Invert")
         self.f0_invert_checkbox.setChecked(False)
         f0_mode_layout.addWidget(self.f0_invert_checkbox)
-        self.f0_enabled_checkbox = QCheckBox("Enable F0")
+        self.f0_enabled_checkbox = QCheckBox("Enable")
         self.f0_enabled_checkbox.setChecked(False)
         f0_mode_layout.addWidget(self.f0_enabled_checkbox)
         f0_mode_layout.addStretch()
@@ -3845,14 +4033,14 @@ bREadfan_69@hotmail.com"""
 
         layout.addWidget(carrier_group)
 
-        # ===== PULSE WIDTH (P1) =====
-        p1_group = CollapsibleGroupBox("Pulse Width (P1) — higher = stronger, smoother", collapsed=True)
+        # ===== PULSE WIDTH =====
+        p1_group = CollapsibleGroupBox("Pulse Width — higher = stronger, smoother", collapsed=True)
         p1_layout = QVBoxLayout(p1_group)
 
         self.p1_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
         p1_layout.addWidget(self.p1_monitor_range_slider)
 
-        self.p1_tcode_range_slider = RangeSliderWithLabel("Sent TCode", 0, 9999, 1000, 8000, 0)
+        self.p1_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 1000, 8000, 0)
         p1_layout.addWidget(self.p1_tcode_range_slider)
 
         self.p1_weight_slider = SliderWithLabel("Weight", 0.0, 5.0, 1.0, 2)
@@ -3867,7 +4055,7 @@ bREadfan_69@hotmail.com"""
         self.p1_invert_checkbox = QCheckBox("Invert")
         self.p1_invert_checkbox.setChecked(False)
         p1_mode_layout.addWidget(self.p1_invert_checkbox)
-        self.p1_enabled_checkbox = QCheckBox("Enable P1")
+        self.p1_enabled_checkbox = QCheckBox("Enable")
         self.p1_enabled_checkbox.setChecked(False)
         p1_mode_layout.addWidget(self.p1_enabled_checkbox)
         p1_mode_layout.addStretch()
@@ -3875,14 +4063,14 @@ bREadfan_69@hotmail.com"""
 
         layout.addWidget(p1_group)
 
-        # ===== RISE TIME (P3) =====
-        p3_group = CollapsibleGroupBox("Rise Time (P3) — higher = smoother, gentler", collapsed=True)
+        # ===== RISE TIME =====
+        p3_group = CollapsibleGroupBox("Rise Time — higher = smoother, gentler", collapsed=True)
         p3_layout = QVBoxLayout(p3_group)
 
         self.p3_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
         p3_layout.addWidget(self.p3_monitor_range_slider)
 
-        self.p3_tcode_range_slider = RangeSliderWithLabel("Sent TCode", 0, 9999, 1000, 8000, 0)
+        self.p3_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 1000, 8000, 0)
         p3_layout.addWidget(self.p3_tcode_range_slider)
 
         self.p3_weight_slider = SliderWithLabel("Weight", 0.0, 5.0, 1.0, 2)
@@ -3897,7 +4085,7 @@ bREadfan_69@hotmail.com"""
         self.p3_invert_checkbox = QCheckBox("Invert")
         self.p3_invert_checkbox.setChecked(False)
         p3_mode_layout.addWidget(self.p3_invert_checkbox)
-        self.p3_enabled_checkbox = QCheckBox("Enable P3")
+        self.p3_enabled_checkbox = QCheckBox("Enable")
         self.p3_enabled_checkbox.setChecked(False)
         p3_mode_layout.addWidget(self.p3_enabled_checkbox)
         p3_mode_layout.addStretch()
@@ -4523,8 +4711,8 @@ bREadfan_69@hotmail.com"""
             # Other Tab
             'pulse_freq_low': self.pulse_freq_range_slider.low(),
             'pulse_freq_high': self.pulse_freq_range_slider.high(),
-            'tcode_freq_min': self.tcode_freq_range_slider.low(),
-            'tcode_freq_max': self.tcode_freq_range_slider.high(),
+            'tcode_min': int(self.tcode_freq_range_slider.low()),
+            'tcode_max': int(self.tcode_freq_range_slider.high()),
             'freq_weight': self.freq_weight_slider.value(),
         }
         
@@ -4634,10 +4822,18 @@ bREadfan_69@hotmail.com"""
                 self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
             if 'pulse_freq_high' in preset_data:
                 self.pulse_freq_range_slider.setHigh(preset_data['pulse_freq_high'])
-            if 'tcode_freq_min' in preset_data:
-                self.tcode_freq_range_slider.setLow(preset_data['tcode_freq_min'])
-            if 'tcode_freq_max' in preset_data:
-                self.tcode_freq_range_slider.setHigh(preset_data['tcode_freq_max'])
+            # Support both new (tcode_min) and old (tcode_freq_min) preset keys
+            p0_tcode_min = preset_data.get('tcode_min', preset_data.get('tcode_freq_min'))
+            p0_tcode_max = preset_data.get('tcode_max', preset_data.get('tcode_freq_max'))
+            if p0_tcode_min is not None:
+                # Backward compat: old presets stored Hz values (typically < 200)
+                if p0_tcode_min < 200:
+                    p0_tcode_min = int(p0_tcode_min * 67)
+                self.tcode_freq_range_slider.setLow(p0_tcode_min)
+            if p0_tcode_max is not None:
+                if p0_tcode_max < 200:
+                    p0_tcode_max = int(p0_tcode_max * 67)
+                self.tcode_freq_range_slider.setHigh(p0_tcode_max)
             if 'freq_weight' in preset_data:
                 self.freq_weight_slider.setValue(preset_data['freq_weight'])
 
@@ -5280,10 +5476,9 @@ bREadfan_69@hotmail.com"""
             else:
                 avg_norm = norm_weighted
             
-            # Map averaged frequency to TCode output range (Hz-based, matching Pulse display)
-            # Sent Freq sliders are in Hz (0-150), convert to TCode 0-9999 via *67
-            tcode_min_val = int(self._cached_tcode_freq_min * 67)
-            tcode_max_val = int(self._cached_tcode_freq_max * 67)
+            # Map averaged frequency to TCode output range (direct TCode, 0-9999)
+            tcode_min_val = self._cached_tcode_freq_min
+            tcode_max_val = self._cached_tcode_freq_max
             tcode_min_val = max(0, min(9999, tcode_min_val))
             tcode_max_val = max(0, min(9999, tcode_max_val))
             p0_val = int(tcode_min_val + avg_norm * (tcode_max_val - tcode_min_val))
@@ -5293,12 +5488,17 @@ bREadfan_69@hotmail.com"""
             cmd.pulse_freq = p0_val
             cmd.pulse_freq_duration = int(self._freq_window_ms)  # 250ms duration
             self._cached_p0_val = p0_val
-            display_freq = p0_val / 67  # Convert TCode to approx Hz (1.5-150hz range)
-            self._cached_pulse_display = f"Pulse: {display_freq:.0f}hz"
+            # Display raw TCode; append Hz if device limits configured
+            dl = self.config.device_limits
+            if dl.p0_freq_min > 0 and dl.p0_freq_max > 0:
+                hz = dl.p0_freq_min + (p0_val / 9999.0) * (dl.p0_freq_max - dl.p0_freq_min)
+                self._cached_pulse_display = f"Pulse Freq: {p0_val} ({hz:.0f}Hz)"
+            else:
+                self._cached_pulse_display = f"Pulse Freq: {p0_val}"
         else:
             cmd.pulse_freq = None
             self._cached_p0_val = None
-            self._cached_pulse_display = "Pulse: off"
+            self._cached_pulse_display = "Pulse Freq: off"
             self._p0_freq_window.clear()  # Clear window when disabled
         
         # --- F0 (Carrier Frequency) with 250ms sliding window averaging ---
@@ -5336,10 +5536,9 @@ bREadfan_69@hotmail.com"""
             else:
                 f0_avg_norm = f0_norm_weighted
             
-            # Map averaged frequency to TCode output range
-            # Sent Freq sliders are 500-1500 display units, convert to TCode 0-9999: tcode = (slider - 500) * 10
-            f0_tcode_min = int((self._cached_f0_tcode_min - 500) * 10)
-            f0_tcode_max = int((self._cached_f0_tcode_max - 500) * 10)
+            # Map averaged frequency to TCode output range (direct TCode, 0-9999)
+            f0_tcode_min = self._cached_f0_tcode_min
+            f0_tcode_max = self._cached_f0_tcode_max
             f0_tcode_min = max(0, min(9999, f0_tcode_min))
             f0_tcode_max = max(0, min(9999, f0_tcode_max))
             f0_val_raw = int(f0_tcode_min + f0_avg_norm * (f0_tcode_max - f0_tcode_min))
@@ -5369,11 +5568,16 @@ bREadfan_69@hotmail.com"""
             cmd.tcode_tags['C0'] = f0_val  # restim uses C0 for carrier frequency, not F0
             cmd.tcode_tags['C0_duration'] = f0_duration
             self._cached_f0_val = f0_val
-            display_f0 = f0_val / 10 + 500  # Convert TCode to display units (500-1500)
-            self._cached_carrier_display = f"Carrier: {display_f0:.0f}"
+            # Display raw TCode; append Hz if device limits configured
+            dl = self.config.device_limits
+            if dl.c0_freq_min > 0 and dl.c0_freq_max > 0:
+                hz = dl.c0_freq_min + (f0_val / 9999.0) * (dl.c0_freq_max - dl.c0_freq_min)
+                self._cached_carrier_display = f"Carrier Freq: {f0_val} ({hz:.0f}Hz)"
+            else:
+                self._cached_carrier_display = f"Carrier Freq: {f0_val}"
         else:
             self._cached_f0_val = None
-            self._cached_carrier_display = "Carrier: off"
+            self._cached_carrier_display = "Carrier Freq: off"
             self._f0_freq_window.clear()  # Clear window when disabled
             self._f0_last_sent_tcode = None  # Reset smoothing state when disabled
         
@@ -5426,10 +5630,16 @@ bREadfan_69@hotmail.com"""
             cmd.tcode_tags['P1'] = p1_val
             cmd.tcode_tags['P1_duration'] = int(self._freq_window_ms)
             self._cached_p1_val = p1_val
-            self._cached_p1_display = f"PWidth: {p1_val}"
+            # Display raw TCode; append converted value if device limits configured
+            dl = self.config.device_limits
+            if dl.p1_cycles_min > 0 and dl.p1_cycles_max > 0:
+                p1_cyc = dl.p1_cycles_min + (p1_val / 9999.0) * (dl.p1_cycles_max - dl.p1_cycles_min)
+                self._cached_p1_display = f"Pulse Width: {p1_val} ({p1_cyc:.1f}cyc)"
+            else:
+                self._cached_p1_display = f"Pulse Width: {p1_val}"
         else:
             self._cached_p1_val = None
-            self._cached_p1_display = "PWidth: off"
+            self._cached_p1_display = "Pulse Width: off"
             self._p1_window.clear()
         
         # --- P3 (Rise Time) with 250ms sliding window averaging ---
@@ -5489,10 +5699,16 @@ bREadfan_69@hotmail.com"""
             cmd.tcode_tags['P3'] = p3_val
             cmd.tcode_tags['P3_duration'] = int(self._freq_window_ms)
             self._cached_p3_val = p3_val
-            self._cached_p3_display = f"Rise: {p3_val}"
+            # Display raw TCode; append converted value if device limits configured
+            dl = self.config.device_limits
+            if dl.p3_cycles_min > 0 and dl.p3_cycles_max > 0:
+                p3_cyc = dl.p3_cycles_min + (p3_val / 9999.0) * (dl.p3_cycles_max - dl.p3_cycles_min)
+                self._cached_p3_display = f"Rise Time: {p3_val} ({p3_cyc:.1f}cyc)"
+            else:
+                self._cached_p3_display = f"Rise Time: {p3_val}"
         else:
             self._cached_p3_val = None
-            self._cached_p3_display = "Rise: off"
+            self._cached_p3_display = "Rise Time: off"
             self._p3_window.clear()
         
         # Log
@@ -5638,23 +5854,23 @@ bREadfan_69@hotmail.com"""
         # Simply stop sending the axis — do NOT send 0 value, which still affects device
         if self._prev_p0_enabled and not new_p0_enabled:
             self._cached_p0_val = None
-            self._cached_pulse_display = "Pulse: off"
+            self._cached_pulse_display = "Pulse Freq: off"
             self._p0_freq_window.clear()
             print("[Main] P0 disabled — stopped sending")
         if self._prev_f0_enabled and not new_f0_enabled:
             self._cached_f0_val = None
-            self._cached_carrier_display = "Carrier: off"
+            self._cached_carrier_display = "Carrier Freq: off"
             self._f0_freq_window.clear()
             self._f0_last_sent_tcode = None
             print("[Main] C0 disabled — stopped sending")
         if self._prev_p1_enabled and not new_p1_enabled:
             self._cached_p1_val = None
-            self._cached_p1_display = "PWidth: off"
+            self._cached_p1_display = "Pulse Width: off"
             self._p1_window.clear()
             print("[Main] P1 disabled — stopped sending")
         if self._prev_p3_enabled and not new_p3_enabled:
             self._cached_p3_val = None
-            self._cached_p3_display = "Rise: off"
+            self._cached_p3_display = "Rise Time: off"
             self._p3_window.clear()
             print("[Main] P3 disabled — stopped sending")
         
@@ -5681,11 +5897,11 @@ bREadfan_69@hotmail.com"""
             self._cached_pulse_invert = self.pulse_invert_checkbox.isChecked()
             self._cached_f0_mode = self.f0_mode_combo.currentIndex()
             self._cached_f0_invert = self.f0_invert_checkbox.isChecked()
-            # Sync TCode Sent Freq slider values for thread-safe access
-            self._cached_tcode_freq_min = self.tcode_freq_range_slider.low()
-            self._cached_tcode_freq_max = self.tcode_freq_range_slider.high()
-            self._cached_f0_tcode_min = self.f0_tcode_range_slider.low()
-            self._cached_f0_tcode_max = self.f0_tcode_range_slider.high()
+            # Sync TCode Sent slider values for thread-safe access
+            self._cached_tcode_freq_min = int(self.tcode_freq_range_slider.low())
+            self._cached_tcode_freq_max = int(self.tcode_freq_range_slider.high())
+            self._cached_f0_tcode_min = int(self.f0_tcode_range_slider.low())
+            self._cached_f0_tcode_max = int(self.f0_tcode_range_slider.high())
             # Sync P1 (Pulse Width) widget states
             self._cached_p1_mode = self.p1_mode_combo.currentIndex()
             self._cached_p1_invert = self.p1_invert_checkbox.isChecked()
@@ -5790,15 +6006,15 @@ bREadfan_69@hotmail.com"""
         self.config.stroke.phase_advance = self.phase_advance_slider.value()
         self.config.pulse_freq.monitor_freq_min = self.pulse_freq_range_slider.low()
         self.config.pulse_freq.monitor_freq_max = self.pulse_freq_range_slider.high()
-        self.config.pulse_freq.tcode_freq_min = self.tcode_freq_range_slider.low()
-        self.config.pulse_freq.tcode_freq_max = self.tcode_freq_range_slider.high()
+        self.config.pulse_freq.tcode_min = int(self.tcode_freq_range_slider.low())
+        self.config.pulse_freq.tcode_max = int(self.tcode_freq_range_slider.high())
         self.config.pulse_freq.freq_weight = self.freq_weight_slider.value()
         
         # Save carrier freq (F0) settings
         self.config.carrier_freq.monitor_freq_min = self.f0_freq_range_slider.low()
         self.config.carrier_freq.monitor_freq_max = self.f0_freq_range_slider.high()
-        self.config.carrier_freq.tcode_freq_min = self.f0_tcode_range_slider.low()
-        self.config.carrier_freq.tcode_freq_max = self.f0_tcode_range_slider.high()
+        self.config.carrier_freq.tcode_min = int(self.f0_tcode_range_slider.low())
+        self.config.carrier_freq.tcode_max = int(self.f0_tcode_range_slider.high())
         self.config.carrier_freq.freq_weight = self.f0_weight_slider.value()
         
         self.config.volume = self.volume_slider.value() / 100.0

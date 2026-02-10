@@ -409,14 +409,31 @@ After a beat stroke completes, smooth arc return over 400ms:
 
 ## UI Components
 
+### UI Naming Convention — NO TCode Tags
+**IMPORTANT:** Never use TCode axis tags (P0, C0, P1, P2, P3, L0, L1, V0, etc.) in user-facing UI text.
+Always use the human-readable function name instead:
+| Internal / TCode | UI Label |
+|-----------------|----------|
+| P0 | Pulse Freq |
+| C0 | Carrier Freq |
+| P1 | Pulse Width |
+| P2 | Interval Random |
+| P3 | Rise Time |
+| L0/L1 | (stroke axes — not user-labeled) |
+| V0 | (vibration — not user-labeled) |
+
+TCode tags are fine in code comments, log output, and agent/developer docs — just not in anything the user sees (labels, dialogs, tooltips, group box titles, checkbox text, slider names).
+
 ### Range Sliders
 Dual-handle sliders for min/max pairs:
 - **Beat detection freq** (30-22050 Hz) → Red band on visualizer → Butterworth filter range
 - **Stroke depth freq** (30-22050 Hz) → Green band on visualizer → Controls stroke depth based on bass/treble content  
-- **Pulse monitor freq** (30-22050 Hz) → Blue band on visualizer → Audio range for P0 TCode generation
-- **Pulse TCode freq** (0-150 Hz) → P0 output range (Hz*67 → TCode 0-9999)
-- **Carrier monitor freq** (30-22050 Hz) → Cyan band on visualizer → Audio range for C0 TCode generation  
-- **Carrier TCode freq** (500-1500) → C0 output range ((display-500)*10 → TCode 0-9999)
+- **Pulse Freq monitor** (30-22050 Hz) → Blue band on visualizer → Audio range for pulse freq generation
+- **Pulse Freq sent value** (0-9999) → Direct TCode output range for P0
+- **Carrier Freq monitor** (30-22050 Hz) → Cyan band on visualizer → Audio range for carrier freq generation  
+- **Carrier Freq sent value** (0-9999) → Direct TCode output range for C0
+- **Pulse Width sent value** (0-9999) → Direct TCode output range for P1
+- **Rise Time sent value** (0-9999) → Direct TCode output range for P3
 
 ### Preset System
 5-slot custom presets storing all settings:
