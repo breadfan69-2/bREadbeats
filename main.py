@@ -1558,8 +1558,8 @@ class PositionCanvas(pg.PlotWidget):
     def __init__(self, parent=None, size=2, get_rotation=None):
         super().__init__(parent)
         
-        # Dark theme
-        self.setBackground('#232323')
+        # Match window background for ghost effect
+        self.setBackground('#3d3d3d')
         self.setMouseEnabled(x=False, y=False)
         self.setMenuEnabled(False)
         self.setAspectLocked(True)
@@ -1574,11 +1574,11 @@ class PositionCanvas(pg.PlotWidget):
         theta = np.linspace(0, 2*np.pi, 100)
         circle_x = np.cos(theta)
         circle_y = np.sin(theta)
-        self.addItem(pg.PlotCurveItem(circle_x, circle_y, pen=pg.mkPen('#666666', width=1)))
+        self.addItem(pg.PlotCurveItem(circle_x, circle_y, pen=pg.mkPen('#555555', width=1)))
         
         # Draw crosshairs
-        self.addItem(pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#555555', width=0.5)))
-        self.addItem(pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#555555', width=0.5)))
+        self.addItem(pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#4a4a4a', width=0.5)))
+        self.addItem(pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#4a4a4a', width=0.5)))
         
         # Trail storage
         self.trail_x = []
@@ -1605,8 +1605,12 @@ class PositionCanvas(pg.PlotWidget):
         x_rot = x_base * cos_a - y_base * sin_a
         y_rot = x_base * sin_a + y_base * cos_a
         
-        self.trail_x.append(x_rot)
-        self.trail_y.append(y_rot)
+        # 90° CCW rotation so our display matches restim orientation
+        x_display = -y_rot
+        y_display = x_rot
+        
+        self.trail_x.append(x_display)
+        self.trail_y.append(y_display)
         if len(self.trail_x) > self.max_trail:
             self.trail_x.pop(0)
             self.trail_y.pop(0)
@@ -1616,7 +1620,7 @@ class PositionCanvas(pg.PlotWidget):
             self.trail_curve.setData(self.trail_x, self.trail_y)
         
         # Update position marker
-        self.position_scatter.setData([x_rot], [y_rot])
+        self.position_scatter.setData([x_display], [y_display])
 
 
 class PresetButton(QPushButton):
@@ -2053,7 +2057,8 @@ class BREadbeatsWindow(QMainWindow):
         super().__init__()
         
         self.setWindowTitle("bREadbeats")
-        self.setMinimumSize(1000, 850)
+        self.setMinimumSize(400, 300)
+        self.resize(1100, 950)
         self.setStyleSheet(self._get_stylesheet())
         
         # Set window icon (appears in taskbar and title bar)
