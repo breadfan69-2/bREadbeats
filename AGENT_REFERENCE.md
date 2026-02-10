@@ -463,6 +463,96 @@ actual beat detection filter matches the displayed band.
 
 ---
 
+## Restim TCode Protocol Reference
+
+**Source:** Analyzed from [diglet48/restim](https://github.com/diglet48/restim) codebase (Feb 2026).
+
+### TCode Command Format (restim `net/tcode.py`)
+
+```
+{axis_id}{value:04d}         ← instant move
+{axis_id}{value:04d}I{ms}   ← interpolated move over ms milliseconds
+```
+- `axis_id` = 2-char string (e.g. `L0`, `V0`, `P0`, `C0`)
+- `value` = 0000-9999 (internally normalized to 0.0-1.0 via `float(value) / 10^len(value)`)
+- `I{ms}` = interpolation duration in milliseconds (restim converts to seconds: `interval / 1000.0`)
+- Commands separated by whitespace or newline
+- Restim routing: `route.axis.add(route.remap(cmd.value), cmd.interval / 1000.0)`
+
+### Restim Default Axis Mapping (from `funscript_kit.py`)
+
+| TCode Axis | Restim Internal Axis | Default Range | Description |
+|------------|---------------------|---------------|-------------|
+| **L0** | POSITION_ALPHA | -1 to 1 | Position alpha (our alpha, rotated) |
+| **L1** | POSITION_BETA | -1 to 1 | Position beta (our beta, rotated) |
+| L2 | POSITION_GAMMA | -1 to 1 | 3rd axis (4-phase only, not used by us) |
+| **V0** | VOLUME_API | 0 to 1 | Volume — one of 4 volume multipliers |
+| **C0** | CARRIER_FREQUENCY | 500 to 1000 Hz | Carrier frequency |
+| **P0** | PULSE_FREQUENCY | 0 to 100 Hz | Pulse frequency |
+| P1 | PULSE_WIDTH | 4 to 10 cycles | Pulse width in carrier cycles |
+| P2 | PULSE_INTERVAL_RANDOM | 0 to 1 | Randomize inter-pulse interval |
+| P3 | PULSE_RISE_TIME | 2 to 20 cycles | Pulse rise time in carrier cycles |
+
+**bREadbeats currently sends:** L0, L1, V0, P0, C0 (all correct).
+
+### Range Mismatch Notes ⚠️
+
+Our output ranges are wider than restim's defaults — values beyond restim's `limit_max` are clipped:
+
+| Axis | Our Output Range | Restim Default Range | Clipping Risk |
+|------|-----------------|---------------------|---------------|
+| **P0** | 0-150 Hz (Hz×67 → 0-9999) | 0-100 Hz | Values >100 Hz clipped unless user widens in restim preferences |
+| **C0** | 500-1500 Hz ((display-500)×10 → 0-9999) | 500-1000 Hz | Values >1000 Hz clipped unless user widens in restim preferences |
+
+Users can change these limits in restim's Settings → Funscript tab → T-Code axis configuration.
+
+### No Start/Stop TCode Commands Exist
+
+Restim has **no TCode-level start/stop or session commands**. Behavior is implicit:
+- **Start:** First TCode command arriving = active
+- **Stop:** Send V0 to 0, or stop sending commands (restim's inactivity timer reduces volume)
+- **Duration:** Built into every command via `I{ms}` suffix — no separate duration signal needed
+
+The `RequestSignalStart`/`RequestSignalStop` messages in restim's codebase are **FOCStim hardware protobuf commands** (serial/TCP to microcontroller), NOT TCode. They are irrelevant to our TCP TCode connection.
+
+### Restim's Volume Stack
+
+Restim multiplies 4 volume sources together — our V0 sets only the `api` volume:
+
+```
+final_volume = api (V0) × master (restim slider) × inactivity × external
+```
+
+- **api** — set by our V0 TCode commands
+- **master** — user's restim volume slider (independent)
+- **inactivity** — auto-reduces if position unchanged for N seconds (configurable)
+- **external** — from Buttplug/other sources
+- **Volume ramp** — slow start to prevent sudden power on restim's end
+
+Even if we send V0=9999, restim's master/ramp/inactivity still apply.
+
+### Axes We Don't Send Yet (Potential Future Features)
+
+| Axis | What It Does | Integration Idea |
+|------|-------------|-----------------|
+| **P1** (Pulse Width) | Carrier cycles per pulse (4-10). Lower = sharper, higher = smoother | Map to beat intensity: strong beats → wider pulses |
+| **P2** (Pulse Interval Random) | Randomize inter-pulse interval (0-1). "Tingly sensation, less painful on fast moves, slows numbing" | Map to flux variance or constant low value |
+| **P3** (Pulse Rise Time) | Envelope ramp in carrier cycles (2-20). Lower = abrupt, higher = gradual | Map to stroke mode: teardrop → longer rise, circle → shorter |
+
+### Restim's Built-in FunscriptExpander
+
+Restim's `serialproxy.py` has a `FunscriptExpander` that converts 1D L0 commands into 2D alpha/beta semicircular arcs automatically. This is conceptually similar to our stroke modes but much simpler (fixed semicircle). Our 4-mode stroke system is far more sophisticated — no action needed, but good to know restim has this concept for Buttplug/serial inputs.
+
+### NeoStim/NeoDK Hardware Limits (If Targeting)
+
+| Parameter | Min | Max |
+|-----------|-----|-----|
+| Pulse frequency | 1 Hz | 100 Hz |
+| Carrier frequency | 500 Hz | 3000 Hz |
+| Duty cycle | 0% | 90% |
+
+---
+
 ## Real-Time Data Requirement ⚠️ CRITICAL
 
 **NEVER send cached or queued data — ALWAYS use live values.**
