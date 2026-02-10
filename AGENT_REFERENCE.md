@@ -1122,3 +1122,113 @@ Each tab had scattered controls outside groupboxes. Added wrapper groupboxes:
 - Stroke Settings tab cleanup (similar GUI wrapping + collapsible groups for presets/jitter section)
 - Advanced tab further consolidation (remove unused imports per newinstructions2.txt)
 - Test full workflow: launch app → collapse Auto-Adjust → expand Auto-Adjust → verify BPS slider appears
+
+---
+
+## Session Summary - February 10, 2026
+
+**Working Branch:** `feature/metric-autoranging`  
+**GitHub URL:** https://github.com/breadfan69-2/bREadbeats/tree/feature/metric-autoranging
+
+### Session Objectives Completed
+
+This chat session focused on **GUI improvements and code cleanup** after the core metric auto-ranging functionality was complete. The user provided task files (`instructions.txt`, `instructions2.txt`, `instructions3.txt`, `instructions4.txt`) with specific requests.
+
+### Key Changes Made
+
+#### 1. Miniplayer Revert & Branch Management
+- **Preserved miniplayer work** on separate `feature/miniplayer` branch (commits 8c8ffc8 through 16cb2e6)
+- **Reset `feature/metric-autoranging`** to commit `ddc5340` (pre-miniplayer state) 
+- **Cherry-picked GUI improvements** from miniplayer branch back to metric-autoranging
+
+#### 2. Major GUI Improvements (Commit: c068d38)
+
+**CollapsibleGroupBox Fix (Critical)**
+- **Problem:** Qt's built-in `setCheckable(True)` + `toggled` signal caused child widgets to become permanently disabled after expand/collapse
+- **Solution:** Rewrote `CollapsibleGroupBox` to use `mousePressEvent` instead of checkbox behavior
+- **New behavior:** Click title area (top ~25px) to toggle, maintains full widget functionality
+- **Features:** `_base_title_text` storage, `showEvent` for first-show collapsed state, `_apply_visibility()` method
+
+**QSplitter Between Visualizers & Tabs**
+- Added `QSplitter(Qt.Orientation.Vertical)` between top visualizer area and bottom tabs+controls
+- **Proportions:** 60% visualizers, 40% tabs (3:2 stretch factors)
+- **User control:** Draggable splitter bar, `setChildrenCollapsible(False)`
+
+**Scroll Areas on All Tabs**
+- **5 tabs** now use `NoWheelScrollArea` with thin 4px scrollbars
+- **DRY refactor:** Extracted `_get_thin_scrollbar_style()` method (shared CSS)
+- **Prevents:** UI clipping when window resized vertically small
+
+**Effects Tab Consolidation**
+- **Merged** Jitter + Creep into single `CollapsibleGroupBox("Effects", collapsed=True)`
+- **Removed** separate QGroupBoxes, shortened labels ("Jitter"/"Creep" vs "Enable Jitter"/"Enable Creep")
+
+**Default Collapsed Groups**
+- **7 groups** start collapsed by default: Levels, Peaks, Pulse Frequency (P0), Carrier Frequency (F0), Stroke Parameters, Spectral Flux Control, Effects
+- **Reduces** visual clutter on first launch
+
+**Axis Weight Tooltips**
+- **Dynamic tooltips** based on current stroke mode (modes 1-3 vs mode 4)
+- **Method:** `_update_axis_weight_tooltips()` called from `_on_mode_change()` and init
+- **Replaces** static QLabel descriptions
+
+#### 3. Visualizer Defaults & Options Menu (Current Session)
+
+**Mountain Range Default**
+- **Changed** default visualizer from Waterfall (index 0) to Mountain Range (index 1)
+- **Reason:** Better visual clarity for beat detection
+
+**Range Indicators Hidden by Default**  
+- **Frequency band overlays** (red/green/blue/cyan rectangles) now hidden on startup
+- **Default:** `hide_indicators_checkbox.setChecked(True)` + `_on_hide_indicators_toggle(2)` called during init
+
+**Moved Controls to Options Menu**
+- **Removed** bottom "Spectrum" groupbox (cleaner layout)
+- **Added** "Spectrum Type" submenu to Options menu (Waterfall, Mountain Range, Bar Graph, Phosphor)
+- **Added** "Show Range Indicators" toggle to Options menu
+- **Implementation:** Hidden widgets for state tracking, menu actions with proper checkmarks
+
+### Git History After Session
+
+```
+c068d38 - GUI improvements: fix CollapsibleGroupBox (mousePressEvent), add QSplitter, scroll areas on all tabs, Effects consolidation, default collapsed groups, axis tooltips, DRY scrollbar style
+ddc5340 - Update AGENT_REFERENCE with GUI refactor session summary (CollapsibleGroupBox, Auto-Adjust group, tab consolidation)
+32b5973 - Beat Detection tab: Auto-Adjust groupbox + Levels/Peaks shades  
+```
+
+**Separate Branch:**
+- `feature/miniplayer` - Preserved miniplayer work (commits 8c8ffc8, abe91d6, c6a8815, 16cb2e6)
+
+### Technical Implementation Details
+
+**Files Modified:**
+- `main.py` - Primary GUI changes (CollapsibleGroupBox class, _setup_ui method, menu creation, event handlers)
+
+**Testing Completed:**
+- ✅ Import tests (`from main import BREadbeatsWindow`)  
+- ✅ Full application launches (no Qt warnings)
+- ✅ Beat detection functional 
+- ✅ All tabs show scrollbars when cramped
+- ✅ Mountain Range default visualizer active
+- ✅ Range indicators hidden by default
+- ✅ Options menu controls work correctly
+
+### Current Status
+
+**Branch State:** All changes committed to `feature/metric-autoranging`, ready for next session  
+**App Status:** Stable, all functionality working, GUI improvements complete  
+**Next Steps:** Branch is ready for additional development or merge to main
+
+### Code Architecture Notes
+
+**CollapsibleGroupBox Pattern:**
+- Use `mousePressEvent` for click detection (title area only)
+- Store `_base_title_text` separately from display title  
+- Apply visibility recursively through `_apply_visibility()` and `_set_layout_visible()`
+- Handle first-show state via `showEvent` + `_first_show` flag
+
+**Scroll Area Pattern:**
+- Wrap tab content in `NoWheelScrollArea()` 
+- Use shared `_get_thin_scrollbar_style()` CSS
+- Set policies: horizontal=always off, vertical=as needed
+- Call `scroll_area.setWidget(widget)` and `return scroll_area`
