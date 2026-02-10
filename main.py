@@ -24,11 +24,11 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QCheckBox,
     QSpinBox, QDoubleSpinBox, QLineEdit, QTabWidget, QFrame,
-    QGridLayout, QSizePolicy, QMenuBar, QMenu, QMessageBox, QFileDialog,
+    QGridLayout, QMenuBar, QMenu, QMessageBox, QFileDialog,
     QSplashScreen, QScrollArea
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRect
-from PyQt6.QtGui import QFont, QPalette, QColor, QPainter, QBrush, QPen, QPixmap
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QPixmap
 from typing import Optional
 
 # PyQtGraph for high-performance real-time plotting
@@ -3453,6 +3453,8 @@ bREadfan_69@hotmail.com"""
             'rise_sensitivity': self.rise_sens_slider.value(),
             'flux_multiplier': self.flux_mult_slider.value(),
             'audio_gain': self.audio_gain_slider.value(),
+            'zscore_threshold': self.zscore_threshold_slider.value(),
+            'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
             
@@ -3514,6 +3516,11 @@ bREadfan_69@hotmail.com"""
         self.rise_sens_slider.setValue(preset_data['rise_sensitivity'])
         self.flux_mult_slider.setValue(preset_data['flux_multiplier'])
         self.audio_gain_slider.setValue(preset_data['audio_gain'])
+        if 'zscore_threshold' in preset_data:
+            self.zscore_threshold_slider.setValue(preset_data['zscore_threshold'])
+            self._on_zscore_threshold_change(preset_data['zscore_threshold'])
+        if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
+            self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
         self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
         self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
         
@@ -3664,6 +3671,12 @@ bREadfan_69@hotmail.com"""
         enabled = state == 2
         self.config.audio.use_butterworth = enabled
         print(f"[Config] Butterworth filter {'enabled' if enabled else 'disabled'} (restart required)")
+
+    def _on_zscore_threshold_change(self, value: float):
+        """Update z-score threshold on all multi-band detectors at runtime."""
+        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+            self.audio_engine.set_zscore_threshold(value)
+        print(f"[Config] Z-score threshold set to {value:.2f}")
     
     def _on_fft_size_change(self, index: int):
         """Update FFT size setting (requires restart to take effect)"""
@@ -3915,7 +3928,7 @@ bREadfan_69@hotmail.com"""
         self.bps_tolerance_spin = QDoubleSpinBox()
         self.bps_tolerance_spin.setRange(0.05, 1.0)
         self.bps_tolerance_spin.setSingleStep(0.05)
-        self.bps_tolerance_spin.setValue(0.2)
+        self.bps_tolerance_spin.setValue(0.5)
         self.bps_tolerance_spin.setDecimals(2)
         self.bps_tolerance_spin.setFixedWidth(60)
         self.bps_tolerance_spin.setToolTip("Tolerance: system accepts ±this range around target")
@@ -3989,6 +4002,11 @@ bREadfan_69@hotmail.com"""
         self.sensitivity_slider = SliderWithLabel("Sensitivity", sens_min, sens_max, self.config.beat.sensitivity)
         self.sensitivity_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'sensitivity', v))
         levels_layout.addWidget(self.sensitivity_slider)
+        
+        # Z-Score Threshold: lower = more z-score beats, higher = fewer (1.0-5.0)
+        self.zscore_threshold_slider = SliderWithLabel("Z-Score Sens", 1.0, 5.0, 2.5)
+        self.zscore_threshold_slider.valueChanged.connect(self._on_zscore_threshold_change)
+        levels_layout.addWidget(self.zscore_threshold_slider)
         
         # Flux Multiplier
         fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
@@ -4125,7 +4143,25 @@ bREadfan_69@hotmail.com"""
         """Update stroke min/max in config"""
         self.config.stroke.stroke_min = low
         self.config.stroke.stroke_max = high
-    
+
+    def _on_motion_intensity_change(self, value: float):
+        """Update motion intensity on the stroke mapper at runtime."""
+        if hasattr(self, 'stroke_mapper') and self.stroke_mapper is not None:
+            self.stroke_mapper.motion_intensity = value
+        print(f"[Config] Motion intensity set to {value:.2f}")
+
+    def _set_motion_preset(self, preset: str):
+        """Apply a quick motion preset: gentle / normal / intense."""
+        presets = {
+            'gentle':  {'motion': 0.50, 'zscore': 3.5},
+            'normal':  {'motion': 1.00, 'zscore': 2.5},
+            'intense': {'motion': 1.50, 'zscore': 1.8},
+        }
+        p = presets.get(preset, presets['normal'])
+        self.motion_intensity_slider.setValue(p['motion'])
+        self.zscore_threshold_slider.setValue(p['zscore'])
+        print(f"[Config] Motion preset '{preset}': intensity={p['motion']}, z-score={p['zscore']}")
+
     def _on_tempo_tracking_toggle(self, state):
         """Enable/disable tempo tracking"""
         enabled = state == 2  # Qt.CheckState.Checked
@@ -4224,6 +4260,8 @@ bREadfan_69@hotmail.com"""
             'rise_sensitivity': self.rise_sens_slider.value(),
             'flux_multiplier': self.flux_mult_slider.value(),
             'audio_gain': self.audio_gain_slider.value(),
+            'zscore_threshold': self.zscore_threshold_slider.value(),
+            'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
             
@@ -4308,6 +4346,11 @@ bREadfan_69@hotmail.com"""
             self.rise_sens_slider.setValue(preset_data['rise_sensitivity'])
             self.flux_mult_slider.setValue(preset_data['flux_multiplier'])
             self.audio_gain_slider.setValue(preset_data['audio_gain'])
+            if 'zscore_threshold' in preset_data:
+                self.zscore_threshold_slider.setValue(preset_data['zscore_threshold'])
+                self._on_zscore_threshold_change(preset_data['zscore_threshold'])
+            if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
+                self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
             if 'silence_reset_ms' in preset_data:
                 self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
             self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
@@ -4455,6 +4498,38 @@ bREadfan_69@hotmail.com"""
         mode_layout.addWidget(self.mode_combo)
         mode_layout.addStretch()
         layout.addLayout(mode_layout)
+        
+        # ===== MOTION INTENSITY =====
+        motion_group = QGroupBox("Motion Intensity")
+        motion_layout = QVBoxLayout(motion_group)
+        
+        # Motion intensity slider (0.25 - 2.0, default 1.0) — scales all stroke output
+        self.motion_intensity_slider = SliderWithLabel("Intensity", 0.25, 2.0, 1.0)
+        self.motion_intensity_slider.valueChanged.connect(self._on_motion_intensity_change)
+        motion_layout.addWidget(self.motion_intensity_slider)
+        
+        # Quick preset buttons: Gentle / Normal / Intense
+        motion_btn_layout = QHBoxLayout()
+        self.motion_gentle_btn = QPushButton("Gentle")
+        self.motion_gentle_btn.setToolTip("Low motion: intensity 0.50, z-score threshold 3.5")
+        self.motion_gentle_btn.clicked.connect(lambda: self._set_motion_preset('gentle'))
+        self.motion_gentle_btn.setStyleSheet("QPushButton { background: #335; color: #8af; }")
+        motion_btn_layout.addWidget(self.motion_gentle_btn)
+        
+        self.motion_normal_btn = QPushButton("Normal")
+        self.motion_normal_btn.setToolTip("Default motion: intensity 1.0, z-score threshold 2.5")
+        self.motion_normal_btn.clicked.connect(lambda: self._set_motion_preset('normal'))
+        self.motion_normal_btn.setStyleSheet("QPushButton { background: #353; color: #8f8; }")
+        motion_btn_layout.addWidget(self.motion_normal_btn)
+        
+        self.motion_intense_btn = QPushButton("Intense")
+        self.motion_intense_btn.setToolTip("High motion: intensity 1.50, z-score threshold 1.8")
+        self.motion_intense_btn.clicked.connect(lambda: self._set_motion_preset('intense'))
+        self.motion_intense_btn.setStyleSheet("QPushButton { background: #533; color: #f88; }")
+        motion_btn_layout.addWidget(self.motion_intense_btn)
+        
+        motion_layout.addLayout(motion_btn_layout)
+        layout.addWidget(motion_group)
         
         # Sliders
         self.stroke_range_slider = RangeSliderWithLabel("Stroke Min/Max", 0.0, 1.0, 0.2, 1.0, 2)
@@ -4699,6 +4774,7 @@ bREadfan_69@hotmail.com"""
         if checked:
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
+            self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
             # Start volume ramp from 0 to 1 over 800ms
             self._volume_ramp_active = True
             self._volume_ramp_start_time = time.time()
@@ -4768,6 +4844,7 @@ bREadfan_69@hotmail.com"""
         self._sync_metric_checkboxes_to_engine()
 
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
+        self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
 
         # Network engine is already started on program launch via _auto_connect_tcp
         # Only create if somehow missing
