@@ -769,9 +769,28 @@ If 3+ consecutive no-beat cycles while audio plays, all locks clear and all para
 - Individual slider lock_spin widgets removed (6 total removed)
 - Simpler `_auto_param_config` tuple: (step_size, max_limit) instead of (step, lock_time, max)
 
+### 10. P1 (Pulse Width) & P3 (Rise Time) TCode Implementation [2026-02-09 to 02-10]
+
+**Session Context:**
+- Experimental branch: `feature/pulse-parameters` (created from `feature/metric-autoranging`)
+- Testing status: ✅ Imports clean, app launches, all 4 axes (P0, C0, P1, P3) default to OFF
+- Git status: Committed to feature/pulse-parameters, pushed to GitHub
+- Merge path: `feature/pulse-parameters` → `feature/metric-autoranging` (clean, no conflicts expected)
+
+**P1 (Pulse Width):** RMS-based width control (louder → wider), modes: Volume/Hz/Speed, GUI with sliders and display label
+
+**P3 (Rise Time):** Spectral centroid-based rise time (bright → snappy, inverted), modes: Brightness/Hz/Speed, GUI with sliders and display label
+
+**Code Changes:**
+- config.py: Added `PulseWidthConfig`, `RiseTimeConfig` with tcode/monitor_freq ranges
+- network_engine.py: Generalized duration tag handling for all axes
+- main.py: Tab renamed "Pulse", added P1/P3 GUI controls, computation in audio callback, state caching for thread safety, display labels in status bar
+
+**Status for Next Agent:** P1/P3 complete on `feature/pulse-parameters`; merge to `feature/metric-autoranging` next (clean); final main integration requires resolving metric divergence.
+
 ---
 
 *Document created: 2026-02-07*  
-*Last comprehensive update: 2026-02-08*  
-*Reference for recent changes: Latest commit*
-*All implementations verified with running program - beat detection working, hunting cycle active, tempo lock functional.*
+*Last comprehensive update: 2026-02-10*  
+*Latest session: P1/P3 TCode implementation (feature/pulse-parameters branch)*  
+*All implementations verified with running program - beat detection working, hunting cycle active, P0/C0/P1/P3 all functional.*
