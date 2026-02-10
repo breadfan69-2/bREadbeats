@@ -426,6 +426,20 @@ Always use the human-readable function name instead:
 
 TCode tags are fine in code comments, log output, and agent/developer docs — just not in anything the user sees (labels, dialogs, tooltips, group box titles, checkbox text, slider names).
 
+### Window & Layout
+- **Default size:** `resize(1100, 950)`, minimum `setMinimumSize(400, 300)`
+- **Main layout:** Vertical `QSplitter` — top half is visualizers, bottom half is settings tabs + presets
+- **Splitter ratio:** Stretch factors `5:2` (~72% visualizers, ~28% tabs)
+- **Visualizer panels** (`_create_spectrum_panel`, `_create_position_panel`) are plain `QWidget` containers with zero margins — NOT `QGroupBox` (groupboxes were removed for cleaner look)
+- **Settings panels** use `CollapsibleGroupBox` (custom windowshade widget) inside `NoWheelScrollArea` tabs
+
+### Position Visualizer
+- **PositionCanvas** displays alpha/beta as a dot on a circular field
+- **90° CCW rotation** is applied after the user rotation transform: `x_display = -y_rot`, `y_display = x_rot`
+- Background color `#3d3d3d` matches the window background
+- Circle pen `#555555`, crosshair pen `#4a4a4a` (softened, non-distracting)
+- Trail uses 20-point scatter with decaying alpha
+
 ### Range Sliders
 Dual-handle sliders for min/max pairs:
 - **Beat detection freq** (30-22050 Hz) → Red band on visualizer → Butterworth filter range
