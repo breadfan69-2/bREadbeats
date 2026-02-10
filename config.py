@@ -133,6 +133,7 @@ class AutoAdjustConfig:
     cooldown_sec: float = 0.10        # Cooldown between adjustments
     consec_beats: int = 8             # Consecutive beats required to lock
     auto_range_enabled: bool = False  # Global auto-range toggle persistence
+    metrics_global_enabled: bool = True  # Master toggle for all metric auto-adjust
     enabled_params: Dict[str, bool] = field(default_factory=lambda: {
         'audio_amp': False,
         'peak_floor': False,
