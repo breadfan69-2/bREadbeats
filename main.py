@@ -3664,6 +3664,8 @@ bREadfan_69@hotmail.com"""
             active_metrics.append("DBRatio")
         if getattr(self, 'metric_audio_amp_cb', None) and self.metric_audio_amp_cb.isChecked():
             active_metrics.append("AudioAmp")
+        if getattr(self, 'metric_flux_balance_cb', None) and self.metric_flux_balance_cb.isChecked():
+            active_metrics.append("FluxBal")
         if getattr(self, 'metric_target_bps_cb', None) and self.metric_target_bps_cb.isChecked():
             active_metrics.append("TargetBPS")
         
@@ -3684,8 +3686,9 @@ bREadfan_69@hotmail.com"""
             new_val = max(pf_min, min(pf_max, new_val))
             if abs(new_val - current) > 0.001:
                 self.peak_floor_slider.setValue(new_val)
+                valley = feedback_data.get('valley', 0)
                 margin = feedback_data.get('margin', 0)
-                print(f"[Metric] peak_floor: margin={margin:.4f} ({direction}) → {new_val:.4f}")
+                print(f"[Metric] peak_floor: valley={valley:.4f} ({direction}) → {new_val:.4f}")
         
         elif metric == 'target_bps' and adjustment != 0:
             # Adjust peak_floor to hit target BPS
@@ -3725,6 +3728,18 @@ bREadfan_69@hotmail.com"""
                 reason = feedback_data.get('reason', '')
                 actual_dps = feedback_data.get('actual_dps', 0)
                 print(f"[Metric] sensitivity: {reason} ({direction}) → {new_val:.4f}")
+        
+        elif metric == 'flux_balance' and adjustment != 0:
+            # Adjust flux_mult to balance flux ≈ energy bar heights
+            current = self.flux_mult_slider.value()
+            new_val = current + adjustment
+            fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
+            new_val = max(fm_min, min(fm_max, new_val))
+            if abs(new_val - current) > 0.005:
+                self.flux_mult_slider.setValue(new_val)
+                ratio = feedback_data.get('ratio', 0)
+                reason = feedback_data.get('reason', '')
+                print(f"[Metric] flux_balance: {reason} ({direction}) → fm={new_val:.2f}")
     
     def _on_target_bps_change(self, value: float):
         """Handle target BPS spinbox change"""
@@ -3827,7 +3842,7 @@ bREadfan_69@hotmail.com"""
         metric_ctrl_layout = QHBoxLayout()
         
         self.metric_peak_floor_cb = QCheckBox("Peak Floor Margin")
-        self.metric_peak_floor_cb.setToolTip("Auto-adjust peak_floor to maintain 0.02-0.05 energy margin (per beat feedback)")
+        self.metric_peak_floor_cb.setToolTip("Auto-adjust peak_floor to track energy valley level (scales with amplification)")
         self.metric_peak_floor_cb.stateChanged.connect(lambda state: self._on_metric_toggle('peak_floor', state == 2))
         metric_ctrl_layout.addWidget(self.metric_peak_floor_cb)
         
@@ -3845,6 +3860,11 @@ bREadfan_69@hotmail.com"""
         self.metric_audio_amp_cb.setToolTip("No beats → raise audio_amp 2%/1.1s | Excess beats → lower audio_amp")
         self.metric_audio_amp_cb.stateChanged.connect(lambda state: self._on_metric_toggle('audio_amp', state == 2))
         metric_ctrl_layout.addWidget(self.metric_audio_amp_cb)
+        
+        self.metric_flux_balance_cb = QCheckBox("Flux Balance (Bars)")
+        self.metric_flux_balance_cb.setToolTip("Auto-adjust flux_mult to keep flux ≈ energy bar heights (0.01 steps/500ms)")
+        self.metric_flux_balance_cb.stateChanged.connect(lambda state: self._on_metric_toggle('flux_balance', state == 2))
+        metric_ctrl_layout.addWidget(self.metric_flux_balance_cb)
         
         metric_ctrl_layout.addStretch()
         metric_layout.addLayout(metric_ctrl_layout)
@@ -3970,7 +3990,7 @@ bREadfan_69@hotmail.com"""
         
         # Flux Multiplier
         fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
-        self.flux_mult_slider = SliderWithLabel("Flux Multiplier", fm_min, fm_max, self.config.beat.flux_multiplier, 1)
+        self.flux_mult_slider = SliderWithLabel("Flux Multiplier", fm_min, fm_max, self.config.beat.flux_multiplier, 2)
         self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
         levels_layout.addWidget(self.flux_mult_slider)
         
@@ -5278,6 +5298,7 @@ bREadfan_69@hotmail.com"""
             now = time.time()
             self.audio_engine.compute_audio_amp_feedback(now, callback=self._on_metric_feedback)
             self.audio_engine.compute_sensitivity_feedback(now, callback=self._on_metric_feedback)
+            self.audio_engine.compute_flux_balance_feedback(now, callback=self._on_metric_feedback)
 
     def _log_experimental_spinbox_shutdown_values(self):
         """Log final experimental spinbox values at shutdown for documentation"""

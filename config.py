@@ -194,6 +194,6 @@ BEAT_RANGE_LIMITS = {
     'peak_floor': (0.015, 0.28),
     'peak_decay': (0.230, 0.999),
     'rise_sens': (0.02, 1.0),
-    'sensitivity': (0.01, 1.0),
+    'sensitivity': (0.10, 1.0),
     'flux_mult': (0.2, 10.0),
 }

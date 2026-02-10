@@ -153,12 +153,18 @@ class AudioEngine:
         # Tracks margins and metrics in real-time to drive parameter adjustments
         # No timer cycle - pure feedback-based optimization
         
-        # Metric 1: Peak Floor Feedback (Energy Margin)
+        # Metric 1: Peak Floor Feedback (Valley-Tracking)
+        # peak_floor should sit at the valley level (between beats) so only genuine
+        # peaks pass the floor check.  Valley level scales naturally with amplification.
         self._metric_peak_floor_enabled: bool = False  # User toggle
-        self._energy_margin_history: list[float] = []  # Last 16 margins
-        self._energy_margin_target_low: float = 0.02   # Optimal zone: 0.02-0.05
+        self._energy_margin_history: list[float] = []  # Last 16 margins (kept for compat)
+        self._energy_margin_target_low: float = 0.02   # Fallback zone (legacy)
         self._energy_margin_target_high: float = 0.05
-        self._energy_margin_adjustment_step: float = 0.002  # Step size per beat
+        self._energy_margin_adjustment_step: float = 0.002  # Step size per check
+        self._valley_history: list[float] = []          # Recent energy valley values
+        self._valley_max_samples: int = 16              # Rolling window size
+        self._prev_energy_for_valley: float = 0.0       # Previous energy for slope detection
+        self._energy_was_falling: bool = False           # True when energy was decreasing
         
         # Metric 2: Sensitivity Feedback (No Downbeat → raise, Excess Downbeats → lower)
         self._metric_sensitivity_enabled: bool = False
@@ -179,6 +185,15 @@ class AudioEngine:
         self._audio_amp_check_interval_ms: float = 1100.0  # Check every ~1100ms
         self._audio_amp_escalate_pct: float = 0.02     # 2% of range per check
         self._last_audio_amp_check: float = 0.0         # Last time we checked
+        
+        # Metric 5: Flux Balance (keep flux ≈ energy bars at similar height)
+        self._metric_flux_balance_enabled: bool = False
+        self._flux_balance_check_interval_ms: float = 500.0  # Check every 500ms (faster than beat metrics)
+        self._last_flux_balance_check: float = 0.0
+        self._flux_energy_ratios: list[float] = []       # Recent flux/energy ratios
+        self._flux_balance_target_low: float = 0.6       # Ratio zone: flux between 0.6x and 1.4x energy
+        self._flux_balance_target_high: float = 1.4
+        self._flux_balance_step_pct: float = 0.01        # 1% of range per check (fine-grained)
         
         # ===== TARGET BPS SYSTEM (Beats Per Second) =====
         # Tracks actual beats per second and adjusts parameters to achieve target rate
@@ -468,6 +483,9 @@ class AudioEngine:
             tempo_reset_flag = True
         
         # Detect beat based on mode (using band energy)
+        # Store last flux for flux balance metric
+        self._last_spectral_flux = spectral_flux
+        
         is_beat = self._detect_beat(band_energy, spectral_flux)
         
         # Estimate dominant frequency
@@ -545,6 +563,18 @@ class AudioEngine:
     def _detect_beat(self, energy: float, flux: float) -> bool:
         """Detect if current frame is a beat"""
         cfg = self.config.beat
+        
+        # Track valley detection (local minima) for peak_floor metric
+        # A valley occurs when energy stops falling and starts rising
+        if energy > self._prev_energy_for_valley and self._energy_was_falling:
+            # Just turned upward → previous value was a valley
+            valley_val = self._prev_energy_for_valley
+            if valley_val > 0.001:  # Ignore silence-level valleys
+                self._valley_history.append(valley_val)
+                if len(self._valley_history) > self._valley_max_samples:
+                    self._valley_history.pop(0)
+        self._energy_was_falling = energy < self._prev_energy_for_valley
+        self._prev_energy_for_valley = energy
         
         # Use aubio if available
         if HAS_AUBIO and self.beat_detector:
@@ -1077,7 +1107,9 @@ class AudioEngine:
             self._metric_peak_floor_enabled = enable
             if enable:
                 self._energy_margin_history.clear()
-                log_event("INFO", "MetricAutoRange", "Peak Floor metric enabled")
+                self._valley_history.clear()
+                self._energy_was_falling = False
+                log_event("INFO", "MetricAutoRange", "Peak Floor metric enabled (valley-tracking)")
             else:
                 log_event("INFO", "MetricAutoRange", "Peak Floor metric disabled")
         elif metric == 'sensitivity':
@@ -1097,6 +1129,14 @@ class AudioEngine:
                 log_event("INFO", "MetricAutoRange", "Audio Amp metric enabled (beat-driven)")
             else:
                 log_event("INFO", "MetricAutoRange", "Audio Amp metric disabled")
+        elif metric == 'flux_balance':
+            self._metric_flux_balance_enabled = enable
+            if enable:
+                self._last_flux_balance_check = 0.0
+                self._flux_energy_ratios.clear()
+                log_event("INFO", "MetricAutoRange", "Flux Balance metric enabled (bar-balance)")
+            else:
+                log_event("INFO", "MetricAutoRange", "Flux Balance metric disabled")
         elif metric == 'target_bps':
             self._target_bps_enabled = enable
             if enable:
@@ -1107,10 +1147,16 @@ class AudioEngine:
     
     def compute_energy_margin_feedback(self, band_energy: float, callback=None):
         """
-        Compute energy margin metric and return adjustment for peak_floor.
+        Compute peak_floor adjustment based on valley tracking.
         
-        Energy margin = band_energy - peak_floor
-        Optimal zone: 0.02-0.05 (peak_floor is 2-5% below current audio)
+        peak_floor should sit at the average valley level (local minima between beats).
+        This naturally scales with amplification since valleys scale with the signal.
+        
+        Valley = average of recent energy local minima (detected in _detect_beat).
+        If peak_floor < valley: raise it (too much noise passes through)
+        If peak_floor > valley: lower it (real peaks might be filtered out)
+        
+        Tolerance band: peak_floor should be within ±20% of avg valley.
         
         Returns:
             (margin, should_adjust, adjustment_direction)
@@ -1119,39 +1165,58 @@ class AudioEngine:
         if not self._metric_peak_floor_enabled:
             return 0.0, False, 0
         
-        margin = band_energy - self.config.beat.peak_floor
+        # Need valley data to work with
+        if len(self._valley_history) < 3:
+            # Not enough valley data yet — fall back to simple margin check
+            margin = band_energy - self.config.beat.peak_floor
+            self._energy_margin_history.append(margin)
+            if len(self._energy_margin_history) > 16:
+                self._energy_margin_history.pop(0)
+            return float(np.mean(self._energy_margin_history)) if self._energy_margin_history else margin, False, 0
         
-        # Track history
+        # Compute target: average valley level
+        avg_valley = float(np.mean(self._valley_history))
+        current_pf = self.config.beat.peak_floor
+        
+        # How far is peak_floor from the valley level?
+        # Positive = peak_floor above valley, Negative = peak_floor below valley
+        error = current_pf - avg_valley
+        
+        # Track margin history for display
+        margin = band_energy - current_pf
         self._energy_margin_history.append(margin)
         if len(self._energy_margin_history) > 16:
             self._energy_margin_history.pop(0)
         
-        avg_margin = np.mean(self._energy_margin_history) if self._energy_margin_history else margin
+        # Tolerance: peak_floor should be within ±20% of valley level
+        tolerance = avg_valley * 0.20
         
-        # Determine action
         should_adjust = False
-        direction = 0  # 0=no change, +1=raise floor, -1=lower floor
+        direction = 0
         
-        if avg_margin < self._energy_margin_target_low:
-            # Margin too tight - LOWER peak_floor to make detection more sensitive (give more headroom)
+        if error > tolerance:
+            # peak_floor too HIGH vs valleys → lower it so peaks pass through
             should_adjust = True
             direction = -1
-        elif avg_margin > self._energy_margin_target_high:
-            # Margin too loose - RAISE peak_floor to make detection stricter (reduce headroom)
+        elif error < -tolerance:
+            # peak_floor too LOW vs valleys → raise it to filter noise
             should_adjust = True
             direction = +1
+        
+        # Scale step size proportional to valley level for amp-agnostic adjustment
+        step = max(self._energy_margin_adjustment_step, avg_valley * 0.05)
         
         if callback and should_adjust:
             callback({
                 'metric': 'peak_floor',
-                'margin': avg_margin,
-                'target_low': self._energy_margin_target_low,
-                'target_high': self._energy_margin_target_high,
-                'adjustment': direction * self._energy_margin_adjustment_step,
+                'margin': float(np.mean(self._energy_margin_history)),
+                'valley': avg_valley,
+                'error': error,
+                'adjustment': direction * step,
                 'direction': 'raise' if direction > 0 else 'lower'
             })
         
-        return avg_margin, should_adjust, direction
+        return float(np.mean(self._energy_margin_history)), should_adjust, direction
 
     def compute_bps_feedback(self, beat_time: float, callback=None):
         """
@@ -1244,6 +1309,76 @@ class AudioEngine:
         # Prune old timestamps
         cutoff = timestamp - self._downbeat_window_seconds
         self._downbeat_times = [t for t in self._downbeat_times if t >= cutoff]
+
+    def compute_flux_balance_feedback(self, now: float, callback=None):
+        """
+        Timer-driven flux_mult adjustment to keep flux ≈ energy (bar balance).
+        
+        Compares recent average flux to recent average energy.
+        If flux >> energy: LOWER flux_mult (shrink flux bar)
+        If flux << energy: RAISE flux_mult (grow flux bar)
+        
+        Uses current peak_envelope (energy) and last spectral_flux from BeatEvent.
+        Both are already scaled by gain, so the ratio reflects display bar heights.
+        
+        Called from _update_display (~30fps), acts every ~500ms.
+        """
+        if not self._metric_flux_balance_enabled:
+            return
+        
+        # Only check every ~500ms
+        if now - self._last_flux_balance_check < self._flux_balance_check_interval_ms / 1000.0:
+            return
+        self._last_flux_balance_check = now
+        
+        # Get current energy and flux values
+        energy = self.peak_envelope
+        flux = getattr(self, '_last_spectral_flux', 0.0)
+        
+        # Skip if either is negligible (no audio / silence)
+        if energy < 0.005 or flux < 0.001:
+            return
+        
+        # Compute ratio: flux / energy
+        ratio = flux / energy
+        
+        # Track rolling history (last 8 samples = ~4 seconds at 500ms interval)
+        self._flux_energy_ratios.append(ratio)
+        if len(self._flux_energy_ratios) > 8:
+            self._flux_energy_ratios.pop(0)
+        
+        # Need at least 3 samples for stability
+        if len(self._flux_energy_ratios) < 3:
+            return
+        
+        avg_ratio = float(np.mean(self._flux_energy_ratios))
+        
+        # Get range for step calculation
+        from config import BEAT_RANGE_LIMITS
+        fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
+        fm_range = fm_max - fm_min
+        step = fm_range * self._flux_balance_step_pct  # 1% of range
+        
+        if avg_ratio > self._flux_balance_target_high:
+            # Flux bar too tall relative to energy → LOWER flux_mult
+            if callback:
+                callback({
+                    'metric': 'flux_balance',
+                    'adjustment': -step,
+                    'direction': 'lower',
+                    'ratio': avg_ratio,
+                    'reason': f'flux/energy ratio {avg_ratio:.2f} > {self._flux_balance_target_high:.1f}',
+                })
+        elif avg_ratio < self._flux_balance_target_low:
+            # Flux bar too short relative to energy → RAISE flux_mult
+            if callback:
+                callback({
+                    'metric': 'flux_balance',
+                    'adjustment': +step,
+                    'direction': 'raise',
+                    'ratio': avg_ratio,
+                    'reason': f'flux/energy ratio {avg_ratio:.2f} < {self._flux_balance_target_low:.1f}',
+                })
 
     def compute_audio_amp_feedback(self, now: float, callback=None):
         """
