@@ -8,6 +8,7 @@ import numpy as np
 import time
 import random
 import threading
+from collections import deque
 from typing import Optional, Tuple, Callable
 from dataclasses import dataclass
 
@@ -96,13 +97,43 @@ class StrokeMapper:
         self._creep_volume_factor: float = 1.0  # Current creep volume reduction (1.0 = no reduction)
         self._creep_was_active_last_frame: bool = False  # Track if creep was active last frame
 
+        # Flux-rise depth: track spectral_flux over last 250ms to compute rise
+        self._flux_history: deque = deque()  # (timestamp, flux) pairs
+        self._flux_rise_window_ms: float = 250.0  # Window for computing flux rise
+
+    def _vol_floor(self, base_vol: float) -> float:
+        """Return the minimum allowed volume given vol_reduction_limit config."""
+        limit_pct = self.config.stroke.vol_reduction_limit / 100.0  # 0-0.20
+        return base_vol * (1.0 - limit_pct)
+
+    def _update_flux_history(self, event: BeatEvent) -> None:
+        """Record current spectral flux and prune entries older than 250ms."""
+        now = event.timestamp
+        self._flux_history.append((now, event.spectral_flux))
+        cutoff = now - self._flux_rise_window_ms / 1000.0
+        while self._flux_history and self._flux_history[0][0] < cutoff:
+            self._flux_history.popleft()
+
+    def _get_flux_rise_factor(self) -> float:
+        """Return 0-1 factor representing how much flux has risen over the last 250ms.
+        0 = no rise (flat or falling), 1 = large rise.
+        The raw rise is normalized by dividing by 0.1 (empirical max) then clamping to [0,1].
+        """
+        if len(self._flux_history) < 2:
+            return 0.0
+        oldest_flux = self._flux_history[0][1]
+        newest_flux = self._flux_history[-1][1]
+        rise = max(0.0, newest_flux - oldest_flux)
+        # Normalize: 0.1 flux rise ≈ factor of 1.0
+        return min(1.0, rise / 0.1)
+
     def _get_band_volume(self, event: BeatEvent) -> float:
-        """Return volume with band-based reduction (subtractive, never below 85%)."""
+        """Return volume with band-based reduction (subtractive, clamped by vol_reduction_limit)."""
         band = getattr(event, 'beat_band', 'sub_bass')
         base_vol = self.get_volume()
         # Band reduction: 0% (sub_bass) to 5% (high)
         band_reduction = (1.0 - self._band_volume_scale.get(band, 1.0)) * base_vol
-        return max(base_vol * 0.85, base_vol - band_reduction)
+        return max(self._vol_floor(base_vol), base_vol - band_reduction)
 
     def _get_band_duration_scale(self, event: BeatEvent) -> float:
         """Return duration multiplier for the current primary beat band.
@@ -124,6 +155,8 @@ class StrokeMapper:
         now = time.time()
         cfg = self.config.stroke
         beat_cfg = self.config.beat
+        # Update flux history for flux-rise depth calculation
+        self._update_flux_history(event)
         # Fade-out state for quiet suppression
         if not hasattr(self, '_fade_intensity'):
             self._fade_intensity = 1.0
@@ -322,6 +355,10 @@ class StrokeMapper:
         
         freq_factor = self._freq_to_factor(event.frequency)
         depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
+        # Flux-rise depth: further reduce depth when flux is rising rapidly
+        if cfg.flux_depth_factor > 0:
+            flux_rise = self._get_flux_rise_factor()
+            depth = cfg.minimum_depth + (depth - cfg.minimum_depth) * max(0.0, 1.0 - cfg.flux_depth_factor * flux_rise)
         
         # Radius for the arc - scale by flux factor and lock boost for more dynamic range
         min_radius = 0.3
@@ -413,6 +450,10 @@ class StrokeMapper:
         
         freq_factor = self._freq_to_factor(event.frequency)
         depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
+        # Flux-rise depth: further reduce depth when flux is rising rapidly
+        if cfg.flux_depth_factor > 0:
+            flux_rise = self._get_flux_rise_factor()
+            depth = cfg.minimum_depth + (depth - cfg.minimum_depth) * max(0.0, 1.0 - cfg.flux_depth_factor * flux_rise)
         
         # Radius for the arc (based on intensity and flux) - matching Breadbeats
         min_radius = 0.2
@@ -506,11 +547,11 @@ class StrokeMapper:
             step_ms = step_durations[i]  # Each step has its own duration
             
             if self.send_callback:
-                # Apply fade-out and band-based volume to arc strokes (subtractive, min 85%)
+                # Apply fade-out and band-based volume to arc strokes (subtractive, clamped)
                 band_vol = getattr(self, '_arc_band_volume', self.get_volume())
                 # Fade reduction: subtractive, not multiplicative
                 fade_reduction = (1.0 - self._fade_intensity) * band_vol
-                volume = max(band_vol * 0.85, band_vol - fade_reduction)
+                volume = max(self._vol_floor(band_vol), band_vol - fade_reduction)
                 cmd = TCodeCommand(alpha, beta, step_ms, volume)
                 self.send_callback(cmd)
                 self.state.alpha = alpha
@@ -535,10 +576,10 @@ class StrokeMapper:
     def _send_return_stroke(self, duration_ms: int, alpha: float, beta: float):
         """Send the return stroke to opposite position (called by timer)"""
         if self.send_callback:
-            # Apply fade-out to return strokes (subtractive, min 85%)
+            # Apply fade-out to return strokes (subtractive, clamped)
             base_vol = self.get_volume()
             fade_reduction = (1.0 - self._fade_intensity) * base_vol
-            volume = max(base_vol * 0.85, base_vol - fade_reduction)
+            volume = max(self._vol_floor(base_vol), base_vol - fade_reduction)
             cmd = TCodeCommand(alpha, beta, duration_ms, volume)
             log_event("INFO", "StrokeMapper", "Return stroke", alpha=f"{alpha:.2f}", beta=f"{beta:.2f}", duration_ms=duration_ms, fade=f"{self._fade_intensity:.2f}")
             self.send_callback(cmd)
@@ -879,7 +920,7 @@ class StrokeMapper:
         self.state.beta = beta_target
         self.state.last_stroke_time = now
         
-        # Apply fade intensity and creep volume factor (subtractive, never below 85%)
+        # Apply fade intensity and creep volume factor (subtractive, clamped by vol_reduction_limit)
         base_vol = self.get_volume()
         fade = getattr(self, '_fade_intensity', 1.0)
         creep_vol = getattr(self, '_creep_volume_factor', 1.0)
@@ -887,8 +928,9 @@ class StrokeMapper:
         fade_reduction = (1.0 - fade) * base_vol
         creep_reduction = (1.0 - creep_vol) * base_vol
         total_reduction = fade_reduction + creep_reduction
-        # Hard clamp: never reduce by more than 15%
-        volume = max(base_vol * 0.85, base_vol - min(total_reduction, base_vol * 0.15))
+        # Hard clamp: never reduce by more than vol_reduction_limit %
+        limit_pct = self.config.stroke.vol_reduction_limit / 100.0
+        volume = max(self._vol_floor(base_vol), base_vol - min(total_reduction, base_vol * limit_pct))
         
         return TCodeCommand(alpha_target, beta_target, duration_ms, volume)
     
