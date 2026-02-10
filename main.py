@@ -1987,10 +1987,18 @@ class CollapsibleGroupBox(QGroupBox):
     def _update_title(self):
         arrow = "▶" if self._collapsed else "▼"
         self.setTitle(f"{arrow} {self._base_title_text}")
+        # Bigger clickable title text with visible arrow
+        self.setStyleSheet(self.styleSheet() + """
+            CollapsibleGroupBox::title {
+                font-size: 12px;
+                font-weight: bold;
+                padding: 4px 8px;
+            }
+        """)
 
     def mousePressEvent(self, event):
-        # Toggle collapse only when clicking in the title-bar area (top ~25px)
-        if event.position().y() <= 25:
+        # Toggle collapse only when clicking in the title-bar area (top ~30px)
+        if event.position().y() <= 30:
             self.setCollapsed(not self._collapsed)
             event.accept()
         else:
@@ -2501,16 +2509,24 @@ class BREadbeatsWindow(QMainWindow):
         viz_layout.setContentsMargins(0, 0, 0, 0)
         viz_layout.addWidget(self._create_spectrum_panel(), stretch=3)
         viz_layout.addWidget(self._create_position_panel(), stretch=1)
+        viz_widget.setMinimumHeight(220)
         splitter.addWidget(viz_widget)
 
-        # Wrap tabs + bottom row in a widget for the splitter
-        bottom_half = QWidget()
-        bottom_half_layout = QVBoxLayout(bottom_half)
-        bottom_half_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_half_layout.setSpacing(6)
-        bottom_half_layout.addWidget(self._create_settings_tabs())
+        # Bottom half of splitter: tabs only (absorbs compression)
+        tabs_widget = QWidget()
+        tabs_widget.setMinimumHeight(60)
+        tabs_layout = QVBoxLayout(tabs_widget)
+        tabs_layout.setContentsMargins(0, 0, 0, 0)
+        tabs_layout.setSpacing(0)
+        tabs_layout.addWidget(self._create_settings_tabs())
+        splitter.addWidget(tabs_widget)
 
-        # Bottom row: Presets + projectM launcher
+        # Set initial splitter proportions (~72% viz, ~28% tabs)
+        splitter.setStretchFactor(0, 5)
+        splitter.setStretchFactor(1, 2)
+        main_layout.addWidget(splitter, stretch=1)
+
+        # Bottom row: Presets + projectM launcher (LOCKED, never squishes)
         bottom_layout = QHBoxLayout()
         bottom_layout.addWidget(self._create_presets_panel())
         
@@ -2523,13 +2539,7 @@ class BREadbeatsWindow(QMainWindow):
         self.projectm_btn.setMaximumWidth(120)
         bottom_layout.addWidget(self.projectm_btn)
 
-        bottom_half_layout.addLayout(bottom_layout)
-        splitter.addWidget(bottom_half)
-
-        # Set initial splitter proportions (~72% viz, ~28% tabs)
-        splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(splitter, stretch=1)
+        main_layout.addLayout(bottom_layout)
     
     def _create_menu_bar(self):
         """Create menu bar with Menu, Options, and Help"""
@@ -3324,10 +3334,11 @@ bREadfan_69@hotmail.com"""
         except AttributeError as e:
             print(f"[UI] Warning: Could not apply all config values: {e}")
         
-    def _create_connection_panel(self) -> QGroupBox:
-        """Connection settings panel - simplified, host/port in Options menu"""
-        group = QGroupBox("TCP Connection")
+    def _create_connection_panel(self) -> QWidget:
+        """Connection settings panel - simplified, host/port in Options menu (no visible groupbox)"""
+        group = QWidget()
         layout = QHBoxLayout(group)  # Horizontal for compact layout
+        layout.setContentsMargins(0, 0, 0, 0)
         
         # Hidden Host/Port widgets (needed for functionality but now in Options menu)
         self.host_edit = QLineEdit(self.config.connection.host)
@@ -3356,10 +3367,11 @@ bREadfan_69@hotmail.com"""
         
         return group
     
-    def _create_control_panel(self) -> QGroupBox:
-        """Main control buttons - audio device selection moved to Options menu"""
-        group = QGroupBox("Controls")
+    def _create_control_panel(self) -> QWidget:
+        """Main control buttons - audio device selection moved to Options menu (no visible groupbox)"""
+        group = QWidget()
         layout = QVBoxLayout(group)
+        layout.setContentsMargins(0, 0, 0, 0)
         
         # Hidden audio device widgets (needed for functionality but now in Options menu)
         self.device_combo = QComboBox()
@@ -3434,43 +3446,57 @@ bREadfan_69@hotmail.com"""
         
         freq_display_widget = QWidget()
         freq_display_widget.setLayout(freq_display_layout)
-        freq_display_widget.setFixedWidth(80)
+        freq_display_widget.setFixedWidth(110)
         btn_layout.addWidget(freq_display_widget, 0, 4)
 
-        # Beat indicator (lights up on any beat)
+        # Right-side stack: traffic light / BPM / beat indicators
+        right_stack = QVBoxLayout()
+        right_stack.setSpacing(2)
+
+        # Traffic light indicator (top of right stack)
+        self.metric_traffic_light = TrafficLightWidget()
+        self.metric_traffic_light.setToolTip("Green=All Locked, Yellow=Some Settled, Red=Adjusting")
+        right_stack.addWidget(self.metric_traffic_light, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # BPM display (middle of right stack)
+        self.bpm_label = QLabel("BPM: --")
+        self.bpm_label.setStyleSheet("color: #0a0; font-size: 14px; font-weight: bold;")
+        self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right_stack.addWidget(self.bpm_label)
+
+        # Beat & Downbeat indicators (bottom of right stack)
+        beat_row = QHBoxLayout()
+        beat_row.setSpacing(4)
         self.beat_indicator = QLabel("●")
-        self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+        self.beat_indicator.setStyleSheet("color: #333; font-size: 20px;")
         self.beat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.beat_indicator.setFixedWidth(30)
-        btn_layout.addWidget(self.beat_indicator, 0, 5)
-        
-        # Downbeat indicator (lights up on downbeat/beat 1)
+        beat_row.addWidget(self.beat_indicator)
         self.downbeat_indicator = QLabel("●")
-        self.downbeat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+        self.downbeat_indicator.setStyleSheet("color: #333; font-size: 20px;")
         self.downbeat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.downbeat_indicator.setFixedWidth(30)
-        btn_layout.addWidget(self.downbeat_indicator, 0, 6)
-        
+        beat_row.addWidget(self.downbeat_indicator)
+        right_stack.addLayout(beat_row)
+
+        right_stack_widget = QWidget()
+        right_stack_widget.setLayout(right_stack)
+        right_stack_widget.setFixedWidth(100)
+        btn_layout.addWidget(right_stack_widget, 0, 5)
+
+        btn_layout.setColumnStretch(6, 1)  # Allow last column to stretch
+        layout.addLayout(btn_layout)
+
         # Beat indicator timer for visual feedback duration
         self.beat_timer = QTimer()
         self.beat_timer.setSingleShot(True)
         self.beat_timer.timeout.connect(self._turn_off_beat_indicator)
         self.beat_indicator_min_duration = 100  # ms
-        
+
         # Downbeat indicator timer
         self.downbeat_timer = QTimer()
         self.downbeat_timer.setSingleShot(True)
         self.downbeat_timer.timeout.connect(self._turn_off_downbeat_indicator)
-
-        # BPM display (right next to indicators)
-        self.bpm_label = QLabel("BPM: --")
-        self.bpm_label.setStyleSheet("color: #0a0; font-size: 14px; font-weight: bold;")
-        self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.bpm_label.setFixedWidth(120)  # Fixed width to prevent layout jumping when text changes
-        btn_layout.addWidget(self.bpm_label, 0, 7)
-
-        btn_layout.setColumnStretch(8, 1)  # Allow last column to stretch
-        layout.addLayout(btn_layout)
 
         return group
     
@@ -4207,9 +4233,10 @@ bREadfan_69@hotmail.com"""
                 actual_bps = feedback_data.get('actual_bps', 0)
                 target_bps = feedback_data.get('target_bps', 0)
                 print(f"[Metric] target_bps: actual={actual_bps:.2f} target={target_bps:.2f} ({direction}) → pf={new_val:.4f}")
-                # Update the BPS display if we have one
-                if hasattr(self, 'bps_actual_label'):
-                    self.bps_actual_label.setText(f"Actual: {actual_bps:.2f} BPS")
+                # Update the BPM display if we have one
+                if hasattr(self, 'bpm_actual_label'):
+                    actual_bpm = actual_bps * 60
+                    self.bpm_actual_label.setText(f"Actual: {actual_bpm:.0f} BPM")
         
         elif metric == 'audio_amp' and adjustment != 0:
             # Adjust audio amplification based on beat presence
@@ -4237,17 +4264,19 @@ bREadfan_69@hotmail.com"""
                 reason = feedback_data.get('reason', '')
                 print(f"[Metric] flux_balance: {reason} ({direction}) → fm={new_val:.2f}")
     
-    def _on_target_bps_change(self, value: float):
-        """Handle target BPS spinbox change"""
+    def _on_target_bpm_change(self, value: float):
+        """Handle target BPM spinbox change - converts to BPS for engine"""
+        bps = value / 60.0
         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-            self.audio_engine.set_target_bps(value)
-            print(f"[Config] Target BPS set to {value:.2f}")
+            self.audio_engine.set_target_bps(bps)
+            print(f"[Config] Target BPM set to {value:.0f} ({bps:.2f} BPS)")
     
-    def _on_bps_tolerance_change(self, value: float):
-        """Handle BPS tolerance spinbox change"""
+    def _on_bpm_tolerance_change(self, value: float):
+        """Handle BPM tolerance spinbox change - converts to BPS for engine"""
+        bps_tol = value / 60.0
         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-            self.audio_engine.set_bps_tolerance(value)
-            print(f"[Config] BPS tolerance set to ±{value:.2f}")
+            self.audio_engine.set_bps_tolerance(bps_tol)
+            print(f"[Config] BPM tolerance set to ±{value:.0f} (±{bps_tol:.2f} BPS)")
     
     def _on_bps_speed_change(self, value: int):
         """Handle BPS adjustment speed slider change"""
@@ -4327,32 +4356,33 @@ bREadfan_69@hotmail.com"""
         # ===== TARGET BPS CONTROLS =====
         bps_layout = QHBoxLayout()
         
-        self.metric_target_bps_cb = QCheckBox("Target BPS")
-        self.metric_target_bps_cb.setToolTip("Adjust peak_floor to achieve target beats per second")
+        self.metric_target_bps_cb = QCheckBox("Target BPM")
+        self.metric_target_bps_cb.setToolTip("Adjust peak_floor to achieve target beats per minute")
         self.metric_target_bps_cb.stateChanged.connect(lambda state: self._on_metric_toggle('target_bps', state == 2))
         bps_layout.addWidget(self.metric_target_bps_cb)
         
         bps_layout.addWidget(QLabel("Target:"))
-        self.target_bps_spin = QDoubleSpinBox()
-        self.target_bps_spin.setRange(0.5, 4.0)
-        self.target_bps_spin.setSingleStep(0.1)
-        self.target_bps_spin.setValue(1.5)
-        self.target_bps_spin.setDecimals(2)
-        self.target_bps_spin.setFixedWidth(65)
-        self.target_bps_spin.setToolTip("Target beats per second (e.g., 1.5 = 90 BPM)")
-        self.target_bps_spin.valueChanged.connect(self._on_target_bps_change)
-        bps_layout.addWidget(self.target_bps_spin)
+        self.target_bpm_spin = QDoubleSpinBox()
+        self.target_bpm_spin.setRange(30, 240)
+        self.target_bpm_spin.setSingleStep(1)
+        self.target_bpm_spin.setValue(90)
+        self.target_bpm_spin.setDecimals(0)
+        self.target_bpm_spin.setFixedWidth(65)
+        self.target_bpm_spin.setSuffix(" BPM")
+        self.target_bpm_spin.setToolTip("Target beats per minute (e.g., 90 BPM = 1.5 BPS)")
+        self.target_bpm_spin.valueChanged.connect(self._on_target_bpm_change)
+        bps_layout.addWidget(self.target_bpm_spin)
         
         bps_layout.addWidget(QLabel("±"))
-        self.bps_tolerance_spin = QDoubleSpinBox()
-        self.bps_tolerance_spin.setRange(0.05, 1.0)
-        self.bps_tolerance_spin.setSingleStep(0.05)
-        self.bps_tolerance_spin.setValue(0.5)
-        self.bps_tolerance_spin.setDecimals(2)
-        self.bps_tolerance_spin.setFixedWidth(60)
-        self.bps_tolerance_spin.setToolTip("Tolerance: system accepts ±this range around target")
-        self.bps_tolerance_spin.valueChanged.connect(self._on_bps_tolerance_change)
-        bps_layout.addWidget(self.bps_tolerance_spin)
+        self.bpm_tolerance_spin = QDoubleSpinBox()
+        self.bpm_tolerance_spin.setRange(3, 60)
+        self.bpm_tolerance_spin.setSingleStep(1)
+        self.bpm_tolerance_spin.setValue(30)
+        self.bpm_tolerance_spin.setDecimals(0)
+        self.bpm_tolerance_spin.setFixedWidth(60)
+        self.bpm_tolerance_spin.setToolTip("Tolerance: system accepts ±this range around target BPM")
+        self.bpm_tolerance_spin.valueChanged.connect(self._on_bpm_tolerance_change)
+        bps_layout.addWidget(self.bpm_tolerance_spin)
         
         bps_layout.addWidget(QLabel("Speed:"))
         self.bps_speed_slider = QSlider(Qt.Orientation.Horizontal)
@@ -4363,19 +4393,15 @@ bREadfan_69@hotmail.com"""
         self.bps_speed_slider.valueChanged.connect(self._on_bps_speed_change)
         bps_layout.addWidget(self.bps_speed_slider)
         
-        self.bps_actual_label = QLabel("Actual: -- BPS")
-        self.bps_actual_label.setStyleSheet("color: #AAA; font-size: 9px;")
-        bps_layout.addWidget(self.bps_actual_label)
+        self.bpm_actual_label = QLabel("Actual: -- BPM")
+        self.bpm_actual_label.setStyleSheet("color: #AAA; font-size: 9px;")
+        bps_layout.addWidget(self.bpm_actual_label)
         
         bps_layout.addStretch()
         metric_layout.addLayout(bps_layout)
         
-        # Traffic light indicator + metric status label
+        # Metric status label only (traffic light moved to control panel)
         status_row = QHBoxLayout()
-        self.metric_traffic_light = TrafficLightWidget()
-        self.metric_traffic_light.setToolTip("Red=Adjusting, Yellow=Some Settled, Green=All Locked")
-        status_row.addWidget(self.metric_traffic_light)
-        
         self.metric_status_label = QLabel("Metrics: [idle]")
         self.metric_status_label.setStyleSheet("color: #AAA; font-size: 9px;")
         status_row.addWidget(self.metric_status_label)
