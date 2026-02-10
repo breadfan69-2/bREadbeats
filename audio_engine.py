@@ -169,7 +169,7 @@ class AudioEngine:
         # Metric 2: Sensitivity Feedback (No Downbeat → raise, Excess Downbeats → lower)
         self._metric_sensitivity_enabled: bool = False
         self._sensitivity_check_interval_ms: float = 1100.0  # Check every ~1100ms
-        self._sensitivity_escalate_pct: float = 0.04   # 4% of range per check
+        self._sensitivity_escalate_pct: float = 0.02   # 2% of range per check
         self._last_downbeat_time: float = 0.0           # Tracked from main.py
         self._last_sensitivity_check: float = 0.0       # Last time we checked
         self._downbeat_times: list[float] = []          # Recent downbeat timestamps
@@ -607,8 +607,8 @@ class AudioEngine:
         avg_flux = np.mean(self.flux_history)
         
         # Sensitivity now works intuitively: higher = more sensitive (lower threshold)
-        # sensitivity 0.0 = need 2x average, sensitivity 1.0 = need 1.1x average
-        threshold_mult = 2.0 - (cfg.sensitivity * 0.9)  # Range: 2.0 down to 1.1
+        # sensitivity 0.0 = need 2x average, sensitivity 1.0 = need 1.3x average
+        threshold_mult = 2.0 - (cfg.sensitivity * 0.7)  # Range: 2.0 down to 1.3
         energy_threshold = avg_energy * threshold_mult
         flux_threshold = avg_flux * threshold_mult
         
@@ -1455,8 +1455,8 @@ class AudioEngine:
         # Check time since last downbeat
         time_since_downbeat = now - self._last_downbeat_time if self._last_downbeat_time > 0 else float('inf')
         
-        # Tolerance for excess: expected_dps * 3.0 (only reduce if way above expected)
-        excess_threshold = expected_dps * 3.0
+        # Tolerance for excess: expected_dps * 5.0 (only reduce if way above expected)
+        excess_threshold = expected_dps * 5.0
         
         if time_since_downbeat > expected_downbeat_interval * 3.0:
             # No downbeats for 3x expected interval → RAISE sensitivity
