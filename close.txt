@@ -1,0 +1,11 @@
+please create a document summarizing this chat session and the changes we've made, be sure to include the experimental branch we are working in and making commits and pushes on while working on this autorange feature:
+ 
+ https://github.com/breadfan69-2/bREadbeats/tree/feature/metric-autoranging
+
+this will serve as a reference and companion to the next chat agent
+
+do not commit any new .txt or .md files
+  
+make any needed changes to agent_reference
+
+commit and push
