@@ -1198,7 +1198,7 @@ class AudioEngine:
         
         # Amplitude proportionality: peak_floor must always be >= 10% of audio_amp
         # This prevents peak_floor from staying absurdly low when gain is cranked up
-        amp_floor = self.config.beat.amplification * 0.10
+        amp_floor = self.config.audio.gain * 0.10
         if avg_valley < amp_floor:
             avg_valley = amp_floor  # Use amp-proportional floor as minimum target
         

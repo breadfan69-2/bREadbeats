@@ -1,0 +1,18 @@
+hi claude,
+
+we need to do some gui cleanup.
+
+do you see any sliders that are completly obselete?  i haven't messed with the [tempo tracking]tab much but they might be useful someday.  not sure on these.  but can you look for anything that's dead/useless?
+
+does the [stroke settings][motion intensity] slider change circle size?  or only fine tune between preset buttons?
+
+we can get rid of [stroke settings][minimum interval],[min depth] i think?
+
+not sure about silence thresholds...mabye you can check old commits and see what the default loading levels have been for me?  i think we exposed those controls for testing specifically....
+
+
+should we consolidate [pulsefreq]and[carrierfreq] tabs, in their own groupboxes?
+
+throw an untitled groupbox around all the loose elements on each tab, for now.   
+
+and please make the auto-metric and all the biggest groupboxes dropdown windowshades
