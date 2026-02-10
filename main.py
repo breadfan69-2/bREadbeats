@@ -2526,8 +2526,8 @@ class BREadbeatsWindow(QMainWindow):
         bottom_half_layout.addLayout(bottom_layout)
         splitter.addWidget(bottom_half)
 
-        # Set initial splitter proportions (~60% viz, ~40% tabs)
-        splitter.setStretchFactor(0, 3)
+        # Set initial splitter proportions (~72% viz, ~28% tabs)
+        splitter.setStretchFactor(0, 5)
         splitter.setStretchFactor(1, 2)
         main_layout.addWidget(splitter, stretch=1)
     
@@ -3657,10 +3657,11 @@ bREadfan_69@hotmail.com"""
         self.preset_mic_btn.setStyleSheet("color: #0a0; font-weight: bold;" if is_mic else "color: #fff;")
         self.preset_loopback_btn.setStyleSheet("color: #0a0; font-weight: bold;" if is_loopback else "color: #fff;")
     
-    def _create_spectrum_panel(self) -> QGroupBox:
+    def _create_spectrum_panel(self) -> QWidget:
         """Spectrum visualizer panel"""
-        group = QGroupBox("Frequency Selection")
-        layout = QVBoxLayout(group)
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
         
         # Create all visualizers (only one visible at a time)
         self.spectrum_canvas = SpectrumCanvas(self, width=8, height=3)
@@ -3676,7 +3677,7 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(self.bar_canvas)
         layout.addWidget(self.phosphor_canvas)
         
-        return group
+        return widget
     
     def _on_launch_projectm(self):
         """Launch projectM standalone application"""
@@ -3727,10 +3728,11 @@ bREadfan_69@hotmail.com"""
         self.hide_indicators_checkbox.setChecked(not checked)
         self._on_hide_indicators_toggle(0 if checked else 2)
     
-    def _create_position_panel(self) -> QGroupBox:
+    def _create_position_panel(self) -> QWidget:
         """Alpha/Beta position display"""
-        group = QGroupBox("Position (α/β)")
-        layout = QVBoxLayout(group)
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Position canvas (no rotation - fixed at 0)
         self.position_canvas = PositionCanvas(self, size=2, get_rotation=lambda: 0)
@@ -3742,7 +3744,7 @@ bREadfan_69@hotmail.com"""
         self.beta_label = QLabel("β: 0.00")
         self.beta_label.setVisible(False)
 
-        return group
+        return widget
     
     def _create_settings_tabs(self) -> QTabWidget:
         """Settings tabs with all the sliders"""
