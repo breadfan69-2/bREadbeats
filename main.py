@@ -3720,10 +3720,7 @@ bREadfan_69@hotmail.com"""
         active_metrics = []
         if getattr(self, 'metric_peak_floor_cb', None) and self.metric_peak_floor_cb.isChecked():
             active_metrics.append("FloorMargin")
-        if getattr(self, 'metric_sensitivity_cb', None) and self.metric_sensitivity_cb.isChecked():
-            active_metrics.append("Sensitivity")
-        if getattr(self, 'metric_downbeat_ratio_cb', None) and self.metric_downbeat_ratio_cb.isChecked():
-            active_metrics.append("DBRatio")
+
         if getattr(self, 'metric_audio_amp_cb', None) and self.metric_audio_amp_cb.isChecked():
             active_metrics.append("AudioAmp")
         if getattr(self, 'metric_flux_balance_cb', None) and self.metric_flux_balance_cb.isChecked():
@@ -3790,18 +3787,6 @@ bREadfan_69@hotmail.com"""
                 reason = feedback_data.get('reason', '')
                 actual_bps = feedback_data.get('actual_bps', 0)
                 print(f"[Metric] audio_amp: {reason} ({direction}) → {new_val:.4f}")
-        
-        elif metric == 'sensitivity' and adjustment != 0:
-            # Adjust sensitivity based on downbeat presence
-            current = self.sensitivity_slider.value()
-            new_val = current + adjustment
-            s_min, s_max = BEAT_RANGE_LIMITS['sensitivity']
-            new_val = max(s_min, min(s_max, new_val))
-            if abs(new_val - current) > 0.001:
-                self.sensitivity_slider.setValue(new_val)
-                reason = feedback_data.get('reason', '')
-                actual_dps = feedback_data.get('actual_dps', 0)
-                print(f"[Metric] sensitivity: {reason} ({direction}) → {new_val:.4f}")
         
         elif metric == 'flux_balance' and adjustment != 0:
             # Adjust flux_mult to balance flux ≈ energy bar heights
@@ -3895,16 +3880,6 @@ bREadfan_69@hotmail.com"""
         self.metric_peak_floor_cb.setToolTip("Auto-adjust peak_floor to track energy valley level (scales with amplification)")
         self.metric_peak_floor_cb.stateChanged.connect(lambda state: self._on_metric_toggle('peak_floor', state == 2))
         metric_ctrl_layout.addWidget(self.metric_peak_floor_cb)
-        
-        self.metric_sensitivity_cb = QCheckBox("Sensitivity (Downbeat)")
-        self.metric_sensitivity_cb.setToolTip("No downbeat → raise sensitivity 4%/1.1s | Excess downbeats → lower sensitivity")
-        self.metric_sensitivity_cb.stateChanged.connect(lambda state: self._on_metric_toggle('sensitivity', state == 2))
-        metric_ctrl_layout.addWidget(self.metric_sensitivity_cb)
-        
-        self.metric_downbeat_ratio_cb = QCheckBox("Downbeat Ratio")
-        self.metric_downbeat_ratio_cb.setToolTip("Auto-adjust peak_floor to maintain 1.8-2.2 downbeat energy ratio")
-        self.metric_downbeat_ratio_cb.stateChanged.connect(lambda state: self._on_metric_toggle('downbeat_ratio', state == 2))
-        metric_ctrl_layout.addWidget(self.metric_downbeat_ratio_cb)
         
         self.metric_audio_amp_cb = QCheckBox("Audio Amp (Beat)")
         self.metric_audio_amp_cb.setToolTip("No beats → raise audio_amp 2%/1.1s | Excess beats → lower audio_amp")
@@ -4909,8 +4884,7 @@ bREadfan_69@hotmail.com"""
             return
         metric_map = {
             'metric_peak_floor_cb': 'peak_floor',
-            'metric_sensitivity_cb': 'sensitivity',
-            'metric_downbeat_ratio_cb': 'downbeat_ratio',
+
             'metric_audio_amp_cb': 'audio_amp',
             'metric_flux_balance_cb': 'flux_balance',
             'metric_target_bps_cb': 'target_bps',
@@ -5218,7 +5192,7 @@ bREadfan_69@hotmail.com"""
                             self.downbeat_timer.start(self.beat_indicator_min_duration)
                         # Record downbeat for sensitivity metric
                         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-                            self.audio_engine.record_downbeat(time.time())
+                            pass  # downbeat recording removed
                     
                     # Format BPM display - simple, no beat position counter
                     bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
@@ -5349,13 +5323,12 @@ bREadfan_69@hotmail.com"""
             if elapsed >= self._volume_ramp_duration:
                 self._volume_ramp_active = False
     
-        # ===== TIMER-DRIVEN METRIC FEEDBACK: Audio Amp & Sensitivity =====
+        # ===== TIMER-DRIVEN METRIC FEEDBACK: Audio Amp =====
         # These fire from the display timer (not from _on_beat) so they can
-        # detect the ABSENCE of beats/downbeats and escalate accordingly.
+        # detect the ABSENCE of beats and escalate accordingly.
         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
             now = time.time()
             self.audio_engine.compute_audio_amp_feedback(now, callback=self._on_metric_feedback)
-            self.audio_engine.compute_sensitivity_feedback(now, callback=self._on_metric_feedback)
             self.audio_engine.compute_flux_balance_feedback(now, callback=self._on_metric_feedback)
             
             # ===== TRAFFIC LIGHT UPDATE =====

@@ -285,22 +285,7 @@ class AudioEngine:
         self._prev_energy_for_valley: float = 0.0       # Previous energy for slope detection
         self._energy_was_falling: bool = False           # True when energy was decreasing
         
-        # Metric 2: Sensitivity Feedback (No Downbeat → raise, Excess Downbeats → lower)
-        self._metric_sensitivity_enabled: bool = False
-        self._sensitivity_check_interval_ms: float = 2500.0  # Check every ~2.5s (was 1.1s)
-        self._sensitivity_escalate_pct: float = 0.02   # 2% of range per check
-        self._last_downbeat_time: float = 0.0           # Tracked from main.py
-        self._last_sensitivity_check: float = 0.0       # Last time we checked
-        self._downbeat_times: list[float] = []          # Recent downbeat timestamps
-        self._downbeat_window_seconds: float = 4.0      # Rolling window for DPS calc
-        self._sensitivity_hysteresis_count: int = 0     # Consecutive out-of-zone checks (hysteresis)
-        
-        # Metric 3: Downbeat Energy Ratio Feedback (stub)
-        self._metric_downbeat_ratio_enabled: bool = False
-        self._downbeat_ratio_target_low: float = 1.8    # Optimal zone: 1.8-2.2
-        self._downbeat_ratio_target_high: float = 2.2
-        
-        # Metric 4: Audio Amp Feedback (No Beats → raise, Excess Beats → lower)
+        # Metric 3: Audio Amp Feedback (No Beats → raise, Excess Beats → lower)
         self._metric_audio_amp_enabled: bool = False
         self._audio_amp_check_interval_ms: float = 2500.0  # Check every ~2.5s (was 1.1s)
         self._audio_amp_escalate_pct: float = 0.02     # 2% of range per check
@@ -1146,18 +1131,6 @@ class AudioEngine:
                 log_event("INFO", "MetricAutoRange", "Peak Floor metric enabled (valley-tracking)")
             else:
                 log_event("INFO", "MetricAutoRange", "Peak Floor metric disabled")
-        elif metric == 'sensitivity':
-            self._metric_sensitivity_enabled = enable
-            if enable:
-                self._last_sensitivity_check = 0.0
-                self._downbeat_times.clear()
-                self._metric_settled_counts['sensitivity'] = 0
-                self._metric_settled_flags['sensitivity'] = False
-                log_event("INFO", "MetricAutoRange", "Sensitivity metric enabled (downbeat-driven)")
-            else:
-                log_event("INFO", "MetricAutoRange", "Sensitivity metric disabled")
-        elif metric == 'downbeat_ratio':
-            self._metric_downbeat_ratio_enabled = enable
         elif metric == 'audio_amp':
             self._metric_audio_amp_enabled = enable
             if enable:
@@ -1358,9 +1331,9 @@ class AudioEngine:
         """Set the BPS tolerance (how close to target before adjusting)"""
         self._target_bps_tolerance = max(0.05, min(1.0, tolerance))
 
-    # ===== TIMER-DRIVEN METRIC FEEDBACK (audio_amp & sensitivity) =====
+    # ===== TIMER-DRIVEN METRIC FEEDBACK (audio_amp) =====
     # These are called from main.py's _update_display timer, NOT from _on_beat,
-    # because they need to detect the ABSENCE of beats/downbeats.
+    # because they need to detect the ABSENCE of beats.
 
     def get_metric_states(self) -> dict[str, str]:
         """
@@ -1371,21 +1344,12 @@ class AudioEngine:
         states = {}
         if self._metric_peak_floor_enabled:
             states['peak_floor'] = 'SETTLED' if self._metric_settled_flags.get('peak_floor', False) else 'ADJUSTING'
-        if self._metric_sensitivity_enabled:
-            states['sensitivity'] = 'SETTLED' if self._metric_settled_flags.get('sensitivity', False) else 'ADJUSTING'
+
         if self._metric_audio_amp_enabled:
             states['audio_amp'] = 'SETTLED' if self._metric_settled_flags.get('audio_amp', False) else 'ADJUSTING'
         if self._metric_flux_balance_enabled:
             states['flux_balance'] = 'SETTLED' if self._metric_settled_flags.get('flux_balance', False) else 'ADJUSTING'
         return states
-
-    def record_downbeat(self, timestamp: float):
-        """Record a downbeat occurrence for sensitivity metric tracking"""
-        self._last_downbeat_time = timestamp
-        self._downbeat_times.append(timestamp)
-        # Prune old timestamps
-        cutoff = timestamp - self._downbeat_window_seconds
-        self._downbeat_times = [t for t in self._downbeat_times if t >= cutoff]
 
     def compute_flux_balance_feedback(self, now: float, callback=None):
         """
@@ -1564,102 +1528,7 @@ class AudioEngine:
                           count=f"{self._metric_settled_counts['audio_amp']}",
                           threshold=f"{self._metric_settled_threshold}")
 
-    def compute_sensitivity_feedback(self, now: float, callback=None):
-        """
-        Timer-driven sensitivity adjustment based on downbeat presence.
-        
-        - No downbeats for >check_interval → RAISE sensitivity (+2% of range)
-        - Excess downbeats (>7× expected rate) → LOWER sensitivity
-          BUT only if tempo is NOT locked (predicted beats matching = don't lower)
-        - Tracks consecutive in-zone checks for SETTLED state
-        - Requires 2 consecutive out-of-zone checks (hysteresis) before adjusting
-        
-        Called from _update_display (~30fps), but only acts every ~2.5s.
-        Uses target_bps / 4 as expected downbeat rate (1 downbeat per 4 beats).
-        """
-        if not self._metric_sensitivity_enabled:
-            return
-        
-        # Only check every ~2.5s
-        if now - self._last_sensitivity_check < self._sensitivity_check_interval_ms / 1000.0:
-            return
-        self._last_sensitivity_check = now
-        
-        # If already settled, don't adjust — just return
-        if self._metric_settled_flags.get('sensitivity', False):
-            return
-        
-        # Get range for percentage calculation
-        from config import BEAT_RANGE_LIMITS
-        sens_min, sens_max = BEAT_RANGE_LIMITS['sensitivity']
-        sens_range = sens_max - sens_min
-        step = sens_range * self._sensitivity_escalate_pct  # 2% of range
-        
-        # Expected downbeat rate = target_bps / 4 (1 downbeat per measure)
-        expected_dps = self._target_bps / 4.0
-        expected_downbeat_interval = 1.0 / expected_dps if expected_dps > 0 else 2.67
-        
-        # Calculate actual downbeats per second
-        actual_dps = 0.0
-        if len(self._downbeat_times) >= 2:
-            window_dur = self._downbeat_times[-1] - self._downbeat_times[0]
-            if window_dur > 0:
-                actual_dps = (len(self._downbeat_times) - 1) / window_dur
-        
-        # Check time since last downbeat
-        time_since_downbeat = now - self._last_downbeat_time if self._last_downbeat_time > 0 else float('inf')
-        
-        # Tolerance for excess: expected_dps * 7.0 (tighter — only reduce if WAY above expected)
-        excess_threshold = expected_dps * 7.0
-        
-        # Check if tempo is locked (predicted beats matching well)
-        tempo_is_locked = (self.consecutive_matching_downbeats >= self.consecutive_match_threshold)
-        
-        wants_adjustment = False
-        adjustment_direction = 0
-        adjustment_reason = ''
-        
-        if time_since_downbeat > expected_downbeat_interval * 3.0:
-            # No downbeats for 3x expected interval → wants to RAISE sensitivity
-            wants_adjustment = True
-            adjustment_direction = +1
-            adjustment_reason = f'no downbeats for {time_since_downbeat:.1f}s'
-        elif actual_dps > excess_threshold:
-            # Excess downbeats → wants to LOWER sensitivity
-            # BUT: if tempo is locked, beats are matching predicted timing, suppress
-            if tempo_is_locked:
-                log_event("INFO", "Metric", "Sensitivity excess suppressed — tempo locked, beats match predicted",
-                          actual_dps=f"{actual_dps:.2f}", threshold=f"{excess_threshold:.2f}")
-            else:
-                wants_adjustment = True
-                adjustment_direction = -1
-                adjustment_reason = f'excess DPS {actual_dps:.2f} > {excess_threshold:.2f}'
-        
-        # Hysteresis: require 2 consecutive out-of-zone checks before adjusting
-        if wants_adjustment:
-            self._sensitivity_hysteresis_count += 1
-            if self._sensitivity_hysteresis_count >= self._metric_hysteresis_required:
-                # Actually adjust now
-                # Decay settled counter instead of hard reset (drop by 3, not to 0)
-                self._metric_settled_counts['sensitivity'] = max(0, self._metric_settled_counts.get('sensitivity', 0) - 3)
-                self._sensitivity_hysteresis_count = 0
-                if callback:
-                    callback({
-                        'metric': 'sensitivity',
-                        'adjustment': adjustment_direction * step,
-                        'direction': 'raise' if adjustment_direction > 0 else 'lower',
-                        'reason': f'{adjustment_reason} (2x confirmed)',
-                        'actual_dps': actual_dps,
-                    })
-        else:
-            # In zone — reset hysteresis counter and increment settled
-            self._sensitivity_hysteresis_count = 0
-            self._metric_settled_counts['sensitivity'] = self._metric_settled_counts.get('sensitivity', 0) + 1
-            if self._metric_settled_counts['sensitivity'] >= self._metric_settled_threshold:
-                self._metric_settled_flags['sensitivity'] = True
-                log_event("INFO", "Metric", "Sensitivity SETTLED",
-                          count=f"{self._metric_settled_counts['sensitivity']}",
-                          threshold=f"{self._metric_settled_threshold}")
+
 
 
 if __name__ == "__main__":
