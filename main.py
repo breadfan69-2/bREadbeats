@@ -5494,6 +5494,67 @@ bREadfan_69@hotmail.com"""
         except Exception as e:
             print(f"[Shutdown] Could not log spinbox values: {e}")
 
+    def resizeEvent(self, event):
+        """Handle window resize - switch to miniplayer mode when narrow"""
+        super().resizeEvent(event)
+        width = event.size().width()
+        
+        # Check if we crossed the threshold
+        should_be_miniplayer = width < self._miniplayer_threshold
+        
+        if should_be_miniplayer != self._miniplayer_mode:
+            self._miniplayer_mode = should_be_miniplayer
+            self._apply_miniplayer_layout()
+    
+    def _apply_miniplayer_layout(self):
+        """Apply or remove miniplayer layout based on current mode"""
+        if self._miniplayer_mode:
+            # MINIPLAYER: Hide controls, stack visualizers vertically
+            self._top_widget.setVisible(False)
+            self._settings_tabs.setVisible(False)
+            self._bottom_widget.setVisible(False)
+            
+            # Switch visualizers to vertical layout
+            # Remove from horizontal layout
+            self._viz_layout.removeWidget(self._spectrum_panel)
+            self._viz_layout.removeWidget(self._position_panel)
+            
+            # Create vertical layout if not exists
+            if not hasattr(self, '_viz_vbox'):
+                self._viz_vbox = QVBoxLayout()
+                self._viz_vbox.setSpacing(5)
+            
+            # Clear and repopulate
+            while self._viz_layout.count():
+                self._viz_layout.takeAt(0)
+            
+            # Add vertical layout to main viz layout
+            self._viz_layout.addLayout(self._viz_vbox)
+            self._viz_vbox.addWidget(self._spectrum_panel, stretch=2)
+            self._viz_vbox.addWidget(self._position_panel, stretch=1)
+            
+        else:
+            # NORMAL: Show all controls, visualizers side-by-side
+            self._top_widget.setVisible(True)
+            self._settings_tabs.setVisible(True)
+            self._bottom_widget.setVisible(True)
+            
+            # Switch visualizers back to horizontal layout
+            if hasattr(self, '_viz_vbox'):
+                self._viz_vbox.removeWidget(self._spectrum_panel)
+                self._viz_vbox.removeWidget(self._position_panel)
+                # Remove the vbox from viz_layout
+                while self._viz_layout.count():
+                    item = self._viz_layout.takeAt(0)
+                    if item.layout():
+                        # Clear inner layout
+                        while item.layout().count():
+                            item.layout().takeAt(0)
+            
+            # Restore horizontal layout
+            self._viz_layout.addWidget(self._spectrum_panel, stretch=3)
+            self._viz_layout.addWidget(self._position_panel, stretch=1)
+
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
         self._stop_engines()

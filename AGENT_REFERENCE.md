@@ -904,10 +904,10 @@ Two critical clamps added to prevent parameters from dropping too low when gain 
 ---
 
 *Document created: 2026-02-07*  
-*Last comprehensive update: 2026-02-10 (dead code cleanup, enhanced presets; GUI refactor with CollapsibleGroupBox)*  
-*Reference for recent changes: Commit 74926fe (dead code cleanup) + enhanced presets + GUI refactor with Auto-Adjust group*
-*All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow.*
-*Current branch: feature/metric-autoranging — metric autoranging with refractory period, adaptive thresholds, and refactored GUI with collapsible groupboxes.*
+*Last comprehensive update: 2026-02-10 (windowshade bug fix, Effects consolidation, miniplayer mode)*  
+*Reference for recent changes: CollapsibleGroupBox mousePressEvent refactor, Effects tab consolidation, scrollbars on all tabs, responsive miniplayer layout*
+*All implementations verified with running program - beat detection working, windowshades toggle correctly, miniplayer mode functional.*
+*Current branch: feature/metric-autoranging — metric autoranging with refractory period, adaptive thresholds, refactored GUI with collapsible groupboxes, miniplayer mode.*
 *Branch URL: https://github.com/breadfan69-2/bREadbeats/tree/feature/metric-autoranging*
 
 ## Session Summary: 2026-02-10 (EARLIER - Dead Code & Presets)
@@ -1122,3 +1122,197 @@ Each tab had scattered controls outside groupboxes. Added wrapper groupboxes:
 - Stroke Settings tab cleanup (similar GUI wrapping + collapsible groups for presets/jitter section)
 - Advanced tab further consolidation (remove unused imports per newinstructions2.txt)
 - Test full workflow: launch app → collapse Auto-Adjust → expand Auto-Adjust → verify BPS slider appears
+
+---
+
+## Session Summary: 2026-02-10 (LATEST - Windowshade Fix, Effects Consolidation, Miniplayer Mode)
+
+### Work Branch
+**`feature/metric-autoranging`** — All development continues on this branch.
+**Branch URL:** https://github.com/breadfan69-2/bREadbeats/tree/feature/metric-autoranging
+
+### Changes Made This Session
+
+**1. CollapsibleGroupBox Windowshade Bug Fix (CRITICAL)**
+
+**Problem:** When collapsing and re-expanding a windowshade (CollapsibleGroupBox), child controls would draw correctly but become unresponsive to user input (clicks, drags).
+
+**Root Cause:** Using `setCheckable(True)` with Qt's built-in `toggled` signal causes Qt to internally disable/enable child widgets. The enable states were not restoring properly after expand.
+
+**Solution:** Replaced `setCheckable(True)` + `toggled` signal with custom `mousePressEvent` implementation:
+
+```python
+class CollapsibleGroupBox(QGroupBox):
+    def __init__(self, title: str, parent=None, collapsed: bool = False):
+        super().__init__(title, parent)
+        self._collapsed = collapsed
+        self._update_title()
+        if collapsed:
+            QTimer.singleShot(0, self._apply_initial_collapse)
+    
+    def mousePressEvent(self, event):
+        # Toggle on click anywhere in title bar area (top 25 pixels)
+        if event.position().y() < 25:
+            self._collapsed = not self._collapsed
+            self._update_title()
+            for child in self.findChildren(QWidget):
+                if child.parent() == self:
+                    child.setVisible(not self._collapsed)
+        else:
+            super().mousePressEvent(event)
+```
+
+**Key changes:**
+- No longer uses `setCheckable(True)` (removes Qt's internal enable/disable behavior)
+- Manually manages `_collapsed` state
+- Uses `mousePressEvent` to toggle on title bar click (y < 25px)
+- Arrow indicator (▼/▶) in title managed via `_update_title()` method
+- `collapsed=True` parameter for starting collapsed
+
+**2. Effects Tab Consolidation (Jitter + Creep → Single "Effects" GroupBox)**
+
+**Before:** Separate "Jitter" and "Creep" collapsible groupboxes with verbose labels like "Enable Jitter" and "Enable Creep".
+
+**After:** Single "Effects" `CollapsibleGroupBox` containing both:
+- Top row: `[✓] Jitter` checkbox + Intensity slider + Amplitude slider
+- Bottom row: `[✓] Creep` checkbox + Speed slider + Radius slider
+
+**Label simplifications:**
+- "Enable Jitter" → "Jitter" (checkbox label speaks for itself)
+- "Enable Creep" → "Creep"
+- Sliders now sit inline on same row as their enable checkbox
+
+**3. Mode-Aware Tooltips for Axis Weight Sliders**
+
+Added dynamic tooltips that explain what axis weights do in different stroke modes:
+
+```python
+def _update_axis_weight_tooltips(self):
+    mode = self.stroke_mode_combo.currentIndex() + 1
+    if mode == 4:  # User mode
+        tip = "Controls flux vs peak response (0=flux only, 1=balanced, 2=peak only)"
+    else:  # Modes 1-3
+        tip = "Scales axis amplitude (0=off, 1=normal, 2=double)"
+    
+    for axis in ['L0', 'L1', 'L2', 'R0', 'R1', 'R2']:
+        self._axis_weight_sliders[axis].setToolTip(tip)
+```
+
+Tooltips update automatically when stroke mode changes via `currentIndexChanged` signal.
+
+**4. All Windowshades Collapsed by Default**
+
+All `CollapsibleGroupBox` instances now start collapsed:
+```python
+CollapsibleGroupBox("Effects", collapsed=True)
+CollapsibleGroupBox("Auto-Adjust", collapsed=True)
+CollapsibleGroupBox("Levels", collapsed=True)
+CollapsibleGroupBox("Peaks", collapsed=True)
+# etc.
+```
+
+**Rationale:** Reduces initial visual clutter. Users expand only the sections they need.
+
+**5. Scrollbars on All Tabs**
+
+All tab content now wrapped in `NoWheelScrollArea` with thin transparent scrollbars:
+
+```python
+def _get_thin_scrollbar_style(self):
+    return """
+        QScrollBar:vertical { width: 4px; background: transparent; }
+        QScrollBar::handle:vertical { background: #555; border-radius: 2px; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        QScrollBar:horizontal { height: 4px; background: transparent; }
+        QScrollBar::handle:horizontal { background: #555; border-radius: 2px; }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+    """
+```
+
+Applied to all `_create_*_tab()` methods. Scrollbars appear when content exceeds viewport.
+
+**6. Window Size Increase for Visualizers**
+
+**Before:** 900×700 initial size, 600×400 minimum.
+
+**After:** 1100×950 initial size, 400×300 minimum.
+
+**Rationale:** Larger window gives more space for waveform/spectrum visualizers and the four metric widgets at the bottom.
+
+**7. Miniplayer Mode (Responsive Layout)**
+
+Implemented responsive layout that switches to "miniplayer" mode when window width < 700px:
+
+```python
+def resizeEvent(self, event):
+    super().resizeEvent(event)
+    width = event.size().width()
+    self._apply_miniplayer_layout(width < 700)
+
+def _apply_miniplayer_layout(self, miniplayer: bool):
+    if miniplayer:
+        # Hide tabs and bottom controls
+        self._settings_tabs.hide()
+        self._bottom_widget.hide()
+        # Stack visualizers vertically
+        if self._viz_hlayout.count():
+            for i in reversed(range(self._viz_hlayout.count())):
+                w = self._viz_hlayout.takeAt(i).widget()
+                if w:
+                    self._viz_vlayout.addWidget(w)
+    else:
+        # Restore normal layout
+        self._settings_tabs.show()
+        self._bottom_widget.show()
+        # Return visualizers to horizontal layout
+        # ...
+```
+
+**Miniplayer mode behavior:**
+- Hides settings tabs (tabbed controls below visualizers)
+- Hides bottom widget (connection status, presets)
+- Stacks waveform and spectrum visualizers vertically
+- Creates a compact view focused on visualizations
+
+**Normal mode restoration:**
+- Shows all controls again
+- Returns visualizers to side-by-side horizontal layout
+
+### Code Changes Summary
+
+| File | Lines Changed | Changes |
+|------|---------------|---------|
+| main.py | ~150 | CollapsibleGroupBox refactor (mousePressEvent), Effects consolidation, tooltips, scrollbars, window resize, miniplayer mode |
+
+### Validation & Testing
+
+- **Import tests:** `from main import BREadbeatsWindow` passes cleanly
+- **Runtime test:** App launches successfully with `run.py`
+- **Windowshade test:** Expand/collapse works reliably; controls respond after expand
+- **Miniplayer test:** Shrink window below 700px width triggers layout switch
+- **Scrollbars test:** Thin scrollbars appear when tab content overflows
+
+### Git Status
+- **Branch:** feature/metric-autoranging
+- **All changes committed and pushed to remote**
+
+### For Next Agent
+
+**What's different now:**
+1. CollapsibleGroupBox uses `mousePressEvent` (NOT setCheckable) — fixes windowshade bug
+2. All windowshades start collapsed by default
+3. Jitter + Creep consolidated into single "Effects" collapsible group
+4. Axis weight sliders have mode-aware tooltips (modes 1-3 vs mode 4)
+5. All tabs have thin scrollbars via NoWheelScrollArea
+6. Window starts at 1100×950 with 400×300 minimum
+7. Miniplayer mode: shrink window below 700px width to hide controls and stack visualizers
+
+**If CollapsibleGroupBox issues arise:**
+- Check `mousePressEvent` y-coordinate threshold (currently 25px)
+- Verify `_collapsed` state is toggling correctly
+- Check `_apply_initial_collapse()` is called via QTimer.singleShot(0, ...)
+
+**If miniplayer issues arise:**
+- Check `resizeEvent` is calling `_apply_miniplayer_layout`
+- Verify layout references (`_viz_hlayout`, `_viz_vlayout`) are correctly captured in `_setup_ui`
+- Test layout restoration when expanding window back above 700px
