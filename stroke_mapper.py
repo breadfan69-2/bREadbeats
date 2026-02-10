@@ -66,7 +66,7 @@ class StrokeMapper:
             'sub_bass': 1.00,
             'low_mid':  0.98,
             'mid':      0.97,
-            'high':     0.95,
+            'high':     0.93,
         }
         self._band_speed_scale = {
             'sub_bass': 0.70,   # fastest (shortest duration)
