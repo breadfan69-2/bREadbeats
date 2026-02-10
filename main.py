@@ -3746,6 +3746,18 @@ bREadfan_69@hotmail.com"""
         
         elif metric == 'target_bps' and adjustment != 0:
             # Adjust peak_floor to hit target BPS
+            # BUT: suppress lowering if valley-tracking wants to RAISE it (prevents oscillation)
+            if feedback_data.get('direction', '') == 'lower':
+                # Check if valley tracking is active and wants to raise
+                if (hasattr(self, 'audio_engine') and self.audio_engine is not None
+                    and self.audio_engine._metric_peak_floor_enabled
+                    and len(self.audio_engine._valley_history) >= 3):
+                    avg_valley = float(np.mean(self.audio_engine._valley_history))
+                    current_pf = self.config.beat.peak_floor
+                    if current_pf < avg_valley * 0.8:
+                        # Valley tracking would raise peak_floor, so suppress BPS lowering
+                        print(f"[Metric] target_bps: suppressed (valley={avg_valley:.4f} > pf={current_pf:.4f})")
+                        return
             current = self.peak_floor_slider.value()
             new_val = current + adjustment
             pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
@@ -3788,7 +3800,9 @@ bREadfan_69@hotmail.com"""
             current = self.flux_mult_slider.value()
             new_val = current + adjustment
             fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
-            new_val = max(fm_min, min(fm_max, new_val))
+            # Amplitude proportionality: flux_mult must always be >= 15% of audio_amp
+            amp_floor = self.config.beat.amplification * 0.15
+            new_val = max(max(fm_min, amp_floor), min(fm_max, new_val))
             if abs(new_val - current) > 0.005:
                 self.flux_mult_slider.setValue(new_val)
                 ratio = feedback_data.get('ratio', 0)
@@ -4822,6 +4836,10 @@ bREadfan_69@hotmail.com"""
         self.audio_engine = AudioEngine(self.config, self._audio_callback)
         self.audio_engine.start()
 
+        # Sync metric checkbox states to the new audio engine
+        # (checkboxes may already be checked from previous start)
+        self._sync_metric_checkboxes_to_engine()
+
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
 
         # Network engine is already started on program launch via _auto_connect_tcp
@@ -4831,6 +4849,28 @@ bREadfan_69@hotmail.com"""
             self.network_engine.start()
 
         self.is_running = True
+    
+    def _sync_metric_checkboxes_to_engine(self):
+        """Sync checked metric checkboxes to the audio engine after it's created.
+        Fixes bug where auto-range doesn't activate until user toggles checkbox."""
+        if not self.audio_engine:
+            return
+        metric_map = {
+            'metric_peak_floor_cb': 'peak_floor',
+            'metric_sensitivity_cb': 'sensitivity',
+            'metric_downbeat_ratio_cb': 'downbeat_ratio',
+            'metric_audio_amp_cb': 'audio_amp',
+            'metric_flux_balance_cb': 'flux_balance',
+            'metric_target_bps_cb': 'target_bps',
+        }
+        synced = []
+        for attr, metric in metric_map.items():
+            cb = getattr(self, attr, None)
+            if cb is not None and cb.isChecked():
+                self.audio_engine.enable_metric_autoranging(metric, True)
+                synced.append(metric)
+        if synced:
+            print(f"[Metric] Synced {len(synced)} metrics to engine: {', '.join(synced)}")
     
     def _send_command_direct(self, cmd: TCodeCommand):
         """Send a command directly (used by StrokeMapper for arc strokes). Thread-safe."""
