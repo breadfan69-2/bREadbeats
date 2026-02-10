@@ -1968,44 +1968,49 @@ class CollapsibleGroupBox(QGroupBox):
     """
     A QGroupBox that can be collapsed/expanded by clicking the title.
     When collapsed, only the title bar is visible (windowshade effect).
+    Uses mousePressEvent instead of setCheckable to avoid Qt's built-in
+    child-disable behavior that prevents widget interaction after expand.
     """
     
     def __init__(self, title: str = "", parent=None, collapsed: bool = False):
         super().__init__(title, parent)
         self._collapsed = collapsed
-        self._content_widgets: list[QWidget] = []
-        self._content_layouts: list[QWidget] = []  # wrapped layout widgets
-        self.setCheckable(True)
-        self.setChecked(not collapsed)
-        self.toggled.connect(self._on_toggled)
-        # Override checkbox indicator to show ▼/▶ arrows
-        self._update_style()
+        self._base_title_text = title
+        self._first_show = True
+        self._update_title()
     
-    def _update_style(self):
-        arrow = "▼" if self.isChecked() else "▶"
-        self.setTitle(f"{arrow} {self._base_title}")
+    def _update_title(self):
+        arrow = "▶" if self._collapsed else "▼"
+        self.setTitle(f"{arrow} {self._base_title_text}")
     
-    @property
-    def _base_title(self):
-        t = self.title()
-        if t.startswith("▼ ") or t.startswith("▶ "):
-            return t[2:]
-        return t
+    def mousePressEvent(self, event):
+        # Toggle collapse only when clicking in the title-bar area (top ~25px)
+        if event.position().y() <= 25:
+            self.setCollapsed(not self._collapsed)
+            event.accept()
+        else:
+            super().mousePressEvent(event)
     
-    def _on_toggled(self, checked: bool):
-        self._collapsed = not checked
-        # Show/hide all direct children of the layout
+    def showEvent(self, event):
+        super().showEvent(event)
+        # On first show, apply collapsed state so children added after __init__
+        # are properly hidden when starting collapsed
+        if self._first_show:
+            self._first_show = False
+            if self._collapsed:
+                self._apply_visibility(False)
+    
+    def _apply_visibility(self, visible: bool):
         layout = self.layout()
         if layout:
             for i in range(layout.count()):
                 item = layout.itemAt(i)
                 widget = item.widget()
                 if widget:
-                    widget.setVisible(checked)
+                    widget.setVisible(visible)
                 inner_layout = item.layout()
                 if inner_layout:
-                    self._set_layout_visible(inner_layout, checked)
-        self._update_style()
+                    self._set_layout_visible(inner_layout, visible)
     
     def _set_layout_visible(self, layout, visible: bool):
         for i in range(layout.count()):
@@ -2018,7 +2023,9 @@ class CollapsibleGroupBox(QGroupBox):
                 self._set_layout_visible(inner, visible)
     
     def setCollapsed(self, collapsed: bool):
-        self.setChecked(not collapsed)
+        self._collapsed = collapsed
+        self._apply_visibility(not collapsed)
+        self._update_title()
     
     def isCollapsed(self) -> bool:
         return self._collapsed
@@ -2045,8 +2052,13 @@ class BREadbeatsWindow(QMainWindow):
         super().__init__()
         
         self.setWindowTitle("bREadbeats")
-        self.setMinimumSize(1000, 850)
+        self.setMinimumSize(400, 300)  # Allow shrinking to miniplayer
+        self.resize(1100, 950)  # Larger default for proper visualizer rendering
         self.setStyleSheet(self._get_stylesheet())
+        
+        # Miniplayer mode tracking
+        self._miniplayer_mode = False
+        self._miniplayer_threshold = 700  # Width threshold for miniplayer
         
         # Set window icon (appears in taskbar and title bar)
         try:
@@ -2432,6 +2444,32 @@ class BREadbeatsWindow(QMainWindow):
                 color: #e0e0e0;
             }
         """
+    
+    def _get_thin_scrollbar_style(self) -> str:
+        """Return thin minimal scrollbar CSS for NoWheelScrollArea tabs"""
+        return """
+            QScrollBar:vertical {
+                background-color: transparent;
+                width: 4px;
+                border: none;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background-color: rgba(100, 100, 100, 0.5);
+                border-radius: 2px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: rgba(150, 150, 150, 0.7);
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+                background: none;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+        """
         
     def _setup_ui(self):
         """Build the user interface"""
@@ -2440,31 +2478,43 @@ class BREadbeatsWindow(QMainWindow):
         
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.setSpacing(10)
+        self._main_layout = QVBoxLayout(central)
+        self._main_layout.setSpacing(10)
         
-        # Top: Connection and controls
-        top_layout = QHBoxLayout()
-        top_layout.addWidget(self._create_connection_panel())
-        top_layout.addWidget(self._create_control_panel())
-        main_layout.addLayout(top_layout)
+        # Top: Connection and controls (hideable in miniplayer)
+        self._top_widget = QWidget()
+        top_layout = QHBoxLayout(self._top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        self._connection_panel = self._create_connection_panel()
+        self._control_panel = self._create_control_panel()
+        top_layout.addWidget(self._connection_panel)
+        top_layout.addWidget(self._control_panel)
+        self._main_layout.addWidget(self._top_widget)
         
-        # Middle: Visualizers
-        viz_layout = QHBoxLayout()
-        viz_layout.addWidget(self._create_spectrum_panel(), stretch=3)
-        viz_layout.addWidget(self._create_position_panel(), stretch=1)
-        main_layout.addLayout(viz_layout)
+        # Middle: Visualizers (layout changes in miniplayer)
+        self._viz_widget = QWidget()
+        self._viz_layout = QHBoxLayout(self._viz_widget)
+        self._viz_layout.setContentsMargins(0, 0, 0, 0)
+        self._spectrum_panel = self._create_spectrum_panel()
+        self._position_panel = self._create_position_panel()
+        self._viz_layout.addWidget(self._spectrum_panel, stretch=3)
+        self._viz_layout.addWidget(self._position_panel, stretch=1)
+        self._main_layout.addWidget(self._viz_widget)
         
-        # Bottom: Tabs with sliders
-        main_layout.addWidget(self._create_settings_tabs())
+        # Bottom: Tabs with sliders (hideable in miniplayer)
+        self._settings_tabs = self._create_settings_tabs()
+        self._main_layout.addWidget(self._settings_tabs)
         
-        # Bottom row: Presets + Visualizer controls
-        bottom_layout = QHBoxLayout()
-        bottom_layout.addWidget(self._create_presets_panel())
+        # Bottom row: Presets + Visualizer controls (hideable in miniplayer)
+        self._bottom_widget = QWidget()
+        bottom_layout = QHBoxLayout(self._bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        self._presets_panel = self._create_presets_panel()
+        bottom_layout.addWidget(self._presets_panel)
         
         # Visualizer controls in a groupbox
-        visualizer_group = QGroupBox("Spectrum")
-        visualizer_layout = QHBoxLayout(visualizer_group)
+        self._visualizer_group = QGroupBox("Spectrum")
+        visualizer_layout = QHBoxLayout(self._visualizer_group)
         visualizer_layout.setContentsMargins(8, 4, 8, 4)
         
         visualizer_layout.addWidget(QLabel("Type:"))
@@ -2479,7 +2529,7 @@ class BREadbeatsWindow(QMainWindow):
         self.hide_indicators_checkbox.stateChanged.connect(self._on_hide_indicators_toggle)
         visualizer_layout.addWidget(self.hide_indicators_checkbox)
         
-        bottom_layout.addWidget(visualizer_group)
+        bottom_layout.addWidget(self._visualizer_group)
         
         bottom_layout.addStretch()  # Gap before Whip the Llama button
         
@@ -2490,7 +2540,7 @@ class BREadbeatsWindow(QMainWindow):
         self.projectm_btn.setMaximumWidth(120)
         bottom_layout.addWidget(self.projectm_btn)
         
-        main_layout.addLayout(bottom_layout)
+        self._main_layout.addWidget(self._bottom_widget)
     
     def _create_menu_bar(self):
         """Create menu bar with Menu, Options, and Help"""
@@ -3666,11 +3716,17 @@ bREadfan_69@hotmail.com"""
 
     def _create_tcode_freq_tab(self) -> QWidget:
         """Combined Pulse (P0) and Carrier (F0) frequency controls"""
+        scroll_area = NoWheelScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setStyleSheet(self._get_thin_scrollbar_style())
+        
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
         # ===== PULSE FREQUENCY (P0) =====
-        pulse_group = CollapsibleGroupBox("Pulse Frequency (P0) - blue overlay on spectrum")
+        pulse_group = CollapsibleGroupBox("Pulse Frequency (P0) - blue overlay on spectrum", collapsed=True)
         pulse_layout = QVBoxLayout(pulse_group)
 
         self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
@@ -3701,7 +3757,7 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(pulse_group)
 
         # ===== CARRIER FREQUENCY (F0) =====
-        carrier_group = CollapsibleGroupBox("Carrier Frequency (F0)")
+        carrier_group = CollapsibleGroupBox("Carrier Frequency (F0)", collapsed=True)
         carrier_layout = QVBoxLayout(carrier_group)
 
         self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
@@ -3732,7 +3788,8 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(carrier_group)
 
         layout.addStretch()
-        return widget
+        scroll_area.setWidget(widget)
+        return scroll_area
     
     def _on_butterworth_toggle(self, state: int):
         """Toggle Butterworth filter (requires restart)"""
@@ -3894,30 +3951,7 @@ bREadfan_69@hotmail.com"""
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        # Thin minimal scrollbar style
-        scroll_area.setStyleSheet("""
-            QScrollBar:vertical {
-                background-color: transparent;
-                width: 4px;
-                border: none;
-                margin: 0;
-            }
-            QScrollBar::handle:vertical {
-                background-color: rgba(100, 100, 100, 0.5);
-                border-radius: 2px;
-                min-height: 30px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: rgba(150, 150, 150, 0.7);
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0;
-                background: none;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: none;
-            }
-        """)
+        scroll_area.setStyleSheet(self._get_thin_scrollbar_style())
         
         # Content widget inside scroll area
         widget = QWidget()
@@ -4047,7 +4081,7 @@ bREadfan_69@hotmail.com"""
             print("[Config] Auto-enabled 4 core metrics from config")
         
         # ===== LEVELS GROUP: Audio Amplification, Sensitivity, Flux Multiplier =====
-        levels_group = CollapsibleGroupBox("Levels")
+        levels_group = CollapsibleGroupBox("Levels", collapsed=True)
         levels_layout = QVBoxLayout(levels_group)
         
         # Frequency band selection (moved from standalone group)
@@ -4081,7 +4115,7 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(levels_group)
         
         # ===== PEAKS GROUP: Peak Floor, Peak Decay, Rise Sensitivity =====
-        peaks_group = CollapsibleGroupBox("Peaks")
+        peaks_group = CollapsibleGroupBox("Peaks", collapsed=True)
         peaks_layout = QVBoxLayout(peaks_group)
         
         # Peak floor: minimum energy to consider (0 = disabled)
@@ -4563,6 +4597,12 @@ bREadfan_69@hotmail.com"""
     
     def _create_stroke_settings_tab(self) -> QWidget:
         """Stroke generation settings"""
+        scroll_area = NoWheelScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setStyleSheet(self._get_thin_scrollbar_style())
+        
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
@@ -4609,7 +4649,7 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(motion_group)
         
         # ===== STROKE PARAMETERS =====
-        params_group = CollapsibleGroupBox("Stroke Parameters")
+        params_group = CollapsibleGroupBox("Stroke Parameters", collapsed=True)
         params_layout = QVBoxLayout(params_group)
         
         self.stroke_range_slider = RangeSliderWithLabel("Stroke Min/Max", 0.0, 1.0, 0.2, 1.0, 2)
@@ -4649,52 +4689,51 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(depth_freq_group)
         
         layout.addStretch()
-        return widget
+        scroll_area.setWidget(widget)
+        return scroll_area
     
     def _create_jitter_creep_tab(self) -> QWidget:
-        """Jitter and creep settings"""
+        """Effects (jitter + creep) and axis weight settings"""
+        scroll_area = NoWheelScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setStyleSheet(self._get_thin_scrollbar_style())
+        
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
-        # Jitter section
-        jitter_group = QGroupBox("Vibration (micro-circles when idle)")
-        jitter_layout = QVBoxLayout(jitter_group)
+        # Combined Effects section (windowshade)
+        effects_group = CollapsibleGroupBox("Effects", collapsed=True)
+        effects_layout = QVBoxLayout(effects_group)
         
-        self.jitter_enabled = QCheckBox("Enable Jitter")
+        self.jitter_enabled = QCheckBox("Jitter")
         self.jitter_enabled.setChecked(True)
         self.jitter_enabled.stateChanged.connect(lambda s: setattr(self.config.jitter, 'enabled', s == 2))
-        jitter_layout.addWidget(self.jitter_enabled)
+        effects_layout.addWidget(self.jitter_enabled)
         
         self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.01, 0.1, 0.1, 3)
         self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
-        jitter_layout.addWidget(self.jitter_amplitude_slider)
+        effects_layout.addWidget(self.jitter_amplitude_slider)
         
         self.jitter_intensity_slider = SliderWithLabel("Circle Speed", 0.0, 10.0, 0.5)
         self.jitter_intensity_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'intensity', v))
-        jitter_layout.addWidget(self.jitter_intensity_slider)
+        effects_layout.addWidget(self.jitter_intensity_slider)
         
-        layout.addWidget(jitter_group)
-        
-        # Creep section
-        creep_group = QGroupBox("Creep (slow drift when idle)")
-        creep_layout = QVBoxLayout(creep_group)
-        
-        self.creep_enabled = QCheckBox("Enable Creep")
+        self.creep_enabled = QCheckBox("Creep")
         self.creep_enabled.setChecked(True)
         self.creep_enabled.stateChanged.connect(lambda s: setattr(self.config.creep, 'enabled', s == 2))
-        creep_layout.addWidget(self.creep_enabled)
+        effects_layout.addWidget(self.creep_enabled)
         
         self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 0.1, 0.02, 3)
         self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
-        creep_layout.addWidget(self.creep_speed_slider)
+        effects_layout.addWidget(self.creep_speed_slider)
         
-        layout.addWidget(creep_group)
+        layout.addWidget(effects_group)
         
         # Axis Weights section (moved from Stroke Settings)
         axis_group = QGroupBox("Axis Weights")
         axis_layout = QVBoxLayout(axis_group)
-        axis_layout.addWidget(QLabel("Modes 1-3: Scales axis amplitude (0=off, 1=normal, 2=double)"))
-        axis_layout.addWidget(QLabel("Mode 4 (User): Controls flux/peak response (0=flux, 1=balanced, 2=peak)"))
         
         self.alpha_weight_slider = SliderWithLabel("Alpha Weight", 0.0, 2.0, 1.0)
         self.alpha_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'alpha_weight', v))
@@ -4703,6 +4742,9 @@ bREadfan_69@hotmail.com"""
         self.beta_weight_slider = SliderWithLabel("Beta Weight", 0.0, 2.0, 1.0)
         self.beta_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'beta_weight', v))
         axis_layout.addWidget(self.beta_weight_slider)
+        
+        # Set initial tooltips (updated dynamically by _on_mode_change)
+        self._update_axis_weight_tooltips()
         
         layout.addWidget(axis_group)
         
@@ -4718,10 +4760,31 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(vol_limit_group)
         
         layout.addStretch()
-        return widget
+        scroll_area.setWidget(widget)
+        return scroll_area
+    
+    def _update_axis_weight_tooltips(self):
+        """Update axis weight slider tooltips based on current stroke mode"""
+        mode = getattr(self.config.stroke, 'mode', None)
+        if mode and hasattr(mode, 'value'):
+            mode_val = mode.value
+        else:
+            mode_val = 1
+        if mode_val <= 3:
+            tip = "Modes 1-3: Scales axis amplitude (0=off, 1=normal, max 1.25)"
+        else:
+            tip = "Mode 4 (User): Controls flux/peak response (0=flux, 1=balanced, 2=peak)"
+        self.alpha_weight_slider.setToolTip(tip)
+        self.beta_weight_slider.setToolTip(tip)
     
     def _create_tempo_tracking_tab(self) -> QWidget:
         """Tempo tracking and rhythm settings"""
+        scroll_area = NoWheelScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setStyleSheet(self._get_thin_scrollbar_style())
+        
         widget = QWidget()
         layout = QVBoxLayout(widget)
         
@@ -4768,7 +4831,7 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(tempo_group)
         
         # Spectral flux control group
-        flux_group = CollapsibleGroupBox("Spectral Flux Control")
+        flux_group = CollapsibleGroupBox("Spectral Flux Control", collapsed=True)
         flux_layout = QVBoxLayout(flux_group)
         flux_layout.addWidget(QLabel("Low flux→downbeats only, High flux→every beat"))
         
@@ -4787,7 +4850,8 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(flux_group)
         
         layout.addStretch()
-        return widget
+        scroll_area.setWidget(widget)
+        return scroll_area
     
     # Event handlers
     def _auto_connect_tcp(self):
@@ -4892,6 +4956,9 @@ bREadfan_69@hotmail.com"""
             self.beta_weight_slider.slider.setMaximum(int(new_max * self.beta_weight_slider.multiplier))
             self.alpha_weight_slider.max_val = new_max
             self.beta_weight_slider.max_val = new_max
+        
+        # Update axis weight tooltips for the current mode
+        self._update_axis_weight_tooltips()
     
     def _start_engines(self):
         """Initialize and start all engines"""
