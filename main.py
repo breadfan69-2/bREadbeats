@@ -2959,6 +2959,7 @@ bREadfan_69@hotmail.com"""
                 self.audio_gain_slider,
                 self.silence_reset_slider,
                 self.freq_range_slider,
+                self.metrics_global_cb,
                 self.tempo_tracking_checkbox,
                 self.time_sig_combo,
                 self.stability_threshold_slider,
@@ -3002,6 +3003,9 @@ bREadfan_69@hotmail.com"""
                 self.silence_reset_slider.setValue(self.config.beat.silence_reset_ms)
                 self.freq_range_slider.setLow(self.config.beat.freq_low)
                 self.freq_range_slider.setHigh(self.config.beat.freq_high)
+
+                # Auto-adjust global toggle
+                self.metrics_global_cb.setChecked(self.config.auto_adjust.metrics_global_enabled)
 
                 # Tempo tracking settings
                 self.tempo_tracking_checkbox.setChecked(self.config.beat.tempo_tracking_enabled)
@@ -3756,6 +3760,17 @@ bREadfan_69@hotmail.com"""
             self.audio_engine._spectrum_skip_frames = skip_values[index]
         print(f"[Config] Spectrum skip frames changed to {skip_values[index]}")
     
+    def _on_metrics_global_toggle(self, state):
+        """Master toggle for all metric auto-adjust checkboxes"""
+        enabled = state == 2
+        self.config.auto_adjust.metrics_global_enabled = enabled
+        # Enable/disable all individual metric checkboxes
+        for cb in (self.metric_peak_floor_cb, self.metric_audio_amp_cb,
+                    self.metric_flux_balance_cb, self.metric_target_bps_cb):
+            cb.setChecked(enabled)
+            cb.setEnabled(enabled)
+        print(f"[Metric] Global auto-adjust {'enabled' if enabled else 'disabled'}")
+    
     def _on_metric_toggle(self, metric: str, enabled: bool):
         """Toggle a real-time metric-based auto-ranging metric"""
         if not hasattr(self, 'audio_engine') or self.audio_engine is None:
@@ -3923,9 +3938,23 @@ bREadfan_69@hotmail.com"""
         detect_layout.addLayout(type_layout)
         layout.addWidget(detect_group)
         
-        # ===== REAL-TIME METRIC-BASED AUTO-RANGING CONTROLS =====
-        metric_group = CollapsibleGroupBox("Real-Time Metrics (Experimental)")
+        # ===== AUTO-ADJUST (METRIC-BASED AUTO-RANGING) =====
+        metric_group = CollapsibleGroupBox("Auto-Adjust", collapsed=True)
         metric_layout = QVBoxLayout(metric_group)
+        
+        # Global enable/disable checkbox for all metrics
+        self.metrics_global_cb = QCheckBox("Enable Auto-Adjust")
+        self.metrics_global_cb.setChecked(self.config.auto_adjust.metrics_global_enabled)
+        self.metrics_global_cb.setToolTip("Master toggle: enable/disable all metric auto-adjustments")
+        self.metrics_global_cb.setStyleSheet("font-weight: bold; font-size: 10px;")
+        self.metrics_global_cb.stateChanged.connect(self._on_metrics_global_toggle)
+        metric_layout.addWidget(self.metrics_global_cb)
+        
+        # Butterworth filter (mandatory for metrics)
+        self.butterworth_checkbox = QCheckBox("Butterworth bandpass filter (better bass isolation)")
+        self.butterworth_checkbox.setChecked(getattr(self.config.audio, 'use_butterworth', True))
+        self.butterworth_checkbox.stateChanged.connect(self._on_butterworth_toggle)
+        metric_layout.addWidget(self.butterworth_checkbox)
         
         # Metric controls row
         metric_ctrl_layout = QHBoxLayout()
@@ -4008,31 +4037,23 @@ bREadfan_69@hotmail.com"""
         
         layout.addWidget(metric_group)
         
-        # Auto-enable key metrics on startup for better user experience
-        self.metric_peak_floor_cb.setChecked(True)      # Essential for valley tracking 
-        self.metric_audio_amp_cb.setChecked(True)       # Essential for beat detection
-        self.metric_flux_balance_cb.setChecked(True)    # Balances flux with energy bars
-        self.metric_target_bps_cb.setChecked(True)      # Maintains target beats per second
-        print("[Config] Auto-enabled 4 core metrics on startup: peak_floor, audio_amp, flux_balance, target_bps")
-        
-        # Frequency band selection
-        freq_group = CollapsibleGroupBox("Frequency Band (Hz) - red overlay", collapsed=True)
-        freq_layout = QVBoxLayout(freq_group)
-        
-        # Full range up to ~20kHz (Nyquist for 44100 Hz)
-
-        # Get sample rate (default to 44100 if not available yet)
-        sr = getattr(self.config.audio, 'sample_rate', 44100)
-        nyquist = sr // 2
-        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 4000, 0)
-        self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
-        freq_layout.addWidget(self.freq_range_slider)
-        
-        layout.addWidget(freq_group)
+        # Enable metrics based on config (first load = True, then saved)
+        global_on = self.config.auto_adjust.metrics_global_enabled
+        self.metric_peak_floor_cb.setChecked(global_on)
+        self.metric_audio_amp_cb.setChecked(global_on)
+        self.metric_flux_balance_cb.setChecked(global_on)
+        self.metric_target_bps_cb.setChecked(global_on)
+        if global_on:
+            print("[Config] Auto-enabled 4 core metrics from config")
         
         # ===== LEVELS GROUP: Audio Amplification, Sensitivity, Flux Multiplier =====
-        levels_group = QGroupBox("Levels")
+        levels_group = CollapsibleGroupBox("Levels")
         levels_layout = QVBoxLayout(levels_group)
+        
+        # Frequency band selection (moved from standalone group)
+        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 4000, 0)
+        self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
+        levels_layout.addWidget(self.freq_range_slider)
         
         # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud)
         aa_min, aa_max = BEAT_RANGE_LIMITS['audio_amp']
@@ -4060,7 +4081,7 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(levels_group)
         
         # ===== PEAKS GROUP: Peak Floor, Peak Decay, Rise Sensitivity =====
-        peaks_group = QGroupBox("Peaks")
+        peaks_group = CollapsibleGroupBox("Peaks")
         peaks_layout = QVBoxLayout(peaks_group)
         
         # Peak floor: minimum energy to consider (0 = disabled)
@@ -4083,15 +4104,6 @@ bREadfan_69@hotmail.com"""
         peaks_layout.addWidget(self.rise_sens_slider)
         
         layout.addWidget(peaks_group)
-        
-        # Advanced options
-        advanced_group = CollapsibleGroupBox("Advanced", collapsed=True)
-        advanced_layout = QVBoxLayout(advanced_group)
-        self.butterworth_checkbox = QCheckBox("Use Butterworth bandpass filter (better bass isolation)")
-        self.butterworth_checkbox.setChecked(getattr(self.config.audio, 'use_butterworth', True))
-        self.butterworth_checkbox.stateChanged.connect(self._on_butterworth_toggle)
-        advanced_layout.addWidget(self.butterworth_checkbox)
-        layout.addWidget(advanced_group)
         
         layout.addStretch()
         scroll_area.setWidget(widget)
@@ -5452,6 +5464,9 @@ bREadfan_69@hotmail.com"""
         self.config.beat.stability_threshold = self.stability_threshold_slider.value()
         self.config.beat.tempo_timeout_ms = int(self.tempo_timeout_slider.value())
         self.config.beat.phase_snap_weight = self.phase_snap_slider.value()
+        
+        # Save auto-adjust global toggle
+        self.config.auto_adjust.metrics_global_enabled = self.metrics_global_cb.isChecked()
         
         # Save config before closing
         save_config(self.config)

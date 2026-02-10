@@ -1,0 +1,8 @@
+lets work on the effects/axis tab now
+
+consolodate vibration/creep to a single groupbox labeled "effects"
+-windowshade
+
+no need for any () explaining what they are, simply jitter and creep please for labels
+
+can the "modes 1-3, mode 4 be put in a tooltip when mouse over those sliders?   appropriate tooltip for the current mode?
