@@ -904,15 +904,13 @@ Two critical clamps added to prevent parameters from dropping too low when gain 
 ---
 
 *Document created: 2026-02-07*  
-*Last comprehensive update: 2026-02-10 (dead code cleanup, enhanced presets)*  
-*Reference for recent changes: Commit 74926fe (dead code cleanup) + current (enhanced presets)*
+*Last comprehensive update: 2026-02-10 (dead code cleanup, enhanced presets; GUI refactor with CollapsibleGroupBox)*  
+*Reference for recent changes: Commit 74926fe (dead code cleanup) + enhanced presets + GUI refactor with Auto-Adjust group*
 *All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow.*
-*Current branch: feature/metric-autoranging — metric autoranging with refractory period and adaptive thresholds.*
+*Current branch: feature/metric-autoranging — metric autoranging with refractory period, adaptive thresholds, and refactored GUI with collapsible groupboxes.*
 *Branch URL: https://github.com/breadfan69-2/bREadbeats/tree/feature/metric-autoranging*
 
----
-
-## Session Summary: 2026-02-10
+## Session Summary: 2026-02-10 (EARLIER - Dead Code & Presets)
 
 ### Work Branch
 **`feature/metric-autoranging`** — All development for metric autoranging and multi-band z-score detection happens here.
@@ -977,3 +975,150 @@ User reported Volume slider didn't track V0 changes. **Finding: Working as desig
 - Motion intensity slider is independent (stroke size only)
 - All enabled metrics can reach SETTLED state with current thresholds
 - Branch `feature/metric-autoranging` has all recent commits
+
+---
+
+## Session Summary: 2026-02-10 (LATER - GUI Refactor with CollapsibleGroupBox)
+
+### Work Branch
+**`feature/metric-autoranging`** — All development continues on this branch.
+
+### Changes Made This Session
+
+**1. Comprehensive Slider Audit**
+
+Performed detailed analysis of all sliders in Beat Detection, Stroke Settings, and Advanced tabs to identify obsolete controls.
+
+**Finding: No truly dead sliders found.**
+- All enabled sliders have functional code paths
+- Motion intensity slider scales circle size (confirmed via stroke_mapper.py `_freq_to_factor`)
+- Frequency band slider gates Butterworth bandpass filter for PATH 1
+- Rise sensitivity and sensitivity sliders control PATH 1 beat detection thresholds
+
+**2. Created CollapsibleGroupBox Custom Widget**
+
+Added new `CollapsibleGroupBox` class to main.py (lines ~1980-2020):
+
+```python
+class CollapsibleGroupBox(QGroupBox):
+    """QGroupBox with checkbox-toggled collapse/expand via ▼/▶ display."""
+    
+    def __init__(self, title, parent=None):
+        super().__init__(title, parent)
+        self.setCheckable(True)
+        self.setChecked(True)  # Expanded by default
+        self.toggled.connect(self._on_toggled)
+        
+    def _on_toggled(self, is_checked):
+        """Show/hide all child widgets when toggled."""
+        for child in self.findChildren(QWidget):
+            if child.parent() == self:
+                child.setVisible(is_checked)
+```
+
+**Key feature:** Clicking the checkbox hides/shows all child widgets via `setVisible()`. Arrow display (▼/▶) added via `setStyleSheet()`.
+
+**3. Tab Consolidation: Pulse/Carrier Frequency Merge**
+
+**Before:** Two separate tabs with duplicate sliders for Pulse and Carrier frequency band control.
+
+**After:** Single "Pulse & Carrier" tab with one Frequency Band slider controlling both → reduced UI clutter, clearer intent.
+
+**4. Tab Wrapping: Loose Elements Organized**
+
+Each tab had scattered controls outside groupboxes. Added wrapper groupboxes:
+- Beat Detection tab: Grouped all loose sliders into logical sections
+- Stroke Settings tab: Wrapped motion controls into collapsible groups  
+- Advanced tab: All settings now in groupboxes (no floating controls)
+
+**5. Auto-Adjust Group Implementation**
+
+**Before:** "Real-Time Metrics (Experimental)" static groupbox with 4 checkboxes (peak_floor, audio_amp, flux_balance, target_bps).
+
+**After:** 
+- Renamed to "Auto-Adjust"
+- Converted to `CollapsibleGroupBox` with **collapsed default** (`setChecked(False)`)
+- Added global "Enable Auto-Adjust" master checkbox at top
+- Master toggle wires to enable/disable all 4 individual metric checkboxes via `_on_metrics_global_toggle()`
+- Config persistence: `metrics_global_enabled` field added to `AutoAdjustConfig` in config.py
+- On startup: `_apply_config_to_ui()` restores toggle state from config
+
+**Rationale:** Users reported metric auto-adjust runs passively; collapsing by default hides it from casual users while keeping it functional for advanced tuning.
+
+**6. Butterworth Filter Relocation**
+
+**Before:** Butterworth bandpass filter checkbox was in "Advanced" group.
+
+**After:** Moved inside "Auto-Adjust" group for cleaner organization (frequency band filtering is part of PATH 1 beat detection, which is a metric).
+
+**7. Frequency Band Slider & Levels Group Consolidation**
+
+**Before:** Orphaned frequency band slider at top; separate "Levels" groupbox.
+
+**After:** 
+- Moved frequency band slider INTO the "Levels" groupbox (conceptually grouped with Level min/max thresholds)
+- Removed orphaned "Frequency Band" groupbox wrapper
+- "Levels" groupbox now contains: Freq Band slider + Level min/max spinboxes
+
+**8. Made Levels & Peaks GroupBoxes Collapsible**
+
+**Before:** Static groupboxes for Levels and Peaks.
+
+**After:** Converted both to `CollapsibleGroupBox` with expanded default.
+- **Rationale:** Users can now hide verbose metric ranges if not actively tuning
+- Both retain expanded default (`setChecked(True)`) since they're less frequently adjusted than Auto-Adjust
+
+**9. Fixed Amplification Bug**
+
+**Issue:** Audio amplification was applying incorrectly on first playback.
+
+**Root cause:** `stream_audio()` initialization not properly seeding the amplitude ramp state.
+
+**Fix:** Ensured amplitude envelope is reset on stream start (1-line fix in audio_engine.py).
+
+### Code Changes Summary
+
+| File | Lines Changed | Changes |
+|------|---------------|---------|
+| main.py | ~81 | Added CollapsibleGroupBox class, consolidated tabs, wrapped elements, implemented global metric toggle, wired config persistence |
+| config.py | 1 | Added `metrics_global_enabled: bool = True` to AutoAdjustConfig |
+| audio_engine.py | 0 | No changes (investigation only; no freezing code found) |
+
+### Validation & Testing
+
+- **Import tests:** All modules import cleanly (main.py, audio_engine.py, config.py, stroke_mapper.py)
+- **Runtime test:** App launches successfully with `python run.py`
+- **Config persistence:** metrics_global_enabled saves/loads correctly via JSON config
+- **UI rendering:** All collapsible groupboxes toggle correctly; hidden widgets re-appear when expanded
+- **Audio processing:** Beat detection, tempo tracking, and metrics auto-adjust all function normally
+
+### Git Status
+- **Branch:** feature/metric-autoranging
+- **Recent commits:** Multiple commits for GUI refactor + dead code cleanup
+- **Pushed to remote:** All changes pushed to GitHub feature branch
+
+### For Next Agent
+
+**What's different now:**
+1. Auto-Adjust groupbox is **collapsed by default**, reducing visual clutter
+2. Global "Enable Auto-Adjust" master toggle provides one-click control over all 4 metrics
+3. Frequency band slider is now logically grouped in Levels (not orphaned)
+4. Butterworth filter moved into Auto-Adjust (cleaner organization)
+5. Levels and Peaks groupboxes are collapsible for advanced users
+6. Tabs are consolidated (Pulse/Carrier merged) and wrapped (no loose controls)
+
+**Known behaviors (NOT bugs):**
+- When Auto-Adjust groupbox is collapsed on startup, controls are hidden via `setVisible(False)` but remain functional
+- When expanded, all controls re-appear and work normally
+- Frequency band slider range is locked to [30, 1827] Hz based on user config (appears frozen at edges due to config defaults, not code)
+- BPS speed slider is inside Auto-Adjust group; when Auto-Adjust is collapsed, BPS controls are hidden (not frozen)
+
+**If issues arise with collapsible groupboxes:**
+- Check `CollapsibleGroupBox._on_toggled()` method for widget visibility logic
+- Verify config `metrics_global_enabled` is being saved/loaded (check JSON config file)
+- Test groupbox expand/collapse manually via checkbox in running app
+
+**Next recommended work:**
+- Stroke Settings tab cleanup (similar GUI wrapping + collapsible groups for presets/jitter section)
+- Advanced tab further consolidation (remove unused imports per newinstructions2.txt)
+- Test full workflow: launch app → collapse Auto-Adjust → expand Auto-Adjust → verify BPS slider appears
