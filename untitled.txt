@@ -1,3 +1,0 @@
-take a good look at the code and get familiar.
-
-i want to know what we can do better with the autoranging functions.  i can see what they need to do now with the 3bar display on the visualizer.   are we currently measuring peak floor/peak size etc and is it possible to just make those values always relative to each other without using a timer sequence?

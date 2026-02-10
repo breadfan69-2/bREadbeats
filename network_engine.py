@@ -61,12 +61,12 @@ class TCodeCommand:
         # Add any other tcode_tags if present (with interpolation time)
         tcode_tags = getattr(self, 'tcode_tags', {})
         for tag, val in tcode_tags.items():
-            if tag == 'C0_duration':
-                continue  # Skip duration tag itself
+            if tag.endswith('_duration'):
+                continue  # Skip duration overrides (consumed below)
             if tag != 'P0':
-                # Use C0_duration for C0 if available
-                c0_dur = tcode_tags.get('C0_duration', None) if tag == 'C0' else None
-                dur = c0_dur or self.duration_ms
+                # Check for tag-specific duration override (e.g. C0_duration, P1_duration)
+                tag_dur = tcode_tags.get(f'{tag}_duration', None)
+                dur = tag_dur or self.duration_ms
                 cmd += f" {tag}{int(val):04d}I{dur}"
         
         cmd += "\n"

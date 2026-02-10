@@ -1,0 +1,24 @@
+hi claude,
+
+shades and groupboxes look good.  i need a little more.  i want our visualizer to get their full value.
+
+lets start with the beat detection tab
+
+[real time metrics}
+change groupbox title to [auto-adjust] and put a global checkbox for the metric functions in/next to the groupbox title.  
+-move butterworth filter to metrics groupbox, since its mandatory.
+
+-default load shade closed, always; global toggle "on" for first load, then save in config 
+
+
+
+{frequency band slider}
+is frequency band slider locked/frozen when in auto mode? ok if so, but it should have an indication.  Ghost slider?
+-we can move it to the 'levels' groupbox.  the orphaned groupbox can be deleted.
+
+
+{more shades}
+add window shades for the levels and peaks groupboxes please
+
+we'll work on the stroke settings tab next
+
