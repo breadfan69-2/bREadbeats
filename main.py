@@ -2124,28 +2124,50 @@ class BREadbeatsWindow(QMainWindow):
         # Cached P0/F0 values for thread-safe access (written by audio thread, read by GUI + send_direct)
         self._cached_p0_val: Optional[int] = None  # Last computed P0 TCode value
         self._cached_f0_val: Optional[int] = None  # Last computed F0 TCode value
-        self._cached_p0_enabled: bool = True
-        self._cached_f0_enabled: bool = True
+        self._cached_p0_enabled: bool = False
+        self._cached_f0_enabled: bool = False
         self._cached_pulse_mode: int = 0  # 0=Hz, 1=Speed
         self._cached_pulse_invert: bool = False
         self._cached_f0_mode: int = 0
         self._cached_f0_invert: bool = False
-        self._cached_pulse_display: str = "Pulse: --"
-        self._cached_carrier_display: str = "Carrier: --"
+        self._cached_pulse_display: str = "Pulse: off"
+        self._cached_carrier_display: str = "Carrier: off"
         # Cached TCode Sent Freq slider values (Hz) for thread-safe P0/F0 computation
         self._cached_tcode_freq_min: float = 30.0
         self._cached_tcode_freq_max: float = 105.0
         self._cached_f0_tcode_min: float = 500.0
         self._cached_f0_tcode_max: float = 1000.0
         # Track previous enabled state for send-zero-once logic
-        self._prev_p0_enabled: bool = True
-        self._prev_f0_enabled: bool = True
+        self._prev_p0_enabled: bool = False
+        self._prev_f0_enabled: bool = False
+        
+        # P1 (Pulse Width) cached state
+        self._cached_p1_enabled: bool = False
+        self._cached_p1_val: Optional[int] = None
+        self._cached_p1_mode: int = 0  # 0=Volume(RMS), 1=Hz, 2=Speed
+        self._cached_p1_invert: bool = False
+        self._cached_p1_display: str = "PWidth: off"
+        self._cached_p1_tcode_min: int = 1000
+        self._cached_p1_tcode_max: int = 8000
+        self._prev_p1_enabled: bool = False
+        
+        # P3 (Rise Time) cached state
+        self._cached_p3_enabled: bool = False
+        self._cached_p3_val: Optional[int] = None
+        self._cached_p3_mode: int = 0  # 0=Brightness(centroid), 1=Hz, 2=Speed
+        self._cached_p3_invert: bool = False
+        self._cached_p3_display: str = "Rise: off"
+        self._cached_p3_tcode_min: int = 1000
+        self._cached_p3_tcode_max: int = 8000
+        self._prev_p3_enabled: bool = False
         
         # P0/F0 sliding window averaging (250ms window for smoother, more readable signal)
         from collections import deque
         import random
         self._p0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
         self._f0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
+        self._p1_window: deque = deque()       # (timestamp, norm_weighted) tuples for Pulse Width
+        self._p3_window: deque = deque()       # (timestamp, norm_weighted) tuples for Rise Time
         self._freq_window_ms: float = 250.0  # Window size in milliseconds
         self._p0_last_send_time: float = 0.0  # For throttling P0 sends
         self._f0_last_send_time: float = 0.0  # For throttling F0 sends
@@ -3202,16 +3224,28 @@ bREadfan_69@hotmail.com"""
         freq_display_layout.setSpacing(0)
         
         # Carrier Freq display (shows sent F0 TCode value)
-        self.carrier_freq_label = QLabel("Carrier: --")
+        self.carrier_freq_label = QLabel("Carrier: off")
         self.carrier_freq_label.setStyleSheet("color: #0af; font-size: 11px; font-weight: bold;")
         self.carrier_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.carrier_freq_label)
         
         # Pulse Freq display (shows sent P0 TCode value)
-        self.pulse_freq_label = QLabel("Pulse: --")
+        self.pulse_freq_label = QLabel("Pulse: off")
         self.pulse_freq_label.setStyleSheet("color: #f80; font-size: 11px; font-weight: bold;")
         self.pulse_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.pulse_freq_label)
+        
+        # Pulse Width display (P1)
+        self.p1_display_label = QLabel("PWidth: off")
+        self.p1_display_label.setStyleSheet("color: #fa0; font-size: 10px;")
+        self.p1_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        freq_display_layout.addWidget(self.p1_display_label)
+        
+        # Rise Time display (P3)
+        self.p3_display_label = QLabel("Rise: off")
+        self.p3_display_label.setStyleSheet("color: #af0; font-size: 10px;")
+        self.p3_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        freq_display_layout.addWidget(self.p3_display_label)
         
         freq_display_widget = QWidget()
         freq_display_widget.setLayout(freq_display_layout)
@@ -3532,7 +3566,7 @@ bREadfan_69@hotmail.com"""
         tabs.addTab(self._create_stroke_settings_tab(), "Stroke Settings")
         tabs.addTab(self._create_jitter_creep_tab(), "Effects / Axis")
         tabs.addTab(self._create_tempo_tracking_tab(), "Tempo Tracking")
-        tabs.addTab(self._create_tcode_freq_tab(), "TCode Freq")
+        tabs.addTab(self._create_tcode_freq_tab(), "Pulse")
         return tabs
     
     def _create_presets_panel(self) -> QGroupBox:
@@ -3773,7 +3807,7 @@ bREadfan_69@hotmail.com"""
         self.pulse_invert_checkbox.setChecked(False)
         pulse_mode_layout.addWidget(self.pulse_invert_checkbox)
         self.pulse_enabled_checkbox = QCheckBox("Enable P0")
-        self.pulse_enabled_checkbox.setChecked(True)
+        self.pulse_enabled_checkbox.setChecked(False)
         pulse_mode_layout.addWidget(self.pulse_enabled_checkbox)
         pulse_mode_layout.addStretch()
         pulse_layout.addLayout(pulse_mode_layout)
@@ -3804,12 +3838,72 @@ bREadfan_69@hotmail.com"""
         self.f0_invert_checkbox.setChecked(False)
         f0_mode_layout.addWidget(self.f0_invert_checkbox)
         self.f0_enabled_checkbox = QCheckBox("Enable F0")
-        self.f0_enabled_checkbox.setChecked(True)
+        self.f0_enabled_checkbox.setChecked(False)
         f0_mode_layout.addWidget(self.f0_enabled_checkbox)
         f0_mode_layout.addStretch()
         carrier_layout.addLayout(f0_mode_layout)
 
         layout.addWidget(carrier_group)
+
+        # ===== PULSE WIDTH (P1) =====
+        p1_group = CollapsibleGroupBox("Pulse Width (P1) — higher = stronger, smoother", collapsed=True)
+        p1_layout = QVBoxLayout(p1_group)
+
+        self.p1_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
+        p1_layout.addWidget(self.p1_monitor_range_slider)
+
+        self.p1_tcode_range_slider = RangeSliderWithLabel("Sent TCode", 0, 9999, 1000, 8000, 0)
+        p1_layout.addWidget(self.p1_tcode_range_slider)
+
+        self.p1_weight_slider = SliderWithLabel("Weight", 0.0, 5.0, 1.0, 2)
+        p1_layout.addWidget(self.p1_weight_slider)
+
+        p1_mode_layout = QHBoxLayout()
+        p1_mode_layout.addWidget(QLabel("Mode:"))
+        self.p1_mode_combo = QComboBox()
+        self.p1_mode_combo.addItems(["Volume (RMS energy)", "Hz (dominant freq)", "Speed (dot movement)"])
+        self.p1_mode_combo.setCurrentIndex(0)
+        p1_mode_layout.addWidget(self.p1_mode_combo)
+        self.p1_invert_checkbox = QCheckBox("Invert")
+        self.p1_invert_checkbox.setChecked(False)
+        p1_mode_layout.addWidget(self.p1_invert_checkbox)
+        self.p1_enabled_checkbox = QCheckBox("Enable P1")
+        self.p1_enabled_checkbox.setChecked(False)
+        p1_mode_layout.addWidget(self.p1_enabled_checkbox)
+        p1_mode_layout.addStretch()
+        p1_layout.addLayout(p1_mode_layout)
+
+        layout.addWidget(p1_group)
+
+        # ===== RISE TIME (P3) =====
+        p3_group = CollapsibleGroupBox("Rise Time (P3) — higher = smoother, gentler", collapsed=True)
+        p3_layout = QVBoxLayout(p3_group)
+
+        self.p3_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
+        p3_layout.addWidget(self.p3_monitor_range_slider)
+
+        self.p3_tcode_range_slider = RangeSliderWithLabel("Sent TCode", 0, 9999, 1000, 8000, 0)
+        p3_layout.addWidget(self.p3_tcode_range_slider)
+
+        self.p3_weight_slider = SliderWithLabel("Weight", 0.0, 5.0, 1.0, 2)
+        p3_layout.addWidget(self.p3_weight_slider)
+
+        p3_mode_layout = QHBoxLayout()
+        p3_mode_layout.addWidget(QLabel("Mode:"))
+        self.p3_mode_combo = QComboBox()
+        self.p3_mode_combo.addItems(["Brightness (spectral centroid)", "Hz (dominant freq)", "Speed (dot movement)"])
+        self.p3_mode_combo.setCurrentIndex(0)
+        p3_mode_layout.addWidget(self.p3_mode_combo)
+        self.p3_invert_checkbox = QCheckBox("Invert")
+        self.p3_invert_checkbox.setChecked(False)
+        p3_mode_layout.addWidget(self.p3_invert_checkbox)
+        self.p3_enabled_checkbox = QCheckBox("Enable P3")
+        self.p3_enabled_checkbox.setChecked(False)
+        p3_mode_layout.addWidget(self.p3_enabled_checkbox)
+        p3_mode_layout.addStretch()
+        p3_layout.addLayout(p3_mode_layout)
+
+        layout.addWidget(p3_group)
 
         layout.addStretch()
         scroll_area.setWidget(widget)
@@ -5043,6 +5137,17 @@ bREadfan_69@hotmail.com"""
                 if cmd.tcode_tags is None:
                     cmd.tcode_tags = {}
                 cmd.tcode_tags['C0'] = self._cached_f0_val  # restim uses C0 for carrier
+            # Attach cached P1/P3 values
+            if self._cached_p1_enabled and self._cached_p1_val is not None:
+                if cmd.tcode_tags is None:
+                    cmd.tcode_tags = {}
+                cmd.tcode_tags['P1'] = self._cached_p1_val
+                cmd.tcode_tags['P1_duration'] = int(self._freq_window_ms)
+            if self._cached_p3_enabled and self._cached_p3_val is not None:
+                if cmd.tcode_tags is None:
+                    cmd.tcode_tags = {}
+                cmd.tcode_tags['P3'] = self._cached_p3_val
+                cmd.tcode_tags['P3_duration'] = int(self._freq_window_ms)
             # Apply volume ramp multiplier (don't override volume - stroke mapper computed it)
             if self._volume_ramp_active:
                 elapsed = time.time() - self._volume_ramp_start_time
@@ -5272,11 +5377,133 @@ bREadfan_69@hotmail.com"""
             self._f0_freq_window.clear()  # Clear window when disabled
             self._f0_last_sent_tcode = None  # Reset smoothing state when disabled
         
+        # --- P1 (Pulse Width) with 250ms sliding window averaging ---
+        p1_enabled = self._cached_p1_enabled
+        if p1_enabled:
+            p1_mode = self._cached_p1_mode
+            p1_invert = self._cached_p1_invert
+            p1_weight = self.config.pulse_width.weight
+            
+            if p1_mode == 0:  # Volume (RMS energy) mode
+                # Use spectrum RMS as volume proxy (0-1 normalized)
+                if spectrum is not None and len(spectrum) > 0:
+                    spec_rms = float(np.sqrt(np.mean(spectrum ** 2)))
+                    # Normalize: typical spec_rms range ~0.0001-0.05, map with log scale
+                    p1_norm = max(0.0, min(1.0, (np.log10(max(spec_rms, 1e-8)) + 4) / 3.0))
+                else:
+                    p1_norm = 0.5
+            elif p1_mode == 1:  # Hz (dominant freq) mode
+                p1_dom_freq = self._extract_dominant_freq(spectrum, self.config.audio.sample_rate,
+                    self.config.pulse_width.monitor_freq_min, self.config.pulse_width.monitor_freq_max) if spectrum is not None else 0.0
+                p1_in_low = self.config.pulse_width.monitor_freq_min
+                p1_in_high = self.config.pulse_width.monitor_freq_max
+                p1_norm = (p1_dom_freq - p1_in_low) / max(1.0, p1_in_high - p1_in_low)
+            else:  # Speed (dot movement) mode
+                p1_norm = min(1.0, dot_speed / 10.0)
+            
+            p1_norm = max(0.0, min(1.0, p1_norm))
+            p1_norm_weighted = 0.5 + (p1_norm - 0.5) * p1_weight
+            p1_norm_weighted = max(0.0, min(1.0, p1_norm_weighted))
+            
+            if p1_invert:
+                p1_norm_weighted = 1.0 - p1_norm_weighted
+            
+            # Sliding window average
+            self._p1_window.append((now, p1_norm_weighted))
+            p1_window_cutoff = now - (self._freq_window_ms / 1000.0)
+            while self._p1_window and self._p1_window[0][0] < p1_window_cutoff:
+                self._p1_window.popleft()
+            p1_avg = sum(s[1] for s in self._p1_window) / len(self._p1_window) if self._p1_window else p1_norm_weighted
+            
+            # Map to TCode range
+            p1_tcode_min = self._cached_p1_tcode_min
+            p1_tcode_max = self._cached_p1_tcode_max
+            p1_val = int(p1_tcode_min + p1_avg * (p1_tcode_max - p1_tcode_min))
+            p1_val = max(0, min(9999, p1_val))
+            
+            if cmd.tcode_tags is None:
+                cmd.tcode_tags = {}
+            cmd.tcode_tags['P1'] = p1_val
+            cmd.tcode_tags['P1_duration'] = int(self._freq_window_ms)
+            self._cached_p1_val = p1_val
+            self._cached_p1_display = f"PWidth: {p1_val}"
+        else:
+            self._cached_p1_val = None
+            self._cached_p1_display = "PWidth: off"
+            self._p1_window.clear()
+        
+        # --- P3 (Rise Time) with 250ms sliding window averaging ---
+        p3_enabled = self._cached_p3_enabled
+        if p3_enabled:
+            p3_mode = self._cached_p3_mode
+            p3_invert = self._cached_p3_invert
+            p3_weight = self.config.rise_time.weight
+            
+            if p3_mode == 0:  # Brightness (spectral centroid) mode
+                if spectrum is not None and len(spectrum) > 0:
+                    sr = self.config.audio.sample_rate
+                    freqs = np.linspace(0, sr / 2, len(spectrum))
+                    total_energy = float(np.sum(spectrum))
+                    if total_energy > 1e-10:
+                        centroid = float(np.sum(freqs * spectrum) / total_energy)
+                    else:
+                        centroid = sr / 4  # midpoint fallback
+                    # Normalize centroid: typical range 200-8000 Hz
+                    p3_norm = max(0.0, min(1.0, (centroid - 200) / 7800))
+                    # INVERT inherently: bright audio → LOW rise time (exciting)
+                    # So high centroid → low p3_norm (before user invert)
+                    p3_norm = 1.0 - p3_norm
+                else:
+                    p3_norm = 0.5
+            elif p3_mode == 1:  # Hz (dominant freq) mode
+                p3_dom_freq = self._extract_dominant_freq(spectrum, self.config.audio.sample_rate,
+                    self.config.rise_time.monitor_freq_min, self.config.rise_time.monitor_freq_max) if spectrum is not None else 0.0
+                p3_in_low = self.config.rise_time.monitor_freq_min
+                p3_in_high = self.config.rise_time.monitor_freq_max
+                p3_norm = (p3_dom_freq - p3_in_low) / max(1.0, p3_in_high - p3_in_low)
+            else:  # Speed (dot movement) mode
+                p3_norm = min(1.0, dot_speed / 10.0)
+            
+            p3_norm = max(0.0, min(1.0, p3_norm))
+            p3_norm_weighted = 0.5 + (p3_norm - 0.5) * p3_weight
+            p3_norm_weighted = max(0.0, min(1.0, p3_norm_weighted))
+            
+            if p3_invert:
+                p3_norm_weighted = 1.0 - p3_norm_weighted
+            
+            # Sliding window average
+            self._p3_window.append((now, p3_norm_weighted))
+            p3_window_cutoff = now - (self._freq_window_ms / 1000.0)
+            while self._p3_window and self._p3_window[0][0] < p3_window_cutoff:
+                self._p3_window.popleft()
+            p3_avg = sum(s[1] for s in self._p3_window) / len(self._p3_window) if self._p3_window else p3_norm_weighted
+            
+            # Map to TCode range
+            p3_tcode_min = self._cached_p3_tcode_min
+            p3_tcode_max = self._cached_p3_tcode_max
+            p3_val = int(p3_tcode_min + p3_avg * (p3_tcode_max - p3_tcode_min))
+            p3_val = max(0, min(9999, p3_val))
+            
+            if cmd.tcode_tags is None:
+                cmd.tcode_tags = {}
+            cmd.tcode_tags['P3'] = p3_val
+            cmd.tcode_tags['P3_duration'] = int(self._freq_window_ms)
+            self._cached_p3_val = p3_val
+            self._cached_p3_display = f"Rise: {p3_val}"
+        else:
+            self._cached_p3_val = None
+            self._cached_p3_display = "Rise: off"
+            self._p3_window.clear()
+        
         # Log
         p0_str = f"P0={cmd.pulse_freq:04d}" if cmd.pulse_freq is not None else "P0=off"
         c0_tag = cmd.tcode_tags.get('C0', None) if cmd.tcode_tags else None
         c0_str = f"C0={c0_tag:04d}" if c0_tag is not None else "C0=off"
-        print(f"[Main] Cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} {p0_str} {c0_str}")
+        p1_tag = cmd.tcode_tags.get('P1', None) if cmd.tcode_tags else None
+        p1_str = f"P1={p1_tag:04d}" if p1_tag is not None else "P1=off"
+        p3_tag = cmd.tcode_tags.get('P3', None) if cmd.tcode_tags else None
+        p3_str = f"P3={p3_tag:04d}" if p3_tag is not None else "P3=off"
+        print(f"[Main] Cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} {p0_str} {c0_str} {p1_str} {p3_str}")
     
     def _network_status_callback(self, message: str, connected: bool):
         """Called from network thread on status change"""
@@ -5401,30 +5628,44 @@ bREadfan_69@hotmail.com"""
             self.beta_label.setText(f"β: {beta:.2f}")
 
         # Sync widget states to cached values for thread-safe reading by audio thread
-        # P0/F0 enable state MUST be synced IMMEDIATELY (every frame) for instant response
+        # P0/F0/P1/P3 enable state MUST be synced IMMEDIATELY (every frame) for instant response
         new_p0_enabled = self.pulse_enabled_checkbox.isChecked()
         new_f0_enabled = self.f0_enabled_checkbox.isChecked()
+        new_p1_enabled = self.p1_enabled_checkbox.isChecked()
+        new_p3_enabled = self.p3_enabled_checkbox.isChecked()
         
         # Handle P0/C0 checkboxes being unchecked (enabled→disabled transition)
         # Simply stop sending the axis — do NOT send 0 value, which still affects device
         if self._prev_p0_enabled and not new_p0_enabled:
-            # P0 just got disabled — stop sending, give control back to restim
             self._cached_p0_val = None
             self._cached_pulse_display = "Pulse: off"
             self._p0_freq_window.clear()
             print("[Main] P0 disabled — stopped sending")
         if self._prev_f0_enabled and not new_f0_enabled:
-            # C0 just got disabled — stop sending, give control back to restim
             self._cached_f0_val = None
             self._cached_carrier_display = "Carrier: off"
             self._f0_freq_window.clear()
             self._f0_last_sent_tcode = None
             print("[Main] C0 disabled — stopped sending")
+        if self._prev_p1_enabled and not new_p1_enabled:
+            self._cached_p1_val = None
+            self._cached_p1_display = "PWidth: off"
+            self._p1_window.clear()
+            print("[Main] P1 disabled — stopped sending")
+        if self._prev_p3_enabled and not new_p3_enabled:
+            self._cached_p3_val = None
+            self._cached_p3_display = "Rise: off"
+            self._p3_window.clear()
+            print("[Main] P3 disabled — stopped sending")
         
         self._prev_p0_enabled = new_p0_enabled
         self._prev_f0_enabled = new_f0_enabled
+        self._prev_p1_enabled = new_p1_enabled
+        self._prev_p3_enabled = new_p3_enabled
         self._cached_p0_enabled = new_p0_enabled
         self._cached_f0_enabled = new_f0_enabled
+        self._cached_p1_enabled = new_p1_enabled
+        self._cached_p3_enabled = new_p3_enabled
         
         # Update freq display labels — throttled to 100ms
         now = time.time()
@@ -5433,6 +5674,8 @@ bREadfan_69@hotmail.com"""
             # Update freq display labels from cached strings (written by audio thread)
             self.pulse_freq_label.setText(self._cached_pulse_display)
             self.carrier_freq_label.setText(self._cached_carrier_display)
+            self.p1_display_label.setText(self._cached_p1_display)
+            self.p3_display_label.setText(self._cached_p3_display)
             # Sync other combo/checkbox states for audio thread (throttled is fine)
             self._cached_pulse_mode = self.pulse_mode_combo.currentIndex()
             self._cached_pulse_invert = self.pulse_invert_checkbox.isChecked()
@@ -5443,6 +5686,22 @@ bREadfan_69@hotmail.com"""
             self._cached_tcode_freq_max = self.tcode_freq_range_slider.high()
             self._cached_f0_tcode_min = self.f0_tcode_range_slider.low()
             self._cached_f0_tcode_max = self.f0_tcode_range_slider.high()
+            # Sync P1 (Pulse Width) widget states
+            self._cached_p1_mode = self.p1_mode_combo.currentIndex()
+            self._cached_p1_invert = self.p1_invert_checkbox.isChecked()
+            self._cached_p1_tcode_min = int(self.p1_tcode_range_slider.low())
+            self._cached_p1_tcode_max = int(self.p1_tcode_range_slider.high())
+            self.config.pulse_width.monitor_freq_min = self.p1_monitor_range_slider.low()
+            self.config.pulse_width.monitor_freq_max = self.p1_monitor_range_slider.high()
+            self.config.pulse_width.weight = self.p1_weight_slider.value()
+            # Sync P3 (Rise Time) widget states
+            self._cached_p3_mode = self.p3_mode_combo.currentIndex()
+            self._cached_p3_invert = self.p3_invert_checkbox.isChecked()
+            self._cached_p3_tcode_min = int(self.p3_tcode_range_slider.low())
+            self._cached_p3_tcode_max = int(self.p3_tcode_range_slider.high())
+            self.config.rise_time.monitor_freq_min = self.p3_monitor_range_slider.low()
+            self.config.rise_time.monitor_freq_max = self.p3_monitor_range_slider.high()
+            self.config.rise_time.weight = self.p3_weight_slider.value()
             
             # Update peak floor bars on all visualizers
             peak_floor = self.config.beat.peak_floor

@@ -68,7 +68,63 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
 
+---
 
+## TCode Protocol Reference (restim Electrostimulation)
+
+bREadbeats communicates with **restim** (electrostimulation software) via TCP using the **TCode** protocol. Each command is a space-separated string of axis commands with interpolation times.
+
+### TCode Format
+```
+<AXIS><VALUE>I<DURATION_MS>\n
+```
+Example: `L04999I100 L14999I100 V09999I100 P00500I250 C05000I900\n`
+
+### Axis Reference Table
+
+| Axis | Name | TCode Range | Real-World Units | Feeling / Effect |
+|------|------|-------------|-------------------|-----------------|
+| **L0** | Alpha (vertical) | 0000-9999 | Position -1.0 to 1.0 | Stroke position — vertical axis of stimulation pattern |
+| **L1** | Beta (horizontal) | 0000-9999 | Position -1.0 to 1.0 | Stroke position — horizontal axis of stimulation pattern |
+| **V0** | Volume | 0000-9999 | 0.0 to 1.0 | Overall stimulation intensity |
+| **P0** | Pulse Frequency | 0000-9999 | ~1.5-150 Hz (÷67) | Rate of pulses. Higher = buzzier/faster. Lower = thuddy/slower. |
+| **C0** | Carrier Frequency | 0000-9999 | 500-1500 display (val/10+500) | Carrier wave frequency. Affects texture/character of stimulation. |
+| **P1** | Pulse Width | 0000-9999 | Device-dependent | **Higher = stronger, smoother** feeling. Lower = more prickly, lighter (less strong because narrower pulse). Width of a single pulse within the wavelet. |
+| **P3** | Rise Time | 0000-9999 | Device-dependent | **Higher = smoother, gentler** feeling. Lower = harsher but still pleasant. Controls how quickly each pulse ramps up. Less dramatic difference than P1. |
+
+### Coordinate System
+- **restim** uses L0=vertical, L1=horizontal (swapped & negated from bREadbeats internal alpha/beta)
+- **Rotation:** 90° clockwise transform applied in `TCodeCommand.to_tcode()`
+- **Interpolation:** Each axis includes `I<ms>` for smooth transitions
+
+### Currently Implemented Axes
+- ✅ **L0, L1** — Stroke position (alpha/beta from StrokeMapper)
+- ✅ **V0** — Volume (from audio RMS)
+- ✅ **P0** — Pulse frequency (music-reactive via dominant frequency or dot speed)
+- ✅ **C0** — Carrier frequency (music-reactive, same input modes as P0)
+- 🔲 **P1** — Pulse width (planned: music-reactive)
+- 🔲 **P3** — Rise time (planned: music-reactive)
+
+### Music→Parameter Mapping Philosophy
+
+Each TCode axis maps an audio feature to a physical sensation. The goal is **musical expressiveness** — the stimulation should "feel like" the music.
+
+| Parameter | Best Audio Source | Mapping Rationale |
+|-----------|-------------------|-------------------|
+| **P0** (Pulse Freq) | Dominant frequency in band | Bass notes → low pulse rate (thuddy), treble → high rate (buzzy) |
+| **C0** (Carrier Freq) | Dominant frequency in band | Similar to P0 but controls carrier wave texture |
+| **P1** (Pulse Width) | RMS energy / volume level | Loud passages → wider pulses (stronger, smoother). Quiet → narrow (lighter, prickly). Intensity follows loudness naturally. |
+| **P3** (Rise Time) | Spectral centroid / brightness | Bright/treble-heavy → short rise (exciting, snappy). Warm/bassy → long rise (flowing, smooth). Musical brightness maps to stimulation sharpness. |
+
+### Input Modes (shared across frequency-reactive axes)
+1. **Hz (dominant freq)** — Extracts dominant frequency from a configurable frequency band via FFT peak detection
+2. **Speed (dot movement)** — Uses the velocity of the stroke pattern dot in alpha/beta space
+3. **Volume (RMS energy)** — Uses audio loudness level (planned for P1)
+4. **Brightness (spectral centroid)** — Uses spectral centroid as brightness measure (planned for P3)
+
+All modes use **250ms sliding window averaging** for smooth transitions, with configurable weight and invert options.
+
+---
 
 ## Critical Features & Behaviors
 
