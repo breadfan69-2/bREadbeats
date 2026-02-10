@@ -21,13 +21,6 @@ except ImportError:
     HAS_SCIPY = False
     log_event("WARN", "AudioEngine", "scipy not found, using FFT-based frequency filtering")
 
-try:
-    import aubio
-    HAS_AUBIO = True
-except ImportError:
-    HAS_AUBIO = False
-    log_event("WARN", "AudioEngine", "aubio not found, using fallback beat detection")
-
 from config import Config, BeatDetectionType
 
 
@@ -124,6 +117,7 @@ class BeatEvent:
     tempo_reset: bool = False # True if tempo/beat counter was reset
     tempo_locked: bool = False  # True if consecutive downbeats match predicted pattern (locked tempo)
     phase_error_ms: float = 0.0  # How far off from predicted downbeat timing (milliseconds)
+    beat_band: str = 'sub_bass'   # Which multi-band z-score sub-band is currently primary
 
 
 class AudioEngine:
@@ -142,9 +136,23 @@ class AudioEngine:
         self.downbeat_confidence = 0.0
         # Reset pattern matching state
         self._reset_downbeat_pattern()
-        # Reset z-score detector so it gets a fresh baseline
-        if hasattr(self, '_zscore_detector'):
-            self._zscore_detector.reset()
+        # Reset ALL multi-band z-score detectors so they get fresh baselines
+        if hasattr(self, '_zscore_detectors'):
+            for det in self._zscore_detectors.values():
+                det.reset()
+            # Reset fire history and confidence
+            for name in self._band_fire_history:
+                self._band_fire_history[name].clear()
+            self._primary_beat_band = 'sub_bass'
+
+    def set_zscore_threshold(self, threshold: float):
+        """Update the z-score threshold on ALL multi-band detectors at runtime."""
+        if hasattr(self, '_zscore_detectors'):
+            for det in self._zscore_detectors.values():
+                det.threshold = threshold
+            log_event("INFO", "MultiBand", "Z-score threshold updated",
+                      threshold=f"{threshold:.2f}")
+
     """
     Engine 1: The Ears
     Captures system audio and detects beats in real-time.
@@ -164,10 +172,6 @@ class AudioEngine:
         self.peak_envelope = 0.0
         self.flux_history: list[float] = []
         self.energy_history: list[float] = []
-        
-        # Aubio beat tracker (if available)
-        self.tempo_detector = None
-        self.beat_detector = None
         
         # Spectrum data for visualization
         self.spectrum_data: Optional[np.ndarray] = None
@@ -231,14 +235,38 @@ class AudioEngine:
         # Visualizer toggle
         self._visualizer_enabled = getattr(config.audio, 'visualizer_enabled', True)
         
-        # ===== Z-SCORE ADAPTIVE PEAK DETECTOR =====
-        # Runs on band_energy stream inside _detect_beat.  When z-score fires +1
-        # (energy spike significantly above rolling mean), the frame is classified
-        # as a strong beat candidate regardless of the manual peak_floor setting.
-        # lag ~30 frames ≈ 0.5 s history at 60 fps; threshold 2.5 σ balances
-        # sensitivity with false-positive rejection; influence 0.05 keeps peaks
-        # from polluting the rolling baseline.
-        self._zscore_detector = ZScorePeakDetector(lag=30, threshold=2.5, influence=0.05)
+        # ===== MULTI-BAND Z-SCORE ADAPTIVE PEAK DETECTION =====
+        # Instead of a single z-score detector on overall band_energy, we run
+        # one detector PER frequency sub-band.  Each frame, every band's energy
+        # is fed to its detector.  The band that produces the strongest/most
+        # consistent z-score signals wins as the "primary beat source".
+        #
+        # Solves the user's scenario: hi-hats fire z-score when only cymbals
+        # play, but kick drum z-score takes over when bass enters.
+        #
+        # Band definitions: (name, low_hz, high_hz)
+        self._zscore_bands = [
+            ('sub_bass',  30,   100),   # kick drum, sub-bass
+            ('low_mid',   100,  500),   # bass guitar, toms, low snare
+            ('mid',       500,  2000),  # snare body, guitars, vocals
+            ('high',      2000, 16000), # hi-hat, cymbals, clicks
+        ]
+        # One z-score detector per band (same params, independent rolling stats)
+        self._zscore_detectors = {
+            name: ZScorePeakDetector(lag=30, threshold=2.5, influence=0.05)
+            for name, _, _ in self._zscore_bands
+        }
+        # Per-band energy values (updated every frame in audio callback)
+        self._band_energies: dict[str, float] = {name: 0.0 for name, _, _ in self._zscore_bands}
+        # Per-band z-score signals (updated every frame: +1, -1, or 0)
+        self._band_zscore_signals: dict[str, int] = {name: 0 for name, _, _ in self._zscore_bands}
+        # Band confidence: rolling count of z-score fires in last N frames
+        self._band_fire_history: dict[str, list[int]] = {name: [] for name, _, _ in self._zscore_bands}
+        self._band_confidence_window: int = 60  # ~1 second at 60fps
+        # Which band is currently primary (best beat source)
+        self._primary_beat_band: str = 'sub_bass'  # default to kick drum
+        # Legacy single-detector alias (for any code that references it)
+        self._zscore_detector = self._zscore_detectors['sub_bass']
         
         # ===== REAL-TIME METRIC-BASED AUTO-RANGING (NEW SYSTEM) =====
         # Tracks margins and metrics in real-time to drive parameter adjustments
@@ -356,22 +384,6 @@ class AudioEngine:
             return
             
         self.running = True
-        
-        # Initialize aubio if available
-        if HAS_AUBIO:
-            self.tempo_detector = aubio.tempo(
-                "default", 
-                self.fft_size, 
-                self.hop_size, 
-                self.config.audio.sample_rate
-            )
-            self.beat_detector = aubio.onset(
-                "default",
-                self.fft_size,
-                self.hop_size,
-                self.config.audio.sample_rate
-            )
-            self.beat_detector.set_threshold(self.config.beat.sensitivity)
         
         # Initialize PyAudio
         self.pyaudio = pyaudio.PyAudio()
@@ -542,6 +554,11 @@ class AudioEngine:
         
         # Note: Audio gain already applied to band_spectrum above, no need to apply again
         
+        # ===== MULTI-BAND ENERGY EXTRACTION =====
+        # Extract energy per sub-band from the full unfiltered spectrum,
+        # feed each to its z-score detector, and track which band fires.
+        self._update_multiband_zscore(spectrum)
+        
         # Debug: print every 20 frames to see levels
         if not hasattr(self, '_debug_counter'):
             self._debug_counter = 0
@@ -617,7 +634,8 @@ class AudioEngine:
             bpm=current_bpm,
             tempo_reset=tempo_reset_flag,
             tempo_locked=tempo_is_locked,
-            phase_error_ms=self.phase_error_ms
+            phase_error_ms=self.phase_error_ms,
+            beat_band=self._primary_beat_band
         )
         
         # Notify callback
@@ -667,7 +685,65 @@ class AudioEngine:
         if len(spectrum) > 0:
             flux = flux / len(spectrum)
         return flux * self.config.beat.flux_multiplier
-        
+
+    # ------------------------------------------------------------------
+    # Multi-Band Z-Score
+    # ------------------------------------------------------------------
+    def _update_multiband_zscore(self, spectrum: np.ndarray):
+        """Extract per-sub-band energy from the FFT *spectrum*, feed each
+        band's z-score detector, update fire history, and select the
+        primary beat band (with hysteresis to avoid rapid switching).
+
+        Called once per audio frame from _audio_callback_pyaudio.
+        """
+        sr = self.config.audio.sample_rate
+        nyquist = sr / 2
+        n_bins = len(spectrum)
+        if n_bins == 0:
+            return
+        freq_per_bin = nyquist / n_bins
+        gain = self.config.audio.gain
+
+        for name, low_hz, high_hz in self._zscore_bands:
+            low_bin  = max(0, int(low_hz / freq_per_bin))
+            high_bin = min(n_bins - 1, int(high_hz / freq_per_bin))
+            band_slice = spectrum[low_bin : high_bin + 1]
+
+            if len(band_slice) > 0:
+                energy = float(np.sqrt(np.mean(band_slice ** 2))) * gain
+            else:
+                energy = 0.0
+
+            self._band_energies[name] = energy
+
+            # Feed the per-band detector
+            signal = self._zscore_detectors[name].update(energy)
+            self._band_zscore_signals[name] = signal
+
+            # Append to rolling fire history (1 = fired, 0 = quiet)
+            self._band_fire_history[name].append(1 if signal == 1 else 0)
+            if len(self._band_fire_history[name]) > self._band_confidence_window:
+                self._band_fire_history[name].pop(0)
+
+        # ---- Select primary band (most consistent fires) ----
+        best_band = self._primary_beat_band
+        best_score = -1
+        for name, _, _ in self._zscore_bands:
+            hist = self._band_fire_history[name]
+            score = sum(hist) if len(hist) >= 10 else 0
+            if score > best_score:
+                best_score = score
+                best_band  = name
+
+        # Hysteresis: only switch if new band is meaningfully better
+        if best_band != self._primary_beat_band:
+            current_score = sum(self._band_fire_history[self._primary_beat_band])
+            if best_score > current_score + 2:          # 2+ extra fires required
+                self._primary_beat_band = best_band
+                self._zscore_detector = self._zscore_detectors[best_band]  # legacy alias
+                log_event("INFO", "MultiBand", "Primary band switched",
+                          band=best_band, fires=str(best_score))
+
     def _detect_beat(self, energy: float, flux: float) -> bool:
         """Detect if current frame is a beat.
         
@@ -693,16 +769,13 @@ class AudioEngine:
         self._energy_was_falling = energy < self._prev_energy_for_valley
         self._prev_energy_for_valley = energy
         
-        # --- Z-Score detector: feed EVERY frame to maintain rolling stats ---
-        zscore_signal = self._zscore_detector.update(energy)
-        zscore_peak = (zscore_signal == 1)  # +1 = energy spike above adaptive threshold
+        # --- Multi-Band Z-Score: use the primary band's signal ---
+        # (Band detectors already fed in _update_multiband_zscore during audio callback)
+        primary = self._primary_beat_band
+        zscore_signal = self._band_zscore_signals.get(primary, 0)
+        zscore_peak = (zscore_signal == 1)  # +1 = primary band spiked
         
-        # Use aubio if available
-        if HAS_AUBIO and self.beat_detector:
-            # Note: aubio expects specific buffer, this is simplified
-            pass
-            
-        # Fallback: threshold-based detection
+        # Threshold-based detection
         self.energy_history.append(energy)
         self.flux_history.append(flux)
         
@@ -757,11 +830,12 @@ class AudioEngine:
                 else:  # COMBINED - need EITHER to trigger (more sensitive)
                     classic_beat = (energy > energy_threshold) or (flux > flux_threshold * 1.2)
         
-        # --- PATH 2: Z-Score adaptive detection ---
-        # Z-score already fired above (every frame).  Accept the peak only if
-        # the energy also exceeds the average (sanity check prevents firing on
-        # tiny absolute values that happen to be > mean during very quiet audio).
-        zscore_beat = zscore_peak and (energy > avg_energy * 1.1)
+        # --- PATH 2: Multi-Band Z-Score adaptive detection ---
+        # The primary band's z-score already fired.  Also check if ANY band
+        # fired (secondary bands can catch beats the primary misses during
+        # transitions).  Sanity check: overall energy must exceed average.
+        any_band_fired = any(s == 1 for s in self._band_zscore_signals.values())
+        zscore_beat = (zscore_peak or any_band_fired) and (energy > avg_energy * 1.1)
         
         # --- COMBINE: either path triggers a beat ---
         is_beat = classic_beat or zscore_beat
@@ -770,6 +844,11 @@ class AudioEngine:
             self._last_beat_time = current_time
             self._update_tempo_tracking(current_time, energy)
             src = "Z+C" if (classic_beat and zscore_beat) else ("Z" if zscore_beat else "C")
+            # Identify which bands fired for diagnostic logging
+            fired_bands = [n for n, s in self._band_zscore_signals.items() if s == 1]
+            band_info = f"band={self._primary_beat_band}"
+            if fired_bands and zscore_beat:
+                band_info += f" fired={','.join(fired_bands)}"
             log_event(
                 "INFO",
                 "BEAT",
@@ -777,7 +856,8 @@ class AudioEngine:
                 energy=f"{energy:.4f}",
                 threshold=f"{energy_threshold:.4f}",
                 flux=f"{flux:.4f}",
-                bpm=f"{self.smoothed_tempo:.1f}"
+                bpm=f"{self.smoothed_tempo:.1f}",
+                bands=band_info
             )
         
         return is_beat
@@ -1050,67 +1130,6 @@ class AudioEngine:
         """Get current spectrum data for visualization"""
         with self.spectrum_lock:
             return self.spectrum_data.copy() if self.spectrum_data is not None else None
-    
-    def find_peak_frequency_band(self, min_freq: float = 30.0, max_freq: float = 2000.0, 
-                                  band_width: float = 300.0) -> tuple[float, float, float]:
-        """
-        Find the most powerful frequency band of specified width within the given range.
-        
-        Args:
-            min_freq: Minimum frequency to search (Hz)
-            max_freq: Maximum frequency to search (Hz)
-            band_width: Width of the band to find (Hz)
-            
-        Returns:
-            Tuple of (center_freq, low_freq, high_freq) of the most powerful band.
-            Returns (0, 0, 0) if no spectrum data available.
-        """
-        with self.spectrum_lock:
-            if self.spectrum_data is None or len(self.spectrum_data) == 0:
-                return (0.0, 0.0, 0.0)
-            
-            spectrum = self.spectrum_data.copy()
-        
-        sr = self.config.audio.sample_rate
-        num_bins = len(spectrum)
-        freq_per_bin = sr / (2 * num_bins)
-        
-        # Convert Hz to bin indices
-        min_bin = max(1, int(min_freq / freq_per_bin))
-        max_bin = min(num_bins - 1, int(max_freq / freq_per_bin))
-        band_bins = max(1, int(band_width / freq_per_bin))
-        
-        if max_bin - min_bin < band_bins:
-            # Range too narrow for the band width
-            center = (min_freq + max_freq) / 2
-            return (center, min_freq, max_freq)
-        
-        # Sliding window: find the band with maximum total energy
-        best_energy = 0.0
-        best_start_bin = min_bin
-        
-        for start_bin in range(min_bin, max_bin - band_bins + 1):
-            end_bin = start_bin + band_bins
-            band_energy = np.sum(spectrum[start_bin:end_bin] ** 2)
-            if band_energy > best_energy:
-                best_energy = band_energy
-                best_start_bin = start_bin
-        
-        # Convert best bin range back to Hz
-        low_freq = best_start_bin * freq_per_bin
-        high_freq = (best_start_bin + band_bins) * freq_per_bin
-        center_freq = (low_freq + high_freq) / 2
-        
-        return (center_freq, low_freq, high_freq)
-    
-    def list_devices(self) -> list[dict]:
-        """List available audio devices"""
-        devices = sd.query_devices()
-        return [
-            {"index": i, "name": d["name"], "inputs": d["max_input_channels"]}
-            for i, d in enumerate(devices)
-            if d["max_input_channels"] > 0
-        ]
     
     # ===== REAL-TIME METRIC FEEDBACK SYSTEM =====
     

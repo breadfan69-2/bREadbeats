@@ -55,6 +55,25 @@ class StrokeMapper:
         self.get_volume = get_volume if get_volume is not None else (lambda: 1.0)
         self.audio_engine = audio_engine
         
+        # Motion intensity multiplier (0.25-2.0, default 1.0) — scales stroke output
+        self.motion_intensity: float = 1.0
+        
+        # Band-based scaling tables:
+        # Volume: high bands get quieter (cymbal taps shouldn't blast)
+        # Speed: low bands get faster strokes (kick drum = punchy, cymbals = gentle)
+        self._band_volume_scale = {
+            'sub_bass': 1.0,
+            'low_mid':  0.90,
+            'mid':      0.70,
+            'high':     0.50,
+        }
+        self._band_speed_scale = {
+            'sub_bass': 0.70,   # fastest (shortest duration)
+            'low_mid':  0.85,
+            'mid':      1.00,
+            'high':     1.20,   # slowest (longest duration)
+        }
+        
         # Mode-specific state
         self.figure8_phase = 0.0
         self.random_arc_start = 0.0
@@ -76,7 +95,18 @@ class StrokeMapper:
         self._creep_sustained_start: float = 0.0  # When creep started being sustained
         self._creep_volume_factor: float = 1.0  # Current creep volume reduction (1.0 = no reduction)
         self._creep_was_active_last_frame: bool = False  # Track if creep was active last frame
-        
+
+    def _get_band_volume(self, event: BeatEvent) -> float:
+        """Return volume multiplied by the band-based scale factor."""
+        band = getattr(event, 'beat_band', 'sub_bass')
+        return self.get_volume() * self._band_volume_scale.get(band, 1.0)
+
+    def _get_band_duration_scale(self, event: BeatEvent) -> float:
+        """Return duration multiplier for the current primary beat band.
+        Lower values = faster (shorter) strokes."""
+        band = getattr(event, 'beat_band', 'sub_bass')
+        return self._band_speed_scale.get(band, 1.0)
+
     def process_beat(self, event: BeatEvent) -> Optional[TCodeCommand]:
         """
         Process a beat event and return a stroke command.
@@ -268,6 +298,10 @@ class StrokeMapper:
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
             measure_duration_ms = beat_interval_ms * 4  # Full measure
         
+        # Band-based speed scaling for downbeats too
+        band_speed = self._get_band_duration_scale(event)
+        measure_duration_ms = int(measure_duration_ms * band_speed)
+        
         # Calculate stroke parameters
         intensity = event.intensity
         
@@ -279,8 +313,8 @@ class StrokeMapper:
         tempo_locked = getattr(event, 'tempo_locked', False)
         lock_boost = 1.25 if tempo_locked else 1.0  # 25% stronger when locked
         
-        # On downbeat, use full stroke amplitude scaled by flux and lock boost
-        stroke_len = cfg.stroke_max * flux_factor * lock_boost
+        # On downbeat, use full stroke amplitude scaled by flux, lock boost, and motion intensity
+        stroke_len = cfg.stroke_max * flux_factor * lock_boost * self.motion_intensity
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max * 1.25, stroke_len))  # Allow up to 125% of max when locked
         
         freq_factor = self._freq_to_factor(event.frequency)
@@ -312,8 +346,9 @@ class StrokeMapper:
         base_step = measure_duration_ms // n_points
         remainder = measure_duration_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
-        # Start arc thread
+        # Start arc thread — store band volume for downbeat arc
         self._stop_arc = False
+        self._arc_band_volume = self._get_band_volume(event)
         self._arc_thread = threading.Thread(
             target=self._send_arc_synchronous,
             args=[alpha_arc, beta_arc, step_durations, n_points],
@@ -359,6 +394,10 @@ class StrokeMapper:
         beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
         beat_interval_ms *= 2  # Double the arc duration
         
+        # Band-based speed scaling: low bands = faster (shorter), high = slower (longer)
+        band_speed = self._get_band_duration_scale(event)
+        beat_interval_ms = int(beat_interval_ms * band_speed)
+        
         # Calculate stroke parameters
         intensity = event.intensity
         
@@ -366,7 +405,7 @@ class StrokeMapper:
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
         
         base_stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * intensity * cfg.stroke_fullness
-        stroke_len = base_stroke_len * flux_factor
+        stroke_len = base_stroke_len * flux_factor * self.motion_intensity
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
         
         freq_factor = self._freq_to_factor(event.frequency)
@@ -422,8 +461,9 @@ class StrokeMapper:
         base_step = beat_interval_ms // n_points
         remainder = beat_interval_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
-        # Start arc thread
+        # Start arc thread — store band volume factor for arc thread to use
         self._stop_arc = False
+        self._arc_band_volume = self._get_band_volume(event)
         self._arc_thread = threading.Thread(
             target=self._send_arc_synchronous,
             args=[alpha_arc, beta_arc, step_durations, n_points],
@@ -438,15 +478,18 @@ class StrokeMapper:
         first_beta = float(beta_arc[0])
         self.state.alpha = first_alpha
         self.state.beta = first_beta
+        band = getattr(event, 'beat_band', 'sub_bass')
         log_event(
             "INFO",
             "StrokeMapper",
             "Arc start",
             mode=self.config.stroke.mode.name,
             points=n_points,
-            duration_ms=beat_interval_ms
+            duration_ms=beat_interval_ms,
+            band=band,
+            motion=f"{self.motion_intensity:.2f}"
         )
-        return TCodeCommand(first_alpha, first_beta, step_durations[0], self.get_volume())
+        return TCodeCommand(first_alpha, first_beta, step_durations[0], self._arc_band_volume)
     
     def _send_arc_synchronous(self, alpha_arc: np.ndarray, beta_arc: np.ndarray, step_durations: list, n_points: int):
         """Send arc points synchronously with proper sleep timing (Breadbeats approach)"""
@@ -460,8 +503,9 @@ class StrokeMapper:
             step_ms = step_durations[i]  # Each step has its own duration
             
             if self.send_callback:
-                # Apply fade-out to arc strokes
-                volume = self.get_volume() * self._fade_intensity
+                # Apply fade-out and band-based volume to arc strokes
+                band_vol = getattr(self, '_arc_band_volume', self.get_volume())
+                volume = band_vol * self._fade_intensity
                 cmd = TCodeCommand(alpha, beta, step_ms, volume)
                 self.send_callback(cmd)
                 self.state.alpha = alpha

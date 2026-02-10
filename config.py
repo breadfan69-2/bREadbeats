@@ -135,7 +135,6 @@ class AutoAdjustConfig:
         'sensitivity': False,
         'flux_mult': False,
     })
-    auto_freq_enabled: bool = False   # Persist auto-frequency tracking toggle
 
 @dataclass
 class AudioConfig:
