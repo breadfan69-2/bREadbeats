@@ -2099,6 +2099,9 @@ class BREadbeatsWindow(QMainWindow):
         # Load config values into UI sliders
         self._apply_config_to_ui()
         
+        # Hide range indicators by default (user can enable via Options menu)
+        self._on_hide_indicators_toggle(2)  # 2 = Qt.Checked = hide
+        
         # Load presets from disk
         self._load_presets_from_disk()
         
@@ -2475,28 +2478,9 @@ class BREadbeatsWindow(QMainWindow):
         bottom_half_layout.setSpacing(6)
         bottom_half_layout.addWidget(self._create_settings_tabs())
 
-        # Bottom row: Presets + Visualizer controls
+        # Bottom row: Presets + projectM launcher
         bottom_layout = QHBoxLayout()
         bottom_layout.addWidget(self._create_presets_panel())
-        
-        # Visualizer controls in a groupbox
-        visualizer_group = QGroupBox("Spectrum")
-        visualizer_layout = QHBoxLayout(visualizer_group)
-        visualizer_layout.setContentsMargins(8, 4, 8, 4)
-        
-        visualizer_layout.addWidget(QLabel("Type:"))
-        self.visualizer_type_combo = QComboBox()
-        self.visualizer_type_combo.addItems(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor"])
-        self.visualizer_type_combo.currentIndexChanged.connect(self._on_visualizer_type_change)
-        visualizer_layout.addWidget(self.visualizer_type_combo)
-        
-        # Hide range indicators checkbox
-        self.hide_indicators_checkbox = QCheckBox("Hide Range Indicators")
-        self.hide_indicators_checkbox.setChecked(False)
-        self.hide_indicators_checkbox.stateChanged.connect(self._on_hide_indicators_toggle)
-        visualizer_layout.addWidget(self.hide_indicators_checkbox)
-        
-        bottom_layout.addWidget(visualizer_group)
         
         bottom_layout.addStretch()  # Gap before Whip the Llama button
         
@@ -2596,6 +2580,32 @@ class BREadbeatsWindow(QMainWindow):
         connection_action = options_menu.addAction("Connection...")
         assert connection_action is not None
         connection_action.triggered.connect(self._on_options_connection)
+
+        # Spectrum visualizer type submenu
+        viz_menu = options_menu.addMenu("Spectrum Type")
+        assert viz_menu is not None
+        self.visualizer_type_combo = QComboBox()  # Hidden combo for state tracking
+        self.visualizer_type_combo.addItems(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor"])
+        self.visualizer_type_combo.setCurrentIndex(1)  # Default: Mountain Range
+        self._viz_type_actions = []
+        for i, name in enumerate(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor"]):
+            action = viz_menu.addAction(name)
+            assert action is not None
+            action.setCheckable(True)
+            action.setChecked(i == 1)  # Mountain Range default
+            action.triggered.connect(lambda checked, idx=i: self._on_viz_menu_change(idx))
+            self._viz_type_actions.append(action)
+
+        # Show/Hide range indicators
+        self.hide_indicators_checkbox = QCheckBox()  # Hidden checkbox for state tracking
+        self.hide_indicators_checkbox.setChecked(True)  # Default: hidden
+        self.show_indicators_action = options_menu.addAction("Show Range Indicators")
+        assert self.show_indicators_action is not None
+        self.show_indicators_action.setCheckable(True)
+        self.show_indicators_action.setChecked(False)  # Default: hidden (unchecked = hidden)
+        self.show_indicators_action.triggered.connect(self._on_show_indicators_menu_toggle)
+
+        options_menu.addSeparator()
 
         # Log level submenu
         log_menu = options_menu.addMenu("Log Level")
@@ -3438,7 +3448,7 @@ bREadfan_69@hotmail.com"""
         self.mountain_canvas = MountainRangeCanvas(self, width=8, height=3)
         self.bar_canvas = BarGraphCanvas(self, width=8, height=3)
         self.phosphor_canvas = PhosphorCanvas(self, width=8, height=3)
-        self.mountain_canvas.setVisible(False)  # Start with waterfall
+        self.spectrum_canvas.setVisible(False)  # Start with mountain range
         self.bar_canvas.setVisible(False)
         self.phosphor_canvas.setVisible(False)
         
@@ -3482,6 +3492,21 @@ bREadfan_69@hotmail.com"""
         for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
             if hasattr(canvas, 'set_indicators_visible'):
                 canvas.set_indicators_visible(not hide)
+
+    def _on_viz_menu_change(self, index: int):
+        """Handle spectrum type change from Options menu"""
+        # Update checkmarks
+        for i, action in enumerate(self._viz_type_actions):
+            action.setChecked(i == index)
+        # Sync hidden combo (for preset save/load compatibility)
+        self.visualizer_type_combo.setCurrentIndex(index)
+        self._on_visualizer_type_change(index)
+
+    def _on_show_indicators_menu_toggle(self, checked: bool):
+        """Handle Show Range Indicators toggle from Options menu"""
+        # Sync hidden checkbox (inverted: menu checked = show = checkbox unchecked)
+        self.hide_indicators_checkbox.setChecked(not checked)
+        self._on_hide_indicators_toggle(0 if checked else 2)
     
     def _create_position_panel(self) -> QGroupBox:
         """Alpha/Beta position display"""
