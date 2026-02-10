@@ -955,8 +955,98 @@ Two critical clamps added to prevent parameters from dropping too low when gain 
 
 ---
 
+## GUI Enhancements
+
+### Indicator Visibility Split (Feb 10, 2026)
+
+**Problem:** Single "Show Indicators" menu option toggled both 3-bar peak indicators AND 4x frequency range indicators together, with no independent control.
+
+**Solution:** Split into two separate menu options with different default visibility:
+- **"Show Peak Indicators"** — Controls 3 vertical bars (peak_actual_bar, peak_floor_bar, peak_decay_bar) — **Visible on startup** (checked)
+- **"Show Range Indicators"** — Controls 4 frequency band overlays (beat_band, depth_band, p0_band, f0_band + labels) — **Hidden on startup** (unchecked)
+
+**Implementation Details:**
+
+*Indicator Method Refactor (All 4 Canvas Classes: SpectrumCanvas, MountainRangeCanvas, BarGraphCanvas, PhosphorCanvas)*
+```python
+# OLD (line ~450-470):
+def set_indicators_visible(self, visible: bool):
+    """Show or hide all frequency band indicators and labels"""
+    self.beat_band.setVisible(visible)
+    # ... range indicators ...
+    self.peak_actual_bar.setVisible(visible)  # Peak bars hidden together with ranges
+    
+# NEW (split into two methods):
+def set_peak_indicators_visible(self, visible: bool):
+    """Show or hide 3-bar peak indicators"""
+    if hasattr(self, 'peak_actual_bar'):
+        self.peak_actual_bar.setVisible(visible)
+    if hasattr(self, 'peak_floor_bar'):
+        self.peak_floor_bar.setVisible(visible)
+    if hasattr(self, 'peak_decay_bar'):
+        self.peak_decay_bar.setVisible(visible)
+
+def set_range_indicators_visible(self, visible: bool):
+    """Show or hide frequency range band indicators and labels"""
+    self.beat_band.setVisible(visible)
+    self.depth_band.setVisible(visible)
+    self.p0_band.setVisible(visible)
+    self.f0_band.setVisible(visible)
+    # ... label visibility ...
+```
+
+*Menu Items (main.py line ~2654)*
+```python
+self.show_peak_indicators_action = options_menu.addAction("Show Peak Indicators")
+self.show_peak_indicators_action.setCheckable(True)
+self.show_peak_indicators_action.setChecked(True)  # Default: visible
+self.show_peak_indicators_action.triggered.connect(self._on_show_peak_indicators_menu_toggle)
+
+self.show_range_indicators_action = options_menu.addAction("Show Range Indicators")
+self.show_range_indicators_action.setCheckable(True)
+self.show_range_indicators_action.setChecked(False)  # Default: hidden
+self.show_range_indicators_action.triggered.connect(self._on_show_range_indicators_menu_toggle)
+```
+
+*Startup Initialization (main.py line ~2117)*
+```python
+# Changed from: self._on_hide_indicators_toggle(0)
+self._on_show_peak_indicators_toggle(True)      # Peak visible
+self._on_show_range_indicators_toggle(False)    # Range hidden
+```
+
+*Toggle Handlers (main.py line ~3757)*
+```python
+def _on_show_peak_indicators_toggle(self, checked: bool):
+    for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+        if hasattr(canvas, 'set_peak_indicators_visible'):
+            canvas.set_peak_indicators_visible(checked)
+
+def _on_show_range_indicators_toggle(self, checked: bool):
+    for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+        if hasattr(canvas, 'set_range_indicators_visible'):
+            canvas.set_range_indicators_visible(checked)
+```
+
+**Bug Fixed:** Range indicators were not disappearing when unchecked because SpectrumCanvas (Waterfall visualizer) still had the old combined `set_indicators_visible()` method. Applied split method refactor to all 4 canvas classes.
+
+**Verification:** App launches without errors; menu items appear in Options menu; both toggles work correctly on all 4 spectrum visualizers.
+
+---
+
+## Documentation Additions
+
+**New Reference Documents Created (Feb 10, 2026):**
+
+1. **GUI_CONTROLS_REFERENCE.md** — Comprehensive tabulated reference of all 43 GUI controls organized by tab, including ranges, defaults, tooltips, and effects on stroke generation
+2. **GUI_CONTROL_CATALOG.md** — Detailed widget inventory organized by panel/section with line numbers, types, default values, and signal connections
+
+These documents capture the full control landscape for documentation and future maintenance. Not auto-updated; manually maintain sync with main.py.
+
+---
+
 *Document created: 2026-02-07*  
-*Last updated: 2026-02-11 (merged to main, removed old hunting system docs, updated P1/P3 to implemented)*  
-*All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow.*
+*Last updated: 2026-02-10 (indicator visibility split, bug fix, documentation added)*  
+*All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow, indicator toggles functioning correctly.*
 *Current branch: main*
 *Repository: https://github.com/breadfan69-2/bREadbeats*
