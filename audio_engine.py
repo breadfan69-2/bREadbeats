@@ -1218,6 +1218,12 @@ class AudioEngine:
         avg_valley = float(np.mean(self._valley_history))
         current_pf = self.config.beat.peak_floor
         
+        # Amplitude proportionality: peak_floor must always be >= 10% of audio_amp
+        # This prevents peak_floor from staying absurdly low when gain is cranked up
+        amp_floor = self.config.beat.amplification * 0.10
+        if avg_valley < amp_floor:
+            avg_valley = amp_floor  # Use amp-proportional floor as minimum target
+        
         # How far is peak_floor from the valley level?
         # Positive = peak_floor above valley, Negative = peak_floor below valley
         error = current_pf - avg_valley
@@ -1247,7 +1253,8 @@ class AudioEngine:
         step = max(self._energy_margin_adjustment_step, avg_valley * 0.05)
         
         if callback and should_adjust:
-            self._metric_settled_counts['peak_floor'] = 0  # Reset settled counter on adjustment
+            # Decay settled counter instead of hard reset (drop by 3, not to 0)
+            self._metric_settled_counts['peak_floor'] = max(0, self._metric_settled_counts.get('peak_floor', 0) - 3)
             callback({
                 'metric': 'peak_floor',
                 'margin': float(np.mean(self._energy_margin_history)),
@@ -1448,7 +1455,8 @@ class AudioEngine:
             self._flux_balance_hysteresis_count += 1
             if self._flux_balance_hysteresis_count >= self._metric_hysteresis_required:
                 # Actually adjust now
-                self._metric_settled_counts['flux_balance'] = 0
+                # Decay settled counter instead of hard reset (drop by 3, not to 0)
+                self._metric_settled_counts['flux_balance'] = max(0, self._metric_settled_counts.get('flux_balance', 0) - 3)
                 self._flux_balance_hysteresis_count = 0
                 if callback:
                     callback({
@@ -1472,7 +1480,7 @@ class AudioEngine:
         Timer-driven audio_amp adjustment based on beat presence.
         
         - No beats for >check_interval → RAISE audio_amp (+2% of range)
-        - ONLY escalates, never reverses (sensitivity handles excess detection)
+        - Excess beats (BPS > 2× target) → LOWER audio_amp (1% of range, half raise rate)
         - Tracks consecutive in-zone checks for SETTLED state
         - Requires 2 consecutive out-of-zone checks (hysteresis) before adjusting
         
@@ -1505,14 +1513,36 @@ class AudioEngine:
             # No beats detected for 3x expected interval → wants to RAISE audio_amp
             wants_adjustment = True
         
+        # Check for excess beats: if BPS > 2× target for consecutive checks, LOWER audio_amp
+        wants_lower = False
+        if self.last_beat_time > 0 and time_since_beat < target_interval:
+            # Beats are coming — check if too many
+            if len(self._bps_beat_times) >= 2:
+                window_dur = self._bps_beat_times[-1] - self._bps_beat_times[0] if len(self._bps_beat_times) >= 2 else 1.0
+                if window_dur > 0:
+                    actual_bps = (len(self._bps_beat_times) - 1) / window_dur
+                    if actual_bps > self._target_bps * 2.0:
+                        wants_lower = True
+        
         # Hysteresis: require 2 consecutive out-of-zone checks before adjusting
-        if wants_adjustment:
+        if wants_adjustment or wants_lower:
             self._audio_amp_hysteresis_count += 1
             if self._audio_amp_hysteresis_count >= self._metric_hysteresis_required:
                 # Actually adjust now
-                self._metric_settled_counts['audio_amp'] = 0
+                # Decay settled counter instead of hard reset (drop by 3, not to 0)
+                self._metric_settled_counts['audio_amp'] = max(0, self._metric_settled_counts.get('audio_amp', 0) - 3)
                 self._audio_amp_hysteresis_count = 0
-                if callback:
+                if wants_lower:
+                    # De-escalate: lower at half the raise rate
+                    lower_step = step * 0.5
+                    if callback:
+                        callback({
+                            'metric': 'audio_amp',
+                            'adjustment': -lower_step,
+                            'direction': 'lower',
+                            'reason': f'excess BPS > 2x target (2x confirmed)',
+                        })
+                elif callback:
                     callback({
                         'metric': 'audio_amp',
                         'adjustment': +step,
@@ -1605,7 +1635,8 @@ class AudioEngine:
             self._sensitivity_hysteresis_count += 1
             if self._sensitivity_hysteresis_count >= self._metric_hysteresis_required:
                 # Actually adjust now
-                self._metric_settled_counts['sensitivity'] = 0
+                # Decay settled counter instead of hard reset (drop by 3, not to 0)
+                self._metric_settled_counts['sensitivity'] = max(0, self._metric_settled_counts.get('sensitivity', 0) - 3)
                 self._sensitivity_hysteresis_count = 0
                 if callback:
                     callback({

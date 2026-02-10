@@ -34,7 +34,7 @@ class BeatDetectionConfig:
     
     # Tempo tracking parameters
     tempo_tracking_enabled: bool = True  # Enable/disable tempo & downbeat tracking
-    stability_threshold: float = 0.15    # Max CV to consider tempo "stable" (lower = stricter)
+    stability_threshold: float = 0.28    # Max CV to consider tempo "stable" (lower = stricter)
     tempo_timeout_ms: int = 2000         # How long no beats before resetting tempo tracking (ms)
     beats_per_measure: int = 4           # Time signature: 4 = 4/4, 3 = 3/4, 6 = 6/8
     phase_snap_weight: float = 0.3       # How much to snap detected beats toward predicted time (0=off, 1=full)
@@ -191,7 +191,7 @@ BEAT_RESET_DEFAULTS = {
 
 BEAT_RANGE_LIMITS = {
     'audio_amp': (0.15, 10.0),
-    'peak_floor': (0.015, 0.28),
+    'peak_floor': (0.015, 2.0),
     'peak_decay': (0.230, 0.999),
     'rise_sens': (0.02, 1.0),
     'sensitivity': (0.10, 1.0),
