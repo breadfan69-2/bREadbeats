@@ -97,9 +97,12 @@ class StrokeMapper:
         self._creep_was_active_last_frame: bool = False  # Track if creep was active last frame
 
     def _get_band_volume(self, event: BeatEvent) -> float:
-        """Return volume multiplied by the band-based scale factor."""
+        """Return volume with band-based reduction (subtractive, never below 85%)."""
         band = getattr(event, 'beat_band', 'sub_bass')
-        return self.get_volume() * self._band_volume_scale.get(band, 1.0)
+        base_vol = self.get_volume()
+        # Band reduction: 0% (sub_bass) to 5% (high)
+        band_reduction = (1.0 - self._band_volume_scale.get(band, 1.0)) * base_vol
+        return max(base_vol * 0.85, base_vol - band_reduction)
 
     def _get_band_duration_scale(self, event: BeatEvent) -> float:
         """Return duration multiplier for the current primary beat band.
@@ -503,9 +506,11 @@ class StrokeMapper:
             step_ms = step_durations[i]  # Each step has its own duration
             
             if self.send_callback:
-                # Apply fade-out and band-based volume to arc strokes
+                # Apply fade-out and band-based volume to arc strokes (subtractive, min 85%)
                 band_vol = getattr(self, '_arc_band_volume', self.get_volume())
-                volume = band_vol * self._fade_intensity
+                # Fade reduction: subtractive, not multiplicative
+                fade_reduction = (1.0 - self._fade_intensity) * band_vol
+                volume = max(band_vol * 0.85, band_vol - fade_reduction)
                 cmd = TCodeCommand(alpha, beta, step_ms, volume)
                 self.send_callback(cmd)
                 self.state.alpha = alpha
@@ -530,8 +535,10 @@ class StrokeMapper:
     def _send_return_stroke(self, duration_ms: int, alpha: float, beta: float):
         """Send the return stroke to opposite position (called by timer)"""
         if self.send_callback:
-            # Apply fade-out to return strokes
-            volume = self.get_volume() * self._fade_intensity
+            # Apply fade-out to return strokes (subtractive, min 85%)
+            base_vol = self.get_volume()
+            fade_reduction = (1.0 - self._fade_intensity) * base_vol
+            volume = max(base_vol * 0.85, base_vol - fade_reduction)
             cmd = TCodeCommand(alpha, beta, duration_ms, volume)
             log_event("INFO", "StrokeMapper", "Return stroke", alpha=f"{alpha:.2f}", beta=f"{beta:.2f}", duration_ms=duration_ms, fade=f"{self._fade_intensity:.2f}")
             self.send_callback(cmd)
@@ -872,10 +879,16 @@ class StrokeMapper:
         self.state.beta = beta_target
         self.state.last_stroke_time = now
         
-        # Apply fade intensity and creep volume factor
+        # Apply fade intensity and creep volume factor (subtractive, never below 85%)
+        base_vol = self.get_volume()
         fade = getattr(self, '_fade_intensity', 1.0)
         creep_vol = getattr(self, '_creep_volume_factor', 1.0)
-        volume = self.get_volume() * fade * creep_vol
+        # Subtractive reductions
+        fade_reduction = (1.0 - fade) * base_vol
+        creep_reduction = (1.0 - creep_vol) * base_vol
+        total_reduction = fade_reduction + creep_reduction
+        # Hard clamp: never reduce by more than 15%
+        volume = max(base_vol * 0.85, base_vol - min(total_reduction, base_vol * 0.15))
         
         return TCodeCommand(alpha_target, beta_target, duration_ms, volume)
     
