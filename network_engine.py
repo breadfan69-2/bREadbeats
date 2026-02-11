@@ -235,6 +235,12 @@ class NetworkEngine:
         self.sending_enabled = enabled
         status = "Playing" if enabled else "Paused"
         log_event("INFO", "NetworkEngine", status)
+    
+    def send_immediate(self, cmd: TCodeCommand) -> None:
+        """Send a command immediately, bypassing the queue and sending_enabled check.
+        Used for shutdown/fade-out commands that must be sent regardless of state."""
+        if self.connected:
+            self._send_tcode(cmd)
         
     def _worker_loop(self) -> None:
         """Background worker that sends queued commands"""
