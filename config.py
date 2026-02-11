@@ -29,7 +29,7 @@ class BeatDetectionConfig:
     flux_multiplier: float = 1.0      # Weight of spectral flux
     # Frequency band selection (Hz)
     freq_low: float = 30.0            # Low cutoff frequency (Hz)
-    freq_high: float = 200.0          # High cutoff frequency (Hz) - bass range default
+    freq_high: float = 150.0          # High cutoff frequency (Hz) - bass range default
     silence_reset_ms: int = 400       # How long silence before resetting beat tracking (ms)
     
     # Tempo tracking parameters
