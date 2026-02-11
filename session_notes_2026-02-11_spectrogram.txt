@@ -1,0 +1,52 @@
+Session Notes — 2026-02-11 — Spectrogram & Frequency Slider Overhaul
+=====================================================================
+
+Triggered by: User feedback from developer friend reviewing the spectrogram.
+
+CHANGES MADE
+=============
+
+1. DYNAMIC RANGE FIX (all 4 visualizer classes)
+   - Changed spectrum normalization from (spectrum + 4) / 4 to (spectrum + 6) / 6
+   - Old behavior: clipped log10 range to [-4, 0], discarding bottom 33% of dynamic range
+   - New behavior: maps full [-6, 0] log10 range to [0, 1], preserving all quiet detail
+   - Affected: SpectrumCanvas, MountainRangeCanvas, BarGraphCanvas, PhosphorCanvas
+
+2. LOG-FREQUENCY AXIS (all 4 visualizer classes)
+   - Replaced linear np.linspace resampling with np.logspace resampling
+   - Low frequencies now get proportionally more display bins (matching human hearing)
+   - High frequencies compressed — standard for audio spectrograms
+
+3. HZ-TO-BIN / BIN-TO-HZ CONVERSION (all 4 visualizer classes)
+   - Updated _hz_to_bin() and _bin_to_hz() to use inverse log mapping
+   - Ensures draggable frequency band overlays map correctly to Hz in log space
+   - Added _fft_bins tracking: stored in update_spectrum() on each frame,
+     initialized to 513 (default for 1024 FFT) in __init__
+
+4. set_frequency_band() UPDATED (all 4 visualizer classes)
+   - Now converts normalized 0-1 values through _hz_to_bin() instead of linear multiplication
+   - Bands position correctly on log-frequency display
+
+5. set_sample_rate() WIRING FIX
+   - Added missing set_sample_rate() calls for bar_canvas and phosphor_canvas
+   - Previously only spectrum_canvas and mountain_canvas received sample rate updates
+
+6. LOG-SCALE RANGE SLIDERS
+   - Added log_scale parameter to RangeSlider and RangeSliderWithLabel classes
+   - _val_to_pos() uses log10 mapping; _pos_to_val() uses 10^x inverse
+   - Enabled log_scale=True on all 6 frequency Hz range sliders:
+     freq_range_slider, pulse_freq_range_slider, f0_freq_range_slider,
+     p1_monitor_range_slider, p3_monitor_range_slider, depth_freq_range_slider
+   - TCode "Sent Value" sliders remain linear (not frequency-based)
+
+FILES MODIFIED
+==============
+- main.py — All changes above (4 visualizer classes, RangeSlider, RangeSliderWithLabel,
+  BREadbeatsWindow init wiring)
+
+TESTING
+=======
+- App launches and runs without errors
+- Beat detection, stroke generation, and idle motion all functioning
+- Spectrogram shows improved dynamic range and log-frequency distribution
+- Range sliders move proportionally to log-frequency display
