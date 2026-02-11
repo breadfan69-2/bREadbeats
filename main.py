@@ -2285,6 +2285,11 @@ class BREadbeatsWindow(QMainWindow):
         self._f0_last_send_time: float = 0.0  # For throttling F0 sends
         self._f0_last_sent_tcode: Optional[int] = None  # Last F0 tcode value sent (for smoothing)
         self._f0_duration_base_ms: float = 900.0  # Base F0 duration (ms)
+        # C0 Band mode rate limiter: +-500 tcode per 2 seconds, finish travel before new target
+        self._c0_band_target: Optional[int] = None   # Current target tcode for band mode
+        self._c0_band_current: Optional[int] = None   # Current sent tcode value (traveling)
+        self._c0_band_last_target_time: float = 0.0   # When last target was set
+        self._c0_band_travel_rate: float = 250.0       # Max tcode change per second (500/2s)
         self._f0_duration_variance_ms: float = 200.0  # ±variance for random duration
         self._f0_max_change_per_send: int = 300  # Max ±300 tcode change per send
         self._last_freq_display_time: float = 0.0  # Throttle freq display updates to 100ms
@@ -4249,7 +4254,7 @@ bREadfan_69@hotmail.com"""
         pulse_mode_layout = QHBoxLayout()
         pulse_mode_layout.addWidget(QLabel("Mode:"))
         self.pulse_mode_combo = QComboBox()
-        self.pulse_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)"])
+        self.pulse_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)", "Band (sub_bass)"])
         self.pulse_mode_combo.setCurrentIndex(0)
         pulse_mode_layout.addWidget(self.pulse_mode_combo)
         self.pulse_invert_checkbox = QCheckBox("Invert")
@@ -4288,7 +4293,7 @@ bREadfan_69@hotmail.com"""
         f0_mode_layout = QHBoxLayout()
         f0_mode_layout.addWidget(QLabel("Mode:"))
         self.f0_mode_combo = QComboBox()
-        self.f0_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)"])
+        self.f0_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)", "Band (mid)"])
         self.f0_mode_combo.setCurrentIndex(0)
         f0_mode_layout.addWidget(self.f0_mode_combo)
         self.f0_invert_checkbox = QCheckBox("Invert")
@@ -4880,6 +4885,13 @@ bREadfan_69@hotmail.com"""
             self.stroke_mapper.motion_intensity = value
         print(f"[Config] Motion intensity set to {value:.2f}")
 
+    def _on_micro_effects_toggle(self, state):
+        """Toggle micro-effects (beat jerks) in the stroke mapper."""
+        enabled = state == 2
+        if hasattr(self, 'stroke_mapper') and self.stroke_mapper is not None:
+            self.stroke_mapper._micro_effects_enabled = enabled
+        print(f"[Config] Micro-effects {'enabled' if enabled else 'disabled'}")
+
     def _set_motion_preset(self, preset: str):
         """Apply a quick motion preset: gentle / normal / intense.
         
@@ -5292,6 +5304,14 @@ bREadfan_69@hotmail.com"""
         motion_btn_layout.addWidget(self.motion_intense_btn)
         
         motion_layout.addLayout(motion_btn_layout)
+        
+        # Micro-effects toggle (jerks on beats during low-amplitude creep mode)
+        self.micro_effects_checkbox = QCheckBox("Micro-effects (beat jerks in creep mode)")
+        self.micro_effects_checkbox.setChecked(True)
+        self.micro_effects_checkbox.setToolTip("When enabled, small impulse jerks fire on beats during low-amplitude passages")
+        self.micro_effects_checkbox.stateChanged.connect(self._on_micro_effects_toggle)
+        motion_layout.addWidget(self.micro_effects_checkbox)
+        
         layout.addWidget(motion_group)
         
         # ===== STROKE PARAMETERS =====
@@ -5574,6 +5594,8 @@ bREadfan_69@hotmail.com"""
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
             self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
+            if hasattr(self, 'micro_effects_checkbox'):
+                self.stroke_mapper._micro_effects_enabled = self.micro_effects_checkbox.isChecked()
             # Start volume ramp from 0 to set value over 1.3s
             self._volume_ramp_active = True
             self._volume_ramp_start_time = time.time()
@@ -5641,6 +5663,8 @@ bREadfan_69@hotmail.com"""
 
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
         self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
+        if hasattr(self, 'micro_effects_checkbox'):
+            self.stroke_mapper._micro_effects_enabled = self.micro_effects_checkbox.isChecked()
 
         # Network engine is already started on program launch via _auto_connect_tcp
         # Only create if somehow missing
@@ -5800,6 +5824,13 @@ bREadfan_69@hotmail.com"""
                 in_low = self.config.pulse_freq.monitor_freq_min
                 in_high = self.config.pulse_freq.monitor_freq_max
                 norm = (p0_dom_freq - in_low) / max(1.0, in_high - in_low)
+            elif pulse_mode == 2:  # Band (sub_bass) mode
+                # Use sub_bass band energy directly — long booming bass = "feeling" the pulse
+                sub_bass_energy = 0.0
+                if self.audio_engine and hasattr(self.audio_engine, '_band_energies'):
+                    sub_bass_energy = self.audio_engine._band_energies.get('sub_bass', 0.0)
+                # Normalize: typical sub_bass energy 0-0.3 after gain
+                norm = min(1.0, sub_bass_energy * 4.0)
             else:  # Speed mode
                 norm = min(1.0, dot_speed / 10.0)
             
@@ -5860,6 +5891,13 @@ bREadfan_69@hotmail.com"""
                 f0_in_low = self.config.carrier_freq.monitor_freq_min
                 f0_in_high = self.config.carrier_freq.monitor_freq_max
                 f0_norm = (f0_dom_freq - f0_in_low) / max(1.0, f0_in_high - f0_in_low)
+            elif f0_mode == 2:  # Band (mid) mode — voice, brass, dominant strings (500-2000 Hz)
+                # Use mid band energy directly — strict rate limit below
+                mid_energy = 0.0
+                if self.audio_engine and hasattr(self.audio_engine, '_band_energies'):
+                    mid_energy = self.audio_engine._band_energies.get('mid', 0.0)
+                # Normalize: typical mid energy 0-0.2 after gain
+                f0_norm = min(1.0, mid_energy * 5.0)
             else:  # Speed mode
                 f0_norm = min(1.0, dot_speed / 10.0)
             
@@ -5892,8 +5930,38 @@ bREadfan_69@hotmail.com"""
             f0_val_raw = int(f0_tcode_min + f0_avg_norm * (f0_tcode_max - f0_tcode_min))
             f0_val_raw = max(0, min(9999, f0_val_raw))
             
-            # Smooth F0: limit change to ±300 tcode per send for smoother transitions
-            if self._f0_last_sent_tcode is not None:
+            # Smooth F0: limit change rate for smoother transitions
+            if f0_mode == 2:
+                # Band (mid) mode: strict rate limiter — ±500 tcode per 2 seconds
+                # Must finish traveling to current target before accepting new one
+                if self._c0_band_current is None:
+                    self._c0_band_current = f0_val_raw
+                    self._c0_band_target = f0_val_raw
+
+                # Check if we've arrived at current target
+                at_target = (self._c0_band_target is not None
+                             and abs(self._c0_band_current - self._c0_band_target) < 5)
+
+                if at_target:
+                    # Accept new target only if different enough (>50 tcode)
+                    if abs(f0_val_raw - self._c0_band_target) > 50:
+                        # Clamp new target: max ±500 from current position
+                        delta_from_current = f0_val_raw - self._c0_band_current
+                        delta_from_current = max(-500, min(500, delta_from_current))
+                        self._c0_band_target = self._c0_band_current + delta_from_current
+                        self._c0_band_target = max(0, min(9999, self._c0_band_target))
+                        self._c0_band_last_target_time = now
+
+                # Travel toward target at _c0_band_travel_rate tcode/sec (=250/s → 500 per 2s)
+                if self._c0_band_target is not None and self._c0_band_current != self._c0_band_target:
+                    max_step = max(1, int(self._c0_band_travel_rate * dt))
+                    diff = self._c0_band_target - self._c0_band_current
+                    step = max(-max_step, min(max_step, diff))
+                    self._c0_band_current += step
+                    self._c0_band_current = max(0, min(9999, self._c0_band_current))
+
+                f0_val = int(self._c0_band_current)
+            elif self._f0_last_sent_tcode is not None:
                 delta = f0_val_raw - self._f0_last_sent_tcode
                 if abs(delta) > self._f0_max_change_per_send:
                     if delta > 0:
