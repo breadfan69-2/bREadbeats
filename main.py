@@ -2297,7 +2297,7 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_start_time: float = 0.0
         self._volume_ramp_from: float = 0.0
         self._volume_ramp_to: float = 1.0
-        self._volume_ramp_duration: float = 0.8  # 800ms
+        self._volume_ramp_duration: float = 1.3  # 1.3s ramp
         
         # Auto-align target BPM tracking
         self._auto_align_target_enabled: bool = False
@@ -5510,17 +5510,24 @@ bREadfan_69@hotmail.com"""
                 QTimer.singleShot(3000, lambda: self.network_engine.set_sending_enabled(was_sending) if self.network_engine else None)
     
     def _on_start_stop(self, checked: bool):
-        """Start/stop audio capture"""
+        """Start/stop audio capture and TCode pipeline.
+        Start enables TCode sending (V0=0 until Play). Stop kills everything."""
         if checked:
             self._start_engines()
             self.start_btn.setText("■ Stop")
             self.play_btn.setEnabled(True)
-        else:
-            # Send zero-volume command before stopping engines (immediate, bypasses queue)
-            self._volume_ramp_active = False
-            if self.network_engine and self.is_sending:
+            # Enable TCode sending immediately on Start (V0=0 until Play is pressed)
+            if self.network_engine:
+                self.network_engine.set_sending_enabled(True)
                 zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=100)
                 self.network_engine.send_immediate(zero_cmd)
+        else:
+            # Send zero-volume command before stopping (always, not just when is_sending)
+            self._volume_ramp_active = False
+            if self.network_engine:
+                zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=100)
+                self.network_engine.send_immediate(zero_cmd)
+                self.network_engine.set_sending_enabled(False)
             self._stop_engines()
             self.start_btn.setText("▶ Start")
             self.play_btn.setEnabled(False)
@@ -5530,28 +5537,26 @@ bREadfan_69@hotmail.com"""
             # Note: Auto-range state is preserved across stop/start - no reset here
     
     def _on_play_pause(self, checked: bool):
-        """Play/pause sending commands"""
+        """Play/pause motion generation. Pause sends V0=0 but keeps TCode pipeline active."""
         self.is_sending = checked
         if checked:
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
             self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
-            # Start volume ramp from 0 to 1 over 800ms
+            # Start volume ramp from 0 to set value over 1.3s
             self._volume_ramp_active = True
             self._volume_ramp_start_time = time.time()
             self._volume_ramp_from = 0.0
             self._volume_ramp_to = 1.0
-            if self.network_engine:
-                self.network_engine.set_sending_enabled(True)
+            # sending_enabled already True from Start — no need to set again
         else:
-            # Immediately stop volume ramp and send zero-volume command with fade
+            # Send V0=0 immediately with fade, but keep TCode pipeline active
             self._volume_ramp_active = False
             if self.network_engine:
-                # Send zero-volume IMMEDIATELY (bypasses queue and sending_enabled check)
-                # Must be sent before disabling, using send_immediate to guarantee delivery
+                # Send zero-volume IMMEDIATELY (bypasses queue)
                 zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=500)
                 self.network_engine.send_immediate(zero_cmd)
-                self.network_engine.set_sending_enabled(False)
+                # DON'T disable sending_enabled — connection stays active until Stop
         self.play_btn.setText("⏸ Pause" if checked else "▶ Play")
     
     def _on_detection_type_change(self, index: int):
@@ -6277,21 +6282,16 @@ bREadfan_69@hotmail.com"""
                         current_target = self.target_bpm_spin.value()
                         diff = sensed_bpm - current_target
                         
-                        if abs(diff) > 1.0:  # Only align if difference > 1 BPM
-                            # Speed slider controls alignment rate (0.1-1.0 BPM per update)
-                            speed = getattr(self, 'bps_speed_slider', None)
-                            rate = 0.1 + (speed.value() / 100.0 * 0.9) if speed else 0.3
-                            
-                            # Move target toward sensed BPM
+                        if abs(diff) >= 1.0:  # Only align if difference >= 1 BPM
+                            # Move target toward sensed BPM by 1 BPM per update cycle
                             if diff > 0:
-                                new_target = min(current_target + rate, sensed_bpm)
+                                new_target = min(int(current_target) + 1, int(sensed_bpm))
                             else:
-                                new_target = max(current_target - rate, sensed_bpm)
+                                new_target = max(int(current_target) - 1, int(np.ceil(sensed_bpm)))
                             
-                            new_target = round(new_target)  # Keep as whole number
-                            if new_target != current_target:
+                            if new_target != int(current_target):
                                 self.target_bpm_spin.setValue(new_target)
-                                print(f"[Auto-align] Target BPM: {current_target:.0f} → {new_target:.0f} (sensed: {sensed_bpm:.1f})")
+                                print(f"[Auto-align] Target BPM: {int(current_target)} → {new_target} (sensed: {sensed_bpm:.1f}, stable count: {self._auto_align_stable_count})")
                 else:
                     # Invalid BPM, reset stable count
                     self._auto_align_stable_count = 0
