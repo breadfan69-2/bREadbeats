@@ -5779,12 +5779,9 @@ bREadfan_69@hotmail.com"""
         """Stop all engines and background threads"""
         self.is_running = False
 
-        # Stop stroke mapper arc thread if running
-        if self.stroke_mapper and hasattr(self.stroke_mapper, '_arc_thread'):
-            arc_thread = getattr(self.stroke_mapper, '_arc_thread', None)
-            if arc_thread and arc_thread.is_alive():
-                self.stroke_mapper._stop_arc = True
-                arc_thread.join(timeout=1.0)
+        # Clear any active trajectory on the stroke mapper
+        if self.stroke_mapper and hasattr(self.stroke_mapper, '_trajectory'):
+            self.stroke_mapper._trajectory = None
         self.stroke_mapper = None
 
         if self.audio_engine:

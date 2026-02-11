@@ -12,10 +12,9 @@ All modes use circular coordinates around (0,0) in the alpha/beta plane.
 import numpy as np
 import time
 import random
-import threading
 from collections import deque
-from typing import Optional, Tuple, Callable
-from dataclasses import dataclass
+from typing import Optional, Tuple, Callable, List
+from dataclasses import dataclass, field
 
 from config import Config, StrokeMode
 from audio_engine import BeatEvent
@@ -43,6 +42,27 @@ class StrokeState:
     beat_counter: int = 0         # For beat counting within measure
     creep_reset_start_time: float = 0.0
     creep_reset_active: bool = False
+
+
+@dataclass
+class PlannedTrajectory:
+    """Pre-computed arc trajectory for frame-by-frame playback.
+    Instead of a separate thread, idle motion reads one point per frame."""
+    alpha_points: np.ndarray = field(default_factory=lambda: np.array([]))
+    beta_points: np.ndarray = field(default_factory=lambda: np.array([]))
+    step_durations: List[int] = field(default_factory=list)
+    n_points: int = 0
+    current_index: int = 0
+    band_volume: float = 1.0
+    start_time: float = 0.0
+
+    @property
+    def active(self) -> bool:
+        return self.current_index < self.n_points
+
+    @property
+    def finished(self) -> bool:
+        return self.current_index >= self.n_points
 
 
 # ---------------------------------------------------------------------------
@@ -100,10 +120,8 @@ class StrokeMapper:
         self._phase_time: float = time.time()
         self._current_bpm: float = 0.0
 
-        # ---------- Full-stroke arc thread ----------
-        self._arc_thread: Optional[threading.Thread] = None
-        self._stop_arc: bool = False
-        self._arc_band_volume: float = 1.0
+        # ---------- Full-stroke planned trajectory ----------
+        self._trajectory: Optional[PlannedTrajectory] = None
 
         # ---------- Micro-effect state ----------
         self._micro_effects_enabled: bool = True   # toggle from GUI
@@ -419,13 +437,10 @@ class StrokeMapper:
     # ------------------------------------------------------------------
 
     def _generate_downbeat_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
-        """Full measure-length arc on downbeat.  When tempo LOCKED -> 25% boost."""
+        """Full measure-length arc on downbeat.  When tempo LOCKED -> 25% boost.
+        Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
         cfg = self.config.stroke
         now = time.time()
-
-        # Stop any running arc
-        if hasattr(self, '_arc_thread') and self._arc_thread and self._arc_thread.is_alive():
-            self._stop_arc = True
 
         # Measure duration
         if self.state.last_beat_time == 0.0:
@@ -476,30 +491,30 @@ class StrokeMapper:
         remainder = measure_duration_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
 
-        self._stop_arc = False
-        self._arc_band_volume = self._get_band_volume(event)
-        self._arc_thread = threading.Thread(
-            target=self._send_arc_synchronous,
-            args=[alpha_arc, beta_arc, step_durations, n_points],
-            daemon=True
+        # Store trajectory for frame-by-frame playback (no thread)
+        self._trajectory = PlannedTrajectory(
+            alpha_points=alpha_arc,
+            beta_points=beta_arc,
+            step_durations=step_durations,
+            n_points=n_points,
+            current_index=0,
+            band_volume=self._get_band_volume(event),
+            start_time=now,
         )
-        self._arc_thread.start()
 
         self.state.last_stroke_time = now
         self.state.last_beat_time = now
         lock_str = "LOCKED+BOOST" if tempo_locked else "unlocked"
-        log_event("INFO", "StrokeMapper", "Downbeat arc start",
+        log_event("INFO", "StrokeMapper", "Arc start",
                   mode=cfg.mode.name, points=n_points,
                   duration_ms=measure_duration_ms, tempo_state=lock_str)
-        return None  # arc thread handles sending
+        return None  # idle motion will read from trajectory
 
-    def _generate_beat_stroke(self, event: BeatEvent) -> TCodeCommand:
-        """Full arc stroke for a regular detected beat."""
+    def _generate_beat_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
+        """Full arc stroke for a regular detected beat.
+        Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
         cfg = self.config.stroke
         now = time.time()
-
-        if hasattr(self, '_arc_thread') and self._arc_thread and self._arc_thread.is_alive():
-            self._stop_arc = True
 
         beat_interval_ms = (now - self.state.last_beat_time) * 1000 if self.state.last_beat_time > 0 else cfg.min_interval_ms
         beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
@@ -568,61 +583,63 @@ class StrokeMapper:
         remainder = beat_interval_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
 
-        self._stop_arc = False
-        self._arc_band_volume = self._get_band_volume(event)
-        self._arc_thread = threading.Thread(
-            target=self._send_arc_synchronous,
-            args=[alpha_arc, beta_arc, step_durations, n_points],
-            daemon=True
+        # Store trajectory for frame-by-frame playback (no thread)
+        self._trajectory = PlannedTrajectory(
+            alpha_points=alpha_arc,
+            beta_points=beta_arc,
+            step_durations=step_durations,
+            n_points=n_points,
+            current_index=0,
+            band_volume=self._get_band_volume(event),
+            start_time=now,
         )
-        self._arc_thread.start()
 
         self.state.last_stroke_time = now
         self.state.last_beat_time = now
-
-        first_alpha = float(alpha_arc[0])
-        first_beta = float(beta_arc[0])
-        self.state.alpha = first_alpha
-        self.state.beta = first_beta
 
         band = getattr(event, 'beat_band', 'sub_bass')
         log_event("INFO", "StrokeMapper", "Arc start",
                   mode=cfg.mode.name, points=n_points,
                   duration_ms=beat_interval_ms, band=band,
                   motion=f"{self.motion_intensity:.2f}")
-        return TCodeCommand(first_alpha, first_beta, step_durations[0], self._arc_band_volume)
+        return None  # idle motion will read from trajectory
 
     # ------------------------------------------------------------------
-    # Arc sender (synchronous thread - same as v1)
+    # Trajectory playback (called from _generate_idle_motion)
     # ------------------------------------------------------------------
 
-    def _send_arc_synchronous(self, alpha_arc, beta_arc, step_durations, n_points):
-        """Send arc points synchronously with proper sleep timing."""
-        for i in range(1, n_points):
-            if self._stop_arc:
-                log_event("INFO", "StrokeMapper", "Arc interrupted", point=i)
-                return
+    def _advance_trajectory(self) -> Optional[TCodeCommand]:
+        """Read the next point from the active trajectory.
+        Returns a TCodeCommand, or None if the trajectory just finished."""
+        traj = self._trajectory
+        if traj is None or traj.finished:
+            return None
 
-            alpha = float(alpha_arc[i])
-            beta = float(beta_arc[i])
-            step_ms = step_durations[i]
+        idx = traj.current_index
+        alpha = float(traj.alpha_points[idx])
+        beta = float(traj.beta_points[idx])
+        step_ms = traj.step_durations[idx]
 
-            if self.send_callback:
-                band_vol = getattr(self, '_arc_band_volume', self.get_volume())
-                fade_reduction = (1.0 - self._fade_intensity) * band_vol
-                volume = max(self._vol_floor(band_vol), band_vol - fade_reduction)
-                cmd = TCodeCommand(alpha, beta, step_ms, volume)
-                self.send_callback(cmd)
-                self.state.alpha = alpha
-                self.state.beta = beta
+        # Use short duration matching our update rate for smooth motion
+        duration_ms = min(step_ms, 25)
 
-            time.sleep(step_ms / 1000.0)
+        fade_reduction = (1.0 - self._fade_intensity) * traj.band_volume
+        volume = max(self._vol_floor(traj.band_volume), traj.band_volume - fade_reduction)
 
-        log_event("INFO", "StrokeMapper", "Arc complete", points=n_points)
-        # Sync creep angle to where arc ended so creep continues smoothly
-        self._sync_creep_angle_to_position()
-        # Start smooth blend from arc endpoint to creep orbit
-        self._post_arc_blend = 0.0
+        self.state.alpha = alpha
+        self.state.beta = beta
+        traj.current_index += 1
+
+        # Check if trajectory just completed
+        if traj.finished:
+            log_event("INFO", "StrokeMapper", "Arc complete", points=traj.n_points)
+            # Sync creep angle to where arc ended so creep continues smoothly
+            self._sync_creep_angle_to_position()
+            # Start smooth blend from arc endpoint to creep orbit
+            self._post_arc_blend = 0.0
+            self._trajectory = None
+
+        return TCodeCommand(alpha, beta, duration_ms, volume)
 
     # ------------------------------------------------------------------
     # Micro-effect: jerk on beat (CREEP_MICRO mode)
@@ -675,7 +692,7 @@ class StrokeMapper:
     # ------------------------------------------------------------------
 
     def _generate_idle_motion(self, event: Optional[BeatEvent]) -> Optional[TCodeCommand]:
-        """Generate jitter/creep/micro-jerk motion when idle."""
+        """Generate motion: trajectory playback OR creep/jitter when idle."""
         now = time.time()
         jitter_cfg = self.config.jitter
         creep_cfg = self.config.creep
@@ -684,6 +701,11 @@ class StrokeMapper:
         time_since_last = (now - self._last_idle_time) * 1000
         if time_since_last < 17:
             return None
+
+        # ---------- Trajectory playback (replaces arc thread) ----------
+        if self._trajectory is not None and self._trajectory.active:
+            self._last_idle_time = now
+            return self._advance_trajectory()
 
         jitter_active = jitter_cfg.enabled and jitter_cfg.amplitude > 0
         creep_active = creep_cfg.enabled and creep_cfg.speed > 0
@@ -864,7 +886,7 @@ class StrokeMapper:
         alpha_target = np.clip(alpha_target, -1.0, 1.0)
         beta_target = np.clip(beta_target, -1.0, 1.0)
 
-        duration_ms = 200  # smooth continuous motion
+        duration_ms = 25  # short duration matching update rate for smooth motion
 
         self.state.alpha = alpha_target
         self.state.beta = beta_target
@@ -980,6 +1002,7 @@ class StrokeMapper:
         self._micro_jerk_alpha = 0.0
         self._micro_jerk_beta = 0.0
         self._last_micro_jerk_time = 0.0
+        self._trajectory = None
 
 
 # ---------------------------------------------------------------------------
