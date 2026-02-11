@@ -277,6 +277,7 @@ class SpectrumCanvas(pg.PlotWidget):
         # Reference to parent window for slider updates
         self.parent_window = parent
         self.sample_rate = 44100  # Will be updated
+        self._fft_bins = 513  # Default for 1024 FFT; updated on first spectrum
         self._updating = False  # Prevent recursion when setting bands
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
@@ -317,14 +318,24 @@ class SpectrumCanvas(pg.PlotWidget):
         self._bar_scale = self.history_len  # Scale heights to match Y range
         
     def _hz_to_bin(self, hz: float) -> float:
-        """Convert Hz to bin index (0 to num_bins)"""
+        """Convert Hz to log-spaced bin index (0 to num_bins)"""
         nyquist = self.sample_rate / 2
-        return (hz / nyquist) * self.num_bins
+        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
+        # Hz -> linear FFT index
+        linear_idx = max(1.0, (hz / nyquist) * (n - 1))
+        # Linear index -> log-spaced bin: inverse of logspace(0, log10(n-1), num_bins)
+        log_max = np.log10(n - 1)
+        return (np.log10(linear_idx) / log_max) * self.num_bins if log_max > 0 else 0.0
     
     def _bin_to_hz(self, bin_idx: float) -> float:
-        """Convert bin index to Hz"""
+        """Convert log-spaced bin index to Hz"""
         nyquist = self.sample_rate / 2
-        return (bin_idx / self.num_bins) * nyquist
+        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
+        # Log-spaced bin -> linear FFT index: apply logspace mapping
+        log_max = np.log10(n - 1)
+        linear_idx = 10 ** ((bin_idx / self.num_bins) * log_max) if log_max > 0 else bin_idx
+        # Linear index -> Hz
+        return (linear_idx / (n - 1)) * nyquist
         
     def _on_beat_band_changed(self):
         """Handle beat detection band dragging"""
@@ -396,8 +407,9 @@ class SpectrumCanvas(pg.PlotWidget):
     def set_frequency_band(self, low_norm: float, high_norm: float):
         """Update beat detection band (normalized 0-1)"""
         self._updating = True
-        low_bin = low_norm * self.num_bins
-        high_bin = high_norm * self.num_bins
+        nyquist = self.sample_rate / 2
+        low_bin = self._hz_to_bin(low_norm * nyquist)
+        high_bin = self._hz_to_bin(high_norm * nyquist)
         self.beat_band.setRegion((low_bin, high_bin))
         # Update label position to center of band
         center_bin = (low_bin + high_bin) / 2
@@ -478,16 +490,25 @@ class SpectrumCanvas(pg.PlotWidget):
             return
         
         # Use full Nyquist range (no cutoff)
-        # Resample to num_bins using interpolation
-        if len(spectrum) != self.num_bins:
-            x_old = np.linspace(0, 1, len(spectrum))
+        # Track source FFT size for hz/bin conversions
+        self._fft_bins = len(spectrum)
+        # Resample to num_bins using log-frequency spacing
+        n = len(spectrum)
+        if n > 1:
+            x_old = np.arange(n)
+            # Log-spaced indices: more resolution at low frequencies
+            x_new = np.logspace(0, np.log10(n - 1), self.num_bins)
+            x_new = np.clip(x_new, 0, n - 1)
+            spectrum = np.interp(x_new, x_old, spectrum)
+        elif len(spectrum) != self.num_bins:
+            x_old = np.linspace(0, 1, n)
             x_new = np.linspace(0, 1, self.num_bins)
             spectrum = np.interp(x_new, x_old, spectrum)
         
         # Apply log scaling for better dynamic range visualization
         spectrum = np.log10(spectrum + 1e-6)
-        # Normalize: typical range is -6 to 0 for normalized input, map to 0-1
-        spectrum = np.clip((spectrum + 4) / 4, 0, 1)
+        # Normalize: full range -6 to 0 for normalized input, map to 0-1
+        spectrum = np.clip((spectrum + 6) / 6, 0, 1)
         
         # Scroll waterfall up: shift all rows up by 1, put new data at bottom (row 0)
         self.waterfall_data[1:, :] = self.waterfall_data[:-1, :]
@@ -640,6 +661,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Reference to parent window
         self.parent_window = parent
         self.sample_rate = 44100
+        self._fft_bins = 513  # Default for 1024 FFT; updated on first spectrum
         self._updating = False
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
@@ -686,14 +708,20 @@ class MountainRangeCanvas(pg.PlotWidget):
         self._smoothing = 0.3  # 0 = no smoothing, 1 = max smoothing
         
     def _hz_to_bin(self, hz: float) -> float:
-        """Convert Hz to bin index"""
+        """Convert Hz to log-spaced bin index"""
         nyquist = self.sample_rate / 2
-        return (hz / nyquist) * self.num_bins
+        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
+        linear_idx = max(1.0, (hz / nyquist) * (n - 1))
+        log_max = np.log10(n - 1)
+        return (np.log10(linear_idx) / log_max) * self.num_bins if log_max > 0 else 0.0
     
     def _bin_to_hz(self, bin_idx: float) -> float:
-        """Convert bin index to Hz"""
+        """Convert log-spaced bin index to Hz"""
         nyquist = self.sample_rate / 2
-        return (bin_idx / self.num_bins) * nyquist
+        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
+        log_max = np.log10(n - 1)
+        linear_idx = 10 ** ((bin_idx / self.num_bins) * log_max) if log_max > 0 else bin_idx
+        return (linear_idx / (n - 1)) * nyquist
         
     def _on_beat_band_changed(self):
         if self._updating:
@@ -756,8 +784,9 @@ class MountainRangeCanvas(pg.PlotWidget):
     
     def set_frequency_band(self, low_norm: float, high_norm: float):
         self._updating = True
-        low_bin = low_norm * self.num_bins
-        high_bin = high_norm * self.num_bins
+        nyquist = self.sample_rate / 2
+        low_bin = self._hz_to_bin(low_norm * nyquist)
+        high_bin = self._hz_to_bin(high_norm * nyquist)
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
         self.beat_label.setPos(center_bin, 0.97)
@@ -836,15 +865,23 @@ class MountainRangeCanvas(pg.PlotWidget):
         cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
         spectrum = spectrum[:cutoff_idx]
             
-        # Resample to num_bins
-        if len(spectrum) != self.num_bins:
-            x_old = np.linspace(0, 1, len(spectrum))
+        # Track source FFT size for hz/bin conversions
+        self._fft_bins = len(spectrum)
+        # Resample to num_bins using log-frequency spacing
+        n = len(spectrum)
+        if n > 1:
+            x_old = np.arange(n)
+            x_new = np.logspace(0, np.log10(n - 1), self.num_bins)
+            x_new = np.clip(x_new, 0, n - 1)
+            spectrum = np.interp(x_new, x_old, spectrum)
+        elif len(spectrum) != self.num_bins:
+            x_old = np.linspace(0, 1, n)
             x_new = np.linspace(0, 1, self.num_bins)
             spectrum = np.interp(x_new, x_old, spectrum)
         
         # Apply log scaling
         spectrum = np.log10(spectrum + 1e-6)
-        spectrum = np.clip((spectrum + 4) / 4, 0, 1)
+        spectrum = np.clip((spectrum + 6) / 6, 0, 1)
         
         # Sharpen peaks - enhance local maxima to make peaks pointy
         sharpened = spectrum.copy()
@@ -989,6 +1026,7 @@ class BarGraphCanvas(pg.PlotWidget):
         # Reference to parent window
         self.parent_window = parent
         self.sample_rate = 44100
+        self._fft_bins = 513  # Default for 1024 FFT; updated on first spectrum
         self._updating = False
         
         # Smoothing buffer
@@ -1028,14 +1066,20 @@ class BarGraphCanvas(pg.PlotWidget):
         self.addItem(self.peak_decay_bar)
         
     def _hz_to_bin(self, hz: float) -> float:
-        """Convert Hz to bar index"""
+        """Convert Hz to log-spaced bar index"""
         nyquist = self.sample_rate / 2
-        return (hz / nyquist) * self.num_bars
+        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bars
+        linear_idx = max(1.0, (hz / nyquist) * (n - 1))
+        log_max = np.log10(n - 1)
+        return (np.log10(linear_idx) / log_max) * self.num_bars if log_max > 0 else 0.0
     
     def _bin_to_hz(self, bin_idx: float) -> float:
-        """Convert bar index to Hz"""
+        """Convert log-spaced bar index to Hz"""
         nyquist = self.sample_rate / 2
-        return (bin_idx / self.num_bars) * nyquist
+        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bars
+        log_max = np.log10(n - 1)
+        linear_idx = 10 ** ((bin_idx / self.num_bars) * log_max) if log_max > 0 else bin_idx
+        return (linear_idx / (n - 1)) * nyquist
         
     def _on_beat_band_changed(self):
         if self._updating:
@@ -1098,8 +1142,9 @@ class BarGraphCanvas(pg.PlotWidget):
     
     def set_frequency_band(self, low_norm: float, high_norm: float):
         self._updating = True
-        low_bin = low_norm * self.num_bars
-        high_bin = high_norm * self.num_bars
+        nyquist = self.sample_rate / 2
+        low_bin = self._hz_to_bin(low_norm * nyquist)
+        high_bin = self._hz_to_bin(high_norm * nyquist)
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
         self.beat_label.setPos(center_bin, 0.97)
@@ -1175,15 +1220,23 @@ class BarGraphCanvas(pg.PlotWidget):
         cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
         spectrum = spectrum[:cutoff_idx]
             
-        # Resample to num_bars
-        if len(spectrum) != self.num_bars:
-            x_old = np.linspace(0, 1, len(spectrum))
+        # Track source FFT size for hz/bin conversions
+        self._fft_bins = len(spectrum)
+        # Resample to num_bars using log-frequency spacing
+        n = len(spectrum)
+        if n > 1:
+            x_old = np.arange(n)
+            x_new = np.logspace(0, np.log10(n - 1), self.num_bars)
+            x_new = np.clip(x_new, 0, n - 1)
+            spectrum = np.interp(x_new, x_old, spectrum)
+        elif len(spectrum) != self.num_bars:
+            x_old = np.linspace(0, 1, n)
             x_new = np.linspace(0, 1, self.num_bars)
             spectrum = np.interp(x_new, x_old, spectrum)
         
         # Apply log scaling
         spectrum = np.log10(spectrum + 1e-6)
-        spectrum = np.clip((spectrum + 4) / 4, 0, 1)
+        spectrum = np.clip((spectrum + 6) / 6, 0, 1)
         
         # Smooth for less jittery animation
         self._smooth_heights = self._smoothing * self._smooth_heights + (1 - self._smoothing) * spectrum
@@ -1301,6 +1354,7 @@ class PhosphorCanvas(pg.PlotWidget):
         
         self.parent_window = parent
         self.sample_rate = 44100
+        self._fft_bins = 513  # Default for 1024 FFT; updated on first spectrum
         self._updating = False
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
@@ -1340,11 +1394,17 @@ class PhosphorCanvas(pg.PlotWidget):
         
     def _hz_to_bin(self, hz: float) -> float:
         nyquist = self.sample_rate / 2
-        return (hz / nyquist) * self.num_bins
+        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
+        linear_idx = max(1.0, (hz / nyquist) * (n - 1))
+        log_max = np.log10(n - 1)
+        return (np.log10(linear_idx) / log_max) * self.num_bins if log_max > 0 else 0.0
     
     def _bin_to_hz(self, bin_idx: float) -> float:
         nyquist = self.sample_rate / 2
-        return (bin_idx / self.num_bins) * nyquist
+        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
+        log_max = np.log10(n - 1)
+        linear_idx = 10 ** ((bin_idx / self.num_bins) * log_max) if log_max > 0 else bin_idx
+        return (linear_idx / (n - 1)) * nyquist
         
     def _on_beat_band_changed(self):
         if self._updating:
@@ -1407,8 +1467,9 @@ class PhosphorCanvas(pg.PlotWidget):
     
     def set_frequency_band(self, low_norm: float, high_norm: float):
         self._updating = True
-        low_bin = low_norm * self.num_bins
-        high_bin = high_norm * self.num_bins
+        nyquist = self.sample_rate / 2
+        low_bin = self._hz_to_bin(low_norm * nyquist)
+        high_bin = self._hz_to_bin(high_norm * nyquist)
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
         self.beat_label.setPos(center_bin, self.num_mag_levels * 0.97)
@@ -1487,15 +1548,23 @@ class PhosphorCanvas(pg.PlotWidget):
         cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
         spectrum = spectrum[:cutoff_idx]
             
-        # Resample to num_bins
-        if len(spectrum) != self.num_bins:
-            x_old = np.linspace(0, 1, len(spectrum))
+        # Track source FFT size for hz/bin conversions
+        self._fft_bins = len(spectrum)
+        # Resample to num_bins using log-frequency spacing
+        n = len(spectrum)
+        if n > 1:
+            x_old = np.arange(n)
+            x_new = np.logspace(0, np.log10(n - 1), self.num_bins)
+            x_new = np.clip(x_new, 0, n - 1)
+            spectrum = np.interp(x_new, x_old, spectrum)
+        elif len(spectrum) != self.num_bins:
+            x_old = np.linspace(0, 1, n)
             x_new = np.linspace(0, 1, self.num_bins)
             spectrum = np.interp(x_new, x_old, spectrum)
         
         # Apply log scaling and normalize to 0-1
         spectrum = np.log10(spectrum + 1e-6)
-        spectrum = np.clip((spectrum + 4) / 4, 0, 1)
+        spectrum = np.clip((spectrum + 6) / 6, 0, 1)
         
         # Apply decay to existing hitmap
         self.hitmap *= self.decay
@@ -1681,11 +1750,12 @@ class RangeSlider(QWidget):
     rangeChanged = pyqtSignal(float, float)  # low, high
     
     def __init__(self, min_val: float, max_val: float, low_default: float, 
-                 high_default: float, decimals: int = 0, parent=None):
+                 high_default: float, decimals: int = 0, log_scale: bool = False, parent=None):
         super().__init__(parent)
         self.min_val = min_val
         self.max_val = max_val
         self.decimals = decimals
+        self.log_scale = log_scale
         self._low = low_default
         self._high = high_default
         self._dragging = None  # 'low', 'high', 'range', or None
@@ -1711,14 +1781,24 @@ class RangeSlider(QWidget):
     
     def _val_to_pos(self, value: float) -> int:
         """Convert value to pixel position"""
-        ratio = (value - self.min_val) / (self.max_val - self.min_val)
+        if self.log_scale and self.min_val > 0 and self.max_val > 0:
+            log_min = np.log10(self.min_val)
+            log_max = np.log10(self.max_val)
+            ratio = (np.log10(max(value, self.min_val)) - log_min) / (log_max - log_min)
+        else:
+            ratio = (value - self.min_val) / (self.max_val - self.min_val)
         return int(self._handle_width/2 + ratio * (self.width() - self._handle_width))
     
     def _pos_to_val(self, pos: float) -> float:
         """Convert pixel position to value"""
         ratio = (pos - self._handle_width/2) / (self.width() - self._handle_width)
         ratio = max(0, min(1, ratio))
-        return self.min_val + ratio * (self.max_val - self.min_val)
+        if self.log_scale and self.min_val > 0 and self.max_val > 0:
+            log_min = np.log10(self.min_val)
+            log_max = np.log10(self.max_val)
+            return 10 ** (log_min + ratio * (log_max - log_min))
+        else:
+            return self.min_val + ratio * (self.max_val - self.min_val)
     
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -1835,7 +1915,8 @@ class RangeSliderWithLabel(QWidget):
     rangeChanged = pyqtSignal(float, float)
     
     def __init__(self, name: str, min_val: float, max_val: float,
-                 low_default: float, high_default: float, decimals: int = 0, parent=None):
+                 low_default: float, high_default: float, decimals: int = 0,
+                 log_scale: bool = False, parent=None):
         super().__init__(parent)
         
         self.decimals = decimals
@@ -1847,7 +1928,7 @@ class RangeSliderWithLabel(QWidget):
         self.label.setFixedWidth(120)
         self.label.setStyleSheet("color: #aaa;")
         
-        self.slider = RangeSlider(min_val, max_val, low_default, high_default, decimals)
+        self.slider = RangeSlider(min_val, max_val, low_default, high_default, decimals, log_scale)
         self.slider.rangeChanged.connect(self._on_change)
         
         self.value_label = QLabel(f"{low_default:.{decimals}f}-{high_default:.{decimals}f}")
@@ -3339,6 +3420,10 @@ bREadfan_69@hotmail.com"""
             self.spectrum_canvas.set_sample_rate(self.config.audio.sample_rate)
             if hasattr(self, 'mountain_canvas'):
                 self.mountain_canvas.set_sample_rate(self.config.audio.sample_rate)
+            if hasattr(self, 'bar_canvas'):
+                self.bar_canvas.set_sample_rate(self.config.audio.sample_rate)
+            if hasattr(self, 'phosphor_canvas'):
+                self.phosphor_canvas.set_sample_rate(self.config.audio.sample_rate)
             self._on_freq_band_change()  # Update beat detection band (red)
             
             # Apply mode-dependent limits after sliders are set
@@ -4037,7 +4122,7 @@ bREadfan_69@hotmail.com"""
         pulse_group = CollapsibleGroupBox("Pulse Frequency - blue overlay on spectrum", collapsed=True)
         pulse_layout = QVBoxLayout(pulse_group)
 
-        self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
+        self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.pulse_freq_range_slider.rangeChanged.connect(self._on_p0_band_change)
         pulse_layout.addWidget(self.pulse_freq_range_slider)
 
@@ -4068,7 +4153,7 @@ bREadfan_69@hotmail.com"""
         carrier_group = CollapsibleGroupBox("Carrier Frequency", collapsed=True)
         carrier_layout = QVBoxLayout(carrier_group)
 
-        self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
+        self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.f0_freq_range_slider.rangeChanged.connect(self._on_f0_band_change)
         carrier_layout.addWidget(self.f0_freq_range_slider)
 
@@ -4099,7 +4184,7 @@ bREadfan_69@hotmail.com"""
         p1_group = CollapsibleGroupBox("Pulse Width — higher = stronger, smoother", collapsed=True)
         p1_layout = QVBoxLayout(p1_group)
 
-        self.p1_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
+        self.p1_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         p1_layout.addWidget(self.p1_monitor_range_slider)
 
         self.p1_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 1000, 8000, 0)
@@ -4129,7 +4214,7 @@ bREadfan_69@hotmail.com"""
         p3_group = CollapsibleGroupBox("Rise Time — higher = smoother, gentler", collapsed=True)
         p3_layout = QVBoxLayout(p3_group)
 
-        self.p3_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0)
+        self.p3_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         p3_layout.addWidget(self.p3_monitor_range_slider)
 
         self.p3_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 1000, 8000, 0)
@@ -4453,7 +4538,7 @@ bREadfan_69@hotmail.com"""
         levels_layout = QVBoxLayout(levels_group)
         
         # Frequency band selection (moved from standalone group)
-        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 4000, 0)
+        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
         levels_layout.addWidget(self.freq_range_slider)
         
@@ -5058,7 +5143,7 @@ bREadfan_69@hotmail.com"""
         depth_freq_group = CollapsibleGroupBox("Depth Frequency Range (Hz) - green overlay", collapsed=True)
         depth_freq_layout = QVBoxLayout(depth_freq_group)
         
-        self.depth_freq_range_slider = RangeSliderWithLabel("Depth Freq (Hz)", 30, 22050, 30, 4000, 0)
+        self.depth_freq_range_slider = RangeSliderWithLabel("Depth Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.depth_freq_range_slider.rangeChanged.connect(self._on_depth_band_change)
         depth_freq_layout.addWidget(self.depth_freq_range_slider)
         
