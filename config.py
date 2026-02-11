@@ -79,6 +79,10 @@ class StrokeConfig:
     # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
     phase_advance: float = 0.25
 
+    # Amplitude gate thresholds for FULL_STROKE vs CREEP_MICRO mode switching
+    amplitude_gate_high: float = 0.08  # RMS above this -> FULL_STROKE
+    amplitude_gate_low: float = 0.04   # RMS below this -> CREEP_MICRO
+
 @dataclass
 class JitterConfig:
     """Jitter - micro-circles when no beat detected"""

@@ -1,10 +1,10 @@
-please create a brief txt document summarizing this chat session and the changes we've made, 
+please create a brief txt document summarizing this chat session and the changes we've made,
 
 this will serve as a reference and companion to the next chat agent
 
-commit but do not push this documnent
 
 then,
 make any needed changes to agent_reference, do not include session notes in agent_reference
 
-after updating agent_reference, please commit and push all unsaved changes [do not include session notes, this document, or any NEW text/instructional documents]{always commit and push [agent reference]}
+after updating agent_reference, please commit and push code changes
+

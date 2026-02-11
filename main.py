@@ -4047,6 +4047,8 @@ bREadfan_69@hotmail.com"""
             'audio_gain': self.audio_gain_slider.value(),
             'zscore_threshold': self.zscore_threshold_slider.value(),
             'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
+            'amp_gate_high': self.amp_gate_high_spin.value() if hasattr(self, 'amp_gate_high_spin') else 0.08,
+            'amp_gate_low': self.amp_gate_low_spin.value() if hasattr(self, 'amp_gate_low_spin') else 0.04,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
             
@@ -4117,6 +4119,10 @@ bREadfan_69@hotmail.com"""
             self._on_zscore_threshold_change(preset_data['zscore_threshold'])
         if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
             self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
+        if 'amp_gate_high' in preset_data and hasattr(self, 'amp_gate_high_spin'):
+            self.amp_gate_high_spin.setValue(preset_data['amp_gate_high'])
+        if 'amp_gate_low' in preset_data and hasattr(self, 'amp_gate_low_spin'):
+            self.amp_gate_low_spin.setValue(preset_data['amp_gate_low'])
         self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
         self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
         
@@ -4892,6 +4898,16 @@ bREadfan_69@hotmail.com"""
             self.stroke_mapper._micro_effects_enabled = enabled
         print(f"[Config] Micro-effects {'enabled' if enabled else 'disabled'}")
 
+    def _on_amp_gate_high_change(self, value: float):
+        """Update amplitude gate high threshold (above this -> FULL_STROKE)."""
+        self.config.stroke.amplitude_gate_high = value
+        print(f"[Config] Amplitude gate high set to {value:.2f}")
+
+    def _on_amp_gate_low_change(self, value: float):
+        """Update amplitude gate low threshold (below this -> CREEP_MICRO)."""
+        self.config.stroke.amplitude_gate_low = value
+        print(f"[Config] Amplitude gate low set to {value:.3f}")
+
     def _set_motion_preset(self, preset: str):
         """Apply a quick motion preset: gentle / normal / intense.
         
@@ -5013,6 +5029,8 @@ bREadfan_69@hotmail.com"""
             'audio_gain': self.audio_gain_slider.value(),
             'zscore_threshold': self.zscore_threshold_slider.value(),
             'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
+            'amp_gate_high': self.amp_gate_high_spin.value() if hasattr(self, 'amp_gate_high_spin') else 0.08,
+            'amp_gate_low': self.amp_gate_low_spin.value() if hasattr(self, 'amp_gate_low_spin') else 0.04,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
             
@@ -5106,6 +5124,10 @@ bREadfan_69@hotmail.com"""
                 self._on_zscore_threshold_change(preset_data['zscore_threshold'])
             if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
                 self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
+            if 'amp_gate_high' in preset_data and hasattr(self, 'amp_gate_high_spin'):
+                self.amp_gate_high_spin.setValue(preset_data['amp_gate_high'])
+            if 'amp_gate_low' in preset_data and hasattr(self, 'amp_gate_low_spin'):
+                self.amp_gate_low_spin.setValue(preset_data['amp_gate_low'])
             if 'silence_reset_ms' in preset_data:
                 self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
             self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
@@ -5311,6 +5333,35 @@ bREadfan_69@hotmail.com"""
         self.micro_effects_checkbox.setToolTip("When enabled, small impulse jerks fire on beats during low-amplitude passages")
         self.micro_effects_checkbox.stateChanged.connect(self._on_micro_effects_toggle)
         motion_layout.addWidget(self.micro_effects_checkbox)
+        
+        # Amplitude gate thresholds (FULL_STROKE vs CREEP_MICRO switching)
+        gate_layout = QHBoxLayout()
+        gate_layout.addWidget(QLabel("Amp Gate:"))
+        
+        gate_layout.addWidget(QLabel("High"))
+        self.amp_gate_high_spin = QDoubleSpinBox()
+        self.amp_gate_high_spin.setRange(0.01, 0.50)
+        self.amp_gate_high_spin.setSingleStep(0.01)
+        self.amp_gate_high_spin.setDecimals(2)
+        self.amp_gate_high_spin.setValue(self.config.stroke.amplitude_gate_high)
+        self.amp_gate_high_spin.setToolTip("RMS above this triggers full arc strokes (FULL_STROKE mode)")
+        self.amp_gate_high_spin.setFixedWidth(70)
+        self.amp_gate_high_spin.valueChanged.connect(self._on_amp_gate_high_change)
+        gate_layout.addWidget(self.amp_gate_high_spin)
+        
+        gate_layout.addWidget(QLabel("Low"))
+        self.amp_gate_low_spin = QDoubleSpinBox()
+        self.amp_gate_low_spin.setRange(0.001, 0.40)
+        self.amp_gate_low_spin.setSingleStep(0.01)
+        self.amp_gate_low_spin.setDecimals(3)
+        self.amp_gate_low_spin.setValue(self.config.stroke.amplitude_gate_low)
+        self.amp_gate_low_spin.setToolTip("RMS below this drops to creep rotation (CREEP_MICRO mode)")
+        self.amp_gate_low_spin.setFixedWidth(70)
+        self.amp_gate_low_spin.valueChanged.connect(self._on_amp_gate_low_change)
+        gate_layout.addWidget(self.amp_gate_low_spin)
+        
+        gate_layout.addStretch()
+        motion_layout.addLayout(gate_layout)
         
         layout.addWidget(motion_group)
         

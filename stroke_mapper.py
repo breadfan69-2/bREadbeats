@@ -43,11 +43,6 @@ class StrokeState:
     beat_counter: int = 0         # For beat counting within measure
     creep_reset_start_time: float = 0.0
     creep_reset_active: bool = False
-    # Smooth arc return state
-    arc_return_active: bool = False
-    arc_return_start_time: float = 0.0
-    arc_return_from: tuple = (0.0, 0.0)
-    arc_return_to: tuple = (0.0, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -95,8 +90,7 @@ class StrokeMapper:
         self._rms_envelope: float = 0.0
         self._rms_attack: float = 0.15     # faster attack to respond to loud passages
         self._rms_release: float = 0.008   # moderate release
-        self._amplitude_gate_high: float = 0.08   # go to FULL_STROKE above this
-        self._amplitude_gate_low: float = 0.04    # go to CREEP_MICRO below this
+        # Gate thresholds now read from config.stroke.amplitude_gate_high/low
         self._motion_mode: str = MotionMode.CREEP_MICRO  # start quiet
         self._mode_switch_time: float = 0.0
 
@@ -161,6 +155,11 @@ class StrokeMapper:
         # ---------- Idle motion throttle (separate from beat stroke timing) ----------
         self._last_idle_time: float = 0.0
 
+        # ---------- Post-arc smooth blend ----------
+        # After an arc completes, smoothly blend from arc endpoint to creep orbit
+        self._post_arc_blend: float = 1.0  # 1.0 = fully on creep orbit (start normal), reset to 0.0 after arc
+        self._post_arc_blend_rate: float = 0.05  # per frame (at 60fps, ~20 frames = 333ms to settle)
+
         # ---------- Beat factoring ----------
         self.max_strokes_per_sec = 4.5
         self.beat_factor = 1
@@ -224,18 +223,25 @@ class StrokeMapper:
     def _update_motion_mode(self) -> None:
         """Switch between FULL_STROKE and CREEP_MICRO with hysteresis."""
         now = time.time()
+        cfg = self.config.stroke
+        gate_high = cfg.amplitude_gate_high
+        gate_low = cfg.amplitude_gate_low
         # Minimum dwell time in a mode before switching (500ms)
         if now - self._mode_switch_time < 0.5:
             return
         old = self._motion_mode
         if self._motion_mode == MotionMode.CREEP_MICRO:
-            if self._rms_envelope > self._amplitude_gate_high:
+            if self._rms_envelope > gate_high:
                 self._motion_mode = MotionMode.FULL_STROKE
                 self._mode_switch_time = now
+                # Sync creep angle to current position on mode switch
+                self._sync_creep_angle_to_position()
         else:
-            if self._rms_envelope < self._amplitude_gate_low:
+            if self._rms_envelope < gate_low:
                 self._motion_mode = MotionMode.CREEP_MICRO
                 self._mode_switch_time = now
+                # Sync creep angle to current position on mode switch
+                self._sync_creep_angle_to_position()
         if old != self._motion_mode:
             log_event("INFO", "StrokeMapper", "Mode switch",
                       mode=self._motion_mode, envelope=f"{self._rms_envelope:.4f}")
@@ -243,6 +249,16 @@ class StrokeMapper:
     # ------------------------------------------------------------------
     # Tempo-synced phase
     # ------------------------------------------------------------------
+
+    def _sync_creep_angle_to_position(self) -> None:
+        """Sync creep_angle to match current (alpha, beta) position.
+        Called on mode transitions and after arc completion to prevent jumps."""
+        r = np.sqrt(self.state.alpha**2 + self.state.beta**2)
+        if r > 0.05:
+            synced = np.arctan2(self.state.alpha, self.state.beta)
+            if synced < 0:
+                synced += 2 * np.pi
+            self.state.creep_angle = synced
 
     def _advance_phase(self, event: BeatEvent) -> None:
         """Advance the continuous beat phase based on current BPM."""
@@ -443,7 +459,9 @@ class StrokeMapper:
         beta_weight = self.config.beta_weight
 
         n_points = max(16, int(measure_duration_ms / 20))
-        arc_phases = np.linspace(0, 1, n_points, endpoint=False)
+        # Start arc from current creep angle position, advance through one full circle
+        current_phase = self.state.creep_angle / (2 * np.pi)
+        arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
         for i, phase in enumerate(arc_phases):
@@ -533,7 +551,9 @@ class StrokeMapper:
             self.spiral_beat_index = next_index % N
         else:
             n_points = max(8, int(beat_interval_ms / 10))
-            arc_phases = np.linspace(0, 1, n_points, endpoint=False)
+            # Start arc from current creep angle position, advance through one full circle
+            current_phase = self.state.creep_angle / (2 * np.pi)
+            arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
             alpha_arc = np.zeros(n_points)
             beta_arc = np.zeros(n_points)
             for i, phase in enumerate(arc_phases):
@@ -599,14 +619,10 @@ class StrokeMapper:
             time.sleep(step_ms / 1000.0)
 
         log_event("INFO", "StrokeMapper", "Arc complete", points=n_points)
-        # Initiate smooth arc return
-        self.state.arc_return_active = True
-        self.state.arc_return_start_time = time.time()
-        self.state.arc_return_from = (self.state.alpha, self.state.beta)
-        if self.config.stroke.mode == StrokeMode.SPIRAL:
-            self.state.arc_return_to = (0.0, 0.0)
-        else:
-            self.state.arc_return_to = (0.0, -0.5)
+        # Sync creep angle to where arc ended so creep continues smoothly
+        self._sync_creep_angle_to_position()
+        # Start smooth blend from arc endpoint to creep orbit
+        self._post_arc_blend = 0.0
 
     # ------------------------------------------------------------------
     # Micro-effect: jerk on beat (CREEP_MICRO mode)
@@ -671,9 +687,8 @@ class StrokeMapper:
 
         jitter_active = jitter_cfg.enabled and jitter_cfg.amplitude > 0
         creep_active = creep_cfg.enabled and creep_cfg.speed > 0
-        return_active = self.state.arc_return_active or self.spiral_reset_active or self.state.creep_reset_active
 
-        if not jitter_active and not creep_active and not return_active:
+        if not jitter_active and not creep_active and not self.spiral_reset_active and not self.state.creep_reset_active:
             # Still allow micro-jerk decay to produce motion
             jerk_a, jerk_b = self._get_micro_jerk_offset()
             if abs(jerk_a) < 0.001 and abs(jerk_b) < 0.001:
@@ -681,54 +696,27 @@ class StrokeMapper:
 
         alpha, beta = self.state.alpha, self.state.beta
 
-        # ---------- Arc return animation ----------
-        if self.state.arc_return_active:
+        # ---------- Spiral reset (fade to center) ----------
+        if self.spiral_reset_active:
             reset_duration_ms = 400
-            step_duration_ms = 200
-            elapsed_ms = (now - self.state.arc_return_start_time) * 1000
+            elapsed_ms = (now - self.spiral_reset_start_time) * 1000
             if elapsed_ms < reset_duration_ms:
                 progress = elapsed_ms / reset_duration_ms
-                eased_progress = 1.0 - (1.0 - progress) ** 2
-
-                from_a, from_b = self.state.arc_return_from
-                to_a, to_b = self.state.arc_return_to
-
-                mid_a = (from_a + to_a) / 2
-                mid_b = (from_b + to_b) / 2
-                perp_a = -(to_b - from_b) * 0.3
-                perp_b = (to_a - from_a) * 0.3
-                ctrl_a = mid_a + perp_a
-                ctrl_b = mid_b + perp_b
-
-                t = eased_progress
-                mt = 1.0 - t
-                alpha_target = mt*mt*from_a + 2*mt*t*ctrl_a + t*t*to_a
-                beta_target = mt*mt*from_b + 2*mt*t*ctrl_b + t*t*to_b
-
-                alpha_target = np.clip(alpha_target, -1.0, 1.0)
-                beta_target = np.clip(beta_target, -1.0, 1.0)
-
-                self.state.alpha = alpha_target
-                self.state.beta = beta_target
+                eased = 1.0 - (1.0 - progress) ** 2
+                from_a, from_b = self.spiral_reset_from
+                alpha_t = from_a * (1.0 - eased)
+                beta_t = from_b * (1.0 - eased)
+                self.state.alpha = alpha_t
+                self.state.beta = beta_t
                 self._last_idle_time = now
                 fade = self._fade_intensity
                 volume = self.get_volume() * fade
-                return TCodeCommand(alpha_target, beta_target, step_duration_ms, volume)
+                return TCodeCommand(alpha_t, beta_t, 200, volume)
             else:
-                self.state.arc_return_active = False
-                to_a, to_b = self.state.arc_return_to
-                self.state.alpha = to_a
-                self.state.beta = to_b
-                self.state.creep_angle = np.arctan2(to_a, to_b)
-                log_event("INFO", "StrokeMapper", "Arc return complete",
-                          alpha=f"{to_a:.2f}", beta=f"{to_b:.2f}")
-
-        elif self.spiral_reset_active:
-            self.state.arc_return_active = True
-            self.state.arc_return_start_time = self.spiral_reset_start_time
-            self.state.arc_return_from = self.spiral_reset_from
-            self.state.arc_return_to = (0.0, 0.0)
-            self.spiral_reset_active = False
+                self.spiral_reset_active = False
+                self.state.alpha = 0.0
+                self.state.beta = 0.0
+                self._sync_creep_angle_to_position()
 
         elif self.state.creep_reset_active:
             reset_duration_ms = 400
@@ -777,23 +765,9 @@ class StrokeMapper:
 
         # ---------- Creep: tempo-synced rotation ----------
         if creep_active:
-            # SYNC ANGLE TO CURRENT POSITION (prevents jumps from arc/mode transitions)
-            # Before advancing angle, ensure it matches where we actually are
-            current_pos_r = np.sqrt(self.state.alpha**2 + self.state.beta**2)
-            if current_pos_r > 0.05:
-                # We have a meaningful position - lock onto it
-                # Position is alpha=sin(angle)*r, beta=cos(angle)*r
-                # So atan2(sin, cos) = atan2(alpha, beta) recovers the angle
-                synced_angle = np.arctan2(self.state.alpha, self.state.beta)
-                if synced_angle < 0:
-                    synced_angle += 2 * np.pi
-                # Smooth lerp to synced angle (avoids wrapping jumps)
-                angle_diff = synced_angle - self.state.creep_angle
-                if angle_diff > np.pi:
-                    angle_diff -= 2 * np.pi
-                elif angle_diff < -np.pi:
-                    angle_diff += 2 * np.pi
-                self.state.creep_angle += angle_diff * 0.3  # 30% correction per frame
+            # Angle sync now happens only on mode transitions and arc completion
+            # (via _sync_creep_angle_to_position), not every frame.
+            # This prevents the sync from fighting the tempo-based rotation.
             
             bpm = getattr(event, 'bpm', 0.0) if event else 0.0
 
@@ -808,7 +782,7 @@ class StrokeMapper:
                     # Override speed: exactly 2pi per measure
                     angle_increment = (2 * np.pi) / (updates_per_beat * self.config.beat.beats_per_measure)
 
-                if not self.state.creep_reset_active and not self.state.arc_return_active:
+                if not self.state.creep_reset_active:
                     self.state.creep_angle += angle_increment
                     if self.state.creep_angle >= 2 * np.pi:
                         self.state.creep_angle -= 2 * np.pi
@@ -821,16 +795,34 @@ class StrokeMapper:
                 else:
                     creep_radius = max(0.1, 0.98 - jitter_r)
 
-                base_alpha = np.sin(self.state.creep_angle) * creep_radius
-                base_beta = np.cos(self.state.creep_angle) * creep_radius
+                target_alpha = np.sin(self.state.creep_angle) * creep_radius
+                target_beta = np.cos(self.state.creep_angle) * creep_radius
+
+                # Smooth blend from arc endpoint to creep orbit
+                if self._post_arc_blend < 1.0:
+                    self._post_arc_blend = min(1.0, self._post_arc_blend + self._post_arc_blend_rate)
+                    base_alpha = alpha + (target_alpha - alpha) * self._post_arc_blend
+                    base_beta = beta + (target_beta - beta) * self._post_arc_blend
+                else:
+                    base_alpha = target_alpha
+                    base_beta = target_beta
             else:
-                if not self.state.creep_reset_active and not self.state.arc_return_active:
+                if not self.state.creep_reset_active:
                     self.state.creep_angle += creep_cfg.speed * 0.02
                     if self.state.creep_angle >= 2 * np.pi:
                         self.state.creep_angle -= 2 * np.pi
                 oscillation = 0.2 + 0.1 * np.sin(self.state.creep_angle)
-                base_alpha = oscillation * np.sin(self.state.creep_angle * 0.5)
-                base_beta = oscillation * np.cos(self.state.creep_angle * 0.5) - 0.2
+                target_alpha = oscillation * np.sin(self.state.creep_angle * 0.5)
+                target_beta = oscillation * np.cos(self.state.creep_angle * 0.5) - 0.2
+
+                # Smooth blend for non-creep mode too
+                if self._post_arc_blend < 1.0:
+                    self._post_arc_blend = min(1.0, self._post_arc_blend + self._post_arc_blend_rate)
+                    base_alpha = alpha + (target_alpha - alpha) * self._post_arc_blend
+                    base_beta = beta + (target_beta - beta) * self._post_arc_blend
+                else:
+                    base_alpha = target_alpha
+                    base_beta = target_beta
         else:
             base_alpha = alpha
             base_beta = beta

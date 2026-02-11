@@ -1,0 +1,7 @@
+re: automatic tempo matching metronome
+
+https://github.com/pnlong/determine_tempo
+https://stackoverflow.com/questions/72509397/whats-the-simplest-way-in-python-to-detect-the-time-placement-of-individual-aud
+https://medium.com/@jackhuang.wz/building-a-metronome-in-python-c8e16826fe4f
+https://www.101computing.net/metronome-app-python-challenge/
+https://github.com/smiszym/tempoligner
