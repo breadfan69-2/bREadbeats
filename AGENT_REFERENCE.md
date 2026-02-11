@@ -888,6 +888,77 @@ Validates windowed smoothing + first derivative sign change is standard for real
 
 ---
 
+## Latest Session Changes (2026-02-11)
+
+### Per-Slider Frequency Range Indicator Toggles
+
+**Problem:** Users wanted granular control over frequency range indicator visibility rather than all-or-nothing menu toggle.
+
+**Solution:** Moved range indicator toggles from menu bar to individual per-slider checkboxes:
+- Added "Show" checkbox next to Beat Band, Depth Band, P0 Band, and F0 Band range sliders
+- Each checkbox independently controls its corresponding frequency band overlay on all 4 visualizers
+- Removed "Show (Frequency) Range Selection Indicators" from Options menu
+- Individual toggle methods: `_on_toggle_beat_band()`, `_on_toggle_depth_band()`, `_on_toggle_p0_band()`, `_on_toggle_f0_band()`
+
+**Implementation:** Each checkbox calls its respective toggle method which updates all 4 canvas classes (SpectrumCanvas, MountainRangeCanvas, BarGraphCanvas, PhosphorCanvas) to show/hide the specific band overlay and label.
+
+### Advanced Controls Dialog
+
+**Added "Advanced Controls..." menu option** that opens a warning dialog about experimental features:
+- Dialog includes warning message: "DON'T BORK YOUR BEATS - These are experimental features that may behave oddly..."
+- "Unlock Advanced Controls" checkbox to enable access
+- Placeholder for future advanced settings that might be risky for casual users
+- Implementation: `_on_advanced_controls()` method opens `QDialog` with warning text and unlock toggle
+
+### Auto-Align Target BPM Feature
+
+**New automatic BPM alignment system** to gradually sync user's target BPM with detected audio tempo:
+- **"Auto-align target with sensed BPM"** checkbox in Beat Detection tab
+- **Configurable stability threshold** via spinbox (range 2-10, default 5) for "stable reading count"
+- When enabled, target BPM slowly aligns with sensed BPM when tempo is stable for N consecutive readings
+- Methods: `_on_auto_align_toggle()`, `_on_auto_align_checks_change()`
+- Prevents constant BPM chasing by requiring sustained stable tempo before adjustment
+
+**Auto-Alignment Logic:**
+```python
+# In _update_display(), check if conditions met for auto-alignment
+if (self._auto_align_enabled and 
+    self._bpm_stable_count >= self._auto_align_checks and 
+    abs(current_bpm - target_bpm) > 1.0):
+    # Gradually move target toward sensed BPM
+    new_target = target_bpm + (current_bpm - target_bpm) * 0.1
+    self.target_bpm_spin.setValue(new_target)
+```
+
+### Volume Fade Fix - Immediate TCode Commands
+
+**Problem:** Volume fade to zero on pause was queued behind other commands, causing delayed response.
+
+**Solution:** Added `send_immediate()` method to NetworkEngine that bypasses queue and sending_enabled check:
+```python
+def send_immediate(self, command_str: str) -> bool:
+    """Send command immediately, bypassing queue and sending_enabled check.
+    Used for critical commands like volume fade on pause."""
+```
+
+**Volume Behavior Fix:**
+- Modified `_on_play_pause()` to use `send_immediate()` for volume fade commands
+- When pausing: immediate V0 fade to zero (not queued)
+- When resuming: normal queued volume ramp up
+- Ensures responsive volume control regardless of queue state
+
+### NetworkEngine send_immediate() Method
+
+**Purpose:** Bypass normal command queue for time-critical operations like shutdown/volume fade.
+
+**Implementation:**
+- Checks connection status but ignores `self._sending_enabled` flag
+- Sends directly to TCP socket without queuing
+- Used for volume fade on pause and application shutdown commands
+- Returns boolean success status
+
+---
+
 ## Latest Session Changes (2026-02-09 Continued)
 
 ### Critical Fix: Beat Detector Refractory Period

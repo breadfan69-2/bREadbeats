@@ -2299,6 +2299,12 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_to: float = 1.0
         self._volume_ramp_duration: float = 0.8  # 800ms
         
+        # Auto-align target BPM tracking
+        self._auto_align_target_enabled: bool = False
+        self._auto_align_stable_count: int = 0
+        self._auto_align_required_stable: int = 5  # consecutive stable readings before aligning (default matches spinbox)
+        self._last_sensed_bpm: float = 0.0
+        
         # State
         self.is_running = False
         self.is_sending = False
@@ -4512,7 +4518,21 @@ bREadfan_69@hotmail.com"""
             self.audio_engine.set_bps_adjustment_speed(speed)
             speed_label = "Fine" if speed < 0.3 else "Aggressive" if speed > 0.7 else "Normal"
             print(f"[Config] BPS adjustment speed: {speed_label} ({speed:.2f})")
-    
+
+    def _on_auto_align_toggle(self, enabled: bool):
+        """Handle auto-align target BPM checkbox toggle"""
+        self._auto_align_target_enabled = enabled
+        self._auto_align_stable_count = 0  # Reset counter on toggle
+        if enabled:
+            print("[Config] Auto-align target BPM enabled - will align to sensed BPM when stable")
+        else:
+            print("[Config] Auto-align target BPM disabled")
+
+    def _on_auto_align_checks_change(self, value: int):
+        """Handle auto-align checks spinbox change"""
+        self._auto_align_required_stable = value
+        print(f"[Config] Auto-align requires {value} consecutive stable readings")
+
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings with vertical scroll"""
         # Outer scroll area (no wheel to prevent interference with parameter sliders)
@@ -4592,11 +4612,11 @@ bREadfan_69@hotmail.com"""
         self.target_bpm_spin = QDoubleSpinBox()
         self.target_bpm_spin.setRange(30, 240)
         self.target_bpm_spin.setSingleStep(1)
-        self.target_bpm_spin.setValue(90)
+        self.target_bpm_spin.setValue(110)
         self.target_bpm_spin.setDecimals(0)
         self.target_bpm_spin.setFixedWidth(65)
         self.target_bpm_spin.setSuffix(" BPM")
-        self.target_bpm_spin.setToolTip("Target beats per minute (e.g., 90 BPM = 1.5 BPS)")
+        self.target_bpm_spin.setToolTip("Target beats per minute (e.g., 110 BPM = 1.83 BPS)")
         self.target_bpm_spin.valueChanged.connect(self._on_target_bpm_change)
         bps_layout.addWidget(self.target_bpm_spin)
         
@@ -4623,6 +4643,20 @@ bREadfan_69@hotmail.com"""
         self.bpm_actual_label = QLabel("Actual: -- BPM")
         self.bpm_actual_label.setStyleSheet("color: #AAA; font-size: 9px;")
         bps_layout.addWidget(self.bpm_actual_label)
+        
+        self.auto_align_target_cb = QCheckBox("Auto-align")
+        self.auto_align_target_cb.setToolTip("Slowly align target BPM to match sensed BPM when tempo is stable")
+        self.auto_align_target_cb.setChecked(False)
+        self.auto_align_target_cb.stateChanged.connect(lambda state: self._on_auto_align_toggle(state == 2))
+        bps_layout.addWidget(self.auto_align_target_cb)
+        
+        self.auto_align_checks_spin = QSpinBox()
+        self.auto_align_checks_spin.setRange(2, 10)
+        self.auto_align_checks_spin.setValue(5)
+        self.auto_align_checks_spin.setFixedWidth(45)
+        self.auto_align_checks_spin.setToolTip("Number of consecutive stable readings before aligning target")
+        self.auto_align_checks_spin.valueChanged.connect(self._on_auto_align_checks_change)
+        bps_layout.addWidget(self.auto_align_checks_spin)
         
         bps_layout.addStretch()
         metric_layout.addLayout(bps_layout)
@@ -5482,11 +5516,11 @@ bREadfan_69@hotmail.com"""
             self.start_btn.setText("■ Stop")
             self.play_btn.setEnabled(True)
         else:
-            # Send zero-volume command before stopping engines
+            # Send zero-volume command before stopping engines (immediate, bypasses queue)
             self._volume_ramp_active = False
             if self.network_engine and self.is_sending:
                 zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=100)
-                self.network_engine.send_command(zero_cmd)
+                self.network_engine.send_immediate(zero_cmd)
             self._stop_engines()
             self.start_btn.setText("▶ Start")
             self.play_btn.setEnabled(False)
@@ -5507,14 +5541,17 @@ bREadfan_69@hotmail.com"""
             self._volume_ramp_start_time = time.time()
             self._volume_ramp_from = 0.0
             self._volume_ramp_to = 1.0
+            if self.network_engine:
+                self.network_engine.set_sending_enabled(True)
         else:
-            # Immediately stop volume ramp and send zero-volume command
+            # Immediately stop volume ramp and send zero-volume command with fade
             self._volume_ramp_active = False
             if self.network_engine:
-                zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=100)
-                self.network_engine.send_command(zero_cmd)
-        if self.network_engine:
-            self.network_engine.set_sending_enabled(checked)
+                # Send zero-volume IMMEDIATELY (bypasses queue and sending_enabled check)
+                # Must be sent before disabling, using send_immediate to guarantee delivery
+                zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=500)
+                self.network_engine.send_immediate(zero_cmd)
+                self.network_engine.set_sending_enabled(False)
         self.play_btn.setText("⏸ Pause" if checked else "▶ Play")
     
     def _on_detection_type_change(self, index: int):
@@ -6215,6 +6252,49 @@ bREadfan_69@hotmail.com"""
             now = time.time()
             self.audio_engine.compute_audio_amp_feedback(now, callback=self._on_metric_feedback)
             self.audio_engine.compute_flux_balance_feedback(now, callback=self._on_metric_feedback)
+            
+            # ===== AUTO-ALIGN TARGET BPM =====
+            if self._auto_align_target_enabled:
+                tempo_info = self.audio_engine.get_tempo_info()
+                sensed_bpm = tempo_info.get('stable_bpm', 0.0)
+                if sensed_bpm <= 0:
+                    sensed_bpm = tempo_info.get('bpm', 0.0)
+                    
+                if sensed_bpm > 30 and sensed_bpm < 240:  # Valid BPM range
+                    # Check if tempo is stable (stability > 0.5 or locked via downbeat matching)
+                    stability = tempo_info.get('stability', 0.0)
+                    consecutive_downbeats = tempo_info.get('consecutive_matching_downbeats', 0)
+                    locked = consecutive_downbeats >= 3
+                    
+                    if stability > 0.5 or locked:
+                        self._auto_align_stable_count += 1
+                        self._last_sensed_bpm = sensed_bpm
+                    else:
+                        self._auto_align_stable_count = max(0, self._auto_align_stable_count - 1)
+                    
+                    # After enough consecutive stable readings, start aligning
+                    if self._auto_align_stable_count >= self._auto_align_required_stable:
+                        current_target = self.target_bpm_spin.value()
+                        diff = sensed_bpm - current_target
+                        
+                        if abs(diff) > 1.0:  # Only align if difference > 1 BPM
+                            # Speed slider controls alignment rate (0.1-1.0 BPM per update)
+                            speed = getattr(self, 'bps_speed_slider', None)
+                            rate = 0.1 + (speed.value() / 100.0 * 0.9) if speed else 0.3
+                            
+                            # Move target toward sensed BPM
+                            if diff > 0:
+                                new_target = min(current_target + rate, sensed_bpm)
+                            else:
+                                new_target = max(current_target - rate, sensed_bpm)
+                            
+                            new_target = round(new_target)  # Keep as whole number
+                            if new_target != current_target:
+                                self.target_bpm_spin.setValue(new_target)
+                                print(f"[Auto-align] Target BPM: {current_target:.0f} → {new_target:.0f} (sensed: {sensed_bpm:.1f})")
+                else:
+                    # Invalid BPM, reset stable count
+                    self._auto_align_stable_count = 0
             
             # ===== TRAFFIC LIGHT UPDATE =====
             if hasattr(self, 'metric_traffic_light'):
