@@ -233,18 +233,6 @@ class StrokeMapper:
             if self._rms_envelope < self._amplitude_gate_low:
                 self._motion_mode = MotionMode.CREEP_MICRO
                 self._mode_switch_time = now
-                
-                # Snap creep_angle to match current position at new radius
-                # This prevents the jump when switching from FULL_STROKE to CREEP_MICRO
-                if abs(self.state.alpha) > 0.01 or abs(self.state.beta) > 0.01:
-                    # Current position is (state.alpha, state.beta)
-                    # At FULL_STROKE radius (0.98), position is sin(angle)*0.98, cos(angle)*0.98
-                    # At CREEP_MICRO radius (0.5), we want the same angle
-                    # atan2(beta, alpha) gives us the angle that matches current position
-                    self.state.creep_angle = np.arctan2(self.state.beta, self.state.alpha)
-                    if self.state.creep_angle < 0:
-                        self.state.creep_angle += 2 * np.pi
-                
         if old != self._motion_mode:
             log_event("INFO", "StrokeMapper", "Mode switch",
                       mode=self._motion_mode, envelope=f"{self._rms_envelope:.4f}")
@@ -784,6 +772,23 @@ class StrokeMapper:
 
         # ---------- Creep: tempo-synced rotation ----------
         if creep_active:
+            # SYNC ANGLE TO CURRENT POSITION (prevents jumps from arc/mode transitions)
+            # Before advancing angle, ensure it matches where we actually are
+            current_pos_r = np.sqrt(self.state.alpha**2 + self.state.beta**2)
+            if current_pos_r > 0.05:
+                # We have a meaningful position - lock onto it
+                # atan2(beta, alpha) gives angle where pos = sin(angle)*r, cos(angle)*r
+                synced_angle = np.arctan2(self.state.beta, self.state.alpha)
+                if synced_angle < 0:
+                    synced_angle += 2 * np.pi
+                # Smooth lerp to synced angle (avoids wrapping jumps)
+                angle_diff = synced_angle - self.state.creep_angle
+                if angle_diff > np.pi:
+                    angle_diff -= 2 * np.pi
+                elif angle_diff < -np.pi:
+                    angle_diff += 2 * np.pi
+                self.state.creep_angle += angle_diff * 0.3  # 30% correction per frame
+            
             bpm = getattr(event, 'bpm', 0.0) if event else 0.0
 
             if bpm > 0:
