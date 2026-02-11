@@ -3651,19 +3651,27 @@ bREadfan_69@hotmail.com"""
         self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         right_stack.addWidget(self.bpm_label)
 
-        # Beat & Downbeat indicators (bottom of right stack)
+        # Beat & Downbeat & Metronome Sync indicators (bottom of right stack)
         beat_row = QHBoxLayout()
         beat_row.setSpacing(4)
         self.beat_indicator = QLabel("●")
         self.beat_indicator.setStyleSheet("color: #333; font-size: 20px;")
         self.beat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.beat_indicator.setFixedWidth(30)
+        self.beat_indicator.setFixedWidth(24)
+        self.beat_indicator.setToolTip("Beat")
         beat_row.addWidget(self.beat_indicator)
         self.downbeat_indicator = QLabel("●")
         self.downbeat_indicator.setStyleSheet("color: #333; font-size: 20px;")
         self.downbeat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.downbeat_indicator.setFixedWidth(30)
+        self.downbeat_indicator.setFixedWidth(24)
+        self.downbeat_indicator.setToolTip("Downbeat")
         beat_row.addWidget(self.downbeat_indicator)
+        self.metronome_sync_indicator = QLabel("●")
+        self.metronome_sync_indicator.setStyleSheet("color: #333; font-size: 20px;")
+        self.metronome_sync_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.metronome_sync_indicator.setFixedWidth(24)
+        self.metronome_sync_indicator.setToolTip("Metronome sync (gray=off, yellow=locking, green=locked)")
+        beat_row.addWidget(self.metronome_sync_indicator)
         right_stack.addLayout(beat_row)
 
         right_stack_widget = QWidget()
@@ -6191,6 +6199,17 @@ bREadfan_69@hotmail.com"""
     
     def _on_beat(self, event: BeatEvent):
         """Handle beat event in GUI thread"""
+        # ===== METRONOME SYNC INDICATOR (updates every frame, not just on beat) =====
+        acf_conf = getattr(event, 'acf_confidence', 0.0)
+        metro_bpm = getattr(event, 'metronome_bpm', 0.0)
+        if hasattr(self, 'metronome_sync_indicator') and self.metronome_sync_indicator is not None:
+            if metro_bpm <= 0 or acf_conf < 0.05:
+                self.metronome_sync_indicator.setStyleSheet("color: #333; font-size: 20px;")  # Off
+            elif acf_conf < 0.25:
+                self.metronome_sync_indicator.setStyleSheet("color: #cc0; font-size: 20px;")  # Yellow: locking
+            else:
+                self.metronome_sync_indicator.setStyleSheet("color: #0f0; font-size: 20px;")  # Green: locked
+
         if event.is_beat:
             # Track beat time for auto-adjustment feature
             self._last_beat_time_for_auto = time.time()
@@ -6236,13 +6255,19 @@ bREadfan_69@hotmail.com"""
                         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
                             pass  # downbeat recording removed
                     
-                    # Format BPM display - simple, no beat position counter
-                    bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
-                    # Add confidence/stability indicator
-                    if confidence < 0.5:
-                        bpm_display += " (~)"
-                    elif stability < 0.5:
-                        bpm_display += " (~)"
+                    # Format BPM display — show ACF info when metronome is active
+                    acf_active = tempo_info.get('acf_active', False)
+                    if acf_active:
+                        bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
+                        acf_c = tempo_info.get('acf_confidence', 0.0)
+                        if acf_c < 0.15:
+                            bpm_display += " (~)"
+                    else:
+                        bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
+                        if confidence < 0.5:
+                            bpm_display += " (~)"
+                        elif stability < 0.5:
+                            bpm_display += " (~)"
                     if hasattr(self, 'bpm_label') and self.bpm_label is not None:
                         self.bpm_label.setText(bpm_display)
         # Show reset in GUI and console if tempo was reset

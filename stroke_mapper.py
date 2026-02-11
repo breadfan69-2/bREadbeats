@@ -383,6 +383,15 @@ class StrokeMapper:
             self._flux_stroke_factor = 1.0 + (base_factor - 1.0) * scaling_weight
 
         # ===== DISPATCH by behavioral mode =====
+        # ===== SYNCOPATION: off-beat "and" onset detected =====
+        # If metronome detects an off-beat raw onset between beats, queue a
+        # quick half-length "double" arc that fires on the next idle frame.
+        is_syncopated = getattr(event, 'is_syncopated', False)
+        if is_syncopated and self._motion_mode == MotionMode.FULL_STROKE:
+            if self._trajectory is None or self._trajectory.finished:
+                cmd = self._generate_syncopated_stroke(event)
+                return self._apply_fade(cmd)
+
         if event.is_beat:
             time_since_stroke = (now - self.state.last_stroke_time) * 1000
             if time_since_stroke < cfg.min_interval_ms:
@@ -436,14 +445,45 @@ class StrokeMapper:
     # FULL_STROKE generators (same proven logic from v1)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _make_thump_durations(total_ms: int, n_points: int) -> List[int]:
+        """Create step durations that accelerate toward the end of the arc,
+        producing a 'thump' on the beat landing.  The last ~15% of points
+        run at half the base duration; the first ~85% are slightly stretched
+        to keep the total time constant."""
+        if n_points <= 1:
+            return [total_ms]
+        thump_count = max(1, int(n_points * 0.15))
+        normal_count = n_points - thump_count
+        # Base step duration (uniform)
+        base_step = total_ms / n_points
+        # Thump steps run at 50% of base (faster)
+        thump_step = max(5, int(base_step * 0.50))
+        # Reclaim the saved time into the normal part
+        thump_total = thump_step * thump_count
+        normal_total = total_ms - thump_total
+        normal_step = max(5, int(normal_total / normal_count)) if normal_count > 0 else base_step
+        # Build step list
+        durations = [normal_step] * normal_count + [thump_step] * thump_count
+        # Adjust rounding error on last normal step
+        actual_total = sum(durations)
+        if actual_total != total_ms and normal_count > 0:
+            durations[normal_count - 1] += (total_ms - actual_total)
+        return durations
+
     def _generate_downbeat_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
         """Full measure-length arc on downbeat.  When tempo LOCKED -> 25% boost.
         Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
         cfg = self.config.stroke
         now = time.time()
 
-        # Measure duration
-        if self.state.last_beat_time == 0.0:
+        # Measure duration — prefer metronome BPM if available
+        metro_bpm = getattr(event, 'metronome_bpm', 0.0)
+        if metro_bpm > 0:
+            beat_interval_ms = 60000.0 / metro_bpm
+            beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+            measure_duration_ms = beat_interval_ms * 4
+        elif self.state.last_beat_time == 0.0:
             measure_duration_ms = 2000
         else:
             beat_interval_ms = (now - self.state.last_beat_time) * 1000
@@ -490,6 +530,8 @@ class StrokeMapper:
         base_step = measure_duration_ms // n_points
         remainder = measure_duration_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
+        # Apply thump acceleration (arc speeds up at the end for a landing thump)
+        step_durations = self._make_thump_durations(measure_duration_ms, n_points)
 
         # Store trajectory for frame-by-frame playback (no thread)
         self._trajectory = PlannedTrajectory(
@@ -516,8 +558,16 @@ class StrokeMapper:
         cfg = self.config.stroke
         now = time.time()
 
-        beat_interval_ms = (now - self.state.last_beat_time) * 1000 if self.state.last_beat_time > 0 else cfg.min_interval_ms
-        beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+        # Prefer metronome BPM for beat timing
+        metro_bpm = getattr(event, 'metronome_bpm', 0.0)
+        if metro_bpm > 0:
+            beat_interval_ms = 60000.0 / metro_bpm
+            beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+        elif self.state.last_beat_time > 0:
+            beat_interval_ms = (now - self.state.last_beat_time) * 1000
+            beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+        else:
+            beat_interval_ms = cfg.min_interval_ms
         beat_interval_ms *= 2
 
         band_speed = self._get_band_duration_scale(event)
@@ -582,6 +632,8 @@ class StrokeMapper:
         base_step = beat_interval_ms // n_points
         remainder = beat_interval_ms % n_points
         step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
+        # Apply thump acceleration (arc speeds up at the end for a landing thump)
+        step_durations = self._make_thump_durations(beat_interval_ms, n_points)
 
         # Store trajectory for frame-by-frame playback (no thread)
         self._trajectory = PlannedTrajectory(
@@ -603,6 +655,63 @@ class StrokeMapper:
                   duration_ms=beat_interval_ms, band=band,
                   motion=f"{self.motion_intensity:.2f}")
         return None  # idle motion will read from trajectory
+
+    def _generate_syncopated_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
+        """Quick half-length arc for an off-beat 'and' hit (syncopation / double-stroke).
+        Produces a short, snappy arc at 50% of normal beat length to give a
+        duh-DUH or 1-2-3-and-4 feel."""
+        cfg = self.config.stroke
+        now = time.time()
+
+        # Duration is half a beat interval
+        metro_bpm = getattr(event, 'metronome_bpm', 0.0)
+        if metro_bpm > 0:
+            half_beat_ms = 30000.0 / metro_bpm  # half of 60000/bpm
+        elif self.state.last_beat_time > 0:
+            half_beat_ms = (now - self.state.last_beat_time) * 500
+        else:
+            half_beat_ms = cfg.min_interval_ms
+        half_beat_ms = max(cfg.min_interval_ms * 0.5, min(500, half_beat_ms))
+        half_beat_ms = int(half_beat_ms)
+
+        # Shorter stroke: 60% of normal
+        flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
+        stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * 0.6 * self.motion_intensity
+        stroke_len = max(cfg.stroke_min, min(cfg.stroke_max * 0.8, stroke_len))
+
+        freq_factor = self._freq_to_factor(event.frequency)
+        depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
+
+        n_points = max(6, int(half_beat_ms / 10))
+        # Half-circle arc from current position
+        current_phase = self.state.creep_angle / (2 * np.pi)
+        arc_phases = np.linspace(current_phase, current_phase + 0.5, n_points, endpoint=False) % 1.0
+        alpha_arc = np.zeros(n_points)
+        beta_arc = np.zeros(n_points)
+        for i, phase in enumerate(arc_phases):
+            prev_phase = self.state.phase
+            self.state.phase = phase
+            a, b = self._get_stroke_target(stroke_len, depth, event)
+            alpha_arc[i] = a
+            beta_arc[i] = b
+            self.state.phase = prev_phase
+
+        step_durations = self._make_thump_durations(half_beat_ms, n_points)
+
+        self._trajectory = PlannedTrajectory(
+            alpha_points=alpha_arc,
+            beta_points=beta_arc,
+            step_durations=step_durations,
+            n_points=n_points,
+            current_index=0,
+            band_volume=self._get_band_volume(event),
+            start_time=now,
+        )
+
+        self.state.last_stroke_time = now
+        log_event("INFO", "StrokeMapper", "Syncopated arc (double-stroke)",
+                  points=n_points, duration_ms=half_beat_ms)
+        return None
 
     # ------------------------------------------------------------------
     # Trajectory playback (called from _generate_idle_motion)

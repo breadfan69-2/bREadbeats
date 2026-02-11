@@ -119,6 +119,9 @@ class BeatEvent:
     phase_error_ms: float = 0.0  # How far off from predicted downbeat timing (milliseconds)
     beat_band: str = 'sub_bass'   # Which multi-band z-score sub-band is currently primary
     fired_bands: list = None      # Which z-score bands actually fired on THIS beat (per-beat, not global)
+    metronome_bpm: float = 0.0    # Current internal metronome BPM (for stroke timing)
+    acf_confidence: float = 0.0   # ACF peak confidence (0-1, for UI sync indicator)
+    is_syncopated: bool = False   # True if an off-beat "and" onset was detected near this beat
 
 
 class AudioEngine:
@@ -140,6 +143,10 @@ class AudioEngine:
         # Reset ACF metronome
         if hasattr(self, '_acf_metronome_enabled'):
             self._reset_acf_metronome()
+        # Reset syncopation detection
+        if hasattr(self, '_raw_onset_times'):
+            self._raw_onset_times.clear()
+            self._syncopation_detected = False
         # Reset ALL multi-band z-score detectors so they get fresh baselines
         if hasattr(self, '_zscore_detectors'):
             for det in self._zscore_detectors.values():
@@ -360,6 +367,12 @@ class AudioEngine:
         self._metronome_beat_fired: bool = False         # Did metronome fire a beat THIS frame?
         self._metronome_downbeat_fired: bool = False     # Did metronome fire a downbeat THIS frame?
         self._metronome_last_beat_time: float = 0.0      # When the metronome last ticked a beat
+        # ===== Syncopation / double-stroke detection =====
+        # Track raw onset times to detect off-beat ("and") hits between metronome beats
+        self._raw_onset_times: list[float] = []          # Recent raw beat detection timestamps
+        self._raw_onset_max: int = 16                    # Keep last 16 raw onsets
+        self._syncopation_detected: bool = False         # True when an off-beat onset detected this frame
+        self._syncopation_window: float = 0.15           # ±fraction of beat period to detect syncope (15% = "and" zone)
 
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""
@@ -646,6 +659,12 @@ class AudioEngine:
         # Raw beat detection (still runs for onset detection + phase-lock + fallback)
         raw_is_beat = self._detect_beat(band_energy, spectral_flux)
         
+        # Track raw onset times for syncopation detection
+        if raw_is_beat:
+            self._raw_onset_times.append(current_time)
+            if len(self._raw_onset_times) > self._raw_onset_max:
+                self._raw_onset_times.pop(0)
+        
         # Advance internal metronome
         self._advance_metronome(current_time)
         
@@ -653,6 +672,20 @@ class AudioEngine:
         if raw_is_beat and self._metronome_bpm > 0:
             onset_strength = min(1.0, band_energy / max(0.001, self.peak_envelope))
             self._nudge_metronome_phase(onset_strength)
+        
+        # ===== SYNCOPATION DETECTION =====
+        # Detect off-beat ("and") onsets: raw onset near the half-beat point
+        # between metronome ticks => syncopated "duh-DUH" pattern
+        self._syncopation_detected = False
+        if self._metronome_bpm > 0 and raw_is_beat and not self._metronome_beat_fired:
+            beat_period = 60.0 / self._metronome_bpm
+            phase_frac = self._metronome_phase % 1.0
+            # Is the onset near the half-beat point (0.4-0.6 of beat period)?
+            dist_to_half = abs(phase_frac - 0.5)
+            if dist_to_half < self._syncopation_window:
+                self._syncopation_detected = True
+                log_event("INFO", "Syncopation", "Off-beat onset detected",
+                          phase=f"{phase_frac:.2f}", bpm=f"{self._metronome_bpm:.1f}")
         
         # Choose beat source: metronome (when running) or raw detection (fallback)
         if self._acf_metronome_enabled and self._metronome_bpm > 0:
@@ -685,7 +718,10 @@ class AudioEngine:
             tempo_locked=tempo_is_locked,
             phase_error_ms=self.phase_error_ms,
             beat_band=self._primary_beat_band,
-            fired_bands=[n for n, s in self._band_zscore_signals.items() if s == 1] if is_beat else []
+            fired_bands=[n for n, s in self._band_zscore_signals.items() if s == 1] if is_beat else [],
+            metronome_bpm=self._metronome_bpm,
+            acf_confidence=self._acf_confidence,
+            is_syncopated=self._syncopation_detected,
         )
         
         # Notify callback
