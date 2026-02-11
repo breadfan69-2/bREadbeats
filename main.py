@@ -2203,9 +2203,12 @@ class BREadbeatsWindow(QMainWindow):
         # Load config values into UI sliders
         self._apply_config_to_ui()
         
-        # Initialize indicator visibility: peak visible, range hidden
+        # Initialize indicator visibility: peak visible, range bands hidden (controlled by per-slider toggles)
         self._on_show_peak_indicators_toggle(True)
-        self._on_show_range_indicators_toggle(False)
+        self._on_toggle_beat_band(False)
+        self._on_toggle_depth_band(False)
+        self._on_toggle_p0_band(False)
+        self._on_toggle_f0_band(False)
         
         # Load presets from disk
         self._load_presets_from_disk()
@@ -2733,18 +2736,12 @@ class BREadbeatsWindow(QMainWindow):
             action.triggered.connect(lambda checked, idx=i: self._on_viz_menu_change(idx))
             self._viz_type_actions.append(action)
 
-        # Show/Hide indicators - split into peak and range
+        # Show/Hide peak indicators
         self.show_peak_indicators_action = options_menu.addAction("Show Peak Indicators")
         assert self.show_peak_indicators_action is not None
         self.show_peak_indicators_action.setCheckable(True)
         self.show_peak_indicators_action.setChecked(True)  # Peak visible by default
         self.show_peak_indicators_action.triggered.connect(self._on_show_peak_indicators_menu_toggle)
-
-        self.show_range_indicators_action = options_menu.addAction("Show Range Indicators")
-        assert self.show_range_indicators_action is not None
-        self.show_range_indicators_action.setCheckable(True)
-        self.show_range_indicators_action.setChecked(False)  # Range hidden by default
-        self.show_range_indicators_action.triggered.connect(self._on_show_range_indicators_menu_toggle)
 
         options_menu.addSeparator()
 
@@ -3859,6 +3856,38 @@ bREadfan_69@hotmail.com"""
         """Handle Show Range Indicators toggle from Options menu"""
         self._on_show_range_indicators_toggle(checked)
 
+    def _on_toggle_beat_band(self, checked: bool):
+        """Toggle visibility of beat detection band (red) on all visualizers"""
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+            if hasattr(canvas, 'beat_band'):
+                canvas.beat_band.setVisible(checked)
+            if hasattr(canvas, 'beat_label'):
+                canvas.beat_label.setVisible(checked)
+
+    def _on_toggle_depth_band(self, checked: bool):
+        """Toggle visibility of stroke depth band (green) on all visualizers"""
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+            if hasattr(canvas, 'depth_band'):
+                canvas.depth_band.setVisible(checked)
+            if hasattr(canvas, 'depth_label'):
+                canvas.depth_label.setVisible(checked)
+
+    def _on_toggle_p0_band(self, checked: bool):
+        """Toggle visibility of pulse frequency band (blue) on all visualizers"""
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+            if hasattr(canvas, 'p0_band'):
+                canvas.p0_band.setVisible(checked)
+            if hasattr(canvas, 'pulse_label'):
+                canvas.pulse_label.setVisible(checked)
+
+    def _on_toggle_f0_band(self, checked: bool):
+        """Toggle visibility of carrier frequency band (cyan) on all visualizers"""
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+            if hasattr(canvas, 'f0_band'):
+                canvas.f0_band.setVisible(checked)
+            if hasattr(canvas, 'carrier_label'):
+                canvas.carrier_label.setVisible(checked)
+
     def _on_viz_menu_change(self, index: int):
         """Handle spectrum type change from Options menu"""
         # Update checkmarks
@@ -4122,9 +4151,17 @@ bREadfan_69@hotmail.com"""
         pulse_group = CollapsibleGroupBox("Pulse Frequency - blue overlay on spectrum", collapsed=True)
         pulse_layout = QVBoxLayout(pulse_group)
 
+        # Pulse Freq monitor slider with visibility toggle
+        p0_slider_row = QHBoxLayout()
         self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.pulse_freq_range_slider.rangeChanged.connect(self._on_p0_band_change)
-        pulse_layout.addWidget(self.pulse_freq_range_slider)
+        p0_slider_row.addWidget(self.pulse_freq_range_slider)
+        self.p0_band_toggle = QCheckBox("Show")
+        self.p0_band_toggle.setToolTip("Show/hide blue overlay on spectrum")
+        self.p0_band_toggle.setChecked(False)
+        self.p0_band_toggle.stateChanged.connect(lambda state: self._on_toggle_p0_band(state == 2))
+        p0_slider_row.addWidget(self.p0_band_toggle)
+        pulse_layout.addLayout(p0_slider_row)
 
         self.tcode_freq_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 2010, 7035, 0)
         pulse_layout.addWidget(self.tcode_freq_range_slider)
@@ -4153,9 +4190,17 @@ bREadfan_69@hotmail.com"""
         carrier_group = CollapsibleGroupBox("Carrier Frequency", collapsed=True)
         carrier_layout = QVBoxLayout(carrier_group)
 
+        # Carrier Freq monitor slider with visibility toggle
+        f0_slider_row = QHBoxLayout()
         self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.f0_freq_range_slider.rangeChanged.connect(self._on_f0_band_change)
-        carrier_layout.addWidget(self.f0_freq_range_slider)
+        f0_slider_row.addWidget(self.f0_freq_range_slider)
+        self.f0_band_toggle = QCheckBox("Show")
+        self.f0_band_toggle.setToolTip("Show/hide cyan overlay on spectrum")
+        self.f0_band_toggle.setChecked(False)
+        self.f0_band_toggle.stateChanged.connect(lambda state: self._on_toggle_f0_band(state == 2))
+        f0_slider_row.addWidget(self.f0_band_toggle)
+        carrier_layout.addLayout(f0_slider_row)
 
         self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 0, 5000, 0)
         carrier_layout.addWidget(self.f0_tcode_range_slider)
@@ -4537,10 +4582,17 @@ bREadfan_69@hotmail.com"""
         levels_group = CollapsibleGroupBox("Levels", collapsed=True)
         levels_layout = QVBoxLayout(levels_group)
         
-        # Frequency band selection (moved from standalone group)
+        # Frequency band selection with visibility toggle (red beat detection band)
+        beat_slider_row = QHBoxLayout()
         self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
-        levels_layout.addWidget(self.freq_range_slider)
+        beat_slider_row.addWidget(self.freq_range_slider)
+        self.beat_band_toggle = QCheckBox("Show")
+        self.beat_band_toggle.setToolTip("Show/hide red overlay on spectrum")
+        self.beat_band_toggle.setChecked(False)
+        self.beat_band_toggle.stateChanged.connect(lambda state: self._on_toggle_beat_band(state == 2))
+        beat_slider_row.addWidget(self.beat_band_toggle)
+        levels_layout.addLayout(beat_slider_row)
         
         # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud)
         aa_min, aa_max = BEAT_RANGE_LIMITS['audio_amp']
@@ -5143,9 +5195,17 @@ bREadfan_69@hotmail.com"""
         depth_freq_group = CollapsibleGroupBox("Depth Frequency Range (Hz) - green overlay", collapsed=True)
         depth_freq_layout = QVBoxLayout(depth_freq_group)
         
+        # Depth Freq slider with visibility toggle (green stroke depth band)
+        depth_slider_row = QHBoxLayout()
         self.depth_freq_range_slider = RangeSliderWithLabel("Depth Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.depth_freq_range_slider.rangeChanged.connect(self._on_depth_band_change)
-        depth_freq_layout.addWidget(self.depth_freq_range_slider)
+        depth_slider_row.addWidget(self.depth_freq_range_slider)
+        self.depth_band_toggle = QCheckBox("Show")
+        self.depth_band_toggle.setToolTip("Show/hide green overlay on spectrum")
+        self.depth_band_toggle.setChecked(False)
+        self.depth_band_toggle.stateChanged.connect(lambda state: self._on_toggle_depth_band(state == 2))
+        depth_slider_row.addWidget(self.depth_band_toggle)
+        depth_freq_layout.addLayout(depth_slider_row)
         
         layout.addWidget(depth_freq_group)
 
