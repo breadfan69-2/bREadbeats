@@ -282,6 +282,8 @@ self._band_fire_history = {name: [] ...}      # Rolling fire count (60 frames �
 self._primary_beat_band = 'sub_bass'          # The "winning" band
 ```
 
+**`fired_bands` (per-beat):** Each `BeatEvent` carries a `fired_bands: list` field populated at creation time with whichever bands actually fired z-score on THAT specific beat: `[n for n, s in _band_zscore_signals.items() if s == 1]`. Empty list when `is_beat=False` or when the classic path fires alone. Used by the motion band filter in stroke_mapper (see below). This is DISTINCT from `_primary_beat_band` which is a global dominant band over 60 frames.
+
 **`_update_multiband_zscore(spectrum)`** — called every audio frame:
 1. Extracts per-band RMS energy from FFT spectrum bins
 2. Applies audio gain to each band's energy
@@ -997,22 +999,42 @@ freq_high: float = 150.0
 
 ### Auto-Align Target BPM Feature
 
-**New automatic BPM alignment system** to gradually sync user's target BPM with detected audio tempo:
+**Automatic BPM alignment system** that gradually syncs user's target BPM with detected audio tempo:
 - **"Auto-align target with sensed BPM"** checkbox in Beat Detection tab
-- **Configurable stability threshold** via spinbox (range 2-10, default 5) for "stable reading count"
-- When enabled, target BPM slowly aligns with sensed BPM when tempo is stable for N consecutive readings
-- Methods: `_on_auto_align_toggle()`, `_on_auto_align_checks_change()`
-- Prevents constant BPM chasing by requiring sustained stable tempo before adjustment
+- **Configurable stability duration** via QDoubleSpinBox (range 1.0-8.0s, default 3.0, step 0.5, suffix "s")
+- When enabled, waits for detected BPM to remain within ±`stability_threshold` for the configured seconds, then steps target ±1 BPM toward sensed BPM
+- 0.8s cooldown between consecutive ±1 steps to prevent rapid oscillation
+- Methods: `_on_auto_align_toggle()`, `_on_auto_align_seconds_change()`
 
-**Auto-Alignment Logic:**
+**State Variables (main.py):**
 ```python
-# In _update_display(), check if conditions met for auto-alignment
-if (self._auto_align_enabled and 
-    self._bpm_stable_count >= self._auto_align_checks and 
-    abs(current_bpm - target_bpm) > 1.0):
-    # Gradually move target toward sensed BPM
-    new_target = target_bpm + (current_bpm - target_bpm) * 0.1
-    self.target_bpm_spin.setValue(new_target)
+self._auto_align_stable_since = 0.0    # time.time() when BPM first became stable
+self._auto_align_is_stable = False     # whether currently in stable period
+self._auto_align_required_seconds = 3.0 # how long stable before stepping
+self._auto_align_cooldown = 0.8        # seconds between ±1 BPM steps
+self._auto_align_last_step_time = 0.0  # time.time() of last step
+```
+
+**Auto-Alignment Logic (time-based, in `_update_display()`):**
+```python
+# Wall-clock stability check
+now = time.time()
+if bpm_is_stable:
+    if not self._auto_align_is_stable:
+        self._auto_align_stable_since = now
+        self._auto_align_is_stable = True
+    elapsed = now - self._auto_align_stable_since
+    if (elapsed >= self._auto_align_required_seconds and
+            now - self._auto_align_last_step_time >= self._auto_align_cooldown):
+        # Step ±1 BPM toward sensed
+        if current_bpm > target_bpm:
+            new_target = target_bpm + 1
+        elif current_bpm < target_bpm:
+            new_target = target_bpm - 1
+        self.target_bpm_spin.setValue(new_target)
+        self._auto_align_last_step_time = now
+else:
+    self._auto_align_is_stable = False  # hard reset on instability
 ```
 
 ### Volume Fade Fix - Immediate TCode Commands
@@ -1025,6 +1047,33 @@ def send_immediate(self, command_str: str) -> bool:
     """Send command immediately, bypassing queue and sending_enabled check.
     Used for critical commands like volume fade on pause."""
 ```
+
+### Per-Beat Motion Band Filter
+
+**Purpose:** Only generate strokes when low-frequency (bass) content is present in the beat, filtering out beats triggered solely by mid/high bands (snares, hi-hats, vocals).
+
+**Config:** `motion_freq_cutoff: float = 500.0` in `BeatDetectionConfig` (config.py)
+
+**UI:** QSpinBox in Levels group — range 60-2000 Hz, step 20, suffix " Hz", default 500. Handler: `_on_motion_freq_cutoff_change()`
+
+**Implementation (stroke_mapper.py, top of `process_beat()`):**
+```python
+_BAND_LOWER_HZ = {'sub_bass': 30, 'low_mid': 100, 'mid': 500, 'high': 2000}
+
+cutoff = beat_cfg.motion_freq_cutoff
+if cutoff > 0 and event.is_beat:
+    fired = getattr(event, 'fired_bands', None) or []
+    if fired:
+        has_low_band = any(_BAND_LOWER_HZ.get(b, 0) < cutoff for b in fired)
+        if not has_low_band:
+            return None  # suppress this beat — no low-band content
+```
+
+**Design decisions:**
+- Uses `fired_bands` (per-beat list), NOT `beat_band` (global primary). The global primary labels ALL beats with whichever band dominates overall — useless for per-beat filtering.
+- Classic-path beats (empty `fired_bands`) always pass through — backward compatible.
+- `beat_band` (global primary) is still used for `_get_band_volume()` and `_get_band_duration_scale()` since those should track dominant instrument.
+- Cutoff 0 disables the filter entirely.
 
 **Volume Behavior Fix:**
 - Modified `_on_play_pause()` to use `send_immediate()` for volume fade commands
@@ -1326,7 +1375,7 @@ class RangeSlider(QWidget):
 ---
 
 *Document created: 2026-02-07*  
-*Last updated: 2026-02-11 (log-frequency spectrogram, dynamic range fix, log-scale range sliders)*  
+*Last updated: 2026-02-12 (time-based auto-align, per-beat motion band filter with fired_bands, 1 BPM precision rule)*  
 *All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow, indicator toggles functioning correctly, spectrogram showing log-frequency distribution with correct band overlay positions.*
 *Current branch: main*
 *Repository: https://github.com/breadfan69-2/bREadbeats*
