@@ -118,6 +118,7 @@ class BeatEvent:
     tempo_locked: bool = False  # True if consecutive downbeats match predicted pattern (locked tempo)
     phase_error_ms: float = 0.0  # How far off from predicted downbeat timing (milliseconds)
     beat_band: str = 'sub_bass'   # Which multi-band z-score sub-band is currently primary
+    fired_bands: list = None      # Which z-score bands actually fired on THIS beat (per-beat, not global)
 
 
 class AudioEngine:
@@ -620,7 +621,8 @@ class AudioEngine:
             tempo_reset=tempo_reset_flag,
             tempo_locked=tempo_is_locked,
             phase_error_ms=self.phase_error_ms,
-            beat_band=self._primary_beat_band
+            beat_band=self._primary_beat_band,
+            fired_bands=[n for n, s in self._band_zscore_signals.items() if s == 1] if is_beat else []
         )
         
         # Notify callback

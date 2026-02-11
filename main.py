@@ -2299,10 +2299,13 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_to: float = 1.0
         self._volume_ramp_duration: float = 1.3  # 1.3s ramp
         
-        # Auto-align target BPM tracking
+        # Auto-align target BPM tracking (wall-clock time-based)
         self._auto_align_target_enabled: bool = False
-        self._auto_align_stable_count: int = 0
-        self._auto_align_required_stable: int = 5  # consecutive stable readings before aligning (default matches spinbox)
+        self._auto_align_stable_since: float = 0.0      # time.time() when stability started
+        self._auto_align_is_stable: bool = False         # currently in stable state
+        self._auto_align_required_seconds: float = 3.0   # seconds of stability before first alignment
+        self._auto_align_last_adjust_time: float = 0.0   # time.time() of last ±1 BPM adjustment
+        self._auto_align_cooldown: float = 0.8            # seconds between each ±1 BPM step
         self._last_sensed_bpm: float = 0.0
         
         # State
@@ -4522,16 +4525,18 @@ bREadfan_69@hotmail.com"""
     def _on_auto_align_toggle(self, enabled: bool):
         """Handle auto-align target BPM checkbox toggle"""
         self._auto_align_target_enabled = enabled
-        self._auto_align_stable_count = 0  # Reset counter on toggle
+        self._auto_align_is_stable = False
+        self._auto_align_stable_since = 0.0
+        self._auto_align_last_adjust_time = 0.0
         if enabled:
             print("[Config] Auto-align target BPM enabled - will align to sensed BPM when stable")
         else:
             print("[Config] Auto-align target BPM disabled")
 
-    def _on_auto_align_checks_change(self, value: int):
-        """Handle auto-align checks spinbox change"""
-        self._auto_align_required_stable = value
-        print(f"[Config] Auto-align requires {value} consecutive stable readings")
+    def _on_auto_align_seconds_change(self, value: float):
+        """Handle auto-align seconds spinbox change"""
+        self._auto_align_required_seconds = value
+        print(f"[Config] Auto-align requires {value:.1f}s of stable tempo before aligning")
 
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings with vertical scroll"""
@@ -4650,13 +4655,16 @@ bREadfan_69@hotmail.com"""
         self.auto_align_target_cb.stateChanged.connect(lambda state: self._on_auto_align_toggle(state == 2))
         bps_layout.addWidget(self.auto_align_target_cb)
         
-        self.auto_align_checks_spin = QSpinBox()
-        self.auto_align_checks_spin.setRange(2, 10)
-        self.auto_align_checks_spin.setValue(5)
-        self.auto_align_checks_spin.setFixedWidth(45)
-        self.auto_align_checks_spin.setToolTip("Number of consecutive stable readings before aligning target")
-        self.auto_align_checks_spin.valueChanged.connect(self._on_auto_align_checks_change)
-        bps_layout.addWidget(self.auto_align_checks_spin)
+        self.auto_align_seconds_spin = QDoubleSpinBox()
+        self.auto_align_seconds_spin.setRange(1.0, 8.0)
+        self.auto_align_seconds_spin.setValue(3.0)
+        self.auto_align_seconds_spin.setSingleStep(0.5)
+        self.auto_align_seconds_spin.setDecimals(1)
+        self.auto_align_seconds_spin.setSuffix("s")
+        self.auto_align_seconds_spin.setFixedWidth(60)
+        self.auto_align_seconds_spin.setToolTip("Seconds of stable tempo required before auto-aligning target BPM")
+        self.auto_align_seconds_spin.valueChanged.connect(self._on_auto_align_seconds_change)
+        bps_layout.addWidget(self.auto_align_seconds_spin)
         
         bps_layout.addStretch()
         metric_layout.addLayout(bps_layout)
@@ -4695,6 +4703,24 @@ bREadfan_69@hotmail.com"""
         self.beat_band_toggle.stateChanged.connect(lambda state: self._on_toggle_beat_band(state == 2))
         beat_slider_row.addWidget(self.beat_band_toggle)
         levels_layout.addLayout(beat_slider_row)
+        
+        # Motion frequency cutoff: only generate strokes from bands below this Hz
+        motion_cutoff_row = QHBoxLayout()
+        motion_cutoff_label = QLabel("Motion Band Cutoff (Hz):")
+        motion_cutoff_label.setStyleSheet("color: #CCC; font-size: 9px;")
+        motion_cutoff_label.setToolTip("Only generate motion from beat bands below this frequency.\nHigher-band beats (hi-hat, cymbals) still feed BPM tracking but won't produce strokes.")
+        motion_cutoff_row.addWidget(motion_cutoff_label)
+        self.motion_freq_cutoff_spin = QSpinBox()
+        self.motion_freq_cutoff_spin.setRange(60, 2000)
+        self.motion_freq_cutoff_spin.setSingleStep(20)
+        self.motion_freq_cutoff_spin.setValue(int(self.config.beat.motion_freq_cutoff))
+        self.motion_freq_cutoff_spin.setSuffix(" Hz")
+        self.motion_freq_cutoff_spin.setFixedWidth(80)
+        self.motion_freq_cutoff_spin.setToolTip("Bands with lower Hz >= this value are filtered from motion generation")
+        self.motion_freq_cutoff_spin.valueChanged.connect(self._on_motion_freq_cutoff_change)
+        motion_cutoff_row.addWidget(self.motion_freq_cutoff_spin)
+        motion_cutoff_row.addStretch()
+        levels_layout.addLayout(motion_cutoff_row)
         
         # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud)
         aa_min, aa_max = BEAT_RANGE_LIMITS['audio_amp']
@@ -4749,6 +4775,11 @@ bREadfan_69@hotmail.com"""
         layout.addStretch()
         scroll_area.setWidget(widget)
         return scroll_area
+    
+    def _on_motion_freq_cutoff_change(self, value: int):
+        """Handle motion frequency cutoff spinbox change"""
+        self.config.beat.motion_freq_cutoff = float(value)
+        print(f"[Config] Motion band cutoff: {value} Hz (bands with lower Hz >= {value} filtered from motion)")
     
     def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""
@@ -6258,7 +6289,7 @@ bREadfan_69@hotmail.com"""
             self.audio_engine.compute_audio_amp_feedback(now, callback=self._on_metric_feedback)
             self.audio_engine.compute_flux_balance_feedback(now, callback=self._on_metric_feedback)
             
-            # ===== AUTO-ALIGN TARGET BPM =====
+            # ===== AUTO-ALIGN TARGET BPM (time-based) =====
             if self._auto_align_target_enabled:
                 tempo_info = self.audio_engine.get_tempo_info()
                 sensed_bpm = tempo_info.get('stable_bpm', 0.0)
@@ -6272,18 +6303,24 @@ bREadfan_69@hotmail.com"""
                     locked = consecutive_downbeats >= 3
                     
                     if stability > 0.5 or locked:
-                        self._auto_align_stable_count += 1
+                        # Tempo is stable — start or continue timing
+                        if not self._auto_align_is_stable:
+                            self._auto_align_is_stable = True
+                            self._auto_align_stable_since = now
                         self._last_sensed_bpm = sensed_bpm
                     else:
-                        self._auto_align_stable_count = max(0, self._auto_align_stable_count - 1)
+                        # Tempo unstable — reset timer immediately
+                        self._auto_align_is_stable = False
+                        self._auto_align_stable_since = 0.0
                     
-                    # After enough consecutive stable readings, start aligning
-                    if self._auto_align_stable_count >= self._auto_align_required_stable:
+                    # Check if stable long enough to start aligning
+                    if (self._auto_align_is_stable and 
+                            (now - self._auto_align_stable_since) >= self._auto_align_required_seconds):
                         current_target = self.target_bpm_spin.value()
                         diff = sensed_bpm - current_target
                         
-                        if abs(diff) >= 1.0:  # Only align if difference >= 1 BPM
-                            # Move target toward sensed BPM by 1 BPM per update cycle
+                        # Only align if difference >= 1 BPM AND cooldown elapsed
+                        if abs(diff) >= 1.0 and (now - self._auto_align_last_adjust_time) >= self._auto_align_cooldown:
                             if diff > 0:
                                 new_target = min(int(current_target) + 1, int(sensed_bpm))
                             else:
@@ -6291,10 +6328,13 @@ bREadfan_69@hotmail.com"""
                             
                             if new_target != int(current_target):
                                 self.target_bpm_spin.setValue(new_target)
-                                print(f"[Auto-align] Target BPM: {int(current_target)} → {new_target} (sensed: {sensed_bpm:.1f}, stable count: {self._auto_align_stable_count})")
+                                self._auto_align_last_adjust_time = now
+                                stable_elapsed = now - self._auto_align_stable_since
+                                print(f"[Auto-align] Target BPM: {int(current_target)} → {new_target} (sensed: {sensed_bpm:.1f}, stable for {stable_elapsed:.1f}s)")
                 else:
-                    # Invalid BPM, reset stable count
-                    self._auto_align_stable_count = 0
+                    # Invalid BPM, reset stability
+                    self._auto_align_is_stable = False
+                    self._auto_align_stable_since = 0.0
             
             # ===== TRAFFIC LIGHT UPDATE =====
             if hasattr(self, 'metric_traffic_light'):

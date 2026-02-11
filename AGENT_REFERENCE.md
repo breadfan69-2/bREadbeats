@@ -127,6 +127,16 @@ All modes use **250ms sliding window averaging** for smooth transitions, with co
 
 ---
 
+## Key Design Principles
+
+### 1 BPM Precision Matters
+
+**bREadbeats is an auto-adjusting metronome, not just a music visualizer.** The rotating position dot completes one full cycle per beat — if the target BPM is off by even 1 BPM, the dot will visibly drift out of sync with the music over a few measures. This is fundamentally different from music listening, where ±1 BPM is imperceptible.
+
+**Rule:** Never dismiss 1 BPM differences as "close enough." All tempo tracking, auto-alignment, and BPM feedback systems must aim for exact integer BPM lock. When in doubt, prioritize precision over speed of convergence.
+
+---
+
 ## Critical Features & Behaviors
 
 ### 1. Stroke Modes [1-4] ⚠️ HANDLE WITH CARE

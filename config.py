@@ -30,6 +30,7 @@ class BeatDetectionConfig:
     # Frequency band selection (Hz)
     freq_low: float = 30.0            # Low cutoff frequency (Hz)
     freq_high: float = 150.0          # High cutoff frequency (Hz) - bass range default
+    motion_freq_cutoff: float = 500.0  # Only generate motion from bands below this Hz (0=disabled)
     silence_reset_ms: int = 400       # How long silence before resetting beat tracking (ms)
     
     # Tempo tracking parameters

@@ -155,6 +155,22 @@ class StrokeMapper:
         now = time.time()
         cfg = self.config.stroke
         beat_cfg = self.config.beat
+        
+        # ===== LOW-BAND MOTION FILTER =====
+        # Only generate strokes if at least one ACTUALLY FIRED band on this beat
+        # has its lower Hz below the cutoff. This uses per-beat fired_bands (not
+        # the global primary), so a bass hit still produces motion even when the
+        # overall dominant band is mid/high.
+        _BAND_LOWER_HZ = {'sub_bass': 30, 'low_mid': 100, 'mid': 500, 'high': 2000}
+        cutoff = beat_cfg.motion_freq_cutoff
+        if cutoff > 0 and event.is_beat:
+            fired = getattr(event, 'fired_bands', None) or []
+            # Classic path beats (no z-score) have empty fired_bands — let them through
+            if fired:
+                has_low_band = any(_BAND_LOWER_HZ.get(b, 0) < cutoff for b in fired)
+                if not has_low_band:
+                    return None  # All fired bands are above cutoff — skip stroke
+        
         # Update flux history for flux-rise depth calculation
         self._update_flux_history(event)
         # Fade-out state for quiet suppression
