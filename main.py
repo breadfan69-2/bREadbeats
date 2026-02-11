@@ -2757,6 +2757,13 @@ class BREadbeatsWindow(QMainWindow):
             self._log_level_actions.append(action)
         self._sync_log_level_menu(getattr(self.config, 'log_level', 'INFO'))
         
+        options_menu.addSeparator()
+        
+        # Advanced Controls dialog
+        advanced_action = options_menu.addAction("Advanced Controls...")
+        assert advanced_action is not None
+        advanced_action.triggered.connect(self._on_advanced_controls)
+        
         # Help menu (separate top-level menu)
         help_menu = menubar.addMenu("Help")
         assert help_menu is not None
@@ -3049,6 +3056,67 @@ class BREadbeatsWindow(QMainWindow):
         else:
             # Mark as prompted even if skipped/cancelled so we don't ask again
             self.config.device_limits.prompted = True
+
+    def _on_advanced_controls(self):
+        """Show Advanced Controls dialog with experimental/expert settings"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QScrollArea, QGroupBox
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Advanced Controls")
+        dialog.setMinimumWidth(450)
+        dialog.setMinimumHeight(400)
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(10)
+        
+        # Warning message and toggle at top
+        warning_box = QGroupBox()
+        warning_box.setStyleSheet("QGroupBox { background-color: #442200; border: 2px solid #ff6600; border-radius: 4px; padding: 8px; }")
+        warning_layout = QVBoxLayout(warning_box)
+        
+        warning_label = QLabel("⚠️ DON'T BORK YOUR BEATS ⚠️")
+        warning_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffaa00;")
+        warning_layout.addWidget(warning_label)
+        
+        warning_text = QLabel("These controls are for advanced users. Incorrect settings\nmay cause erratic behavior or break beat detection.")
+        warning_text.setStyleSheet("color: #ccaa66;")
+        warning_layout.addWidget(warning_text)
+        
+        self._advanced_unlock_cb = QCheckBox("I understand, unlock advanced controls")
+        self._advanced_unlock_cb.setStyleSheet("color: #ffcc00;")
+        warning_layout.addWidget(self._advanced_unlock_cb)
+        
+        layout.addWidget(warning_box)
+        
+        # Scroll area for future controls
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(10)
+        
+        # Placeholder for future advanced controls
+        placeholder_group = QGroupBox("Advanced Settings (TBD)")
+        placeholder_layout = QVBoxLayout(placeholder_group)
+        placeholder_label = QLabel("Advanced control sliders and spinboxes\nwill be added here in future updates.")
+        placeholder_label.setStyleSheet("color: #888; font-style: italic;")
+        placeholder_layout.addWidget(placeholder_label)
+        scroll_layout.addWidget(placeholder_group)
+        
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        
+        # Initially disable scroll content until unlocked
+        scroll_content.setEnabled(False)
+        self._advanced_unlock_cb.stateChanged.connect(
+            lambda state: scroll_content.setEnabled(state == 2)
+        )
+        
+        layout.addWidget(scroll)
+        
+        dialog.show()
 
     def _on_help(self):
         """Show Help/Troubleshooting dialog with reset buttons (non-modal)"""
