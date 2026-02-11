@@ -93,10 +93,10 @@ class StrokeMapper:
         # ---------- Amplitude gate ----------
         # RMS envelope tracker for mode switching
         self._rms_envelope: float = 0.0
-        self._rms_attack: float = 0.08     # fast attack
-        self._rms_release: float = 0.005   # slow release
-        self._amplitude_gate_high: float = 0.12   # go to FULL_STROKE above this
-        self._amplitude_gate_low: float = 0.06    # go to CREEP_MICRO below this
+        self._rms_attack: float = 0.15     # faster attack to respond to loud passages
+        self._rms_release: float = 0.008   # moderate release
+        self._amplitude_gate_high: float = 0.08   # go to FULL_STROKE above this
+        self._amplitude_gate_low: float = 0.04    # go to CREEP_MICRO below this
         self._motion_mode: str = MotionMode.CREEP_MICRO  # start quiet
         self._mode_switch_time: float = 0.0
 
@@ -157,6 +157,9 @@ class StrokeMapper:
         self._creep_sustained_start: float = 0.0
         self._creep_volume_factor: float = 1.0
         self._creep_was_active_last_frame: bool = False
+
+        # ---------- Idle motion throttle (separate from beat stroke timing) ----------
+        self._last_idle_time: float = 0.0
 
         # ---------- Beat factoring ----------
         self.max_strokes_per_sec = 4.5
@@ -366,12 +369,14 @@ class StrokeMapper:
                     return self._apply_fade(cmd)
 
             else:  # CREEP_MICRO
-                # Low amplitude -> micro-effects only, no full arcs
+                # Low amplitude -> micro-effects on beats, plus produce creep motion
                 if self._micro_effects_enabled:
                     self._trigger_micro_jerk(event, is_downbeat)
-                return None   # creep/idle loop will produce the actual position
+                # Generate creep motion on beats too (not just idle)
+                cmd = self._generate_idle_motion(event)
+                return self._apply_fade(cmd)
 
-        elif self.state.idle_time > 0.3:
+        elif self.state.idle_time > 0.05:
             # Idle motion: creep + jitter + micro-jerk decay
             if not is_truly_silent and self._fade_intensity > 0.01:
                 cmd = self._generate_idle_motion(event)
@@ -659,8 +664,8 @@ class StrokeMapper:
         jitter_cfg = self.config.jitter
         creep_cfg = self.config.creep
 
-        # 60 fps throttle
-        time_since_last = (now - self.state.last_stroke_time) * 1000
+        # 60 fps throttle (use separate timer from beat strokes)
+        time_since_last = (now - self._last_idle_time) * 1000
         if time_since_last < 17:
             return None
 
@@ -705,7 +710,7 @@ class StrokeMapper:
 
                 self.state.alpha = alpha_target
                 self.state.beta = beta_target
-                self.state.last_stroke_time = now
+                self._last_idle_time = now
                 fade = self._fade_intensity
                 volume = self.get_volume() * fade
                 return TCodeCommand(alpha_target, beta_target, step_duration_ms, volume)
@@ -777,8 +782,9 @@ class StrokeMapper:
             current_pos_r = np.sqrt(self.state.alpha**2 + self.state.beta**2)
             if current_pos_r > 0.05:
                 # We have a meaningful position - lock onto it
-                # atan2(beta, alpha) gives angle where pos = sin(angle)*r, cos(angle)*r
-                synced_angle = np.arctan2(self.state.beta, self.state.alpha)
+                # Position is alpha=sin(angle)*r, beta=cos(angle)*r
+                # So atan2(sin, cos) = atan2(alpha, beta) recovers the angle
+                synced_angle = np.arctan2(self.state.alpha, self.state.beta)
                 if synced_angle < 0:
                     synced_angle += 2 * np.pi
                 # Smooth lerp to synced angle (avoids wrapping jumps)
@@ -870,7 +876,7 @@ class StrokeMapper:
 
         self.state.alpha = alpha_target
         self.state.beta = beta_target
-        self.state.last_stroke_time = now
+        self._last_idle_time = now
 
         # Volume with fade + creep reduction
         base_vol = self.get_volume()
