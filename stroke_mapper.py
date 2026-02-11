@@ -498,8 +498,9 @@ class StrokeMapper:
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
             measure_duration_ms = beat_interval_ms
 
-        band_speed = self._get_band_duration_scale(event)
-        measure_duration_ms = int(measure_duration_ms * band_speed)
+        # CRITICAL: Do NOT scale measure_duration_ms by band_speed
+        # The arc must complete in exactly (measure_duration_ms) to sync with next beat
+        measure_duration_ms = int(measure_duration_ms)
 
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
         tempo_locked = getattr(event, 'tempo_locked', False)
@@ -577,9 +578,9 @@ class StrokeMapper:
         else:
             beat_interval_ms = cfg.min_interval_ms
         # One full revolution per beat (no 2x multiplier)
-
-        band_speed = self._get_band_duration_scale(event)
-        beat_interval_ms = int(beat_interval_ms * band_speed)
+        # CRITICAL: Do NOT scale beat_interval_ms by band_speed
+        # The arc must complete in exactly (beat_interval_ms) to sync with next beat
+        beat_interval_ms = int(beat_interval_ms)
 
         intensity = event.intensity
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
