@@ -1045,8 +1045,132 @@ These documents capture the full control landscape for documentation and future 
 
 ---
 
+## Spectrogram & Frequency Slider Overhaul (2026-02-11)
+
+### Log-Frequency Spectrogram Display
+
+**Problem:** All 4 spectrum visualizers used linear frequency axis (`np.linspace` resampling), which compressed bass frequencies into a few pixels while spreading out inaudible high frequencies. Dynamic range normalization clipped at [-4, 0] dB (via `(spectrum + 4) / 4`), discarding the bottom third of useful signal.
+
+**Changes Applied to All 4 Canvas Classes** (SpectrumCanvas, MountainRangeCanvas, BarGraphCanvas, PhosphorCanvas):
+
+#### 1. Dynamic Range Fix
+```python
+# OLD: clipped to [-4, 0] log10 range — lost bottom 33%
+spectrum = np.clip((spectrum + 4) / 4, 0, 1)
+
+# NEW: full [-6, 0] log10 range preserved
+spectrum = np.clip((spectrum + 6) / 6, 0, 1)
+```
+
+#### 2. Log-Frequency Resampling
+```python
+# OLD: linear spacing — bass compressed, treble stretched
+indices = np.linspace(0, len(spectrum) - 1, self.num_bins).astype(int)
+resampled = spectrum[indices]
+
+# NEW: logarithmic spacing — perceptually correct
+n = len(spectrum)
+log_indices = np.logspace(0, np.log10(n - 1), self.num_bins).astype(int)
+log_indices = np.clip(log_indices, 0, n - 1)
+resampled = spectrum[log_indices]
+```
+
+#### 3. Log Hz↔Bin Conversion (all 4 classes)
+Frequency band overlays (beat band, depth band, P0 band, C0 band) must map Hz positions correctly onto the log-frequency display:
+
+```python
+def _hz_to_bin(self, hz: float) -> int:
+    """Convert Hz to display bin index in log-frequency space."""
+    if not hasattr(self, '_sample_rate') or self._sample_rate <= 0:
+        return 0
+    nyquist = self._sample_rate / 2.0
+    n = getattr(self, '_fft_bins', self.num_bins)  # FFT bins from spectrum
+    linear_idx = hz / nyquist * (n - 1)
+    linear_idx = max(1, min(linear_idx, n - 1))
+    log_bin = np.log10(linear_idx) / np.log10(n - 1) * self.num_bins
+    return int(np.clip(log_bin, 0, self.num_bins - 1))
+
+def _bin_to_hz(self, bin_idx: int) -> float:
+    """Convert display bin index back to Hz in log-frequency space."""
+    if not hasattr(self, '_sample_rate') or self._sample_rate <= 0:
+        return 0.0
+    nyquist = self._sample_rate / 2.0
+    n = getattr(self, '_fft_bins', self.num_bins)
+    linear_idx = 10 ** ((bin_idx / self.num_bins) * np.log10(n - 1))
+    return linear_idx / (n - 1) * nyquist
+```
+
+#### 4. `_fft_bins` Tracking
+Each canvas `__init__` initializes `self._fft_bins = 513` (default for 1024-sample FFT with `np.fft.rfft`). Updated every frame in `update_spectrum()`:
+```python
+self._fft_bins = len(spectrum)  # before resampling
+```
+This ensures `_hz_to_bin()` maps correctly even before first audio data arrives.
+
+#### 5. `set_frequency_band()` Updated
+All 4 classes now route through `_hz_to_bin()` instead of linear multiplication:
+```python
+# OLD: linear position
+low_bin = int(low_norm * self.num_bins)
+
+# NEW: Hz → log bin
+hz_low = low_norm * nyquist
+low_bin = self._hz_to_bin(hz_low)
+```
+
+#### 6. `set_sample_rate()` Wiring Fix
+Added missing `set_sample_rate()` calls for `bar_canvas` and `phosphor_canvas` in `BREadbeatsWindow._on_sample_rate_changed()` (line ~3404). Previously only `spectrum_canvas` and `mountain_canvas` received sample rate updates, causing incorrect Hz↔bin mapping on the other two visualizers.
+
+### Log-Scale Range Sliders
+
+**Problem:** After switching to log-frequency display, the linear Hz range sliders no longer matched the visual. Moving the left handle barely changed position on the spectrogram (compressing low-Hz movement), while the right handle moved too fast (stretching high-Hz movement).
+
+**Solution:** Added `log_scale` parameter to `RangeSlider` and `RangeSliderWithLabel`:
+
+```python
+class RangeSlider(QWidget):
+    def __init__(self, ..., log_scale: bool = False):
+        self._log_scale = log_scale
+    
+    def _val_to_pos(self, val):
+        if self._log_scale and self._max_val > self._min_val and self._min_val > 0:
+            log_min = np.log10(self._min_val)
+            log_max = np.log10(self._max_val)
+            log_val = np.log10(max(val, self._min_val))
+            frac = (log_val - log_min) / (log_max - log_min)
+            return int(self._margin + frac * usable)
+        # ... linear fallback
+
+    def _pos_to_val(self, pos):
+        if self._log_scale and self._max_val > self._min_val and self._min_val > 0:
+            log_min = np.log10(self._min_val)
+            log_max = np.log10(self._max_val)
+            log_val = log_min + frac * (log_max - log_min)
+            return 10 ** log_val
+        # ... linear fallback
+```
+
+**Enabled on all 6 frequency Hz sliders** (all have `log_scale=True`):
+- `freq_range_slider` — Beat detection frequency band
+- `pulse_freq_range_slider` — Pulse Freq monitor band
+- `f0_freq_range_slider` — Carrier Freq monitor band
+- `p1_monitor_range_slider` — Pulse Width monitor band
+- `p3_monitor_range_slider` — Rise Time monitor band
+- `depth_freq_range_slider` — Stroke depth frequency band
+
+**NOT enabled** on TCode "Sent Value" sliders (linear 0-9999 range, not frequency-based).
+
+### Updated Testing Checklist Items
+- [ ] Spectrogram shows log-frequency distribution (bass frequencies get more visual space)
+- [ ] Frequency band overlays align correctly with spectral content in log space
+- [ ] Range slider handle movement matches visual position on spectrogram
+- [ ] All 4 visualizers display consistent frequency mapping
+- [ ] Band positions correct at startup before first audio frame (_fft_bins = 513 default)
+
+---
+
 *Document created: 2026-02-07*  
-*Last updated: 2026-02-10 (indicator visibility split, bug fix, documentation added)*  
-*All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow, indicator toggles functioning correctly.*
+*Last updated: 2026-02-11 (log-frequency spectrogram, dynamic range fix, log-scale range sliders)*  
+*All implementations verified with running program - beat detection working, steady stroke generation, no burst clusters, BPS metrics accurate, metrics reaching settled state, traffic light reaching green or yellow, indicator toggles functioning correctly, spectrogram showing log-frequency distribution with correct band overlay positions.*
 *Current branch: main*
 *Repository: https://github.com/breadfan69-2/bREadbeats*
