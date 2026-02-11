@@ -890,6 +890,81 @@ Validates windowed smoothing + first derivative sign change is standard for real
 
 ## Latest Session Changes (2026-02-11)
 
+### Auto-Align BPM Rounding Bug Fix
+
+**Problem:** Auto-align target BPM spinbox was not updating visually when stable tempo detected.
+
+**Root Cause:** Logic used `round(current_target + 0.3)` to increment target BPM. When `current_target = 120`, `round(120 + 0.3) = 120` (same value), so spinbox change signal didn't fire—PyQt6 optimizes away unchanged value updates.
+
+**Solution:** Changed to direct integer stepping with directional clamping (main.py lines 6278-6287):
+```python
+# OLD (buggy):
+new_target = round(current_target + rate)  # rate = 0.3; rounds to same int
+self.target_bpm_spin.setValue(new_target)  # no update if value unchanged
+
+# NEW (working):
+if current_bpm > current_target:
+    new_target = current_target + 1  # Step up by 1 BPM
+elif current_bpm < current_target:
+    new_target = current_target - 1  # Step down by 1 BPM
+else:
+    return  # Already aligned
+self.target_bpm_spin.setValue(new_target)  # Always triggers update
+```
+
+**Effect:** Spinbox now visibly updates 1 BPM per cycle when tempo is stable, allowing users to see auto-alignment in action.
+
+**Testing:** App launched, auto-align toggle verified working, spinbox updates confirmed.
+
+---
+
+### Start/Stop vs Play/Pause TCode Pipeline Refactor
+
+**Problem:** Unclear separation between button states; Play/Pause toggled `sending_enabled` flag but Start/Stop didn't properly enable the TCode pipeline. Volume ramp response felt disconnected from button press.
+
+**Solution:** Refactored control logic with clear intent separation (main.py lines 5512-5559):
+
+| Event | `sending_enabled` | TCode Sent | Action |
+|-------|-------------------|-----------|--------|
+| **Start** | → True | V0=0 | Enables TCode TCP pipeline, ready to send commands |
+| **Play** | (unchanged) | Ramps V0 linearly 0→set over 1.3s | Starts volume fade-in, no pipeline enable |
+| **Pause** | (unchanged) | V0=0 immediately | Zeros volume instantly, keeps pipeline alive |
+| **Stop** | → False | V0=0 | Disables TCode pipeline, stops all audio engines |
+
+**Implementation Details:**
+- `_on_start_stop()`: Sets `self._sending_enabled = True` on Start; `False` on Stop
+- `_on_play_pause()`: Calls `volume_ramp()` for Play (starts fade-in), calls `send_immediate("V0 0")` for Pause
+- Volume ramp duration: Increased from 0.8s → **1.3s** for smoother fade-in subjective feel
+- No more Play/Pause toggling `sending_enabled`; only Start/Stop manage pipeline state
+
+**Effect:** Clear state machine—pipeline enable/disable separated from volume control. Volume response immediate to Pause button. Start button reliably prepares TCode system.
+
+**Testing:** App launched, all 4 button states tested, volume ramp timing confirmed.
+
+---
+
+### Default Beat Detection Frequency Range: 30-200 Hz → 30-150 Hz
+
+**Change:** Updated `config.py` line 32:
+```python
+# OLD:
+freq_high: float = 200.0
+
+# NEW:
+freq_high: float = 150.0
+```
+
+**Rationale:** Factory default now focuses on bass frequencies (30-150 Hz) rather than extending into mid-range (200 Hz). Aligns with haptic toy frequency response sweet spot and typical music kick drum range.
+
+**Behavior:**
+- **Fresh installs:** Start with 30-150 Hz band (per `config.py` default)
+- **Existing users:** Unaffected—use saved `~/.bREadbeats/config.json` from last session
+- **EXE builds:** Use `config.py` defaults if user config file absent
+
+**Testing:** Deleted local config file, verified fresh app launch shows 30-150 Hz slider defaults.
+
+---
+
 ### Per-Slider Frequency Range Indicator Toggles
 
 **Problem:** Users wanted granular control over frequency range indicator visibility rather than all-or-nothing menu toggle.
