@@ -147,6 +147,11 @@ class AudioEngine:
         if hasattr(self, '_raw_onset_times'):
             self._raw_onset_times.clear()
             self._syncopation_detected = False
+            self._syncopation_streak = 0
+            self._syncopation_had_offbeat = False
+            self._syncopation_confirmed = False
+            self._any_band_onset = False
+            self._syncopation_armed = False
         # Reset ALL multi-band z-score detectors so they get fresh baselines
         if hasattr(self, '_zscore_detectors'):
             for det in self._zscore_detectors.values():
@@ -372,7 +377,12 @@ class AudioEngine:
         self._raw_onset_times: list[float] = []          # Recent raw beat detection timestamps
         self._raw_onset_max: int = 16                    # Keep last 16 raw onsets
         self._syncopation_detected: bool = False         # True when an off-beat onset detected this frame
-        self._syncopation_window: float = 0.15           # ±fraction of beat period to detect syncope (15% = "and" zone)
+        self._syncopation_window: float = self.config.beat.syncopation_window  # from config
+        self._any_band_onset: bool = False               # True if ANY z-score band fired this frame (wider detection)
+        self._syncopation_streak: int = 0                # Consecutive beat periods with off-beat onsets
+        self._syncopation_had_offbeat: bool = False      # Off-beat onset seen in current beat period
+        self._syncopation_confirmed: bool = False        # True after confirmation
+        self._syncopation_armed: bool = False            # Armed on first off-beat, fires on second in same period
 
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""
@@ -585,6 +595,14 @@ class AudioEngine:
         # Extract energy per sub-band from the full unfiltered spectrum,
         # feed each to its z-score detector, and track which band fires.
         self._update_multiband_zscore(spectrum)
+
+        # Wider-band onset: did ANY z-score band fire? (for syncopation detection)
+        # Respects config: 'any' = any band, or a specific band name
+        sync_band = self.config.beat.syncopation_band
+        if sync_band == 'any':
+            self._any_band_onset = any(s == 1 for s in self._band_zscore_signals.values())
+        else:
+            self._any_band_onset = self._band_zscore_signals.get(sync_band, 0) == 1
         
         # Debug: print every 20 frames to see levels
         if not hasattr(self, '_debug_counter'):
@@ -674,18 +692,51 @@ class AudioEngine:
             self._nudge_metronome_phase(onset_strength)
         
         # ===== SYNCOPATION DETECTION =====
-        # Detect off-beat ("and") onsets: raw onset near the half-beat point
-        # between metronome ticks => syncopated "duh-DUH" pattern
+        # Detect off-beat ("and") onsets using configurable z-score band(s).
+        # Fast reaction: fires on the FIRST off-beat onset if the previous beat
+        # period also had one (streak >= 1). For the very first period, arms on
+        # first off-beat and fires on the second off-beat in the same period.
+        # Drops immediately on first beat period without any off-beat onset.
         self._syncopation_detected = False
-        if self._metronome_bpm > 0 and raw_is_beat and not self._metronome_beat_fired:
-            beat_period = 60.0 / self._metronome_bpm
+        if (self.config.beat.syncopation_enabled
+                and self._metronome_bpm > 0
+                and self._any_band_onset
+                and not self._metronome_beat_fired):
+            bpm_limit = self.config.beat.syncopation_bpm_limit
+            if self._metronome_bpm <= bpm_limit:
+                phase_frac = self._metronome_phase % 1.0
+                window = self.config.beat.syncopation_window
+                dist_to_half = abs(phase_frac - 0.5)
+                if dist_to_half < window:
+                    self._syncopation_had_offbeat = True
+                    if self._syncopation_streak >= 1:
+                        # Previous beat period had off-beats → fire immediately
+                        self._syncopation_detected = True
+                        log_event("INFO", "Syncopation", "Off-beat onset detected",
+                                  phase=f"{phase_frac:.2f}", bpm=f"{self._metronome_bpm:.1f}")
+                    elif self._syncopation_armed:
+                        # Second off-beat in same period → fire (fast first-time reaction)
+                        self._syncopation_detected = True
+                        self._syncopation_streak = 1  # pre-confirm for next period
+                        log_event("INFO", "Syncopation", "Armed → firing (2nd onset)",
+                                  phase=f"{phase_frac:.2f}", bpm=f"{self._metronome_bpm:.1f}")
+                    else:
+                        # First off-beat onset ever → arm for second
+                        self._syncopation_armed = True
+
+        # Predictive drop-off: if we're past the off-beat window (phase > 0.65)
+        # and no off-beat onset was detected this beat period, preemptively
+        # reset streak so the NEXT beat won't produce a false syncopation.
+        if self._metronome_bpm > 0 and not self._metronome_beat_fired:
             phase_frac = self._metronome_phase % 1.0
-            # Is the onset near the half-beat point (0.4-0.6 of beat period)?
-            dist_to_half = abs(phase_frac - 0.5)
-            if dist_to_half < self._syncopation_window:
-                self._syncopation_detected = True
-                log_event("INFO", "Syncopation", "Off-beat onset detected",
-                          phase=f"{phase_frac:.2f}", bpm=f"{self._metronome_bpm:.1f}")
+            window = self.config.beat.syncopation_window
+            if phase_frac > (0.5 + window) and not self._syncopation_had_offbeat:
+                # Past the "and" window with no onset → pattern broken
+                if self._syncopation_streak > 0 or self._syncopation_armed:
+                    self._syncopation_streak = 0
+                    self._syncopation_confirmed = False
+                    self._syncopation_armed = False
+                    log_event("INFO", "Syncopation", "Predictive drop-off (no onset in window)")
         
         # Choose beat source: metronome (when running) or raw detection (fallback)
         if self._acf_metronome_enabled and self._metronome_bpm > 0:
@@ -968,6 +1019,17 @@ class AudioEngine:
             self._metronome_beat_count += 1
             bpm = self.beats_per_measure
             self._metronome_downbeat_fired = (self._metronome_beat_count % bpm == 1)
+
+            # Track syncopation confirmation per beat period
+            if self._syncopation_had_offbeat:
+                self._syncopation_streak += 1
+            else:
+                self._syncopation_streak = 0
+                self._syncopation_confirmed = False
+                self._syncopation_armed = False
+            self._syncopation_had_offbeat = False  # reset for next beat period
+            if self._syncopation_streak >= 1:
+                self._syncopation_confirmed = True
 
             src = "DB" if self._metronome_downbeat_fired else "bt"
             log_event("INFO", "Metronome", f"Tick [{src}]",

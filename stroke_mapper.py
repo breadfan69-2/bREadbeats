@@ -384,13 +384,20 @@ class StrokeMapper:
 
         # ===== DISPATCH by behavioral mode =====
         # ===== SYNCOPATION: off-beat "and" onset detected =====
-        # If metronome detects an off-beat raw onset between beats, queue a
-        # quick half-length "double" arc that fires on the next idle frame.
+        # If metronome detects an off-beat raw onset between beats, fire a
+        # 2x-speed full-circle "double" arc for the duh-DUH effect.
         is_syncopated = getattr(event, 'is_syncopated', False)
+        metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         if is_syncopated and self._motion_mode == MotionMode.FULL_STROKE:
-            if self._trajectory is None or self._trajectory.finished:
-                cmd = self._generate_syncopated_stroke(event)
-                return self._apply_fade(cmd)
+            # BPM limit from config
+            bpm_limit = beat_cfg.syncopation_bpm_limit if hasattr(beat_cfg, 'syncopation_bpm_limit') else 160.0
+            if metro_bpm > bpm_limit:
+                pass
+            elif self._trajectory is None or self._trajectory.finished:
+                time_since_stroke = (now - self.state.last_stroke_time) * 1000
+                if time_since_stroke >= cfg.min_interval_ms * 0.5:
+                    cmd = self._generate_syncopated_stroke(event)
+                    return self._apply_fade(cmd)
 
         if event.is_beat:
             time_since_stroke = (now - self.state.last_stroke_time) * 1000
@@ -477,18 +484,19 @@ class StrokeMapper:
         cfg = self.config.stroke
         now = time.time()
 
-        # Measure duration — prefer metronome BPM if available
+        # Beat duration — prefer metronome BPM if available
+        # One full revolution per beat (not per measure)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         if metro_bpm > 0:
             beat_interval_ms = 60000.0 / metro_bpm
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
-            measure_duration_ms = beat_interval_ms * 4
+            measure_duration_ms = beat_interval_ms
         elif self.state.last_beat_time == 0.0:
-            measure_duration_ms = 2000
+            measure_duration_ms = 500
         else:
             beat_interval_ms = (now - self.state.last_beat_time) * 1000
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
-            measure_duration_ms = beat_interval_ms * 4
+            measure_duration_ms = beat_interval_ms
 
         band_speed = self._get_band_duration_scale(event)
         measure_duration_ms = int(measure_duration_ms * band_speed)
@@ -568,7 +576,7 @@ class StrokeMapper:
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
         else:
             beat_interval_ms = cfg.min_interval_ms
-        beat_interval_ms *= 2
+        # One full revolution per beat (no 2x multiplier)
 
         band_speed = self._get_band_duration_scale(event)
         beat_interval_ms = int(beat_interval_ms * band_speed)
@@ -657,9 +665,9 @@ class StrokeMapper:
         return None  # idle motion will read from trajectory
 
     def _generate_syncopated_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
-        """Quick half-length arc for an off-beat 'and' hit (syncopation / double-stroke).
-        Produces a short, snappy arc at 50% of normal beat length to give a
-        duh-DUH or 1-2-3-and-4 feel."""
+        """2x-speed full-circle arc for an off-beat 'and' hit (syncopation / double-stroke).
+        Runs a full revolution in half a beat period — twice the normal speed —
+        to produce a snappy duh-DUH or 1-2-3-and-4 feel."""
         cfg = self.config.stroke
         now = time.time()
 
@@ -674,18 +682,20 @@ class StrokeMapper:
         half_beat_ms = max(cfg.min_interval_ms * 0.5, min(500, half_beat_ms))
         half_beat_ms = int(half_beat_ms)
 
-        # Shorter stroke: 60% of normal
+        # Full stroke amplitude (same as normal beat stroke)
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
-        stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * 0.6 * self.motion_intensity
-        stroke_len = max(cfg.stroke_min, min(cfg.stroke_max * 0.8, stroke_len))
+        intensity = event.intensity
+        stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * intensity * cfg.stroke_fullness
+        stroke_len = stroke_len * flux_factor * self.motion_intensity
+        stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
 
         freq_factor = self._freq_to_factor(event.frequency)
         depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
 
         n_points = max(6, int(half_beat_ms / 10))
-        # Half-circle arc from current position
+        # Full-circle arc from current position at 2x speed (within half-beat duration)
         current_phase = self.state.creep_angle / (2 * np.pi)
-        arc_phases = np.linspace(current_phase, current_phase + 0.5, n_points, endpoint=False) % 1.0
+        arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
         for i, phase in enumerate(arc_phases):

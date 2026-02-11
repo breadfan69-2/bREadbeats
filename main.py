@@ -3111,14 +3111,52 @@ class BREadbeatsWindow(QMainWindow):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(10)
         
-        # Placeholder for future advanced controls
-        placeholder_group = QGroupBox("Advanced Settings (TBD)")
-        placeholder_layout = QVBoxLayout(placeholder_group)
-        placeholder_label = QLabel("Advanced control sliders and spinboxes\nwill be added here in future updates.")
-        placeholder_label.setStyleSheet("color: #888; font-style: italic;")
-        placeholder_layout.addWidget(placeholder_label)
-        scroll_layout.addWidget(placeholder_group)
-        
+        # ===== Syncopation Controls =====
+        syncope_group = QGroupBox("Syncopation / Double-Stroke")
+        syncope_layout = QVBoxLayout(syncope_group)
+
+        # On/Off checkbox
+        syncope_enabled_cb = QCheckBox("Enable syncopation detection")
+        syncope_enabled_cb.setChecked(self.config.beat.syncopation_enabled)
+        syncope_enabled_cb.stateChanged.connect(
+            lambda state: setattr(self.config.beat, 'syncopation_enabled', state == 2)
+        )
+        syncope_layout.addWidget(syncope_enabled_cb)
+
+        # Band selector
+        from PyQt6.QtWidgets import QComboBox, QHBoxLayout as QHBox
+        band_row = QHBox()
+        band_label = QLabel("Detection band:")
+        band_label.setStyleSheet("color: #ccc;")
+        band_row.addWidget(band_label)
+        band_combo = QComboBox()
+        band_options = ['any', 'sub_bass', 'low_mid', 'mid', 'high']
+        band_combo.addItems(band_options)
+        current_band = self.config.beat.syncopation_band
+        if current_band in band_options:
+            band_combo.setCurrentIndex(band_options.index(current_band))
+        band_combo.currentTextChanged.connect(
+            lambda text: setattr(self.config.beat, 'syncopation_band', text)
+        )
+        band_row.addWidget(band_combo)
+        syncope_layout.addLayout(band_row)
+
+        # Syncopation window slider
+        syncope_window_slider = SliderWithLabel("Off-beat window (± beat fraction)", 0.05, 0.30, self.config.beat.syncopation_window, 2)
+        syncope_window_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'syncopation_window', v)
+        )
+        syncope_layout.addWidget(syncope_window_slider)
+
+        # BPM limit slider
+        syncope_bpm_slider = SliderWithLabel("BPM limit (disable above)", 80.0, 200.0, self.config.beat.syncopation_bpm_limit, 0)
+        syncope_bpm_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'syncopation_bpm_limit', v)
+        )
+        syncope_layout.addWidget(syncope_bpm_slider)
+
+        scroll_layout.addWidget(syncope_group)
+
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         

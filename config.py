@@ -45,6 +45,12 @@ class BeatDetectionConfig:
     consecutive_match_threshold: int = 3       # N consecutive matching downbeats to lock tempo
     downbeat_pattern_enabled: bool = True      # Enable/disable strict downbeat pattern matching
 
+    # Syncopation / double-stroke detection
+    syncopation_enabled: bool = True             # Master on/off for syncopation detection
+    syncopation_band: str = 'any'                # Which z-score band triggers syncope: 'any', 'sub_bass', 'low_mid', 'mid', 'high'
+    syncopation_window: float = 0.15             # ±fraction of beat period to detect off-beat (0.05-0.30)
+    syncopation_bpm_limit: float = 160.0         # Disable syncopation above this BPM
+
 @dataclass
 class StrokeConfig:
     """Stroke generation parameters"""
