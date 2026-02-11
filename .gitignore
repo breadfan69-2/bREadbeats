@@ -24,11 +24,10 @@ env/
 Thumbs.db
 
 # Documentation/working notes - NOT for version control
-instructions*.txt
-INSTRUCTIONS*.txt
-FINALINSTRUCTIONS*.TXT
-NOTES*.txt
+*instruction*.txt
+*notes*.txt
+*research*.txt
+*session*.txt
 chathistory.txt
 build.log
 *finaldebug.txt
-higher_band_ideas_and_research.txt
