@@ -392,6 +392,9 @@ class AudioEngine:
         self._session_band_energy_max: float | None = None
         self._session_flux_min: float | None = None
         self._session_flux_max: float | None = None
+        self._session_raw_rms_sum: float = 0.0
+        self._session_band_energy_sum: float = 0.0
+        self._session_flux_sum: float = 0.0
 
     def _reset_session_stats(self) -> None:
         self._session_started_at = time.time()
@@ -402,9 +405,15 @@ class AudioEngine:
         self._session_band_energy_max = None
         self._session_flux_min = None
         self._session_flux_max = None
+        self._session_raw_rms_sum = 0.0
+        self._session_band_energy_sum = 0.0
+        self._session_flux_sum = 0.0
 
     def _update_session_stats(self, raw_rms: float, band_energy: float, spectral_flux: float) -> None:
         self._session_frame_count += 1
+        self._session_raw_rms_sum += raw_rms
+        self._session_band_energy_sum += band_energy
+        self._session_flux_sum += spectral_flux
         if self._session_raw_rms_min is None or raw_rms < self._session_raw_rms_min:
             self._session_raw_rms_min = raw_rms
         if self._session_raw_rms_max is None or raw_rms > self._session_raw_rms_max:
@@ -429,6 +438,10 @@ class AudioEngine:
         band_max = float(self._session_band_energy_max or 0.0)
         flux_min = float(self._session_flux_min or 0.0)
         flux_max = float(self._session_flux_max or 0.0)
+        frame_count = float(self._session_frame_count)
+        raw_mean = self._session_raw_rms_sum / frame_count
+        band_mean = self._session_band_energy_sum / frame_count
+        flux_mean = self._session_flux_sum / frame_count
 
         log_event(
             "INFO",
@@ -438,12 +451,15 @@ class AudioEngine:
             seconds=f"{elapsed_s:.1f}",
             raw_rms_min=f"{raw_min:.6f}",
             raw_rms_max=f"{raw_max:.6f}",
+            raw_rms_mean=f"{raw_mean:.6f}",
             raw_rms_span=f"{(raw_max - raw_min):.6f}",
             band_energy_min=f"{band_min:.6f}",
             band_energy_max=f"{band_max:.6f}",
+            band_energy_mean=f"{band_mean:.6f}",
             band_energy_span=f"{(band_max - band_min):.6f}",
             flux_min=f"{flux_min:.4f}",
             flux_max=f"{flux_max:.4f}",
+            flux_mean=f"{flux_mean:.4f}",
             flux_span=f"{(flux_max - flux_min):.4f}",
         )
 
