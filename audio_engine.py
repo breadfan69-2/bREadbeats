@@ -778,6 +778,11 @@ class AudioEngine:
         # Notify callback
         self.beat_callback(event)
         
+        # Clear downbeat flag after reporting so next beat must be freshly detected
+        # This ensures the downbeat light only flashes once per actual downbeat
+        if is_beat:
+            self.is_downbeat = False
+        
         return (in_data, pyaudio.paContinue)
     
     def _filter_frequency_band(self, spectrum: np.ndarray) -> np.ndarray:
