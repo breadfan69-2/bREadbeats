@@ -53,7 +53,7 @@ from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
 from close_persist_wiring import persist_runtime_ui_to_config
 from frequency_utils import extract_dominant_freq
-from presets_wiring import get_presets_file_path, load_presets_data, save_presets_data
+from presets_wiring import get_presets_file_path, load_presets_data, resolve_p0_tcode_bounds, save_presets_data
 from slider_tuning_tracker import SliderTuningTracker
 from transport_wiring import (
     begin_volume_ramp,
@@ -5434,17 +5434,11 @@ bREadfan_69@hotmail.com"""
                 self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
             if 'pulse_freq_high' in preset_data:
                 self.pulse_freq_range_slider.setHigh(preset_data['pulse_freq_high'])
-            # Support both new (tcode_min) and old (tcode_freq_min) preset keys
-            p0_tcode_min = preset_data.get('tcode_min', preset_data.get('tcode_freq_min'))
-            p0_tcode_max = preset_data.get('tcode_max', preset_data.get('tcode_freq_max'))
+            # Support both new/old preset keys and legacy Hz-scale values
+            p0_tcode_min, p0_tcode_max = resolve_p0_tcode_bounds(preset_data)
             if p0_tcode_min is not None:
-                # Backward compat: old presets stored Hz values (typically < 200)
-                if p0_tcode_min < 200:
-                    p0_tcode_min = int(p0_tcode_min * 67)
                 self.tcode_freq_range_slider.setLow(p0_tcode_min)
             if p0_tcode_max is not None:
-                if p0_tcode_max < 200:
-                    p0_tcode_max = int(p0_tcode_max * 67)
                 self.tcode_freq_range_slider.setHigh(p0_tcode_max)
             if 'freq_weight' in preset_data:
                 self.freq_weight_slider.setValue(preset_data['freq_weight'])

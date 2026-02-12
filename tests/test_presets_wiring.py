@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from presets_wiring import get_presets_file_path, load_presets_data, save_presets_data
+from presets_wiring import get_presets_file_path, load_presets_data, resolve_p0_tcode_bounds, save_presets_data
 
 
 class TestPresetsWiring(unittest.TestCase):
@@ -49,6 +49,23 @@ class TestPresetsWiring(unittest.TestCase):
             loaded = load_presets_data(presets_file, frozen=True, meipass=str(meipass))
             self.assertEqual(loaded, factory_payload)
             self.assertTrue(presets_file.exists())
+
+    def test_resolve_p0_tcode_bounds_new_keys(self):
+        preset = {"tcode_min": 2100, "tcode_max": 7200}
+        lo, hi = resolve_p0_tcode_bounds(preset)
+        self.assertEqual(lo, 2100)
+        self.assertEqual(hi, 7200)
+
+    def test_resolve_p0_tcode_bounds_legacy_keys_scaled(self):
+        preset = {"tcode_freq_min": 30, "tcode_freq_max": 150}
+        lo, hi = resolve_p0_tcode_bounds(preset)
+        self.assertEqual(lo, 2010)
+        self.assertEqual(hi, 10050)
+
+    def test_resolve_p0_tcode_bounds_missing(self):
+        lo, hi = resolve_p0_tcode_bounds({})
+        self.assertIsNone(lo)
+        self.assertIsNone(hi)
 
 
 if __name__ == "__main__":
