@@ -6452,7 +6452,9 @@ bREadfan_69@hotmail.com"""
                 tempo_info = self.audio_engine.get_tempo_info()
                 if tempo_info['bpm'] > 0:
                     confidence = tempo_info['confidence']
-                    is_downbeat = tempo_info.get('is_downbeat', False)
+                    # Use event.is_downbeat (frozen at construction time) instead of
+                    # polling get_tempo_info() which races with audio thread clearing the flag
+                    is_downbeat = getattr(event, 'is_downbeat', False)
                     stability = tempo_info.get('stability', 0.0)
                     
                     # Light up downbeat indicator (cyan/blue for downbeat)
