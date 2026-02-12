@@ -345,7 +345,7 @@ class AudioEngine:
         self._target_bps_tolerance: float = 0.2         # ± tolerance (0.2 = accept 1.3-1.7 BPS if target is 1.5)
         self._bps_window_seconds: float = 4.0           # Rolling window for BPS calculation
         self._bps_beat_times: list[float] = []          # Timestamps of recent beats
-        self._bps_adjustment_speed: float = 0.5         # 0.0=fine, 1.0=aggressive (scales step size)
+        self._bps_adjustment_speed: float = 1.0         # Hardcoded to max (was adjustable via slider)
         self._bps_base_step: float = 0.002              # Base step for peak_floor adjustment
         
         # ===== ACF AUTO-METRONOME =====

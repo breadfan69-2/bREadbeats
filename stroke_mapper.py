@@ -194,7 +194,10 @@ class StrokeMapper:
         #   Option A: metronome GREEN + traffic YELLOW or GREEN
         #   Option B: metronome GREEN or YELLOW + traffic GREEN
         # Otherwise: creep/jitter only
+        # Grace period: 1300ms after conditions drop before returning to jitter
         self._stroke_ready: bool = False
+        self._stroke_ready_lost_time: float = 0.0   # when conditions last dropped
+        self._stroke_grace_ms: float = 1300.0        # grace period before disabling strokes
 
     # ------------------------------------------------------------------
     # Helpers
@@ -260,6 +263,10 @@ class StrokeMapper:
           B) Metronome GREEN or YELLOW (acf_conf >= 0.05) AND traffic GREEN
         Otherwise: creep/jitter only.
         
+        Grace period: when conditions drop, strokes continue for 1300ms
+        before reverting to jitter. This prevents brief dips from
+        interrupting an ongoing stroke pattern.
+        
         If no metrics are enabled (no traffic light), only metronome matters.
         """
         acf_conf = getattr(event, 'acf_confidence', 0.0)
@@ -282,14 +289,30 @@ class StrokeMapper:
                 traffic_yellow = any_settled and not all_settled
         
         if traffic_has_metrics:
-            # Option A: metronome GREEN + traffic YELLOW or GREEN
             option_a = metro_green and (traffic_yellow or traffic_green)
-            # Option B: metronome GREEN or YELLOW + traffic GREEN
             option_b = (metro_green or metro_yellow) and traffic_green
-            self._stroke_ready = option_a or option_b
+            conditions_met = option_a or option_b
         else:
-            # No metrics enabled — just need metronome yellow or green
-            self._stroke_ready = metro_yellow
+            conditions_met = metro_yellow
+        
+        now = time.time()
+        if conditions_met:
+            # Conditions met — immediately ready, reset lost timer
+            self._stroke_ready = True
+            self._stroke_ready_lost_time = 0.0
+        else:
+            # Conditions dropped — start or continue grace period
+            if self._stroke_ready:
+                # Was ready, just lost it — start grace timer
+                if self._stroke_ready_lost_time == 0.0:
+                    self._stroke_ready_lost_time = now
+                # Check if grace period expired
+                elapsed_ms = (now - self._stroke_ready_lost_time) * 1000.0
+                if elapsed_ms >= self._stroke_grace_ms:
+                    self._stroke_ready = False
+                    self._stroke_ready_lost_time = 0.0
+                # else: still within grace period, keep _stroke_ready = True
+            # else: already not ready, stay not ready
 
     def _update_motion_mode(self) -> None:
         """Switch between FULL_STROKE and CREEP_MICRO with hysteresis."""
