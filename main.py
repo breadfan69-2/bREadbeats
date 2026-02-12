@@ -51,7 +51,7 @@ from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
-from transport_wiring import begin_volume_ramp, send_zero_volume_immediate, set_transport_sending
+from transport_wiring import begin_volume_ramp, send_zero_volume_immediate, set_transport_sending, trigger_network_test
 from stroke_mapper import StrokeMapper
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
@@ -5806,14 +5806,10 @@ bREadfan_69@hotmail.com"""
     
     def _on_test(self):
         """Send test pattern"""
-        if self.network_engine and self.network_engine.connected:
-            # Temporarily enable sending for test
-            was_sending = self.network_engine.sending_enabled
-            self.network_engine.set_sending_enabled(True)
-            self.network_engine.send_test()
-            # Restore after a delay (test takes ~2.5 seconds)
-            if not was_sending:
-                QTimer.singleShot(3000, lambda: self.network_engine.set_sending_enabled(was_sending) if self.network_engine else None)
+        _, should_restore = trigger_network_test(self.network_engine)
+        # Restore after a delay (test takes ~2.5 seconds)
+        if should_restore:
+            QTimer.singleShot(3000, lambda: set_transport_sending(self.network_engine, False))
     
     def _on_start_stop(self, checked: bool):
         """Start/stop audio capture and TCode pipeline.
