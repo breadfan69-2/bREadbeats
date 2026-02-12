@@ -1071,7 +1071,7 @@ class StrokeMapper:
         # Pick a random micro-pattern type
         pattern = random.choice(['jerk', 'swirl', 'star', 'zigzag'])
         magnitude_scale = getattr(self.config.stroke, 'noise_burst_magnitude', 1.0)
-        jerk_mag = random.uniform(0.03, 0.08) * self.motion_intensity * magnitude_scale
+        jerk_mag = random.uniform(0.15, 0.40) * self.motion_intensity * magnitude_scale
         base_angle = self.state.creep_angle
         n_points = random.randint(4, 8)
         duration_ms = random.randint(60, 120)

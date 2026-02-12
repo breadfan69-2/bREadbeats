@@ -3254,7 +3254,7 @@ class BREadbeatsWindow(QMainWindow):
         burst_layout.addWidget(burst_flux_slider)
 
         # Magnitude slider — scale the size of noise burst patterns
-        burst_mag_slider = SliderWithLabel("Burst magnitude (pattern size)", 0.5, 5.0, self.config.stroke.noise_burst_magnitude, 1)
+        burst_mag_slider = SliderWithLabel("Burst magnitude (pattern size)", 0.5, 10.0, self.config.stroke.noise_burst_magnitude, 1)
         burst_mag_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'noise_burst_magnitude', v)
         )

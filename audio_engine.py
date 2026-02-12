@@ -683,8 +683,8 @@ class AudioEngine:
             if len(self._raw_onset_times) > self._raw_onset_max:
                 self._raw_onset_times.pop(0)
         
-        # Advance internal metronome
-        self._advance_metronome(current_time)
+        # Advance internal metronome (pass band_energy for energy-based downbeat detection)
+        self._advance_metronome(current_time, band_energy)
         
         # Phase-lock: nudge metronome when a strong onset is detected near a beat
         if raw_is_beat and self._metronome_bpm > 0:
@@ -743,7 +743,9 @@ class AudioEngine:
             is_beat = self._metronome_beat_fired
             is_downbeat_flag = self._metronome_downbeat_fired
             current_bpm = self._metronome_bpm
-            tempo_is_locked = self._acf_confidence > 0.2
+            # Tempo is locked when ACF is confident AND energy downbeats are matching
+            tempo_is_locked = (self._acf_confidence > 0.2
+                               and self.consecutive_matching_downbeats >= self.consecutive_match_threshold)
             # Update last_beat_time for tempo timeout check
             if is_beat:
                 self._metronome_last_beat_time = current_time
@@ -1033,10 +1035,11 @@ class AudioEngine:
                       bpm=f"{bpm:.1f}", confidence=f"{peak_value:.3f}",
                       fps=f"{fps:.1f}")
 
-    def _advance_metronome(self, now: float):
+    def _advance_metronome(self, now: float, band_energy: float = 0.0):
         """Advance the internal metronome phase accumulator.
         Fires _metronome_beat_fired / _metronome_downbeat_fired when
-        the phase crosses integer boundaries."""
+        the phase crosses integer boundaries.
+        Uses energy-based downbeat detection to identify the real beat 1."""
         self._metronome_beat_fired = False
         self._metronome_downbeat_fired = False
 
@@ -1076,7 +1079,63 @@ class AudioEngine:
             self._metronome_beat_fired = True
             self._metronome_beat_count += 1
             bpm = self.beats_per_measure
-            self._metronome_downbeat_fired = (self._metronome_beat_count % bpm == 1)
+
+            # === Energy-based downbeat detection (shared with raw beat path) ===
+            # Feed metronome beats into the same energy accumulator so we know
+            # which measure position has the strongest energy (= real beat 1).
+            self.beat_position_in_measure = (self.beat_position_in_measure % bpm) + 1
+            pos_idx = self.beat_position_in_measure - 1  # 0-based
+
+            decay = 0.85
+            for i in range(bpm):
+                self.measure_energy_accum[i] *= decay
+            self.measure_energy_accum[pos_idx] += band_energy
+            self.measure_beat_counts[pos_idx] += 1
+
+            # Find which position has highest average energy
+            avg_energies = []
+            for i in range(bpm):
+                if self.measure_beat_counts[i] > 0:
+                    avg_energies.append(self.measure_energy_accum[i] / max(1, self.measure_beat_counts[i]))
+                else:
+                    avg_energies.append(0.0)
+
+            total_beats = sum(self.measure_beat_counts)
+            if total_beats >= bpm * 2:
+                strongest_pos = int(np.argmax(avg_energies))
+                mean_energy = np.mean(avg_energies) if np.mean(avg_energies) > 0 else 1.0
+                self.downbeat_confidence = avg_energies[strongest_pos] / mean_energy
+                self.downbeat_position = strongest_pos
+
+            # Downbeat = when current position matches the energy-strongest position
+            is_energy_downbeat = (pos_idx == self.downbeat_position) and total_beats >= bpm * 2
+
+            # Apply pattern matching validation if enabled
+            if is_energy_downbeat and self.downbeat_pattern_enabled and self._metronome_bpm > 0:
+                pattern_matches = self._validate_downbeat_against_pattern(now)
+                self._metronome_downbeat_fired = pattern_matches
+                self.is_downbeat = pattern_matches
+
+                if pattern_matches:
+                    self.consecutive_matching_downbeats += 1
+                    log_event("INFO", "Downbeat", "Metronome+Energy accepted",
+                              position=f"{pos_idx+1}/{bpm}",
+                              confidence=f"{self.downbeat_confidence:.2f}",
+                              consecutive=f"{self.consecutive_matching_downbeats}/{self.consecutive_match_threshold}",
+                              error_ms=f"{self.phase_error_ms:.1f}",
+                              energies="[" + ", ".join(f"{e:.2f}" for e in avg_energies) + "]")
+                else:
+                    self.consecutive_matching_downbeats = 0
+                    self._metronome_downbeat_fired = False
+                    self.is_downbeat = False
+            else:
+                self._metronome_downbeat_fired = is_energy_downbeat
+                self.is_downbeat = is_energy_downbeat
+                if is_energy_downbeat:
+                    log_event("INFO", "Downbeat", "Energy downbeat (metronome)",
+                              position=f"{pos_idx+1}/{bpm}",
+                              confidence=f"{self.downbeat_confidence:.2f}",
+                              energies="[" + ", ".join(f"{e:.2f}" for e in avg_energies) + "]")
 
             # Track syncopation confirmation per beat period
             if self._syncopation_had_offbeat:
