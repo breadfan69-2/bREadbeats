@@ -49,6 +49,7 @@ from config import (
 from logging_utils import get_log_level, set_log_level
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
+from network_lifecycle import ensure_network_engine, toggle_user_connection
 from stroke_mapper import StrokeMapper
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
@@ -5774,8 +5775,12 @@ bREadfan_69@hotmail.com"""
         """Auto-connect TCP on program startup"""
         self.config.connection.host = self.host_edit.text()
         self.config.connection.port = self.port_spin.value()
-        self.network_engine = NetworkEngine(self.config, self._network_status_callback)
-        self.network_engine.start()
+        self.network_engine = ensure_network_engine(
+            self.network_engine,
+            self.config,
+            self._network_status_callback,
+            force_new=True,
+        )
         print("[Main] Auto-connecting TCP on startup")
 
     def _on_connect(self):
@@ -5783,13 +5788,13 @@ bREadfan_69@hotmail.com"""
         if self.network_engine is None:
             self.config.connection.host = self.host_edit.text()
             self.config.connection.port = self.port_spin.value()
-            self.network_engine = NetworkEngine(self.config, self._network_status_callback)
-            self.network_engine.start()
+            self.network_engine = ensure_network_engine(
+                self.network_engine,
+                self.config,
+                self._network_status_callback,
+            )
         else:
-            if self.network_engine.connected:
-                self.network_engine.user_disconnect()
-            else:
-                self.network_engine.user_connect()
+            toggle_user_connection(self.network_engine)
     
     def _on_test(self):
         """Send test pattern"""
@@ -5910,13 +5915,12 @@ bREadfan_69@hotmail.com"""
 
         # Network engine is already started on program launch via _auto_connect_tcp
         # Only create if somehow missing
-        if self.network_engine is None:
-            self.network_engine = NetworkEngine(self.config, self._network_status_callback)
-            self.network_engine.set_dry_run(self._dry_run_enabled)
-            self.network_engine.start()
-        else:
-            # If reusing an existing engine, ensure dry-run flag matches config
-            self.network_engine.set_dry_run(self._dry_run_enabled)
+        self.network_engine = ensure_network_engine(
+            self.network_engine,
+            self.config,
+            self._network_status_callback,
+            dry_run_enabled=self._dry_run_enabled,
+        )
 
         self.is_running = True
     
