@@ -1451,8 +1451,13 @@ class StrokeMapper:
                 while current_angle < -np.pi:
                     current_angle += 2 * np.pi
                 self.state.creep_angle = current_angle * (1.0 - eased_progress)
+                # Also drive position toward center quickly
+                self.state.alpha *= (1.0 - eased_progress * 0.3)
+                self.state.beta *= (1.0 - eased_progress * 0.3)
             else:
                 self.state.creep_angle = 0.0
+                self.state.alpha = 0.0
+                self.state.beta = 0.0
                 self.state.creep_reset_active = False
 
         # ---------- Creep volume lowering ----------
@@ -1540,15 +1545,15 @@ class StrokeMapper:
                     base_alpha = 0.0
                     base_beta = 0.0
         else:
-            # Creep disabled: smoothly drift toward center so dot
+            # Creep disabled: quickly wobble toward center so dot
             # doesn't get stuck at the edge after an arc finishes.
-            blend_rate = 0.04  # per frame (~60fps → ~1.5s to reach center)
+            blend_rate = 0.15  # per frame (~60fps → ~300ms to reach center)
             base_alpha = alpha * (1.0 - blend_rate)
             base_beta = beta * (1.0 - blend_rate)
             # Snap to zero when close enough to avoid perpetual micro-drift
-            if abs(base_alpha) < 0.005:
+            if abs(base_alpha) < 0.01:
                 base_alpha = 0.0
-            if abs(base_beta) < 0.005:
+            if abs(base_beta) < 0.01:
                 base_beta = 0.0
 
         # ---------- Jitter: sinusoidal micro-circles ----------
