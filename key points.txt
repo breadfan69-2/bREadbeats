@@ -1,0 +1,30 @@
+Summary of Legacy Timing Analysis
+Based on examining main branch vs current code:
+
+What V1 (main branch) Had:
+target_bps system in audio_engine: User-set target BPM → adjusted peak_floor to try to hit that beat rate
+Creep driven by detected BPM (event.bpm) — same as v2
+Band-speed scaling on arc duration (beat_interval_ms * band_speed) — v2 REMOVED this
+Flux-rise → depth modulation — preserved in v2
+NO flux-rise anticipation phase offset — v1 didn't have this (we ADDED it in v2)
+What V2 (current) Has:
+✅ ACF auto-metronome (better BPM detection)
+✅ 2x beat duration on arcs (beat_interval_ms * 2)
+✅ Flux-rise anticipation (0-10% phase offset backward) — NEW in v2
+✅ Return-to-bottom after arc (creep_angle = π)
+✅ _last_known_bpm persistence during confidence drops
+❌ Removed band-speed scaling (commit 160cd80)
+Key Findings:
+The target_bpm spinbox was NOT directly used for stroke timing in v1 — it only adjusted detection parameters to try to hit a target beat count. The stroke mapper in v1 ALSO used detected BPM for creep rotation, same as v2.
+
+V2 actually ADDED anticipation logic that v1 didn't have (the anticipation_phase = flux_rise * 0.10 code).
+
+Possible Issues:
+Band-speed scaling removal — v1 scaled arc duration by band (kick=faster, cymbals=slower). We removed this. Should we restore it?
+
+[SEE, WE WERE SCALING THE ARC DURATION TO MEET THE BEAT AT THE TOP][WE NEED TO MOVE EVERYTHING FASTER/SLOWER TO MATCH THE BEAT THAT IS VERIFIED BY THE METRONOME]
+
+Anticipation multiplier tuning — The 0.10 (10%) might be too little. V1 didn't have explicit anticipation but the band-speed scaling might have achieved similar effect.
+
+Different arc starting position — v2 starts from current creep_angle minus anticipation; v1 started from phase=0 (top of circle) on arcs. [WE SHOULD ALWAYS BE MAKING FULL ROTATIONS, EXCEPT FOR A FEW EXCEPTIONS][WE WANT THE DOT TO LAND AT THE TOP OF THE ARC ON THE BEAT.  LEGACY STROKEMAPPER HAS THE TIMING LOGIC FOR THIS, PLEASE FINE IT.
+
