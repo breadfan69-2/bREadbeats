@@ -218,6 +218,11 @@ class StrokeMapper:
 
         # ---------- Last confirmed beat time (for no-beat timeout) ----------
         self._last_confirmed_beat_time: float = 0.0   # wall-clock of last beat with stroke_ready
+
+        # ---------- Snap timing feedback (self-checking) ----------
+        # When snap-to-target fires, record the timing error so the next arc
+        # can compensate by shortening/lengthening its duration.
+        self._last_snap_correction_ms: float = 0.0
         self._no_beat_timeout_s: float = 2.0           # seconds before returning to center+jitter
 
         # ---------- Flux-drop fallback ----------
@@ -887,6 +892,15 @@ class StrokeMapper:
         if beat_target_time == 0.0 and 0 < event_age_ms < beat_interval_ms * 0.3:
             beat_interval_ms = max(cfg.min_interval_ms, int(beat_interval_ms - event_age_ms))
 
+        # === SELF-CHECK: Apply snap timing correction from previous arc ===
+        # If the last arc had to snap-to-target, the timing was slightly off.
+        # Compensate by adjusting this arc's duration (e.g., if we were 20ms early,
+        # extend the next arc by 20ms so the next landing takes that into account).
+        if abs(self._last_snap_correction_ms) > 5.0:
+            correction = self._last_snap_correction_ms * 0.7  # 70% correction
+            beat_interval_ms = max(cfg.min_interval_ms, int(beat_interval_ms + correction))
+            self._last_snap_correction_ms = 0.0  # consumed
+
         intensity = event.intensity
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
 
@@ -1229,6 +1243,13 @@ class StrokeMapper:
                 self.state.alpha = alpha
                 self.state.beta = beta
                 traj.current_index = traj.n_points  # mark finished
+                # === SELF-CHECK: Record timing discrepancy for next arc ===
+                # If we had to snap, the arc was slightly too slow/fast.
+                # Store the remaining time so next arc can compensate.
+                snap_error_ms = (traj.beat_target_time - now) * 1000.0
+                self._last_snap_correction_ms = snap_error_ms
+                log_event("INFO", "StrokeMapper", "Snap-to-target fired",
+                          error_ms=f"{snap_error_ms:.1f}", dist=f"{dist:.3f}")
 
         # Check if trajectory just completed
         if traj.finished:
