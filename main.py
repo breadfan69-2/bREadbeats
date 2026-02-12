@@ -50,6 +50,7 @@ from logging_utils import get_log_level, set_log_level
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
+from command_wiring import attach_cached_tcode_values, apply_volume_ramp
 from stroke_mapper import StrokeMapper
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
@@ -5948,32 +5949,27 @@ bREadfan_69@hotmail.com"""
     def _send_command_direct(self, cmd: TCodeCommand):
         """Send a command directly (used by StrokeMapper for arc strokes). Thread-safe."""
         if self.network_engine and self.is_sending:
-            # Attach cached P0/F0 values (computed by audio callback)
-            # Only send P0/C0 if device limits has sending enabled
-            p0c0_enabled = self.config.device_limits.p0_c0_sending_enabled
-            if p0c0_enabled and self._cached_p0_enabled and self._cached_p0_val is not None:
-                cmd.pulse_freq = self._cached_p0_val
-            if p0c0_enabled and self._cached_f0_enabled and self._cached_f0_val is not None:
-                if cmd.tcode_tags is None:
-                    cmd.tcode_tags = {}
-                cmd.tcode_tags['C0'] = self._cached_f0_val  # restim uses C0 for carrier
-            # Attach cached P1/P3 values
-            if self._cached_p1_enabled and self._cached_p1_val is not None:
-                if cmd.tcode_tags is None:
-                    cmd.tcode_tags = {}
-                cmd.tcode_tags['P1'] = self._cached_p1_val
-                cmd.tcode_tags['P1_duration'] = int(self._freq_window_ms)
-            if self._cached_p3_enabled and self._cached_p3_val is not None:
-                if cmd.tcode_tags is None:
-                    cmd.tcode_tags = {}
-                cmd.tcode_tags['P3'] = self._cached_p3_val
-                cmd.tcode_tags['P3_duration'] = int(self._freq_window_ms)
-            # Apply volume ramp multiplier (don't override volume - stroke mapper computed it)
-            if self._volume_ramp_active:
-                elapsed = time.time() - self._volume_ramp_start_time
-                progress = min(1.0, elapsed / self._volume_ramp_duration)
-                ramp_mult = self._volume_ramp_from + (self._volume_ramp_to - self._volume_ramp_from) * progress
-                cmd.volume = cmd.volume * ramp_mult
+            attach_cached_tcode_values(
+                cmd,
+                p0c0_enabled=self.config.device_limits.p0_c0_sending_enabled,
+                cached_p0_enabled=self._cached_p0_enabled,
+                cached_p0_val=self._cached_p0_val,
+                cached_f0_enabled=self._cached_f0_enabled,
+                cached_f0_val=self._cached_f0_val,
+                cached_p1_enabled=self._cached_p1_enabled,
+                cached_p1_val=self._cached_p1_val,
+                cached_p3_enabled=self._cached_p3_enabled,
+                cached_p3_val=self._cached_p3_val,
+                freq_window_ms=int(self._freq_window_ms),
+            )
+            apply_volume_ramp(
+                cmd,
+                volume_ramp_active=self._volume_ramp_active,
+                volume_ramp_start_time=self._volume_ramp_start_time,
+                volume_ramp_duration=self._volume_ramp_duration,
+                volume_ramp_from=self._volume_ramp_from,
+                volume_ramp_to=self._volume_ramp_to,
+            )
             self.network_engine.send_command(cmd)
     
     def _stop_engines(self):
@@ -6012,12 +6008,14 @@ bREadfan_69@hotmail.com"""
             if cmd and self.network_engine:
                 # Compute P0/F0 and attach to command (thread-safe, no widget access)
                 self._compute_and_attach_tcode(cmd, event, spectrum)
-                # Apply volume ramp multiplier
-                if self._volume_ramp_active:
-                    elapsed = time.time() - self._volume_ramp_start_time
-                    progress = min(1.0, elapsed / self._volume_ramp_duration)
-                    ramp_mult = self._volume_ramp_from + (self._volume_ramp_to - self._volume_ramp_from) * progress
-                    cmd.volume = cmd.volume * ramp_mult
+                apply_volume_ramp(
+                    cmd,
+                    volume_ramp_active=self._volume_ramp_active,
+                    volume_ramp_start_time=self._volume_ramp_start_time,
+                    volume_ramp_duration=self._volume_ramp_duration,
+                    volume_ramp_from=self._volume_ramp_from,
+                    volume_ramp_to=self._volume_ramp_to,
+                )
                 self.network_engine.send_command(cmd)
         elif event.is_beat and not self.is_sending:
             print("[Main] Beat detected but Play not enabled")
