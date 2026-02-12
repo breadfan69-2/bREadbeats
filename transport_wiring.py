@@ -36,3 +36,28 @@ def begin_volume_ramp(now: float) -> dict:
         'from': 0.0,
         'to': 1.0,
     }
+
+
+def start_stop_ui_state(is_running: bool) -> dict:
+    """Return UI state for Start/Play controls based on running state."""
+    if is_running:
+        return {
+            'start_text': "■ Stop",
+            'play_enabled': True,
+            'play_reset_checked': False,
+            'play_text': None,
+            'is_sending': None,
+        }
+
+    return {
+        'start_text': "▶ Start",
+        'play_enabled': False,
+        'play_reset_checked': True,
+        'play_text': "▶ Play",
+        'is_sending': False,
+    }
+
+
+def play_button_text(is_playing: bool) -> str:
+    """Return Play button text for playing/paused state."""
+    return "⏸ Pause" if is_playing else "▶ Play"

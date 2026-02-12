@@ -51,7 +51,14 @@ from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
-from transport_wiring import begin_volume_ramp, send_zero_volume_immediate, set_transport_sending, trigger_network_test
+from transport_wiring import (
+    begin_volume_ramp,
+    play_button_text,
+    send_zero_volume_immediate,
+    set_transport_sending,
+    start_stop_ui_state,
+    trigger_network_test,
+)
 from stroke_mapper import StrokeMapper
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
@@ -5816,8 +5823,9 @@ bREadfan_69@hotmail.com"""
         Start enables TCode sending (V0=0 until Play). Stop kills everything."""
         if checked:
             self._start_engines()
-            self.start_btn.setText("■ Stop")
-            self.play_btn.setEnabled(True)
+            ui_state = start_stop_ui_state(True)
+            self.start_btn.setText(ui_state['start_text'])
+            self.play_btn.setEnabled(ui_state['play_enabled'])
             # Enable TCode sending immediately on Start (V0=0 until Play is pressed)
             set_transport_sending(self.network_engine, True)
             send_zero_volume_immediate(self.network_engine, duration_ms=100)
@@ -5827,11 +5835,15 @@ bREadfan_69@hotmail.com"""
             send_zero_volume_immediate(self.network_engine, duration_ms=100)
             set_transport_sending(self.network_engine, False)
             self._stop_engines()
-            self.start_btn.setText("▶ Start")
-            self.play_btn.setEnabled(False)
-            self.play_btn.setChecked(False)
-            self.play_btn.setText("▶ Play")  # Reset play button text
-            self.is_sending = False
+            ui_state = start_stop_ui_state(False)
+            self.start_btn.setText(ui_state['start_text'])
+            self.play_btn.setEnabled(ui_state['play_enabled'])
+            if ui_state['play_reset_checked']:
+                self.play_btn.setChecked(False)
+            if ui_state['play_text'] is not None:
+                self.play_btn.setText(ui_state['play_text'])
+            if ui_state['is_sending'] is not None:
+                self.is_sending = ui_state['is_sending']
             # Note: Auto-range state is preserved across stop/start - no reset here
     
     def _on_play_pause(self, checked: bool):
@@ -5855,7 +5867,7 @@ bREadfan_69@hotmail.com"""
             self._volume_ramp_active = False
             send_zero_volume_immediate(self.network_engine, duration_ms=500)
             # DON'T disable sending_enabled — connection stays active until Stop
-        self.play_btn.setText("⏸ Pause" if checked else "▶ Play")
+        self.play_btn.setText(play_button_text(checked))
     
     def _on_detection_type_change(self, index: int):
         """Change beat detection type"""
