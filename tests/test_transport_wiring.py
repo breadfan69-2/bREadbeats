@@ -1,6 +1,8 @@
 import unittest
 
 from transport_wiring import (
+    StartStopUiState,
+    VolumeRampState,
     begin_volume_ramp,
     play_button_text,
     send_zero_volume_immediate,
@@ -50,10 +52,11 @@ class TestTransportWiring(unittest.TestCase):
 
     def test_begin_volume_ramp(self):
         state = begin_volume_ramp(42.0)
-        self.assertTrue(state['active'])
-        self.assertEqual(state['start_time'], 42.0)
-        self.assertEqual(state['from'], 0.0)
-        self.assertEqual(state['to'], 1.0)
+        self.assertIsInstance(state, VolumeRampState)
+        self.assertTrue(state.active)
+        self.assertEqual(state.start_time, 42.0)
+        self.assertEqual(state.from_volume, 0.0)
+        self.assertEqual(state.to_volume, 1.0)
 
     def test_trigger_network_test_connected_restore_needed(self):
         engine = DummyEngine()
@@ -90,19 +93,21 @@ class TestTransportWiring(unittest.TestCase):
 
     def test_start_stop_ui_state_running(self):
         state = start_stop_ui_state(True)
-        self.assertEqual(state['start_text'], "■ Stop")
-        self.assertTrue(state['play_enabled'])
-        self.assertFalse(state['play_reset_checked'])
-        self.assertIsNone(state['play_text'])
-        self.assertIsNone(state['is_sending'])
+        self.assertIsInstance(state, StartStopUiState)
+        self.assertEqual(state.start_text, "■ Stop")
+        self.assertTrue(state.play_enabled)
+        self.assertFalse(state.play_reset_checked)
+        self.assertIsNone(state.play_text)
+        self.assertIsNone(state.is_sending)
 
     def test_start_stop_ui_state_stopped(self):
         state = start_stop_ui_state(False)
-        self.assertEqual(state['start_text'], "▶ Start")
-        self.assertFalse(state['play_enabled'])
-        self.assertTrue(state['play_reset_checked'])
-        self.assertEqual(state['play_text'], "▶ Play")
-        self.assertFalse(state['is_sending'])
+        self.assertIsInstance(state, StartStopUiState)
+        self.assertEqual(state.start_text, "▶ Start")
+        self.assertFalse(state.play_enabled)
+        self.assertTrue(state.play_reset_checked)
+        self.assertEqual(state.play_text, "▶ Play")
+        self.assertFalse(state.is_sending)
 
     def test_play_button_text(self):
         self.assertEqual(play_button_text(True), "⏸ Pause")

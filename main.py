@@ -5789,8 +5789,8 @@ bREadfan_69@hotmail.com"""
         if checked:
             self._start_engines()
             ui_state = start_stop_ui_state(True)
-            self.start_btn.setText(ui_state['start_text'])
-            self.play_btn.setEnabled(ui_state['play_enabled'])
+            self.start_btn.setText(ui_state.start_text)
+            self.play_btn.setEnabled(ui_state.play_enabled)
             # Enable TCode sending immediately on Start (V0=0 until Play is pressed)
             set_transport_sending(self.network_engine, True)
             send_zero_volume_immediate(self.network_engine, duration_ms=100)
@@ -5801,14 +5801,14 @@ bREadfan_69@hotmail.com"""
             set_transport_sending(self.network_engine, False)
             self._stop_engines()
             ui_state = start_stop_ui_state(False)
-            self.start_btn.setText(ui_state['start_text'])
-            self.play_btn.setEnabled(ui_state['play_enabled'])
-            if ui_state['play_reset_checked']:
+            self.start_btn.setText(ui_state.start_text)
+            self.play_btn.setEnabled(ui_state.play_enabled)
+            if ui_state.play_reset_checked:
                 self.play_btn.setChecked(False)
-            if ui_state['play_text'] is not None:
-                self.play_btn.setText(ui_state['play_text'])
-            if ui_state['is_sending'] is not None:
-                self.is_sending = ui_state['is_sending']
+            if ui_state.play_text is not None:
+                self.play_btn.setText(ui_state.play_text)
+            if ui_state.is_sending is not None:
+                self.is_sending = ui_state.is_sending
             # Note: Auto-range state is preserved across stop/start - no reset here
     
     def _on_play_pause(self, checked: bool):
@@ -5822,10 +5822,10 @@ bREadfan_69@hotmail.com"""
                 self.stroke_mapper._micro_effects_enabled = self.micro_effects_checkbox.isChecked()
             # Start volume ramp from 0 to set value over 1.3s
             ramp_state = begin_volume_ramp(time.time())
-            self._volume_ramp_active = ramp_state['active']
-            self._volume_ramp_start_time = ramp_state['start_time']
-            self._volume_ramp_from = ramp_state['from']
-            self._volume_ramp_to = ramp_state['to']
+            self._volume_ramp_active = ramp_state.active
+            self._volume_ramp_start_time = ramp_state.start_time
+            self._volume_ramp_from = ramp_state.from_volume
+            self._volume_ramp_to = ramp_state.to_volume
             # sending_enabled already True from Start — no need to set again
         else:
             # Send V0=0 immediately with fade, but keep TCode pipeline active
