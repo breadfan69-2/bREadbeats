@@ -1,0 +1,54 @@
+last edits were dealing with the arc timing- we added a "wait" for next beat at anchor.  it solved the drifting problem, but i don't like it.
+
+change the "wait" beahavior to calculate time to next, will be much better.
+
+NEED CALCULATE TIME OF STROKE INSTEAD OF WAITING----NEEDS TO KEEP MOVING SMOOTHLY
+ 
+UPDATE
+
+the dot is still sitting and waiting a bit>
+
+
+its really not a "find something else to do" situation...we want all the rotations to be a relatively [even speed], [without wait], [without creep(if there is good beat detected)] 
+
+we need to use the detected bpm to calculate the speed of the dots motion relative to how many beats/rotation we are looking for, does that clarify?
+
+we also need to account for any acceleration that is built in, or "thump" effect's influence on speed and arc timing.
+
+we need to account for these "effects" because they will always be throwing timing off..
+
+this will be different maths process for EVERY arc....to keep the timing proper....
+
+we need the next arc to start immediately after the last one has completed
+with travel time already calculated by the beat interval
+-----------UPDATE 2==============
+
+
+"The core fix: when an arc finishes in FULL_STROKE mode with a good BPM, immediately start another arc instead of dropping to idle/creep. Real beat events override the continuation arc when they arrive (phase correction), but the dot never stops rotating."
+
+-WHAT IS 'CONTINUATION ARC'?  IS THAT WHAT WE ARE CALLING THE PRE-PLANNED ARC THAT NEEDS TO BE FIRED OFF AS SOON AS THE LAST ONE LANDS?
+
+-this might have helped.  its still waiting sometimes but have much more consistent motion.   
+
+-we should still be looking for 1 completion of arc over 2 beats>
+(we got confused when building strokemapperv2)
+
+-we need to watch upper end of audio spectrum- mabye <2000 hz?, and if flux drops off signifigantly, go back to creep-edge or center-wait.
+
+-change any "wait" behavoir to go back to center and jitter if there has been no beat confirmed for 2sec
+
+-currently our beat confirmation rule is (i think):
+traffic light green or yellow with metronome green OR
+traffic light green with metronome green or yellow
+*- add more acceptable states:
+[-OR- traffic light yellow after leaving green and metronome yellow/green]
+[-OR- metronome green (stable, more than 2000ms) but traffic light red]
+
+****************************************
+_____________UPDATE 3__________________
+
+CAN'T WE CALCULATE THE SPEED A LITTLE BETTER TO AVOID WAITING WHEN THERE IS CONFIRMED "GOOD" BEAT?  REGARDLESS OF 'NUMBER OF ARC COMPLETIONS' PER BEAT?
+
+ITS GETTING BETTER BUT ITS STILL WAITING- THOUGH LESS.  WE ALSO NEED TO TRY BETTER TO HIT TOP ON BEAT ONCE A BEAT HAS BEEN ESTABLISHED, HOW CAN WE DO THAT?  WE WERE ANCHORING TO TOP OR BOTTOM, [WHICHEVER WAS CLOSER] BEFORE.  CAN WE DO THAT, BUT WITHOUT WAITING THERE?
+
+

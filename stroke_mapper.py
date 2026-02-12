@@ -203,11 +203,23 @@ class StrokeMapper:
         # Strokes only fire when metronome + traffic light conditions are met:
         #   Option A: metronome GREEN + traffic YELLOW or GREEN
         #   Option B: metronome GREEN or YELLOW + traffic GREEN
+        #   Option C: traffic YELLOW (was recently GREEN) + metronome YELLOW or GREEN
+        #   Option D: metronome GREEN stable >2s + any traffic state
         # Otherwise: creep/jitter only
         # Grace period: 1300ms after conditions drop before returning to jitter
         self._stroke_ready: bool = False
         self._stroke_ready_lost_time: float = 0.0   # when conditions last dropped
         self._stroke_grace_ms: float = 1300.0        # grace period before disabling strokes
+        self._traffic_was_green: bool = False         # track if traffic was recently green
+        self._traffic_left_green_time: float = 0.0    # when traffic left green
+        self._metro_green_since: float = 0.0          # when metronome first became green
+
+        # ---------- Last confirmed beat time (for no-beat timeout) ----------
+        self._last_confirmed_beat_time: float = 0.0   # wall-clock of last beat with stroke_ready
+        self._no_beat_timeout_s: float = 2.0           # seconds before returning to center+jitter
+
+        # ---------- Flux-drop fallback ----------
+        self._recent_flux_values: deque = deque(maxlen=60)  # ~1s of flux history for drop detection
 
     # ------------------------------------------------------------------
     # Helpers
@@ -281,6 +293,7 @@ class StrokeMapper:
         """
         acf_conf = getattr(event, 'acf_confidence', 0.0)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
+        now = time.time()
         
         metro_green = acf_conf >= 0.25 and metro_bpm > 0
         metro_yellow = acf_conf >= 0.05 and metro_bpm > 0
@@ -298,10 +311,35 @@ class StrokeMapper:
                 traffic_green = all_settled
                 traffic_yellow = any_settled and not all_settled
         
+        # Track traffic-was-green state (for option C)
+        if traffic_green:
+            self._traffic_was_green = True
+            self._traffic_left_green_time = 0.0
+        elif self._traffic_was_green and not traffic_green:
+            if self._traffic_left_green_time == 0.0:
+                self._traffic_left_green_time = now
+            # Expire after 3s
+            if (now - self._traffic_left_green_time) > 3.0:
+                self._traffic_was_green = False
+
+        # Track metro-green stable duration (for option D)
+        if metro_green:
+            if self._metro_green_since == 0.0:
+                self._metro_green_since = now
+        else:
+            self._metro_green_since = 0.0
+        metro_stable_2s = (self._metro_green_since > 0
+                           and (now - self._metro_green_since) >= 2.0)
+
         if traffic_has_metrics:
             option_a = metro_green and (traffic_yellow or traffic_green)
             option_b = (metro_green or metro_yellow) and traffic_green
-            conditions_met = option_a or option_b
+            # C: traffic was recently green (now yellow) + metronome yellow/green
+            option_c = (traffic_yellow and self._traffic_was_green
+                        and (metro_green or metro_yellow))
+            # D: metronome green stable >2s, any traffic state
+            option_d = metro_stable_2s
+            conditions_met = option_a or option_b or option_c or option_d
         else:
             conditions_met = metro_yellow
         
@@ -429,6 +467,41 @@ class StrokeMapper:
         self._advance_phase(event)
         self._update_band_energies(event)
 
+        # ===== FLUX-DROP FALLBACK =====
+        # Track recent flux for drop detection — if upper spectrum flux
+        # drops significantly, force back to creep mode
+        self._recent_flux_values.append(event.spectral_flux)
+        if len(self._recent_flux_values) >= 30:
+            recent_avg = sum(list(self._recent_flux_values)[-15:]) / 15.0
+            older_avg = sum(list(self._recent_flux_values)[:15]) / 15.0
+            if older_avg > 0.01 and recent_avg < older_avg * 0.25:
+                # Flux dropped to <25% of recent levels — force creep
+                if self._motion_mode == MotionMode.FULL_STROKE:
+                    self._motion_mode = MotionMode.CREEP_MICRO
+                    self._mode_switch_time = now
+                    self._trajectory = None
+                    self._pending_arc_event = None
+                    self._sync_creep_angle_to_position()
+                    log_event("INFO", "StrokeMapper", "Flux drop → creep fallback",
+                              recent=f"{recent_avg:.4f}", older=f"{older_avg:.4f}")
+
+        # ===== NO-BEAT TIMEOUT =====
+        # Track last confirmed beat (stroke_ready + is_beat)
+        if event.is_beat and self._stroke_ready:
+            self._last_confirmed_beat_time = now
+        # If no confirmed beat for 2s, cancel trajectory and return to center+jitter
+        if (self._last_confirmed_beat_time > 0
+                and (now - self._last_confirmed_beat_time) > self._no_beat_timeout_s
+                and self._trajectory is not None):
+            self._trajectory = None
+            self._locked_anchor = None
+            self._pending_arc_event = None
+            # Start creep reset to center
+            if not self.state.creep_reset_active:
+                self.state.creep_reset_active = True
+                self.state.creep_reset_start_time = now
+            log_event("INFO", "StrokeMapper", "No-beat timeout → center+jitter")
+
         # ===== SILENCE FADE-OUT =====
         quiet_flux_thresh = cfg.flux_threshold * cfg.silence_flux_multiplier
         quiet_energy_thresh = beat_cfg.peak_floor * cfg.silence_energy_multiplier
@@ -546,44 +619,20 @@ class StrokeMapper:
             is_downbeat = getattr(event, 'is_downbeat', False)
 
             if self._motion_mode == MotionMode.FULL_STROKE:
-                # High amplitude -> full arc strokes
-                # Check if creep is near the locked anchor (top or bottom).
-                # First beat picks nearest and locks; held until silence reset.
-                raw_angle = self.state.creep_angle % (2 * np.pi)
-                dist_top = min(raw_angle, 2 * np.pi - raw_angle)
-                dist_bot = abs(raw_angle - np.pi)
+                # High amplitude -> fire arc immediately from current position.
+                # No anchor gate — the dot sweeps 360° from wherever it is.
+                # Continuous rotation means it passes through top/bottom naturally.
+                self._pending_arc_event = None
 
-                if self._locked_anchor is not None:
-                    # Already locked — always target the same anchor
-                    nearest_anchor = self._locked_anchor
+                is_downbeat = getattr(event, 'is_downbeat', False)
+                if is_downbeat:
+                    cmd = self._generate_downbeat_stroke(event)
+                    return self._apply_fade(cmd)
                 else:
-                    # First beat — pick whichever is nearest and lock it
-                    nearest_anchor = 0.0 if dist_top <= dist_bot else np.pi
-                    self._locked_anchor = nearest_anchor
-
-                dist_to_anchor = dist_top if nearest_anchor == 0.0 else dist_bot
-                near_enough = dist_to_anchor < self._arc_anchor_threshold
-
-                if near_enough:
-                    # Close enough — snap the last tiny gap and fire immediately
-                    self.state.creep_angle = nearest_anchor
-                    self._pending_arc_event = None
-                    if is_downbeat:
-                        cmd = self._generate_downbeat_stroke(event)
-                        return self._apply_fade(cmd)
-                    else:
-                        is_high_flux = event.spectral_flux >= cfg.flux_threshold
-                        if not is_high_flux:
-                            return None
-                        cmd = self._generate_beat_stroke(event)
-                        return self._apply_fade(cmd)
-                else:
-                    # Not at an anchor — defer: store event and let creep glide there
-                    self._pending_arc_event = event
-                    self._pending_arc_target = nearest_anchor
-                    self._pending_arc_is_downbeat = is_downbeat
-                    # Fall through to idle motion for this frame
-                    cmd = self._generate_idle_motion(event)
+                    is_high_flux = event.spectral_flux >= cfg.flux_threshold
+                    if not is_high_flux:
+                        return None
+                    cmd = self._generate_beat_stroke(event)
                     return self._apply_fade(cmd)
 
             else:  # CREEP_MICRO
@@ -658,22 +707,25 @@ class StrokeMapper:
         now = time.time()
 
         # Beat duration — prefer metronome BPM if available
-        # One full revolution per beat (not per measure)
+        # One full revolution spans beats_between_strokes beats
+        beats_per_arc = max(1, cfg.beats_between_strokes if hasattr(cfg, 'beats_between_strokes') else 2)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         if metro_bpm > 0:
             beat_interval_ms = 60000.0 / metro_bpm
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
-            measure_duration_ms = beat_interval_ms
+            measure_duration_ms = int(beat_interval_ms * beats_per_arc)
         elif self.state.last_beat_time == 0.0:
-            measure_duration_ms = 500
+            measure_duration_ms = 500 * beats_per_arc
         else:
             beat_interval_ms = (now - self.state.last_beat_time) * 1000
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
-            measure_duration_ms = beat_interval_ms
+            measure_duration_ms = int(beat_interval_ms * beats_per_arc)
 
-        # Band-speed scaling: low bands = faster (punchier), high = slower (gentler)
-        band_speed = self._get_band_duration_scale(event)
-        measure_duration_ms = int(measure_duration_ms * band_speed)
+        # Adjust for pending-arc delay: if this beat was deferred while
+        # creep glided to anchor, shorten the arc so it finishes on time
+        event_age_ms = (now - event.timestamp) * 1000
+        if 0 < event_age_ms < measure_duration_ms * 0.5:
+            measure_duration_ms = max(cfg.min_interval_ms, int(measure_duration_ms - event_age_ms))
 
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
         tempo_locked = getattr(event, 'tempo_locked', False)
@@ -752,12 +804,15 @@ class StrokeMapper:
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
         else:
             beat_interval_ms = cfg.min_interval_ms
-        # 1x duration: arc completes exactly one full circle per beat interval
-        # Dot returns to anchor precisely when the next beat fires
-        beat_interval_ms = int(beat_interval_ms)
-        # Band-speed scaling: low bands = faster (punchier), high = slower (gentler)
-        band_speed = self._get_band_duration_scale(event)
-        beat_interval_ms = int(beat_interval_ms * band_speed)
+        # 2x duration adjusted by beats_between_strokes: arc fills the full span
+        beats_per_arc = max(1, cfg.beats_between_strokes if hasattr(cfg, 'beats_between_strokes') else 2)
+        beat_interval_ms = int(beat_interval_ms * beats_per_arc)
+
+        # Adjust for pending-arc delay: if this beat was deferred while
+        # creep glided to anchor, shorten the arc so it finishes on time
+        event_age_ms = (now - event.timestamp) * 1000
+        if 0 < event_age_ms < beat_interval_ms * 0.5:
+            beat_interval_ms = max(cfg.min_interval_ms, int(beat_interval_ms - event_age_ms))
 
         intensity = event.intensity
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
@@ -1051,18 +1106,92 @@ class StrokeMapper:
         # Check if trajectory just completed
         if traj.finished:
             log_event("INFO", "StrokeMapper", "Arc complete", points=traj.n_points)
+            self._sync_creep_angle_to_position()
+
             if getattr(traj, 'is_micro', False):
-                # Micro patterns (noise jitter): just sync angle and resume creep
-                self._sync_creep_angle_to_position()
+                # Micro patterns (noise jitter): resume creep
+                self._post_arc_blend = 0.0
+                self._trajectory = None
+            elif (self._motion_mode == MotionMode.FULL_STROKE
+                    and self._stroke_ready
+                    and self._last_known_bpm > 0):
+                # Continuous rotation: immediately start another arc
+                # so the dot never stops moving between beats.
+                # Real beat events will override this when they fire.
+                self._generate_continuation_arc()
             else:
-                # All modes: sync creep angle to where arc actually ended.
-                # No hard snaps — smooth continuation.
-                self._sync_creep_angle_to_position()
-            # Start smooth blend from arc endpoint to creep orbit
-            self._post_arc_blend = 0.0
-            self._trajectory = None
+                # No good BPM or not in FULL_STROKE — drop to creep
+                self._post_arc_blend = 0.0
+                self._trajectory = None
 
         return TCodeCommand(alpha, beta, duration_ms, volume)
+
+    # ------------------------------------------------------------------
+    # Continuation arc (seamless rotation between beat-driven arcs)
+    # ------------------------------------------------------------------
+
+    def _generate_continuation_arc(self) -> None:
+        """Generate a new full-circle arc immediately after the previous one
+        finishes, so the dot keeps rotating at BPM speed with no gaps.
+        Uses last known BPM and the previous arc's radius/volume.
+        Real beat events will override this trajectory when they fire."""
+        cfg = self.config.stroke
+        now = time.time()
+        bpm = self._last_known_bpm
+        if bpm <= 0:
+            self._trajectory = None
+            return
+
+        beats_per_arc = max(1, cfg.beats_between_strokes if hasattr(cfg, 'beats_between_strokes') else 2)
+        beat_interval_ms = int(60000.0 / bpm * beats_per_arc)
+        beat_interval_ms = max(cfg.min_interval_ms, min(4000, beat_interval_ms))
+
+        # Reuse the last trajectory's radius for visual continuity.
+        # Fall back to a moderate default if unavailable.
+        prev_traj = self._trajectory
+        prev_volume = prev_traj.band_volume if prev_traj else self.get_volume()
+
+        # Recover radius from the last arc's endpoint
+        last_r = np.sqrt(self.state.alpha**2 + self.state.beta**2)
+        radius = max(0.2, min(1.0, last_r)) if last_r > 0.05 else 0.5
+
+        alpha_weight = self.config.alpha_weight
+        beta_weight = self.config.beta_weight
+
+        n_points = max(8, int(beat_interval_ms / 10))
+        current_phase = self.state.creep_angle / (2 * np.pi)
+        arc_phases = np.linspace(current_phase, current_phase + 1.0,
+                                 n_points, endpoint=False) % 1.0
+        alpha_arc = np.zeros(n_points)
+        beta_arc = np.zeros(n_points)
+        for i, phase in enumerate(arc_phases):
+            angle = phase * 2 * np.pi
+            alpha_arc[i] = np.sin(angle) * radius * alpha_weight
+            beta_arc[i] = np.cos(angle) * radius * beta_weight
+
+        # Apply thump acceleration if enabled (must account for it so
+        # total duration still matches beat interval exactly)
+        if cfg.thump_enabled:
+            step_durations = self._make_thump_durations(beat_interval_ms, n_points)
+        else:
+            base_step = beat_interval_ms // n_points
+            remainder = beat_interval_ms % n_points
+            step_durations = [base_step + 1 if i < remainder else base_step
+                              for i in range(n_points)]
+
+        self._trajectory = PlannedTrajectory(
+            alpha_points=alpha_arc,
+            beta_points=beta_arc,
+            step_durations=step_durations,
+            n_points=n_points,
+            current_index=0,
+            band_volume=prev_volume,
+            start_time=now,
+        )
+
+        log_event("INFO", "StrokeMapper", "Continuation arc",
+                  bpm=f"{bpm:.1f}", points=n_points,
+                  duration_ms=beat_interval_ms, radius=f"{radius:.2f}")
 
     # ------------------------------------------------------------------
     # Micro-effect: jerk on beat (CREEP_MICRO mode)
@@ -1234,43 +1363,10 @@ class StrokeMapper:
                     angle_increment = (2 * np.pi) / (updates_per_beat * self.config.beat.beats_per_measure)
 
                 if not self.state.creep_reset_active:
-                    # In FULL_STROKE: after arc completes, HOLD at anchor until next beat
-                    # (don't let creep drift the dot away from where it needs to be)
-                    if (self._motion_mode == MotionMode.FULL_STROKE 
-                            and self._trajectory is None
-                            and self._pending_arc_event is None
-                            and self._locked_anchor is not None):
-                        # Park at locked anchor — next beat fires from here
-                        self.state.creep_angle = self._locked_anchor
-                    elif self._pending_arc_event is not None:
-                        # Pending arc waiting — steer toward the anchor at 3x speed
-                        angle_increment *= 3.0
-                        self.state.creep_angle += angle_increment
-                        if self.state.creep_angle >= 2 * np.pi:
-                            self.state.creep_angle -= 2 * np.pi
-                    else:
-                        self.state.creep_angle += angle_increment
-                        if self.state.creep_angle >= 2 * np.pi:
-                            self.state.creep_angle -= 2 * np.pi
-
-                    # Check if we've arrived at the pending arc's target anchor
-                    if self._pending_arc_event is not None:
-                        raw = self.state.creep_angle % (2 * np.pi)
-                        target = self._pending_arc_target
-                        dist = abs(raw - target)
-                        if dist > np.pi:
-                            dist = 2 * np.pi - dist
-                        if dist < self._arc_anchor_threshold:
-                            # Arrived — snap to exact anchor and fire the arc
-                            self.state.creep_angle = target
-                            pending_event = self._pending_arc_event
-                            pending_downbeat = self._pending_arc_is_downbeat
-                            self._pending_arc_event = None
-                            if pending_downbeat:
-                                cmd = self._generate_downbeat_stroke(pending_event)
-                            else:
-                                cmd = self._generate_beat_stroke(pending_event)
-                            return self._apply_fade(cmd)
+                    # Normal creep rotation — keeps moving smoothly between arcs
+                    self.state.creep_angle += angle_increment
+                    if self.state.creep_angle >= 2 * np.pi:
+                        self.state.creep_angle -= 2 * np.pi
 
                 jitter_r = jitter_cfg.amplitude if jitter_active else 0.0
 
