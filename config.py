@@ -50,6 +50,8 @@ class BeatDetectionConfig:
     syncopation_band: str = 'any'                # Which z-score band triggers syncope: 'any', 'sub_bass', 'low_mid', 'mid', 'high'
     syncopation_window: float = 0.15             # ±fraction of beat period to detect off-beat (0.05-0.30)
     syncopation_bpm_limit: float = 160.0         # Disable syncopation above this BPM
+    syncopation_arc_size: float = 0.5              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
+    syncopation_speed: float = 0.5                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
 
 @dataclass
 class StrokeConfig:
@@ -92,14 +94,17 @@ class StrokeConfig:
     # Beats-between-strokes: only fire full arcs every Nth beat (1/2/4/8)
     beats_between_strokes: int = 1           # 1=every beat, 2=every 2nd, 4=every 4th, 8=every 8th
 
-    # Thump: accelerate the second half of arc strokes for a "landing" feel
-    thump_enabled: bool = False             # Enable thump acceleration on arc strokes
+    # Thump: legacy setting, replaced by landing durations
+    thump_enabled: bool = False             # Kept for preset compatibility, not used in UI
 
     # Noise-burst reactive arc (hybrid with metronome system)
     # Fires a quick partial arc on sudden loud transients between beats
     noise_burst_enabled: bool = True        # Allow transient-reactive arcs between beats
     noise_burst_flux_multiplier: float = 2.0  # Fire burst when flux > flux_threshold * this
     noise_primary_mode: bool = False        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
+
+    # Flux-drop detection: if recent flux drops below this fraction of older flux, force creep
+    flux_drop_ratio: float = 0.25           # 0.0-1.0, lower = less sensitive (needs bigger drop)
 
 @dataclass
 class JitterConfig:

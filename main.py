@@ -3155,6 +3155,20 @@ class BREadbeatsWindow(QMainWindow):
         )
         syncope_layout.addWidget(syncope_bpm_slider)
 
+        # Arc size: fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
+        syncope_arc_slider = SliderWithLabel("Syncopation arc size (circle fraction)", 0.10, 1.0, self.config.beat.syncopation_arc_size, 2)
+        syncope_arc_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'syncopation_arc_size', v)
+        )
+        syncope_layout.addWidget(syncope_arc_slider)
+
+        # Speed: duration as fraction of beat interval (0.25=quarter beat, 0.5=half, 1.0=full)
+        syncope_speed_slider = SliderWithLabel("Syncopation speed (beat fraction)", 0.10, 1.0, self.config.beat.syncopation_speed, 2)
+        syncope_speed_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'syncopation_speed', v)
+        )
+        syncope_layout.addWidget(syncope_speed_slider)
+
         scroll_layout.addWidget(syncope_group)
 
         # ===== Amplitude Gate Controls =====
@@ -3249,6 +3263,30 @@ class BREadbeatsWindow(QMainWindow):
         noise_mode_layout.addWidget(noise_primary_cb)
 
         scroll_layout.addWidget(noise_mode_group)
+
+        # ===== Flux Controls =====
+        flux_group = QGroupBox("Flux Sensitivity")
+        flux_layout = QVBoxLayout(flux_group)
+
+        flux_info = QLabel("Controls how spectral flux affects mode switching.\nFlux threshold determines low vs high energy boundary.\nFlux drop ratio controls how much flux must drop to trigger creep fallback.")
+        flux_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        flux_layout.addWidget(flux_info)
+
+        # Flux threshold slider
+        flux_thresh_slider = SliderWithLabel("Flux threshold", 0.005, 0.20, self.config.stroke.flux_threshold, 3)
+        flux_thresh_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'flux_threshold', v)
+        )
+        flux_layout.addWidget(flux_thresh_slider)
+
+        # Flux drop ratio slider
+        flux_drop_slider = SliderWithLabel("Flux drop ratio (creep fallback)", 0.05, 0.50, self.config.stroke.flux_drop_ratio, 2)
+        flux_drop_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'flux_drop_ratio', v)
+        )
+        flux_layout.addWidget(flux_drop_slider)
+
+        scroll_layout.addWidget(flux_group)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -3597,7 +3635,6 @@ bREadfan_69@hotmail.com"""
                 self.jitter_intensity_slider.setValue(self.config.jitter.intensity)
                 self.creep_enabled.setChecked(self.config.creep.enabled)
                 self.creep_speed_slider.setValue(self.config.creep.speed)
-                self.thump_enabled_cb.setChecked(self.config.stroke.thump_enabled)
 
                 # Axis weights tab
                 self.alpha_weight_slider.setValue(self.config.alpha_weight)
@@ -4220,7 +4257,7 @@ bREadfan_69@hotmail.com"""
             'jitter_intensity': self.jitter_intensity_slider.value(),
             'creep_enabled': self.creep_enabled.isChecked(),
             'creep_speed': self.creep_speed_slider.value(),
-            'thump_enabled': self.thump_enabled_cb.isChecked(),
+            'thump_enabled': self.config.stroke.thump_enabled,
 
             # Axis Weights Tab
             'alpha_weight': self.alpha_weight_slider.value(),
@@ -4303,7 +4340,7 @@ bREadfan_69@hotmail.com"""
         self.creep_enabled.setChecked(preset_data['creep_enabled'])
         self.creep_speed_slider.setValue(preset_data['creep_speed'])
         if 'thump_enabled' in preset_data:
-            self.thump_enabled_cb.setChecked(preset_data['thump_enabled'])
+            self.config.stroke.thump_enabled = preset_data['thump_enabled']
         
         # Axis Weights Tab
         self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
@@ -5190,7 +5227,7 @@ bREadfan_69@hotmail.com"""
             'jitter_intensity': self.jitter_intensity_slider.value(),
             'creep_enabled': self.creep_enabled.isChecked(),
             'creep_speed': self.creep_speed_slider.value(),
-            'thump_enabled': self.thump_enabled_cb.isChecked(),
+            'thump_enabled': self.config.stroke.thump_enabled,
 
             # Axis Weights Tab
             'alpha_weight': self.alpha_weight_slider.value(),
@@ -5305,7 +5342,7 @@ bREadfan_69@hotmail.com"""
             self.creep_enabled.setChecked(preset_data['creep_enabled'])
             self.creep_speed_slider.setValue(preset_data['creep_speed'])
             if 'thump_enabled' in preset_data:
-                self.thump_enabled_cb.setChecked(preset_data['thump_enabled'])
+                self.config.stroke.thump_enabled = preset_data['thump_enabled']
             # Axis Weights Tab
             self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
             self.beta_weight_slider.setValue(preset_data['beta_weight'])
@@ -5584,11 +5621,6 @@ bREadfan_69@hotmail.com"""
         self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 2.0, 0.02, 3)
         self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
         effects_layout.addWidget(self.creep_speed_slider)
-
-        self.thump_enabled_cb = QCheckBox("Thump (arc acceleration)")
-        self.thump_enabled_cb.setChecked(self.config.stroke.thump_enabled)
-        self.thump_enabled_cb.stateChanged.connect(lambda s: setattr(self.config.stroke, 'thump_enabled', s == 2))
-        effects_layout.addWidget(self.thump_enabled_cb)
 
         layout.addWidget(effects_group)
 

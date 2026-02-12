@@ -1,0 +1,13 @@
+so you know when a good song is on and you are tapping your foot to it, or tapping fingers, whatever....
+
+you tend to pick up syncopation and things with that, and duplicate it.
+
+you would also tend to tap harder when the music is louder (more flux)
+
+mabye when the music is quiet you only tap on downbeats
+
+
+this is the effect we are looking for with our program- an automatic finger tapper.  imagine the dot is the tip of your finger and you are listening to music...how would the motion look?   (keep in mind, the rotation of the arc is good, i don't want straight lines.  but we need to be landing on the beat, and timing properly, as if you were tapping along to music)
+
+
+Knowing this, what do you think we should improve?
