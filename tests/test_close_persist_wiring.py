@@ -97,6 +97,22 @@ class TestClosePersistWiring(unittest.TestCase):
 
         self.assertFalse(cfg.auto_adjust.metrics_global_enabled)
 
+    def test_missing_required_control_raises_clear_error(self):
+        cfg = Config()
+        window = _WindowStub()
+        delattr(window, "phase_snap_slider")
+
+        with self.assertRaisesRegex(AttributeError, "missing required control: phase_snap_slider"):
+            persist_runtime_ui_to_config(window, cfg)
+
+    def test_missing_required_control_in_middle_raises_clear_error(self):
+        cfg = Config()
+        window = _WindowStub()
+        delattr(window, "f0_weight_slider")
+
+        with self.assertRaisesRegex(AttributeError, "missing required control: f0_weight_slider"):
+            persist_runtime_ui_to_config(window, cfg)
+
 
 if __name__ == "__main__":
     unittest.main()
