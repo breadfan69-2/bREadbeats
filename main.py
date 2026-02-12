@@ -4624,9 +4624,7 @@ bREadfan_69@hotmail.com"""
                 target_bps = feedback_data.get('target_bps', 0)
                 print(f"[Metric] target_bps: actual={actual_bps:.2f} target={target_bps:.2f} ({direction}) → pf={new_val:.4f}")
                 # Update the BPM display if we have one
-                if hasattr(self, 'bpm_actual_label'):
-                    actual_bpm = actual_bps * 60
-                    self.bpm_actual_label.setText(f"Actual: {actual_bpm:.0f} BPM")
+                # bpm_actual_label now shows metronome BPM (updated in _on_beat)
         
         elif metric == 'audio_amp' and adjustment != 0:
             # Adjust audio amplification based on beat presence
@@ -4668,13 +4666,7 @@ bREadfan_69@hotmail.com"""
             self.audio_engine.set_bps_tolerance(bps_tol)
             print(f"[Config] BPM tolerance set to ±{value:.0f} (±{bps_tol:.2f} BPS)")
     
-    def _on_bps_speed_change(self, value: int):
-        """Handle BPS adjustment speed slider change"""
-        speed = value / 100.0  # Convert 0-100 to 0.0-1.0
-        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-            self.audio_engine.set_bps_adjustment_speed(speed)
-            speed_label = "Fine" if speed < 0.3 else "Aggressive" if speed > 0.7 else "Normal"
-            print(f"[Config] BPS adjustment speed: {speed_label} ({speed:.2f})")
+    # _on_bps_speed_change removed — speed hardcoded to max in audio_engine
 
     def _on_auto_align_toggle(self, enabled: bool):
         """Handle auto-align target BPM checkbox toggle"""
@@ -4790,16 +4782,9 @@ bREadfan_69@hotmail.com"""
         self.bpm_tolerance_spin.valueChanged.connect(self._on_bpm_tolerance_change)
         bps_layout.addWidget(self.bpm_tolerance_spin)
         
-        bps_layout.addWidget(QLabel("Speed:"))
-        self.bps_speed_slider = QSlider(Qt.Orientation.Horizontal)
-        self.bps_speed_slider.setRange(0, 100)
-        self.bps_speed_slider.setValue(50)
-        self.bps_speed_slider.setFixedWidth(80)
-        self.bps_speed_slider.setToolTip("Adjustment speed: Fine (left) ↔ Aggressive (right)")
-        self.bps_speed_slider.valueChanged.connect(self._on_bps_speed_change)
-        bps_layout.addWidget(self.bps_speed_slider)
+        # Speed slider removed — hardcoded to max in audio_engine
         
-        self.bpm_actual_label = QLabel("Actual: -- BPM")
+        self.bpm_actual_label = QLabel("Metro: -- BPM")
         self.bpm_actual_label.setStyleSheet("color: #AAA; font-size: 9px;")
         bps_layout.addWidget(self.bpm_actual_label)
         
@@ -6352,6 +6337,13 @@ bREadfan_69@hotmail.com"""
                 self.metronome_sync_indicator.setStyleSheet("color: #cc0; font-size: 20px;")  # Yellow: locking
             else:
                 self.metronome_sync_indicator.setStyleSheet("color: #0f0; font-size: 20px;")  # Green: locked
+
+        # Update metronome BPM display (small label next to target BPM controls)
+        if hasattr(self, 'bpm_actual_label'):
+            if metro_bpm > 0:
+                self.bpm_actual_label.setText(f"Metro: {metro_bpm:.0f} BPM")
+            else:
+                self.bpm_actual_label.setText("Metro: -- BPM")
 
         if event.is_beat:
             # Track beat time for auto-adjustment feature
