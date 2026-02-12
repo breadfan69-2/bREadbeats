@@ -637,13 +637,6 @@ class StrokeMapper:
         band_speed = self._get_band_duration_scale(event)
         measure_duration_ms = int(measure_duration_ms * band_speed)
 
-        # Flux-rise anticipation: offset arc start phase backward so the
-        # landing (end of arc) arrives AT the beat, not after it.
-        # A rising flux slope means a beat is incoming — shift the arc
-        # start earlier by up to 10% of a full circle.
-        flux_rise = self._get_flux_rise_factor()
-        anticipation_phase = flux_rise * 0.10  # 0-10% phase offset
-
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
         tempo_locked = getattr(event, 'tempo_locked', False)
         lock_boost = 1.25 if tempo_locked else 1.0
@@ -665,18 +658,18 @@ class StrokeMapper:
         beta_weight = self.config.beta_weight
 
         n_points = max(16, int(measure_duration_ms / 20))
-        # Start arc from current creep angle position, offset by anticipation
-        current_phase = self.state.creep_angle / (2 * np.pi) - anticipation_phase
+        # Arc starts from current creep angle, sweeps exactly 360° over
+        # one beat interval.  No phase offsets — pure math timing.
+        current_phase = self.state.creep_angle / (2 * np.pi)
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
         for i, phase in enumerate(arc_phases):
-            prev_phase = self.state.phase
-            self.state.phase = phase
-            a, b = self._get_stroke_target(stroke_len, depth, event)
-            alpha_arc[i] = a
-            beta_arc[i] = b
-            self.state.phase = prev_phase
+            angle = phase * 2 * np.pi
+            r = min_radius + (stroke_len * depth - min_radius) * event.intensity
+            r = max(min_radius, min(1.0, r))
+            alpha_arc[i] = np.sin(angle) * r * alpha_weight
+            beta_arc[i] = np.cos(angle) * r * beta_weight
 
         # Apply thump acceleration or uniform durations based on config
         if cfg.thump_enabled:
@@ -728,10 +721,6 @@ class StrokeMapper:
         band_speed = self._get_band_duration_scale(event)
         beat_interval_ms = int(beat_interval_ms * band_speed)
 
-        # Flux-rise anticipation: offset arc start phase backward
-        flux_rise = self._get_flux_rise_factor()
-        anticipation_phase = flux_rise * 0.10
-
         intensity = event.intensity
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
 
@@ -775,18 +764,19 @@ class StrokeMapper:
             self.spiral_beat_index = next_index % N
         else:
             n_points = max(8, int(beat_interval_ms / 10))
-            # Start arc from current creep angle position, offset by anticipation
-            current_phase = self.state.creep_angle / (2 * np.pi) - anticipation_phase
+            # Arc starts from current creep angle, sweeps exactly 360°
+            # over the beat interval.  Pure math timing, no phase offsets.
+            current_phase = self.state.creep_angle / (2 * np.pi)
             arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
             alpha_arc = np.zeros(n_points)
             beta_arc = np.zeros(n_points)
             for i, phase in enumerate(arc_phases):
-                prev_phase = self.state.phase
-                self.state.phase = phase
-                a, b = self._get_stroke_target(stroke_len, depth, event)
-                alpha_arc[i] = a
-                beta_arc[i] = b
-                self.state.phase = prev_phase
+                angle = phase * 2 * np.pi
+                r = min_radius + (max_radius - min_radius) * intensity
+                r = r * flux_factor
+                r = max(min_radius, min(1.0, r))
+                alpha_arc[i] = np.sin(angle) * r * alpha_weight
+                beta_arc[i] = np.cos(angle) * r * beta_weight
 
         # Apply thump acceleration or uniform durations based on config
         if cfg.thump_enabled:
@@ -847,20 +837,21 @@ class StrokeMapper:
 
         n_points = max(12, int(half_beat_ms / 10))
         # Full-circle arc from current position at 2x speed (within half-beat duration)
-        # Use SAME radius calculation as beat strokes via _get_stroke_target()
-        # so syncopation arcs match normal beat stroke radius exactly.
+        # Pure math timing, no phase offsets.
         current_phase = self.state.creep_angle / (2 * np.pi)
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
 
+        alpha_weight = self.config.alpha_weight
+        beta_weight = self.config.beta_weight
+        min_radius = 0.2
         for i, phase in enumerate(arc_phases):
-            prev_phase = self.state.phase
-            self.state.phase = phase
-            a, b = self._get_stroke_target(stroke_len, depth, event)
-            alpha_arc[i] = a
-            beta_arc[i] = b
-            self.state.phase = prev_phase
+            angle = phase * 2 * np.pi
+            r = min_radius + (stroke_len * depth - min_radius) * intensity
+            r = max(min_radius, min(1.0, r))
+            alpha_arc[i] = np.sin(angle) * r * alpha_weight
+            beta_arc[i] = np.cos(angle) * r * beta_weight
 
         if cfg.thump_enabled:
             step_durations = self._make_thump_durations(half_beat_ms, n_points)
