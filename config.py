@@ -101,6 +101,7 @@ class StrokeConfig:
     # Fires a quick partial arc on sudden loud transients between beats
     noise_burst_enabled: bool = True        # Allow transient-reactive arcs between beats
     noise_burst_flux_multiplier: float = 2.0  # Fire burst when flux > flux_threshold * this
+    noise_burst_magnitude: float = 1.0      # Magnitude scaling for noise burst patterns (0.5-5.0)
     noise_primary_mode: bool = False        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
 
     # Flux-drop detection: if recent flux drops below this fraction of older flux, force creep
@@ -162,6 +163,8 @@ class DeviceLimitsConfig:
     p3_cycles_min: float = 0.0        # Device P3 min rise time (cycles), 0 = not set
     p3_cycles_max: float = 0.0        # Device P3 max rise time (cycles), 0 = not set
     prompted: bool = False            # Whether user has been prompted on first run
+    p0_c0_sending_enabled: bool = True  # Whether to actually send P0/C0 TCode to device
+    dont_show_on_startup: bool = False  # User opted out of startup device limits dialog
 
 @dataclass
 class PulseWidthConfig:

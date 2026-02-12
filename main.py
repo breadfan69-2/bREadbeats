@@ -143,6 +143,21 @@ def load_config() -> Config:
                     if hasattr(config.auto_adjust, key):
                         setattr(config.auto_adjust, key, value)
             
+            if 'device_limits' in data:
+                for key, value in data['device_limits'].items():
+                    if hasattr(config.device_limits, key):
+                        setattr(config.device_limits, key, value)
+            
+            if 'pulse_width' in data:
+                for key, value in data['pulse_width'].items():
+                    if hasattr(config.pulse_width, key):
+                        setattr(config.pulse_width, key, value)
+            
+            if 'rise_time' in data:
+                for key, value in data['rise_time'].items():
+                    if hasattr(config.rise_time, key):
+                        setattr(config.rise_time, key, value)
+            
             # Top-level values
             if 'alpha_weight' in data:
                 config.alpha_weight = data['alpha_weight']
@@ -2214,7 +2229,10 @@ class BREadbeatsWindow(QMainWindow):
         self._load_presets_from_disk()
         
         # First-run device limits prompt (delayed so window is visible first)
-        if not self.config.device_limits.prompted:
+        # Skip if user already entered values, opted out, or was already prompted
+        dl = self.config.device_limits
+        has_values = (dl.p0_freq_max > 0 or dl.c0_freq_max > 0)
+        if not dl.prompted and not dl.dont_show_on_startup and not has_values:
             QTimer.singleShot(500, lambda: self._on_device_limits(first_run=True))
         
         # Connect signals
@@ -3026,6 +3044,19 @@ class BREadbeatsWindow(QMainWindow):
         show_extra.toggled.connect(extra_group.setVisible)
         layout.addWidget(extra_group)
         
+        # --- P0/C0 sending toggle ---
+        p0c0_cb = QCheckBox("Enable P0/C0 TCode sending to device")
+        p0c0_cb.setChecked(dl.p0_c0_sending_enabled)
+        p0c0_cb.setToolTip("Uncheck to disable sending Pulse Freq (P0) and Carrier Freq (C0) TCode commands.\n"
+                           "Useful if your device doesn't support these axes.")
+        layout.addWidget(p0c0_cb)
+        
+        # --- Don't show on startup checkbox ---
+        dont_show_cb = QCheckBox("Don't show this dialog on startup")
+        dont_show_cb.setChecked(dl.dont_show_on_startup)
+        dont_show_cb.setToolTip("You can always open this later from Options → Device Limits")
+        layout.addWidget(dont_show_cb)
+        
         # OK / Cancel / Clear
         btn_row = QHBoxLayout()
         clear_btn = QPushButton("Clear All")
@@ -3061,15 +3092,19 @@ class BREadbeatsWindow(QMainWindow):
             self.config.device_limits.p2_range_max = p2_max.value()
             self.config.device_limits.p3_cycles_min = p3_min.value()
             self.config.device_limits.p3_cycles_max = p3_max.value()
+            self.config.device_limits.p0_c0_sending_enabled = p0c0_cb.isChecked()
+            self.config.device_limits.dont_show_on_startup = dont_show_cb.isChecked()
             self.config.device_limits.prompted = True
             print(f"[Config] Device limits updated: P0={p0_min.value()}-{p0_max.value()}Hz, "
                   f"C0={c0_min.value()}-{c0_max.value()}Hz, "
                   f"P1={p1_min.value()}-{p1_max.value()}cyc, "
                   f"P2={p2_min.value()}-{p2_max.value()}, "
-                  f"P3={p3_min.value()}-{p3_max.value()}cyc")
+                  f"P3={p3_min.value()}-{p3_max.value()}cyc, "
+                  f"P0/C0 sending={'ON' if p0c0_cb.isChecked() else 'OFF'}")
         else:
             # Mark as prompted even if skipped/cancelled so we don't ask again
             self.config.device_limits.prompted = True
+            self.config.device_limits.dont_show_on_startup = dont_show_cb.isChecked()
 
     def _on_advanced_controls(self):
         """Show Advanced Controls dialog with experimental/expert settings"""
@@ -3217,6 +3252,13 @@ class BREadbeatsWindow(QMainWindow):
             lambda v: setattr(self.config.stroke, 'noise_burst_flux_multiplier', v)
         )
         burst_layout.addWidget(burst_flux_slider)
+
+        # Magnitude slider — scale the size of noise burst patterns
+        burst_mag_slider = SliderWithLabel("Burst magnitude (pattern size)", 0.5, 5.0, self.config.stroke.noise_burst_magnitude, 1)
+        burst_mag_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'noise_burst_magnitude', v)
+        )
+        burst_layout.addWidget(burst_mag_slider)
 
         scroll_layout.addWidget(burst_group)
 
@@ -5918,9 +5960,11 @@ bREadfan_69@hotmail.com"""
         """Send a command directly (used by StrokeMapper for arc strokes). Thread-safe."""
         if self.network_engine and self.is_sending:
             # Attach cached P0/F0 values (computed by audio callback)
-            if self._cached_p0_enabled and self._cached_p0_val is not None:
+            # Only send P0/C0 if device limits has sending enabled
+            p0c0_enabled = self.config.device_limits.p0_c0_sending_enabled
+            if p0c0_enabled and self._cached_p0_enabled and self._cached_p0_val is not None:
                 cmd.pulse_freq = self._cached_p0_val
-            if self._cached_f0_enabled and self._cached_f0_val is not None:
+            if p0c0_enabled and self._cached_f0_enabled and self._cached_f0_val is not None:
                 if cmd.tcode_tags is None:
                     cmd.tcode_tags = {}
                 cmd.tcode_tags['C0'] = self._cached_f0_val  # restim uses C0 for carrier
