@@ -1,4 +1,5 @@
 import unittest
+from typing import Any, cast
 
 from config import Config
 from network_lifecycle import ensure_network_engine, toggle_user_connection
@@ -37,10 +38,11 @@ class TestNetworkLifecycle(unittest.TestCase):
             cfg,
             status_callback=None,
             dry_run_enabled=True,
-            engine_factory=DummyEngine,
+            engine_factory=cast(Any, DummyEngine),
         )
-        self.assertTrue(engine.started)
-        self.assertTrue(engine.dry_run)
+        dummy = cast(DummyEngine, engine)
+        self.assertTrue(dummy.started)
+        self.assertTrue(dummy.dry_run)
 
     def test_ensure_network_engine_reuses_existing(self):
         cfg = Config()
@@ -48,25 +50,25 @@ class TestNetworkLifecycle(unittest.TestCase):
         existing.started = True
 
         reused = ensure_network_engine(
-            existing,
+            cast(Any, existing),
             cfg,
             status_callback=None,
             dry_run_enabled=False,
-            engine_factory=DummyEngine,
+            engine_factory=cast(Any, DummyEngine),
         )
 
         self.assertIs(reused, existing)
-        self.assertEqual(reused.dry_run, False)
+        self.assertEqual(cast(DummyEngine, reused).dry_run, False)
 
     def test_toggle_user_connection(self):
         cfg = Config()
         engine = DummyEngine(cfg, None)
 
-        toggle_user_connection(engine)
+        toggle_user_connection(cast(Any, engine))
         self.assertEqual(engine.connect_calls, 1)
         self.assertTrue(engine.connected)
 
-        toggle_user_connection(engine)
+        toggle_user_connection(cast(Any, engine))
         self.assertEqual(engine.disconnect_calls, 1)
         self.assertFalse(engine.connected)
 
