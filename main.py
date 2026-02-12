@@ -51,6 +51,7 @@ from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
+from slider_tuning_tracker import SliderTuningTracker
 from transport_wiring import (
     begin_volume_ramp,
     play_button_text,
@@ -63,6 +64,23 @@ from transport_wiring import (
 from stroke_mapper import StrokeMapper
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
+
+
+_active_slider_tracker: Optional[SliderTuningTracker] = None
+
+
+def _set_active_slider_tracker(tracker: Optional[SliderTuningTracker]) -> None:
+    global _active_slider_tracker
+    _active_slider_tracker = tracker
+
+
+def _track_slider_value(name: str, value: float) -> None:
+    if _active_slider_tracker is None:
+        return
+    try:
+        _active_slider_tracker.record_value(name, value)
+    except Exception:
+        pass
 
 
 # Config persistence - use exe folder when packaged, home dir when running from source
@@ -1910,6 +1928,9 @@ class RangeSliderWithLabel(QWidget):
     
     def _on_change(self, low: float, high: float):
         self.value_label.setText(f"{low:.{self.decimals}f}-{high:.{self.decimals}f}")
+        base_name = self.label.text()
+        _track_slider_value(f"{base_name} [low]", low)
+        _track_slider_value(f"{base_name} [high]", high)
         self.rangeChanged.emit(low, high)
     
     def low(self) -> float:
@@ -1965,6 +1986,7 @@ class SliderWithLabel(QWidget):
     def _on_change(self, value: int):
         real_value = value / self.multiplier
         self.value_label.setText(f"{real_value:.{self.decimals}f}")
+        _track_slider_value(self.label.text(), real_value)
         self.valueChanged.emit(real_value)
         
     def value(self) -> float:
@@ -2160,6 +2182,8 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
+        self._slider_tracker = SliderTuningTracker(get_config_dir())
+        _set_active_slider_tracker(self._slider_tracker)
         # Apply persisted log level early so downstream modules inherit
         set_log_level(getattr(self.config, 'log_level', 'INFO'))
         self.signals = SignalBridge()
@@ -6743,6 +6767,12 @@ bREadfan_69@hotmail.com"""
         
         # Save config before closing
         save_config(self.config)
+
+        # Save slider tuning report
+        try:
+            self._slider_tracker.save_reports()
+        except Exception as e:
+            print(f"[Tracker] Failed to save slider tuning report: {e}")
 
         # Save presets to disk
         self._save_presets_to_disk()
