@@ -50,11 +50,11 @@ from network_engine import NetworkEngine, TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
 from close_persist_wiring import persist_runtime_ui_to_config
-from config_persistence import (
-    get_config_dir as _get_config_dir_impl,
-    get_config_file as _get_config_file_impl,
-    load_config as _load_config_impl,
-    save_config as _save_config_impl,
+from config_facade import (
+    get_config_dir,
+    get_config_file,
+    load_config,
+    save_config,
 )
 from frequency_utils import extract_dominant_freq
 from presets_wiring import get_presets_file_path, load_presets_data, resolve_p0_tcode_bounds, save_presets_data
@@ -92,12 +92,6 @@ def _track_slider_value(name: str, value: float) -> None:
 
 _apply_dict_to_dataclass = apply_dict_to_dataclass
 _migrate_config = migrate_config
-
-# Compatibility aliases for existing imports/tests
-get_config_dir = _get_config_dir_impl
-get_config_file = _get_config_file_impl
-save_config = _save_config_impl
-load_config = _load_config_impl
 
 
 class SignalBridge(QObject):
