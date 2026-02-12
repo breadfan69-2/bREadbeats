@@ -55,6 +55,7 @@ class PlannedTrajectory:
     current_index: int = 0
     band_volume: float = 1.0
     start_time: float = 0.0
+    is_micro: bool = False  # True for noise burst micro-patterns (skip return-to-bottom)
 
     @property
     def active(self) -> bool:
@@ -184,6 +185,9 @@ class StrokeMapper:
         # ---------- Beat factoring ----------
         self.max_strokes_per_sec = 4.5
         self.beat_factor = 1
+
+        # ---------- Beats-between-strokes counter ----------
+        self._beats_since_stroke: int = 0  # counts how many beats have passed since last full stroke
 
     # ------------------------------------------------------------------
     # Helpers
@@ -402,12 +406,31 @@ class StrokeMapper:
                     cmd = self._generate_syncopated_stroke(event)
                     return self._apply_fade(cmd)
 
-        # ===== NOISE BURST: transient-reactive arc (hybrid system) =====
-        # React immediately to sudden loud flux spikes between beats,
-        # combining old noise-driven responsiveness with the new metronome system.
-        if (not event.is_beat
+        # ===== NOISE-PRIMARY MODE =====
+        # When enabled: noise (flux spike) fires strokes immediately,
+        # and the metronome only validates timing (the reverse of default).
+        if (cfg.noise_primary_mode
+                and not event.is_beat
                 and cfg.noise_burst_enabled
                 and self._motion_mode == MotionMode.FULL_STROKE
+                and (self._trajectory is None or self._trajectory.finished)):
+            noise_thresh = cfg.flux_threshold * cfg.noise_burst_flux_multiplier
+            if event.spectral_flux >= noise_thresh:
+                time_since_stroke = (now - self.state.last_stroke_time) * 1000
+                if time_since_stroke >= cfg.min_interval_ms * 0.4:
+                    # In noise-primary mode, fire a FULL beat stroke (not a burst)
+                    # using the metronome BPM for duration if available
+                    cmd = self._generate_beat_stroke(event)
+                    return self._apply_fade(cmd)
+
+        # ===== NOISE BURST (non-primary): small jitter on flux spikes =====
+        # Only active when creep is engaged (CREEP_MICRO mode).
+        # Produces small random jerks/swirls instead of full-circle arcs.
+        if (not cfg.noise_primary_mode
+                and not event.is_beat
+                and cfg.noise_burst_enabled
+                and self._motion_mode == MotionMode.CREEP_MICRO
+                and self.config.creep.enabled
                 and (self._trajectory is None or self._trajectory.finished)):
             noise_thresh = cfg.flux_threshold * cfg.noise_burst_flux_multiplier
             if event.spectral_flux >= noise_thresh:
@@ -420,6 +443,16 @@ class StrokeMapper:
             time_since_stroke = (now - self.state.last_stroke_time) * 1000
             if time_since_stroke < cfg.min_interval_ms:
                 return None
+
+            # Beats-between-strokes gating: only fire every Nth beat
+            beats_skip = cfg.beats_between_strokes if hasattr(cfg, 'beats_between_strokes') else 1
+            if beats_skip > 1:
+                self._beats_since_stroke += 1
+                is_downbeat = getattr(event, 'is_downbeat', False)
+                # Always allow downbeats through, otherwise count
+                if not is_downbeat and self._beats_since_stroke < beats_skip:
+                    return None
+                self._beats_since_stroke = 0
 
             is_downbeat = getattr(event, 'is_downbeat', False)
 
@@ -474,28 +507,33 @@ class StrokeMapper:
 
     @staticmethod
     def _make_thump_durations(total_ms: int, n_points: int) -> List[int]:
-        """Create step durations that accelerate toward the end of the arc,
-        producing a 'thump' on the beat landing.  The last ~15% of points
-        run at half the base duration; the first ~85% are slightly stretched
-        to keep the total time constant."""
+        """Create step durations that gradually accelerate over the second
+        half of the arc, producing a natural 'thump' as the stroke lands
+        at the beat.
+        First half:  uniform pace.
+        Second half:  linearly decreasing step durations (speeding up)
+                      down to ~50 % of normal at the final point.
+        Total time is preserved.  This also helps with beat adjustments:
+        if an incoming beat is faster, the already-accelerating second
+        half absorbs the timing change more gracefully."""
         if n_points <= 1:
             return [total_ms]
-        thump_count = max(1, int(n_points * 0.15))
-        normal_count = n_points - thump_count
-        # Base step duration (uniform)
-        base_step = total_ms / n_points
-        # Thump steps run at 50% of base (faster)
-        thump_step = max(5, int(base_step * 0.50))
-        # Reclaim the saved time into the normal part
-        thump_total = thump_step * thump_count
-        normal_total = total_ms - thump_total
-        normal_step = max(5, int(normal_total / normal_count)) if normal_count > 0 else base_step
-        # Build step list
-        durations = [normal_step] * normal_count + [thump_step] * thump_count
-        # Adjust rounding error on last normal step
+        first_half = n_points // 2
+        second_half = n_points - first_half
+        # Build ratio array: first half = 1.0, second half ramps 1.0 -> 0.5
+        ratios = []
+        for i in range(first_half):
+            ratios.append(1.0)
+        for i in range(second_half):
+            t = i / max(1, second_half - 1) if second_half > 1 else 0.0
+            ratios.append(1.0 - 0.5 * t)
+        # Normalise so durations sum to total_ms
+        total_ratio = sum(ratios)
+        durations = [max(5, int(total_ms * r / total_ratio)) for r in ratios]
+        # Fix rounding error on the last step
         actual_total = sum(durations)
-        if actual_total != total_ms and normal_count > 0:
-            durations[normal_count - 1] += (total_ms - actual_total)
+        if actual_total != total_ms:
+            durations[-1] += (total_ms - actual_total)
         return durations
 
     def _generate_downbeat_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
@@ -518,9 +556,16 @@ class StrokeMapper:
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
             measure_duration_ms = beat_interval_ms
 
-        # CRITICAL: Do NOT scale measure_duration_ms by band_speed
-        # The arc must complete in exactly (measure_duration_ms) to sync with next beat
-        measure_duration_ms = int(measure_duration_ms)
+        # Band-speed scaling: low bands = faster (punchier), high = slower (gentler)
+        band_speed = self._get_band_duration_scale(event)
+        measure_duration_ms = int(measure_duration_ms * band_speed)
+
+        # Flux-rise anticipation: offset arc start phase backward so the
+        # landing (end of arc) arrives AT the beat, not after it.
+        # A rising flux slope means a beat is incoming — shift the arc
+        # start earlier by up to 10% of a full circle.
+        flux_rise = self._get_flux_rise_factor()
+        anticipation_phase = flux_rise * 0.10  # 0-10% phase offset
 
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
         tempo_locked = getattr(event, 'tempo_locked', False)
@@ -543,8 +588,8 @@ class StrokeMapper:
         beta_weight = self.config.beta_weight
 
         n_points = max(16, int(measure_duration_ms / 20))
-        # Start arc from current creep angle position, advance through one full circle
-        current_phase = self.state.creep_angle / (2 * np.pi)
+        # Start arc from current creep angle position, offset by anticipation
+        current_phase = self.state.creep_angle / (2 * np.pi) - anticipation_phase
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
@@ -597,10 +642,16 @@ class StrokeMapper:
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
         else:
             beat_interval_ms = cfg.min_interval_ms
-        # One full revolution per beat (no 2x multiplier)
-        # CRITICAL: Do NOT scale beat_interval_ms by band_speed
-        # The arc must complete in exactly (beat_interval_ms) to sync with next beat
-        beat_interval_ms = int(beat_interval_ms)
+        # 2x duration: arc spans two beat intervals (v1 legacy timing)
+        # This gives the arc enough time to sweep around and land AT the next beat
+        beat_interval_ms = int(beat_interval_ms * 2)
+        # Band-speed scaling: low bands = faster (punchier), high = slower (gentler)
+        band_speed = self._get_band_duration_scale(event)
+        beat_interval_ms = int(beat_interval_ms * band_speed)
+
+        # Flux-rise anticipation: offset arc start phase backward
+        flux_rise = self._get_flux_rise_factor()
+        anticipation_phase = flux_rise * 0.10
 
         intensity = event.intensity
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
@@ -645,8 +696,8 @@ class StrokeMapper:
             self.spiral_beat_index = next_index % N
         else:
             n_points = max(8, int(beat_interval_ms / 10))
-            # Start arc from current creep angle position, advance through one full circle
-            current_phase = self.state.creep_angle / (2 * np.pi)
+            # Start arc from current creep angle position, offset by anticipation
+            current_phase = self.state.creep_angle / (2 * np.pi) - anticipation_phase
             arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
             alpha_arc = np.zeros(n_points)
             beta_arc = np.zeros(n_points)
@@ -752,59 +803,81 @@ class StrokeMapper:
     # ------------------------------------------------------------------
 
     def _generate_noise_burst_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
-        """Quick partial arc fired on sudden loud transients between beats.
-        Uses the old noise-driven approach: react immediately to flux spikes
-        rather than waiting for the metronome.  Produces a quarter-circle
-        using the same radius as beat strokes in about 120ms."""
-        cfg = self.config.stroke
+        """Small random jitter/swirl patterns on sudden loud transients.
+        Only fires in CREEP_MICRO mode when creep is active.
+        Produces random tiny patterns: jerks, micro-swirls, star shapes, zigzags."""
         now = time.time()
 
-        burst_ms = 120  # short burst arc
-        n_points = max(8, int(burst_ms / 10))
+        # Pick a random micro-pattern type
+        pattern = random.choice(['jerk', 'swirl', 'star', 'zigzag'])
+        jerk_mag = random.uniform(0.03, 0.08) * self.motion_intensity
+        base_angle = self.state.creep_angle
+        n_points = random.randint(4, 8)
+        duration_ms = random.randint(60, 120)
 
-        # Use same stroke_len/depth as beat strokes for consistent radius
-        intensity = event.intensity
-        flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
-        base_stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * intensity * cfg.stroke_fullness
-        stroke_len = base_stroke_len * flux_factor * self.motion_intensity
-        stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
-        freq_factor = self._freq_to_factor(event.frequency)
-        depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
+        # Current creep position as center of the micro-pattern
+        jitter_r = self.config.jitter.amplitude if self.config.jitter.enabled else 0.0
+        creep_radius = max(0.1, 0.5 - jitter_r)
+        center_a = np.sin(base_angle) * creep_radius
+        center_b = np.cos(base_angle) * creep_radius
 
-        # Quarter-circle arc from current creep angle
-        current_phase = self.state.creep_angle / (2 * np.pi)
-        arc_phases = np.linspace(current_phase, current_phase + 0.25, n_points, endpoint=False) % 1.0
-        alpha_arc = np.zeros(n_points)
-        beta_arc = np.zeros(n_points)
+        alpha_pts = np.zeros(n_points)
+        beta_pts = np.zeros(n_points)
 
-        for i, phase in enumerate(arc_phases):
-            prev_phase = self.state.phase
-            self.state.phase = phase
-            a, b = self._get_stroke_target(stroke_len, depth, event)
-            alpha_arc[i] = a
-            beta_arc[i] = b
-            self.state.phase = prev_phase
+        if pattern == 'jerk':
+            # Single direction jerk with decay back to center
+            angle = base_angle + random.uniform(-1.5, 1.5)
+            for i in range(n_points):
+                decay = 1.0 - (i / n_points)
+                alpha_pts[i] = center_a + np.sin(angle) * jerk_mag * decay
+                beta_pts[i] = center_b + np.cos(angle) * jerk_mag * decay
+        elif pattern == 'swirl':
+            # Tiny spiral inward (or outward)
+            direction = random.choice([1, -1])
+            for i in range(n_points):
+                t = i / n_points
+                angle = base_angle + t * np.pi * 2 * direction
+                r = jerk_mag * (1.0 - t * 0.7)
+                alpha_pts[i] = center_a + np.sin(angle) * r
+                beta_pts[i] = center_b + np.cos(angle) * r
+        elif pattern == 'star':
+            # Star pattern: alternate large/small radius at different angles
+            for i in range(n_points):
+                angle = base_angle + (i / n_points) * np.pi * 2
+                r = jerk_mag if i % 2 == 0 else jerk_mag * 0.3
+                alpha_pts[i] = center_a + np.sin(angle) * r
+                beta_pts[i] = center_b + np.cos(angle) * r
+        else:  # zigzag
+            # Zigzag perpendicular to creep direction with decay
+            perp = base_angle + np.pi / 2
+            for i in range(n_points):
+                offset = jerk_mag * (1 if i % 2 == 0 else -1) * (1.0 - i / n_points)
+                alpha_pts[i] = center_a + np.sin(perp) * offset
+                beta_pts[i] = center_b + np.cos(perp) * offset
 
-        base_step = max(5, burst_ms // n_points)
-        step_durations = [base_step] * n_points
-        # Adjust total to match burst_ms
+        alpha_pts = np.clip(alpha_pts, -1.0, 1.0)
+        beta_pts = np.clip(beta_pts, -1.0, 1.0)
+
+        step = max(5, duration_ms // n_points)
+        step_durations = [step] * n_points
         actual = sum(step_durations)
-        if actual != burst_ms:
-            step_durations[-1] += (burst_ms - actual)
+        if actual != duration_ms and n_points > 0:
+            step_durations[-1] += (duration_ms - actual)
 
         self._trajectory = PlannedTrajectory(
-            alpha_points=alpha_arc,
-            beta_points=beta_arc,
+            alpha_points=alpha_pts,
+            beta_points=beta_pts,
             step_durations=step_durations,
             n_points=n_points,
             current_index=0,
             band_volume=self._get_band_volume(event),
             start_time=now,
+            is_micro=True,
         )
 
         self.state.last_stroke_time = now
-        log_event("INFO", "StrokeMapper", "Noise burst",
-                  points=n_points, duration_ms=burst_ms,
+        log_event("INFO", "StrokeMapper", f"Noise jitter ({pattern})",
+                  points=n_points, duration_ms=duration_ms,
                   flux=f"{event.spectral_flux:.3f}")
         return None
 
@@ -856,8 +929,19 @@ class StrokeMapper:
         # Check if trajectory just completed
         if traj.finished:
             log_event("INFO", "StrokeMapper", "Arc complete", points=traj.n_points)
-            # Sync creep angle to where arc ended so creep continues smoothly
-            self._sync_creep_angle_to_position()
+            if getattr(traj, 'is_micro', False):
+                # Micro patterns (noise jitter): just sync angle and resume creep
+                self._sync_creep_angle_to_position()
+            elif self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE:
+                # SIMPLE_CIRCLE mode: snap creep angle to bottom of circle (π)
+                # so the next beat's arc starts from the bottom and lands at the
+                # top — the v1 "return-to-bottom" behavior for beat anticipation.
+                self.state.creep_angle = np.pi  # bottom of circle
+                self.state.alpha = 0.0
+                self.state.beta = -1.0 * max(0.1, 0.98 - self.config.jitter.amplitude)
+            else:
+                # Other modes: sync to where arc ended
+                self._sync_creep_angle_to_position()
             # Start smooth blend from arc endpoint to creep orbit
             self._post_arc_blend = 0.0
             self._trajectory = None
@@ -1232,6 +1316,7 @@ class StrokeMapper:
         self._micro_jerk_beta = 0.0
         self._last_micro_jerk_time = 0.0
         self._trajectory = None
+        self._beats_since_stroke = 0
 
 
 # ---------------------------------------------------------------------------

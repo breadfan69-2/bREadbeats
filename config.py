@@ -89,10 +89,14 @@ class StrokeConfig:
     amplitude_gate_high: float = 0.08  # RMS above this -> FULL_STROKE
     amplitude_gate_low: float = 0.04   # RMS below this -> CREEP_MICRO
 
+    # Beats-between-strokes: only fire full arcs every Nth beat (1/2/4/8)
+    beats_between_strokes: int = 1           # 1=every beat, 2=every 2nd, 4=every 4th, 8=every 8th
+
     # Noise-burst reactive arc (hybrid with metronome system)
     # Fires a quick partial arc on sudden loud transients between beats
     noise_burst_enabled: bool = True        # Allow transient-reactive arcs between beats
     noise_burst_flux_multiplier: float = 2.0  # Fire burst when flux > flux_threshold * this
+    noise_primary_mode: bool = False        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
 
 @dataclass
 class JitterConfig:
@@ -105,7 +109,7 @@ class JitterConfig:
 class CreepConfig:
     """Creep - very slow movement when idle"""
     enabled: bool = True
-    speed: float = 0.02               # Multiplier for creep rotation (0.0-0.1) - lower = slower drift
+    speed: float = 0.02               # Multiplier for creep rotation (0.0-1.0) - lower = slower drift
 
 @dataclass 
 class ConnectionConfig:

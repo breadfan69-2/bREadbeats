@@ -941,16 +941,53 @@ class AudioEngine:
 
         bpm = 60.0 * fps / refined_lag
 
-        # Octave disambiguation: prefer the faster tempo if
-        # the half-period peak is almost as strong
+        # Octave disambiguation: collect candidate tempos at 1x, 2x, and 0.5x
+        # and pick the one closest to target BPM (if set), otherwise prefer
+        # the faster tempo when the half-period peak is strong enough.
+        candidates = [(bpm, peak_value)]  # (bpm, confidence)
+
+        # Half-period candidate (double BPM)
         half_lag = raw_lag // 2
         if half_lag >= min_lag:
             half_val = float(acf[half_lag])
-            if half_val > peak_value * 0.75:
+            if half_val > peak_value * 0.60:
                 bpm_half = 60.0 * fps / half_lag
                 if 55 <= bpm_half <= 185:
-                    bpm = bpm_half
-                    peak_value = half_val
+                    candidates.append((bpm_half, half_val))
+
+        # Double-period candidate (half BPM)
+        double_lag = raw_lag * 2
+        if double_lag <= max_lag:
+            double_val = float(acf[double_lag])
+            if double_val > peak_value * 0.60:
+                bpm_double = 60.0 * fps / double_lag
+                if 55 <= bpm_double <= 185:
+                    candidates.append((bpm_double, double_val))
+
+        # Pick best candidate: prefer closest to target BPM if enabled
+        target_bpm_hint = self._target_bps * 60.0 if self._target_bps_enabled and self._target_bps > 0 else 0.0
+        if target_bpm_hint > 0 and len(candidates) > 1:
+            # Score by distance to target BPM, weighted by confidence
+            def octave_score(c):
+                bpm_c, conf_c = c
+                # Distance as ratio (penalises being far from target)
+                ratio = abs(bpm_c - target_bpm_hint) / target_bpm_hint
+                # Confidence bonus (higher confidence = better)
+                return ratio - conf_c * 0.3  # Lower score = better
+            candidates.sort(key=octave_score)
+            bpm, peak_value = candidates[0]
+            log_event("DEBUG", "ACF", "Octave disambig (target-guided)",
+                      target=f"{target_bpm_hint:.0f}",
+                      chosen=f"{bpm:.1f}",
+                      candidates=str([(f"{c[0]:.1f}", f"{c[1]:.2f}") for c in candidates]))
+        else:
+            # No target BPM: prefer faster tempo if half-period peak is strong
+            if len(candidates) > 1:
+                # Sort by BPM descending (prefer faster), filter by reasonable confidence
+                fast = [c for c in candidates if c[1] > peak_value * 0.75]
+                if fast:
+                    fast.sort(key=lambda c: -c[0])
+                    bpm, peak_value = fast[0]
 
         # Clamp to sane range
         if bpm < 55 or bpm > 185:
@@ -964,10 +1001,26 @@ class AudioEngine:
             ratio = abs(bpm - self._acf_bpm_smoothed) / self._acf_bpm_smoothed
             if ratio < 0.15:  # Within 15% — smooth
                 self._acf_bpm_smoothed = 0.85 * self._acf_bpm_smoothed + 0.15 * bpm
-            elif peak_value > 0.25:  # Large jump but confident — accept
-                self._acf_bpm_smoothed = bpm
-                log_event("INFO", "ACF", "Tempo jump",
-                          bpm=f"{bpm:.1f}", confidence=f"{peak_value:.3f}")
+            elif peak_value > 0.25:  # Large jump but confident
+                # Guard against octave jumps when target BPM is set
+                # If the jump looks like a doubling/halving and we have a target,
+                # only accept if the new BPM is closer to target than current
+                if target_bpm_hint > 0 and (0.45 < ratio < 0.55 or 0.90 < ratio < 1.10):
+                    old_dist = abs(self._acf_bpm_smoothed - target_bpm_hint)
+                    new_dist = abs(bpm - target_bpm_hint)
+                    if new_dist < old_dist:
+                        self._acf_bpm_smoothed = bpm
+                        log_event("INFO", "ACF", "Tempo jump (target-validated)",
+                                  bpm=f"{bpm:.1f}", target=f"{target_bpm_hint:.0f}",
+                                  confidence=f"{peak_value:.3f}")
+                    else:
+                        log_event("INFO", "ACF", "Tempo jump REJECTED (farther from target)",
+                                  bpm=f"{bpm:.1f}", target=f"{target_bpm_hint:.0f}",
+                                  current=f"{self._acf_bpm_smoothed:.1f}")
+                else:
+                    self._acf_bpm_smoothed = bpm
+                    log_event("INFO", "ACF", "Tempo jump",
+                              bpm=f"{bpm:.1f}", confidence=f"{peak_value:.3f}")
             # else: ignore noisy outlier
         else:
             self._acf_bpm_smoothed = bpm

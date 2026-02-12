@@ -3073,7 +3073,7 @@ class BREadbeatsWindow(QMainWindow):
 
     def _on_advanced_controls(self):
         """Show Advanced Controls dialog with experimental/expert settings"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QScrollArea, QGroupBox
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QScrollArea, QGroupBox, QSpinBox
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Advanced Controls")
@@ -3205,6 +3205,50 @@ class BREadbeatsWindow(QMainWindow):
         burst_layout.addWidget(burst_flux_slider)
 
         scroll_layout.addWidget(burst_group)
+
+        # ===== Beats Between Strokes =====
+        bbs_group = QGroupBox("Stroke Timing")
+        bbs_layout = QVBoxLayout(bbs_group)
+
+        bbs_info = QLabel("Only fire full arc strokes every Nth beat.\nHigher = slower motion. Downbeats always fire.")
+        bbs_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        bbs_layout.addWidget(bbs_info)
+
+        bbs_row = QHBoxLayout()
+        bbs_label = QLabel("Beats between strokes:")
+        bbs_label.setStyleSheet("color: #ccc;")
+        bbs_row.addWidget(bbs_label)
+        bbs_spin = QSpinBox()
+        bbs_spin.setMinimum(1)
+        bbs_spin.setMaximum(8)
+        bbs_spin.setValue(self.config.stroke.beats_between_strokes)
+        bbs_spin.setToolTip("1 = every beat, 2 = every 2nd, 4 = every 4th, 8 = every 8th")
+        bbs_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'beats_between_strokes', v)
+        )
+        bbs_row.addWidget(bbs_spin)
+        bbs_layout.addLayout(bbs_row)
+
+        scroll_layout.addWidget(bbs_group)
+
+        # ===== Noise-Primary Mode =====
+        noise_mode_group = QGroupBox("Noise vs Metronome Priority")
+        noise_mode_layout = QVBoxLayout(noise_mode_group)
+
+        noise_mode_info = QLabel("DEFAULT: metronome fires strokes, noise adds bursts.\n"
+                                 "REVERSED: noise fires strokes, metronome verifies timing.\n"
+                                 "Reversed mode reacts faster to transients.")
+        noise_mode_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        noise_mode_layout.addWidget(noise_mode_info)
+
+        noise_primary_cb = QCheckBox("Noise-primary mode (reversed)")
+        noise_primary_cb.setChecked(self.config.stroke.noise_primary_mode)
+        noise_primary_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'noise_primary_mode', state == 2)
+        )
+        noise_mode_layout.addWidget(noise_primary_cb)
+
+        scroll_layout.addWidget(noise_mode_group)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -5545,7 +5589,7 @@ bREadfan_69@hotmail.com"""
         self.creep_enabled.stateChanged.connect(lambda s: setattr(self.config.creep, 'enabled', s == 2))
         effects_layout.addWidget(self.creep_enabled)
 
-        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 0.1, 0.02, 3)
+        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 1.0, 0.02, 3)
         self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
         effects_layout.addWidget(self.creep_speed_slider)
 
