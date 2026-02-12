@@ -1009,15 +1009,9 @@ class StrokeMapper:
             if getattr(traj, 'is_micro', False):
                 # Micro patterns (noise jitter): just sync angle and resume creep
                 self._sync_creep_angle_to_position()
-            elif self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE:
-                # SIMPLE_CIRCLE mode: snap creep angle to bottom of circle (π)
-                # so the next beat's arc starts from the bottom and lands at the
-                # top — the v1 "return-to-bottom" behavior for beat anticipation.
-                self.state.creep_angle = np.pi  # bottom of circle
-                self.state.alpha = 0.0
-                self.state.beta = -1.0 * max(0.1, 0.98 - self.config.jitter.amplitude)
             else:
-                # Other modes: sync to where arc ended
+                # All modes: sync creep angle to where arc actually ended.
+                # No hard snaps — smooth continuation.
                 self._sync_creep_angle_to_position()
             # Start smooth blend from arc endpoint to creep orbit
             self._post_arc_blend = 0.0
