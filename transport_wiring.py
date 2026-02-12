@@ -16,6 +16,18 @@ def set_transport_sending(network_engine, enabled: bool) -> None:
     network_engine.set_sending_enabled(enabled)
 
 
+def trigger_network_test(network_engine) -> tuple[bool, bool]:
+    """Run network test pattern when connected.
+    Returns (did_trigger, should_restore_sending_state)."""
+    if not network_engine or not network_engine.connected:
+        return False, False
+
+    was_sending = network_engine.sending_enabled
+    network_engine.set_sending_enabled(True)
+    network_engine.send_test()
+    return True, not was_sending
+
+
 def begin_volume_ramp(now: float) -> dict:
     """Return canonical start state for play volume ramp."""
     return {
