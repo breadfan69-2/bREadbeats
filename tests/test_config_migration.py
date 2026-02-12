@@ -4,11 +4,13 @@ from dataclasses import asdict
 from pathlib import Path
 import unittest
 
-from main import (
+from config import (
     Config,
     CURRENT_CONFIG_VERSION,
-    _apply_dict_to_dataclass,
-    _migrate_config,
+    apply_dict_to_dataclass,
+    migrate_config,
+)
+from main import (
     get_config_file,
     load_config,
     save_config,
@@ -24,8 +26,8 @@ class TestConfigMigration(unittest.TestCase):
             "device_limits": {},
         }
 
-        _apply_dict_to_dataclass(cfg, data)
-        _migrate_config(cfg, data.get("version"))
+        apply_dict_to_dataclass(cfg, data)
+        migrate_config(cfg, data.get("version"))
 
         self.assertEqual(cfg.version, CURRENT_CONFIG_VERSION)
         self.assertEqual(cfg.stroke.noise_burst_magnitude, 1.0)
@@ -45,8 +47,8 @@ class TestConfigMigration(unittest.TestCase):
             },
         }
 
-        _apply_dict_to_dataclass(cfg, data)
-        _migrate_config(cfg, data.get("version"))
+        apply_dict_to_dataclass(cfg, data)
+        migrate_config(cfg, data.get("version"))
 
         self.assertEqual(cfg.version, CURRENT_CONFIG_VERSION)
         self.assertEqual(cfg.stroke.noise_burst_magnitude, 1.0)
@@ -68,8 +70,8 @@ class TestConfigMigration(unittest.TestCase):
             },
         }
 
-        _apply_dict_to_dataclass(cfg, data)
-        _migrate_config(cfg, data.get("version"))
+        apply_dict_to_dataclass(cfg, data)
+        migrate_config(cfg, data.get("version"))
 
         self.assertEqual(cfg.version, CURRENT_CONFIG_VERSION)
         self.assertEqual(cfg.stroke.noise_burst_magnitude, 2.5)

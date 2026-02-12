@@ -18,8 +18,7 @@ import json
 import os
 import random
 from pathlib import Path
-from dataclasses import asdict, is_dataclass
-from enum import IntEnum
+from dataclasses import asdict
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -41,8 +40,11 @@ from config import (
     BEAT_RESET_DEFAULTS,
     BeatDetectionType,
     Config,
+    CURRENT_CONFIG_VERSION,
     DeviceLimitsConfig,
     StrokeMode,
+    apply_dict_to_dataclass,
+    migrate_config,
 )
 from logging_utils import get_log_level, set_log_level
 from audio_engine import AudioEngine, BeatEvent
@@ -50,9 +52,6 @@ from network_engine import NetworkEngine, TCodeCommand
 from stroke_mapper import StrokeMapper
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
-
-
-CURRENT_CONFIG_VERSION = 1
 
 
 # Config persistence - use exe folder when packaged, home dir when running from source
@@ -72,60 +71,8 @@ def get_config_file() -> Path:
     return get_config_dir() / 'config.json'
 
 
-def _apply_dict_to_dataclass(target, data) -> None:
-    """Recursively apply values from a dict onto a dataclass instance.
-    Unknown keys are ignored; IntEnum fields are coerced when possible."""
-    if not isinstance(data, dict):
-        return
-
-    for key, value in data.items():
-        if not hasattr(target, key):
-            continue
-
-        current = getattr(target, key)
-
-        # Recurse into nested dataclasses
-        if is_dataclass(current) and isinstance(value, dict):
-            _apply_dict_to_dataclass(current, value)
-            continue
-
-        # Coerce IntEnum fields (e.g., StrokeMode)
-        if isinstance(current, IntEnum):
-            try:
-                setattr(target, key, current.__class__(value))
-                continue
-            except Exception:
-                print(f"[Config] Warning: Could not convert {key} to {current.__class__.__name__}, keeping default")
-                continue
-
-        setattr(target, key, value)
-
-
-def _migrate_config(config: Config, loaded_version) -> None:
-    """Upgrade older config structures to the current schema.
-    Adds defaults for newly introduced fields and bumps version."""
-    try:
-        version = int(loaded_version) if loaded_version is not None else 0
-    except Exception:
-        version = 0
-
-    # Migration to version 1: ensure new fields have sane defaults
-    if version < 1:
-        # stroke.noise_burst_magnitude introduced; sanitize zero/None
-        if getattr(config.stroke, 'noise_burst_magnitude', 1.0) in (None, 0):
-            config.stroke.noise_burst_magnitude = 1.0
-
-        # device_limits toggles introduced; sanitize None
-        if getattr(config.device_limits, 'p0_c0_sending_enabled', True) is None:
-            config.device_limits.p0_c0_sending_enabled = True
-        if getattr(config.device_limits, 'dont_show_on_startup', False) is None:
-            config.device_limits.dont_show_on_startup = False
-        if getattr(config.device_limits, 'prompted', False) is None:
-            config.device_limits.prompted = False
-        if getattr(config.device_limits, 'dry_run', False) is None:
-            config.device_limits.dry_run = False
-
-    config.version = CURRENT_CONFIG_VERSION
+_apply_dict_to_dataclass = apply_dict_to_dataclass
+_migrate_config = migrate_config
 
 def save_config(config: Config) -> bool:
     """Save config to JSON file"""
@@ -150,9 +97,9 @@ def load_config() -> Config:
 
             # Reconstruct Config from dict (handles nested dataclasses)
             config = Config()
-            _apply_dict_to_dataclass(config, data)
+            apply_dict_to_dataclass(config, data)
             loaded_version = data.get('version')
-            _migrate_config(config, loaded_version)
+            migrate_config(config, loaded_version)
 
             version = getattr(config, 'version', 'unknown')
             print(f"[Config] Loaded from {config_file} (version={version})")
