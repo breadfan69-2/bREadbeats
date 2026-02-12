@@ -195,6 +195,10 @@ class StrokeMapper:
         self._pending_arc_is_downbeat: bool = False
         self._arc_anchor_threshold: float = 0.35     # radians (~20°) — close enough to fire
 
+        # ---------- Locked anchor: pick top or bottom once, keep until silence ----------
+        # None = unlocked (first beat picks nearest), 0.0 = locked to top, π = locked to bottom
+        self._locked_anchor: Optional[float] = None
+
         # ---------- Stroke readiness gating ----------
         # Strokes only fire when metronome + traffic light conditions are met:
         #   Option A: metronome GREEN + traffic YELLOW or GREEN
@@ -444,6 +448,7 @@ class StrokeMapper:
                     self._fade_intensity = max(0.0, 1.0 - (elapsed / fade_duration))
                     if self.audio_engine and elapsed > silence_reset_threshold:
                         self.audio_engine.reset_tempo_tracking()
+                        self._locked_anchor = None  # unlock anchor for next song/section
                 else:
                     self._fade_intensity = 0.0
         else:
@@ -542,13 +547,22 @@ class StrokeMapper:
 
             if self._motion_mode == MotionMode.FULL_STROKE:
                 # High amplitude -> full arc strokes
-                # Check if creep is near top (0) or bottom (π) before firing.
-                # If not, defer the arc and let creep glide to the nearest anchor.
+                # Check if creep is near the locked anchor (top or bottom).
+                # First beat picks nearest and locks; held until silence reset.
                 raw_angle = self.state.creep_angle % (2 * np.pi)
                 dist_top = min(raw_angle, 2 * np.pi - raw_angle)
                 dist_bot = abs(raw_angle - np.pi)
-                nearest_anchor = 0.0 if dist_top <= dist_bot else np.pi
-                near_enough = min(dist_top, dist_bot) < self._arc_anchor_threshold
+
+                if self._locked_anchor is not None:
+                    # Already locked — always target the same anchor
+                    nearest_anchor = self._locked_anchor
+                else:
+                    # First beat — pick whichever is nearest and lock it
+                    nearest_anchor = 0.0 if dist_top <= dist_bot else np.pi
+                    self._locked_anchor = nearest_anchor
+
+                dist_to_anchor = dist_top if nearest_anchor == 0.0 else dist_bot
+                near_enough = dist_to_anchor < self._arc_anchor_threshold
 
                 if near_enough:
                     # Close enough — snap the last tiny gap and fire immediately
@@ -738,9 +752,9 @@ class StrokeMapper:
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
         else:
             beat_interval_ms = cfg.min_interval_ms
-        # 2x duration: arc spans two beat intervals (v1 legacy timing)
-        # This gives the arc enough time to sweep around and land AT the next beat
-        beat_interval_ms = int(beat_interval_ms * 2)
+        # 1x duration: arc completes exactly one full circle per beat interval
+        # Dot returns to anchor precisely when the next beat fires
+        beat_interval_ms = int(beat_interval_ms)
         # Band-speed scaling: low bands = faster (punchier), high = slower (gentler)
         band_speed = self._get_band_duration_scale(event)
         beat_interval_ms = int(beat_interval_ms * band_speed)
@@ -1220,12 +1234,24 @@ class StrokeMapper:
                     angle_increment = (2 * np.pi) / (updates_per_beat * self.config.beat.beats_per_measure)
 
                 if not self.state.creep_reset_active:
-                    # If a pending arc is waiting, steer toward the anchor at 3x speed
-                    if self._pending_arc_event is not None:
+                    # In FULL_STROKE: after arc completes, HOLD at anchor until next beat
+                    # (don't let creep drift the dot away from where it needs to be)
+                    if (self._motion_mode == MotionMode.FULL_STROKE 
+                            and self._trajectory is None
+                            and self._pending_arc_event is None
+                            and self._locked_anchor is not None):
+                        # Park at locked anchor — next beat fires from here
+                        self.state.creep_angle = self._locked_anchor
+                    elif self._pending_arc_event is not None:
+                        # Pending arc waiting — steer toward the anchor at 3x speed
                         angle_increment *= 3.0
-                    self.state.creep_angle += angle_increment
-                    if self.state.creep_angle >= 2 * np.pi:
-                        self.state.creep_angle -= 2 * np.pi
+                        self.state.creep_angle += angle_increment
+                        if self.state.creep_angle >= 2 * np.pi:
+                            self.state.creep_angle -= 2 * np.pi
+                    else:
+                        self.state.creep_angle += angle_increment
+                        if self.state.creep_angle >= 2 * np.pi:
+                            self.state.creep_angle -= 2 * np.pi
 
                     # Check if we've arrived at the pending arc's target anchor
                     if self._pending_arc_event is not None:
