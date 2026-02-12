@@ -14,11 +14,9 @@ print("\n[Startup] main.py loading heavy modules...", flush=True)
 import numpy as np
 import queue
 import threading
-import json
 import os
 import random
 from pathlib import Path
-from dataclasses import asdict
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -52,6 +50,12 @@ from network_engine import NetworkEngine, TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
 from close_persist_wiring import persist_runtime_ui_to_config
+from config_persistence import (
+    get_config_dir as _get_config_dir_impl,
+    get_config_file as _get_config_file_impl,
+    load_config as _load_config_impl,
+    save_config as _save_config_impl,
+)
 from frequency_utils import extract_dominant_freq
 from presets_wiring import get_presets_file_path, load_presets_data, resolve_p0_tcode_bounds, save_presets_data
 from slider_tuning_tracker import SliderTuningTracker
@@ -86,80 +90,14 @@ def _track_slider_value(name: str, value: float) -> None:
         pass
 
 
-# Config persistence - use exe folder when packaged, home dir when running from source
-def get_config_dir() -> Path:
-    """Get config directory - exe folder when packaged, home dir otherwise"""
-    if getattr(sys, 'frozen', False):
-        # Running as packaged exe - prefer same folder as exe
-        exe_dir = Path(sys.executable).parent
-        probe = exe_dir / '.breadbeats_write_test.tmp'
-        try:
-            with open(probe, 'w', encoding='utf-8') as f:
-                f.write('ok')
-            probe.unlink(missing_ok=True)
-            return exe_dir
-        except Exception:
-            # Fallback when exe dir is not writable (e.g. Program Files)
-            config_dir = Path.home() / '.breadbeats'
-            config_dir.mkdir(parents=True, exist_ok=True)
-            return config_dir
-    else:
-        # Running from source - use home directory
-        config_dir = Path.home() / '.breadbeats'
-        config_dir.mkdir(parents=True, exist_ok=True)
-        return config_dir
-
-def get_config_file() -> Path:
-    """Get config file path"""
-    return get_config_dir() / 'config.json'
-
-
 _apply_dict_to_dataclass = apply_dict_to_dataclass
 _migrate_config = migrate_config
 
-def save_config(config: Config) -> bool:
-    """Save config to JSON file"""
-    try:
-        config_file = get_config_file()
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_file, 'w') as f:
-            json.dump(asdict(config), f, indent=2)
-        print(f"[Config] Saved to {config_file}")
-        return True
-    except Exception as e:
-        print(f"[Config] Failed to save: {e}")
-        return False
-
-def load_config() -> Config:
-    """Load config from JSON file, returns default if not found"""
-    try:
-        config_file = get_config_file()
-        if config_file.exists():
-            with open(config_file, 'r') as f:
-                data = json.load(f)
-
-            # Reconstruct Config from dict (handles nested dataclasses)
-            config = Config()
-            apply_dict_to_dataclass(config, data)
-            loaded_version = data.get('version')
-            migrate_config(config, loaded_version)
-
-            version = getattr(config, 'version', 'unknown')
-            print(f"[Config] Loaded from {config_file} (version={version})")
-
-            # Auto-save migrated configs so version bumps persist
-            if loaded_version != version:
-                try:
-                    save_config(config)
-                except Exception as e:
-                    print(f"[Config] Warning: could not auto-save migrated config: {e}")
-            return config
-        else:
-            print(f"[Config] No saved config found, using defaults")
-            return Config()
-    except Exception as e:
-        print(f"[Config] Failed to load: {e}, using defaults")
-        return Config()
+# Compatibility aliases for existing imports/tests
+get_config_dir = _get_config_dir_impl
+get_config_file = _get_config_file_impl
+save_config = _save_config_impl
+load_config = _load_config_impl
 
 
 class SignalBridge(QObject):
