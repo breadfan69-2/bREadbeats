@@ -2322,11 +2322,14 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_to: float = 1.0
         self._volume_ramp_duration: float = 1.3  # 1.3s ramp
         
+        # Advanced controls dialog singleton reference
+        self._advanced_controls_dialog = None
+        
         # Auto-align target BPM tracking (wall-clock time-based)
         self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
         self._auto_align_stable_since: float = 0.0      # time.time() when stability started
         self._auto_align_is_stable: bool = False         # currently in stable state
-        self._auto_align_required_seconds: float = 0.5   # seconds of stability before first alignment
+        self._auto_align_required_seconds: float = 1.2   # seconds of stability before first alignment
         self._auto_align_last_adjust_time: float = 0.0   # time.time() of last ±1 BPM adjustment
         self._auto_align_cooldown: float = 0.3            # seconds between each ±1 BPM step
         self._last_sensed_bpm: float = 0.0
@@ -3110,12 +3113,21 @@ class BREadbeatsWindow(QMainWindow):
         """Show Advanced Controls dialog with experimental/expert settings"""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QScrollArea, QGroupBox, QSpinBox
         
+        # Prevent multiple instances — reuse existing dialog if open
+        if hasattr(self, '_advanced_controls_dialog') and self._advanced_controls_dialog is not None:
+            self._advanced_controls_dialog.raise_()
+            self._advanced_controls_dialog.activateWindow()
+            return
+        
         dialog = QDialog(self)
         dialog.setWindowTitle("Advanced Controls")
         dialog.setMinimumWidth(450)
         dialog.setMinimumHeight(400)
         dialog.setModal(False)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        # Clear reference when dialog is closed
+        dialog.destroyed.connect(lambda: setattr(self, '_advanced_controls_dialog', None))
+        self._advanced_controls_dialog = dialog
         
         layout = QVBoxLayout(dialog)
         layout.setSpacing(10)
@@ -3140,8 +3152,9 @@ class BREadbeatsWindow(QMainWindow):
         layout.addWidget(warning_box)
         
         # Scroll area for future controls
-        scroll = QScrollArea()
+        scroll = NoWheelScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(10)
@@ -3305,6 +3318,30 @@ class BREadbeatsWindow(QMainWindow):
         noise_mode_layout.addWidget(noise_primary_cb)
 
         scroll_layout.addWidget(noise_mode_group)
+
+        # ===== Post-Silence Volume Ramp =====
+        silence_ramp_group = QGroupBox("Post-Silence Volume Ramp")
+        silence_ramp_layout = QVBoxLayout(silence_ramp_group)
+
+        silence_ramp_info = QLabel("After silence (track change), reduce volume and slowly\nraise it back over a configurable duration.")
+        silence_ramp_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        silence_ramp_layout.addWidget(silence_ramp_info)
+
+        # Volume reduction slider (0% - 50%)
+        vol_reduction_slider = SliderWithLabel("Volume reduction (%)", 0.0, 0.50, self.config.stroke.post_silence_vol_reduction, 2)
+        vol_reduction_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'post_silence_vol_reduction', v)
+        )
+        silence_ramp_layout.addWidget(vol_reduction_slider)
+
+        # Ramp duration slider (1.0 - 8.0 seconds)
+        ramp_dur_slider = SliderWithLabel("Ramp duration (seconds)", 1.0, 8.0, self.config.stroke.post_silence_ramp_seconds, 1)
+        ramp_dur_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'post_silence_ramp_seconds', v)
+        )
+        silence_ramp_layout.addWidget(ramp_dur_slider)
+
+        scroll_layout.addWidget(silence_ramp_group)
 
         # ===== Flux Controls =====
         flux_group = QGroupBox("Flux Sensitivity")
@@ -4874,10 +4911,10 @@ bREadfan_69@hotmail.com"""
         bps_layout.addWidget(self.auto_align_target_cb)
         
         self.auto_align_seconds_spin = QDoubleSpinBox()
-        self.auto_align_seconds_spin.setRange(0.5, 8.0)
-        self.auto_align_seconds_spin.setValue(0.5)
-        self.auto_align_seconds_spin.setSingleStep(0.5)
-        self.auto_align_seconds_spin.setDecimals(1)
+        self.auto_align_seconds_spin.setRange(0.1, 8.0)
+        self.auto_align_seconds_spin.setValue(1.2)
+        self.auto_align_seconds_spin.setSingleStep(0.1)
+        self.auto_align_seconds_spin.setDecimals(2)
         self.auto_align_seconds_spin.setSuffix("s")
         self.auto_align_seconds_spin.setFixedWidth(60)
         self.auto_align_seconds_spin.setToolTip("Seconds of stable tempo required before auto-aligning target BPM")

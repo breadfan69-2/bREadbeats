@@ -215,6 +215,7 @@ class StrokeMapper:
         self._traffic_was_green: bool = False         # track if traffic was recently green
         self._traffic_left_green_time: float = 0.0    # when traffic left green
         self._metro_green_since: float = 0.0          # when metronome first became green
+        self._prev_had_any_light: bool = False        # was at least one light yellow+ last check (track cold-start)
 
         # ---------- Last confirmed beat time (for no-beat timeout) ----------
         self._last_confirmed_beat_time: float = 0.0   # wall-clock of last beat with stroke_ready
@@ -224,6 +225,12 @@ class StrokeMapper:
         # can compensate by shortening/lengthening its duration.
         self._last_snap_correction_ms: float = 0.0
         self._no_beat_timeout_s: float = 2.0           # seconds before returning to center+jitter
+
+        # ---------- Post-silence volume ramp ----------
+        # After silence/track-change reset, reduce volume and slowly ramp back up
+        self._post_silence_ramp_active: bool = False
+        self._post_silence_ramp_start: float = 0.0     # time.time() when ramp started
+        self._was_silent: bool = False                  # track if we were faded out
 
         # ---------- Flux-drop fallback ----------
         self._recent_flux_values: deque = deque(maxlen=60)  # ~1s of flux history for drop detection
@@ -287,10 +294,13 @@ class StrokeMapper:
     def _update_stroke_readiness(self, event: BeatEvent) -> None:
         """Determine if strokes should fire based on metronome + traffic light.
         
-        Conditions for strokes to fire (either):
-          A) Metronome GREEN (acf_conf >= 0.25) AND traffic YELLOW or GREEN
-          B) Metronome GREEN or YELLOW (acf_conf >= 0.05) AND traffic GREEN
-        Otherwise: creep/jitter only.
+        Rules (both lights = metronome + traffic):
+          - Both GREEN → fire strokes
+          - One GREEN + one YELLOW → fire strokes
+          - Both YELLOW → fire strokes ONLY if previously had at least one
+            light on (not coming from red/off state cold-start), OR if the
+            current frame has a confirmed beat/downbeat indicator
+          - Anything below both-yellow → don't fire (grace period applies)
         
         Grace period: when conditions drop, strokes continue for 1300ms
         before reverting to jitter. This prevents brief dips from
@@ -318,7 +328,7 @@ class StrokeMapper:
                 traffic_green = all_settled
                 traffic_yellow = any_settled and not all_settled
         
-        # Track traffic-was-green state (for option C)
+        # Track traffic-was-green state (for recovering from brief dips)
         if traffic_green:
             self._traffic_was_green = True
             self._traffic_left_green_time = 0.0
@@ -329,7 +339,7 @@ class StrokeMapper:
             if (now - self._traffic_left_green_time) > 3.0:
                 self._traffic_was_green = False
 
-        # Track metro-green stable duration (for option D)
+        # Track metro-green stable duration
         if metro_green:
             if self._metro_green_since == 0.0:
                 self._metro_green_since = now
@@ -338,19 +348,40 @@ class StrokeMapper:
         metro_stable_2s = (self._metro_green_since > 0
                            and (now - self._metro_green_since) >= 2.0)
 
+        # Determine current light levels
+        has_any_light = metro_yellow or traffic_yellow or metro_green or traffic_green
+
         if traffic_has_metrics:
-            option_a = metro_green and (traffic_yellow or traffic_green)
-            option_b = (metro_green or metro_yellow) and traffic_green
-            # C: traffic was recently green (now yellow) + metronome yellow/green
-            option_c = (traffic_yellow and self._traffic_was_green
-                        and (metro_green or metro_yellow))
-            # D: metronome green stable >2s, any traffic state
-            option_d = metro_stable_2s
-            conditions_met = option_a or option_b or option_c or option_d
+            # Rule: both green
+            both_green = metro_green and traffic_green
+            # Rule: one green + one yellow
+            mixed_green_yellow = ((metro_green and traffic_yellow)
+                                  or (metro_yellow and traffic_green))
+            # Rule: both yellow — only if NOT cold-starting from red/off,
+            # OR if beat/downbeat indicator confirms
+            both_yellow = metro_yellow and (traffic_yellow or traffic_green is False)
+            both_yellow_ok = False
+            if metro_yellow and traffic_yellow:
+                if self._prev_had_any_light:
+                    # Previously had lights on → trust both-yellow
+                    both_yellow_ok = True
+                elif event.is_beat or getattr(event, 'is_downbeat', False):
+                    # Cold start but beat/downbeat indicator confirms → allow
+                    both_yellow_ok = True
+            # Recovery: traffic was recently green (now yellow) + metronome yellow/green
+            option_recovery = (traffic_yellow and self._traffic_was_green
+                               and (metro_green or metro_yellow))
+            # Fallback: metronome green stable >2s, any traffic state
+            option_stable = metro_stable_2s
+            
+            conditions_met = (both_green or mixed_green_yellow
+                              or both_yellow_ok or option_recovery or option_stable)
         else:
             conditions_met = metro_yellow
+
+        # Update previous-light tracking for next iteration
+        self._prev_had_any_light = has_any_light
         
-        now = time.time()
         if conditions_met:
             # Conditions met — immediately ready, reset lost timer
             self._stroke_ready = True
@@ -532,8 +563,17 @@ class StrokeMapper:
                         self._locked_anchor = None  # unlock anchor for next song/section
                 else:
                     self._fade_intensity = 0.0
+                    self._was_silent = True
         else:
             self._consecutive_silent_count = 0
+            # Detect transition from silence → sound: trigger post-silence volume ramp
+            if self._was_silent and self._fade_intensity < 0.5:
+                self._post_silence_ramp_active = True
+                self._post_silence_ramp_start = now
+                self._was_silent = False
+                log_event("INFO", "StrokeMapper", "Post-silence volume ramp started",
+                          reduction=f"{cfg.post_silence_vol_reduction:.0%}",
+                          duration=f"{cfg.post_silence_ramp_seconds:.1f}s")
             self._fade_intensity = min(1.0, self._fade_intensity + 0.1)
             self._last_quiet_time = 0.0
 
@@ -671,6 +711,18 @@ class StrokeMapper:
             cmd.intensity *= self._fade_intensity
         if hasattr(cmd, 'volume'):
             cmd.volume *= self._fade_intensity
+            # Post-silence volume ramp: reduce volume and slowly raise back
+            if self._post_silence_ramp_active:
+                cfg = self.config.stroke
+                elapsed = time.time() - self._post_silence_ramp_start
+                ramp_dur = max(0.5, cfg.post_silence_ramp_seconds)
+                if elapsed >= ramp_dur:
+                    self._post_silence_ramp_active = False
+                else:
+                    # Start at (1 - reduction), ramp linearly to 1.0
+                    reduction = cfg.post_silence_vol_reduction
+                    ramp_mult = (1.0 - reduction) + reduction * (elapsed / ramp_dur)
+                    cmd.volume *= ramp_mult
         return cmd if self._fade_intensity > 0.01 else None
 
     # ------------------------------------------------------------------

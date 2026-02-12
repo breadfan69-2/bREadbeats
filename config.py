@@ -107,6 +107,10 @@ class StrokeConfig:
     # Flux-drop detection: if recent flux drops below this fraction of older flux, force creep
     flux_drop_ratio: float = 0.25           # 0.0-1.0, lower = less sensitive (needs bigger drop)
 
+    # Post-silence volume ramp: reduce volume after silence/track-change, ramp back up
+    post_silence_vol_reduction: float = 0.15  # Fraction to reduce volume by (0.0-0.50, 0.15 = 15%)
+    post_silence_ramp_seconds: float = 3.0    # Seconds to ramp volume back to full (1.0-8.0)
+
 @dataclass
 class JitterConfig:
     """Jitter - micro-circles when no beat detected"""
