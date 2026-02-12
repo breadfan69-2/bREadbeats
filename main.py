@@ -53,6 +53,7 @@ from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
 from close_persist_wiring import persist_runtime_ui_to_config
 from frequency_utils import extract_dominant_freq
+from presets_wiring import get_presets_file_path, load_presets_data, save_presets_data
 from slider_tuning_tracker import SliderTuningTracker
 from transport_wiring import (
     begin_volume_ramp,
@@ -5469,19 +5470,17 @@ bREadfan_69@hotmail.com"""
     
     def _get_presets_file_path(self) -> Path:
         """Get the path to the presets file - exe folder when packaged, workspace when developing"""
-        if getattr(sys, 'frozen', False):
-            # Running as packaged exe - save in same folder as exe
-            return Path(sys.executable).parent / "presets.json"
-        else:
-            # Running from source - use workspace folder (for editing factory presets)
-            return Path(__file__).parent / "presets.json"
+        return get_presets_file_path(
+            frozen=getattr(sys, 'frozen', False),
+            executable_path=str(sys.executable),
+            source_file=__file__,
+        )
     
     def _save_presets_to_disk(self):
         """Save all custom presets to disk"""
         try:
             presets_file = self._get_presets_file_path()
-            with open(presets_file, 'w') as f:
-                json.dump(self.custom_beat_presets, f, indent=2)
+            save_presets_data(presets_file, self.custom_beat_presets)
             print(f"[Presets] Saved {len(self.custom_beat_presets)} presets to {presets_file}")
         except Exception as e:
             print(f"[Presets] Error saving presets: {e}")
@@ -5490,20 +5489,17 @@ bREadfan_69@hotmail.com"""
         """Load custom presets from disk"""
         try:
             presets_file = self._get_presets_file_path()
-            
-            # If no user presets file exists, try to copy factory presets from bundled location
-            if not presets_file.exists() and getattr(sys, 'frozen', False):
-                meipass = getattr(sys, '_MEIPASS', None)
-                if meipass:
-                    factory_presets = Path(meipass) / 'presets.json'
-                    if factory_presets.exists():
-                        import shutil
-                        shutil.copy(factory_presets, presets_file)
-                        print(f"[Presets] Copied factory presets to {presets_file}")
-            
-            if presets_file.exists():
-                with open(presets_file, 'r') as f:
-                    self.custom_beat_presets = json.load(f)
+            was_missing = not presets_file.exists()
+            self.custom_beat_presets = load_presets_data(
+                presets_file,
+                frozen=getattr(sys, 'frozen', False),
+                meipass=getattr(sys, '_MEIPASS', None),
+            )
+
+            if was_missing and presets_file.exists() and self.custom_beat_presets:
+                print(f"[Presets] Copied factory presets to {presets_file}")
+
+            if self.custom_beat_presets:
                 # Mark buttons that have saved presets and apply custom names
                 for idx, preset_data in self.custom_beat_presets.items():
                     idx_int = int(idx)
@@ -5514,7 +5510,6 @@ bREadfan_69@hotmail.com"""
                             self.preset_buttons[idx_int].setText(preset_data['preset_name'])
                 print(f"[Presets] Loaded {len(self.custom_beat_presets)} presets from {presets_file}")
             else:
-                self.custom_beat_presets = {}
                 print(f"[Presets] No presets file found, starting with empty presets")
         except Exception as e:
             print(f"[Presets] Error loading presets: {e}")
