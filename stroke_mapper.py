@@ -1207,16 +1207,18 @@ class StrokeMapper:
                 self.state.creep_angle += 2 * np.pi
         traj.current_index = target_idx + 1
 
-        # ===== SNAP TO TARGET =====
-        # When arc is >90% complete and close to final point, snap to end
-        # so the dot doesn't visibly drift past the beat landing.
-        progress = traj.current_index / max(1, traj.n_points)
-        if progress > 0.90 and traj.current_index < traj.n_points:
+        # ===== SNAP TO TARGET (only when about to miss the beat) =====
+        # Only snap if we have a beat_target_time and the beat is imminent
+        # (within 50ms). This prevents snapping during normal smooth arcs
+        # and only activates when the dot would visibly miss the landing.
+        if (traj.beat_target_time > 0
+                and traj.current_index < traj.n_points
+                and 0 < (traj.beat_target_time - now) < 0.050):
             final_a = float(traj.alpha_points[-1])
             final_b = float(traj.beta_points[-1])
             dist = np.sqrt((alpha - final_a)**2 + (beta - final_b)**2)
-            if dist < 0.08:
-                # Close enough — snap to final position
+            if dist < 0.12:
+                # Beat is <50ms away and we're close — snap to landing
                 alpha = final_a
                 beta = final_b
                 self.state.alpha = alpha
