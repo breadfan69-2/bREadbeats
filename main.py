@@ -51,6 +51,7 @@ from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
+from close_persist_wiring import persist_runtime_ui_to_config
 from slider_tuning_tracker import SliderTuningTracker
 from transport_wiring import (
     begin_volume_ramp,
@@ -6744,37 +6745,7 @@ bREadfan_69@hotmail.com"""
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
         shutdown_runtime(self._stop_engines, self.network_engine)
 
-        # Save all settings from sliders to config before closing
-        self.config.stroke.phase_advance = self.phase_advance_slider.value()
-        self.config.pulse_freq.monitor_freq_min = self.pulse_freq_range_slider.low()
-        self.config.pulse_freq.monitor_freq_max = self.pulse_freq_range_slider.high()
-        self.config.pulse_freq.tcode_min = int(self.tcode_freq_range_slider.low())
-        self.config.pulse_freq.tcode_max = int(self.tcode_freq_range_slider.high())
-        self.config.pulse_freq.freq_weight = self.freq_weight_slider.value()
-        
-        # Save carrier freq (F0) settings
-        self.config.carrier_freq.monitor_freq_min = self.f0_freq_range_slider.low()
-        self.config.carrier_freq.monitor_freq_max = self.f0_freq_range_slider.high()
-        self.config.carrier_freq.tcode_min = int(self.f0_tcode_range_slider.low())
-        self.config.carrier_freq.tcode_max = int(self.f0_tcode_range_slider.high())
-        self.config.carrier_freq.freq_weight = self.f0_weight_slider.value()
-        
-        self.config.volume = self.volume_slider.value() / 100.0
-        
-        # Save axis weights from Effects tab
-        self.config.alpha_weight = self.alpha_weight_slider.value()
-        self.config.beta_weight = self.beta_weight_slider.value()
-        
-        # Save tempo tracking settings
-        self.config.beat.tempo_tracking_enabled = self.tempo_tracking_checkbox.isChecked()
-        beats_map = {0: 4, 1: 3, 2: 6}
-        self.config.beat.beats_per_measure = beats_map.get(self.time_sig_combo.currentIndex(), 4)
-        self.config.beat.stability_threshold = self.stability_threshold_slider.value()
-        self.config.beat.tempo_timeout_ms = int(self.tempo_timeout_slider.value())
-        self.config.beat.phase_snap_weight = self.phase_snap_slider.value()
-        
-        # Save auto-adjust global toggle
-        self.config.auto_adjust.metrics_global_enabled = self.metrics_global_cb.isChecked()
+        persist_runtime_ui_to_config(self, self.config)
         
         # Save config before closing
         save_config(self.config)
