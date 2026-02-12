@@ -45,6 +45,23 @@ class TestConfigPersistence(unittest.TestCase):
             self.assertEqual(loaded.version, 1)
             self.assertEqual(loaded.stroke.noise_burst_magnitude, 1.0)
 
+    def test_load_invalid_json_returns_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_file = Path(tmpdir) / "config.json"
+            with open(cfg_file, "w", encoding="utf-8") as f:
+                f.write("{invalid json")
+
+            with mock.patch.object(config_persistence, "get_config_file", return_value=cfg_file):
+                loaded = config_persistence.load_config()
+
+            self.assertIsInstance(loaded, Config)
+
+    def test_save_failure_returns_false(self):
+        cfg = Config()
+
+        with mock.patch.object(config_persistence, "get_config_file", side_effect=OSError("boom")):
+            self.assertFalse(config_persistence.save_config(cfg))
+
 
 if __name__ == "__main__":
     unittest.main()
