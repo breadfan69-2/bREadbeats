@@ -5,6 +5,7 @@ from transport_wiring import (
     play_button_text,
     send_zero_volume_immediate,
     set_transport_sending,
+    shutdown_runtime,
     start_stop_ui_state,
     trigger_network_test,
 )
@@ -25,6 +26,9 @@ class DummyEngine:
 
     def send_test(self):
         self.test_called += 1
+
+    def stop(self):
+        self.stopped = True
 
 
 class TestTransportWiring(unittest.TestCase):
@@ -103,6 +107,30 @@ class TestTransportWiring(unittest.TestCase):
     def test_play_button_text(self):
         self.assertEqual(play_button_text(True), "⏸ Pause")
         self.assertEqual(play_button_text(False), "▶ Play")
+
+    def test_shutdown_runtime(self):
+        calls = []
+
+        def stop_engines():
+            calls.append('engines')
+
+        engine = DummyEngine()
+        engine.stopped = False
+
+        shutdown_runtime(stop_engines, engine)
+
+        self.assertEqual(calls, ['engines'])
+        self.assertTrue(engine.stopped)
+
+    def test_shutdown_runtime_without_network(self):
+        calls = []
+
+        def stop_engines():
+            calls.append('engines')
+
+        shutdown_runtime(stop_engines, None)
+
+        self.assertEqual(calls, ['engines'])
 
 
 if __name__ == "__main__":
