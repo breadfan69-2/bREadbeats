@@ -10,10 +10,9 @@ from config import (
     apply_dict_to_dataclass,
     migrate_config,
 )
+import config_persistence as config_persistence_module
 from main import (
-    get_config_file,
     load_config,
-    save_config,
 )
 
 
@@ -91,9 +90,9 @@ class TestConfigMigration(unittest.TestCase):
         with open(tmp.name, "w") as f:
             json.dump(legacy_data, f)
 
-        # Monkeypatch get_config_file/save_config to use the temp file
-        orig_get_config_file = get_config_file
-        orig_save_config = save_config
+        # Monkeypatch config_persistence get_config_file/save_config to use temp file
+        orig_get_config_file = config_persistence_module.get_config_file
+        orig_save_config = config_persistence_module.save_config
         calls = {}
 
         def fake_get_config_file():
@@ -106,10 +105,8 @@ class TestConfigMigration(unittest.TestCase):
             return True
 
         try:
-            import main as main_module
-
-            main_module.get_config_file = fake_get_config_file  # type: ignore
-            main_module.save_config = fake_save_config  # type: ignore
+            config_persistence_module.get_config_file = fake_get_config_file  # type: ignore
+            config_persistence_module.save_config = fake_save_config  # type: ignore
 
             cfg = load_config()
 
@@ -121,10 +118,8 @@ class TestConfigMigration(unittest.TestCase):
             self.assertEqual(persisted.get("version"), CURRENT_CONFIG_VERSION)
         finally:
             # Restore originals
-            import main as main_module
-
-            main_module.get_config_file = orig_get_config_file  # type: ignore
-            main_module.save_config = orig_save_config  # type: ignore
+            config_persistence_module.get_config_file = orig_get_config_file  # type: ignore
+            config_persistence_module.save_config = orig_save_config  # type: ignore
 
 
 if __name__ == "__main__":
