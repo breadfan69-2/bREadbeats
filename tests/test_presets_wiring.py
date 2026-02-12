@@ -50,6 +50,15 @@ class TestPresetsWiring(unittest.TestCase):
             self.assertEqual(loaded, factory_payload)
             self.assertTrue(presets_file.exists())
 
+    def test_load_presets_data_invalid_json_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            presets_file = Path(tmpdir) / "presets.json"
+            with open(presets_file, "w", encoding="utf-8") as f:
+                f.write("{not valid json")
+
+            loaded = load_presets_data(presets_file, frozen=False, meipass=None)
+            self.assertEqual(loaded, {})
+
     def test_resolve_p0_tcode_bounds_new_keys(self):
         preset = {"tcode_min": 2100, "tcode_max": 7200}
         lo, hi = resolve_p0_tcode_bounds(preset)
