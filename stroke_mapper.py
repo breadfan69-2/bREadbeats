@@ -189,6 +189,12 @@ class StrokeMapper:
         # ---------- Beats-between-strokes counter ----------
         self._beats_since_stroke: int = 0  # counts how many beats have passed since last full stroke
 
+        # ---------- Pending arc: glide to top/bottom before firing ----------
+        self._pending_arc_event: Optional[BeatEvent] = None
+        self._pending_arc_target: float = 0.0       # 0.0 = top, π = bottom
+        self._pending_arc_is_downbeat: bool = False
+        self._arc_anchor_threshold: float = 0.35     # radians (~20°) — close enough to fire
+
         # ---------- Stroke readiness gating ----------
         # Strokes only fire when metronome + traffic light conditions are met:
         #   Option A: metronome GREEN + traffic YELLOW or GREEN
@@ -334,6 +340,7 @@ class StrokeMapper:
             if self._rms_envelope < gate_low:
                 self._motion_mode = MotionMode.CREEP_MICRO
                 self._mode_switch_time = now
+                self._pending_arc_event = None  # Cancel any deferred arc
                 # Sync creep angle to current position on mode switch
                 self._sync_creep_angle_to_position()
         if old != self._motion_mode:
@@ -535,17 +542,34 @@ class StrokeMapper:
 
             if self._motion_mode == MotionMode.FULL_STROKE:
                 # High amplitude -> full arc strokes
-                # New beat always overrides any running trajectory — this
-                # prevents the old arc from blocking the new beat and causing
-                # the motion to fall behind the actual tempo.
-                if is_downbeat:
-                    cmd = self._generate_downbeat_stroke(event)
-                    return self._apply_fade(cmd)
+                # Check if creep is near top (0) or bottom (π) before firing.
+                # If not, defer the arc and let creep glide to the nearest anchor.
+                raw_angle = self.state.creep_angle % (2 * np.pi)
+                dist_top = min(raw_angle, 2 * np.pi - raw_angle)
+                dist_bot = abs(raw_angle - np.pi)
+                nearest_anchor = 0.0 if dist_top <= dist_bot else np.pi
+                near_enough = min(dist_top, dist_bot) < self._arc_anchor_threshold
+
+                if near_enough:
+                    # Close enough — snap the last tiny gap and fire immediately
+                    self.state.creep_angle = nearest_anchor
+                    self._pending_arc_event = None
+                    if is_downbeat:
+                        cmd = self._generate_downbeat_stroke(event)
+                        return self._apply_fade(cmd)
+                    else:
+                        is_high_flux = event.spectral_flux >= cfg.flux_threshold
+                        if not is_high_flux:
+                            return None
+                        cmd = self._generate_beat_stroke(event)
+                        return self._apply_fade(cmd)
                 else:
-                    is_high_flux = event.spectral_flux >= cfg.flux_threshold
-                    if not is_high_flux:
-                        return None
-                    cmd = self._generate_beat_stroke(event)
+                    # Not at an anchor — defer: store event and let creep glide there
+                    self._pending_arc_event = event
+                    self._pending_arc_target = nearest_anchor
+                    self._pending_arc_is_downbeat = is_downbeat
+                    # Fall through to idle motion for this frame
+                    cmd = self._generate_idle_motion(event)
                     return self._apply_fade(cmd)
 
             else:  # CREEP_MICRO
@@ -659,7 +683,7 @@ class StrokeMapper:
 
         n_points = max(16, int(measure_duration_ms / 20))
         # Arc starts from current creep angle, sweeps exactly 360° over
-        # one beat interval.  No phase offsets — pure math timing.
+        # one beat interval.  Creep is steered to top/bottom before we get here.
         current_phase = self.state.creep_angle / (2 * np.pi)
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
@@ -764,8 +788,8 @@ class StrokeMapper:
             self.spiral_beat_index = next_index % N
         else:
             n_points = max(8, int(beat_interval_ms / 10))
-            # Arc starts from current creep angle, sweeps exactly 360°
-            # over the beat interval.  Pure math timing, no phase offsets.
+            # Arc starts from current creep angle, sweeps exactly 360°.
+            # Creep is steered to top/bottom before we get here.
             current_phase = self.state.creep_angle / (2 * np.pi)
             arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
             alpha_arc = np.zeros(n_points)
@@ -836,8 +860,8 @@ class StrokeMapper:
         depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
 
         n_points = max(12, int(half_beat_ms / 10))
-        # Full-circle arc from current position at 2x speed (within half-beat duration)
-        # Pure math timing, no phase offsets.
+        # Arc starts from current creep angle, sweeps exactly 360°.
+        # Creep is steered to top/bottom before we get here.
         current_phase = self.state.creep_angle / (2 * np.pi)
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
@@ -1196,9 +1220,31 @@ class StrokeMapper:
                     angle_increment = (2 * np.pi) / (updates_per_beat * self.config.beat.beats_per_measure)
 
                 if not self.state.creep_reset_active:
+                    # If a pending arc is waiting, steer toward the anchor at 3x speed
+                    if self._pending_arc_event is not None:
+                        angle_increment *= 3.0
                     self.state.creep_angle += angle_increment
                     if self.state.creep_angle >= 2 * np.pi:
                         self.state.creep_angle -= 2 * np.pi
+
+                    # Check if we've arrived at the pending arc's target anchor
+                    if self._pending_arc_event is not None:
+                        raw = self.state.creep_angle % (2 * np.pi)
+                        target = self._pending_arc_target
+                        dist = abs(raw - target)
+                        if dist > np.pi:
+                            dist = 2 * np.pi - dist
+                        if dist < self._arc_anchor_threshold:
+                            # Arrived — snap to exact anchor and fire the arc
+                            self.state.creep_angle = target
+                            pending_event = self._pending_arc_event
+                            pending_downbeat = self._pending_arc_is_downbeat
+                            self._pending_arc_event = None
+                            if pending_downbeat:
+                                cmd = self._generate_downbeat_stroke(pending_event)
+                            else:
+                                cmd = self._generate_beat_stroke(pending_event)
+                            return self._apply_fade(cmd)
 
                 jitter_r = jitter_cfg.amplitude if jitter_active else 0.0
 

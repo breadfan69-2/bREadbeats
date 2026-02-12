@@ -2308,9 +2308,9 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
         self._auto_align_stable_since: float = 0.0      # time.time() when stability started
         self._auto_align_is_stable: bool = False         # currently in stable state
-        self._auto_align_required_seconds: float = 3.0   # seconds of stability before first alignment
+        self._auto_align_required_seconds: float = 0.5   # seconds of stability before first alignment
         self._auto_align_last_adjust_time: float = 0.0   # time.time() of last ±1 BPM adjustment
-        self._auto_align_cooldown: float = 0.8            # seconds between each ±1 BPM step
+        self._auto_align_cooldown: float = 0.3            # seconds between each ±1 BPM step
         self._last_sensed_bpm: float = 0.0
         
         # State
@@ -3198,7 +3198,7 @@ class BREadbeatsWindow(QMainWindow):
         burst_layout.addWidget(burst_enabled_cb)
 
         # Flux multiplier slider
-        burst_flux_slider = SliderWithLabel("Burst sensitivity (flux multiplier)", 1.0, 5.0, self.config.stroke.noise_burst_flux_multiplier, 1)
+        burst_flux_slider = SliderWithLabel("Burst sensitivity (flux multiplier)", 0.5, 5.0, self.config.stroke.noise_burst_flux_multiplier, 1)
         burst_flux_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'noise_burst_flux_multiplier', v)
         )
@@ -4795,8 +4795,8 @@ bREadfan_69@hotmail.com"""
         bps_layout.addWidget(self.auto_align_target_cb)
         
         self.auto_align_seconds_spin = QDoubleSpinBox()
-        self.auto_align_seconds_spin.setRange(1.0, 8.0)
-        self.auto_align_seconds_spin.setValue(3.0)
+        self.auto_align_seconds_spin.setRange(0.5, 8.0)
+        self.auto_align_seconds_spin.setValue(0.5)
         self.auto_align_seconds_spin.setSingleStep(0.5)
         self.auto_align_seconds_spin.setDecimals(1)
         self.auto_align_seconds_spin.setSuffix("s")
