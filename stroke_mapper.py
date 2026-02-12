@@ -526,7 +526,7 @@ class StrokeMapper:
             ratios.append(1.0)
         for i in range(second_half):
             t = i / max(1, second_half - 1) if second_half > 1 else 0.0
-            ratios.append(1.0 - 0.5 * t)
+            ratios.append(1.0 - 0.15 * t)
         # Normalise so durations sum to total_ms
         total_ratio = sum(ratios)
         durations = [max(5, int(total_ms * r / total_ratio)) for r in ratios]
@@ -601,11 +601,13 @@ class StrokeMapper:
             beta_arc[i] = b
             self.state.phase = prev_phase
 
-        base_step = measure_duration_ms // n_points
-        remainder = measure_duration_ms % n_points
-        step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
-        # Apply thump acceleration (arc speeds up at the end for a landing thump)
-        step_durations = self._make_thump_durations(measure_duration_ms, n_points)
+        # Apply thump acceleration or uniform durations based on config
+        if cfg.thump_enabled:
+            step_durations = self._make_thump_durations(measure_duration_ms, n_points)
+        else:
+            base_step = measure_duration_ms // n_points
+            remainder = measure_duration_ms % n_points
+            step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
 
         # Store trajectory for frame-by-frame playback (no thread)
         self._trajectory = PlannedTrajectory(
@@ -709,11 +711,13 @@ class StrokeMapper:
                 beta_arc[i] = b
                 self.state.phase = prev_phase
 
-        base_step = beat_interval_ms // n_points
-        remainder = beat_interval_ms % n_points
-        step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
-        # Apply thump acceleration (arc speeds up at the end for a landing thump)
-        step_durations = self._make_thump_durations(beat_interval_ms, n_points)
+        # Apply thump acceleration or uniform durations based on config
+        if cfg.thump_enabled:
+            step_durations = self._make_thump_durations(beat_interval_ms, n_points)
+        else:
+            base_step = beat_interval_ms // n_points
+            remainder = beat_interval_ms % n_points
+            step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
 
         # Store trajectory for frame-by-frame playback (no thread)
         self._trajectory = PlannedTrajectory(
@@ -781,7 +785,12 @@ class StrokeMapper:
             beta_arc[i] = b
             self.state.phase = prev_phase
 
-        step_durations = self._make_thump_durations(half_beat_ms, n_points)
+        if cfg.thump_enabled:
+            step_durations = self._make_thump_durations(half_beat_ms, n_points)
+        else:
+            base_step = half_beat_ms // n_points
+            remainder = half_beat_ms % n_points
+            step_durations = [base_step + 1 if i < remainder else base_step for i in range(n_points)]
 
         self._trajectory = PlannedTrajectory(
             alpha_points=alpha_arc,
@@ -1142,15 +1151,20 @@ class StrokeMapper:
                     base_alpha = target_alpha
                     base_beta = target_beta
             else:
+                # No tempo: return to center and oscillate/jitter there
+                # Use a fixed gentle rotation speed (~1 revolution per 6 seconds)
+                # so creep_cfg.speed still scales it but never stalls
+                no_tempo_speed = max(0.02, creep_cfg.speed) * 0.05
                 if not self.state.creep_reset_active:
-                    self.state.creep_angle += creep_cfg.speed * 0.02
+                    self.state.creep_angle += no_tempo_speed
                     if self.state.creep_angle >= 2 * np.pi:
                         self.state.creep_angle -= 2 * np.pi
-                oscillation = 0.2 + 0.1 * np.sin(self.state.creep_angle)
-                target_alpha = oscillation * np.sin(self.state.creep_angle * 0.5)
-                target_beta = oscillation * np.cos(self.state.creep_angle * 0.5) - 0.2
+                # Small oscillation around center (0,0) — gentle wobble while waiting for tempo
+                osc_radius = 0.08
+                target_alpha = np.sin(self.state.creep_angle) * osc_radius
+                target_beta = np.cos(self.state.creep_angle) * osc_radius
 
-                # Smooth blend for non-creep mode too
+                # Smooth blend toward center
                 if self._post_arc_blend < 1.0:
                     self._post_arc_blend = min(1.0, self._post_arc_blend + self._post_arc_blend_rate)
                     base_alpha = alpha + (target_alpha - alpha) * self._post_arc_blend
