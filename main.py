@@ -2285,6 +2285,11 @@ class BREadbeatsWindow(QMainWindow):
         self._f0_last_send_time: float = 0.0  # For throttling F0 sends
         self._f0_last_sent_tcode: Optional[int] = None  # Last F0 tcode value sent (for smoothing)
         self._f0_duration_base_ms: float = 900.0  # Base F0 duration (ms)
+        # C0 Band mode rate limiter: +-500 tcode per 2 seconds, finish travel before new target
+        self._c0_band_target: Optional[int] = None   # Current target tcode for band mode
+        self._c0_band_current: Optional[int] = None   # Current sent tcode value (traveling)
+        self._c0_band_last_target_time: float = 0.0   # When last target was set
+        self._c0_band_travel_rate: float = 250.0       # Max tcode change per second (500/2s)
         self._f0_duration_variance_ms: float = 200.0  # ±variance for random duration
         self._f0_max_change_per_send: int = 300  # Max ±300 tcode change per send
         self._last_freq_display_time: float = 0.0  # Throttle freq display updates to 100ms
@@ -3068,7 +3073,7 @@ class BREadbeatsWindow(QMainWindow):
 
     def _on_advanced_controls(self):
         """Show Advanced Controls dialog with experimental/expert settings"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QScrollArea, QGroupBox
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QScrollArea, QGroupBox, QSpinBox
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Advanced Controls")
@@ -3106,14 +3111,145 @@ class BREadbeatsWindow(QMainWindow):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(10)
         
-        # Placeholder for future advanced controls
-        placeholder_group = QGroupBox("Advanced Settings (TBD)")
-        placeholder_layout = QVBoxLayout(placeholder_group)
-        placeholder_label = QLabel("Advanced control sliders and spinboxes\nwill be added here in future updates.")
-        placeholder_label.setStyleSheet("color: #888; font-style: italic;")
-        placeholder_layout.addWidget(placeholder_label)
-        scroll_layout.addWidget(placeholder_group)
-        
+        # ===== Syncopation Controls =====
+        syncope_group = QGroupBox("Syncopation / Double-Stroke")
+        syncope_layout = QVBoxLayout(syncope_group)
+
+        # On/Off checkbox
+        syncope_enabled_cb = QCheckBox("Enable syncopation detection")
+        syncope_enabled_cb.setChecked(self.config.beat.syncopation_enabled)
+        syncope_enabled_cb.stateChanged.connect(
+            lambda state: setattr(self.config.beat, 'syncopation_enabled', state == 2)
+        )
+        syncope_layout.addWidget(syncope_enabled_cb)
+
+        # Band selector
+        from PyQt6.QtWidgets import QComboBox, QHBoxLayout as QHBox
+        band_row = QHBox()
+        band_label = QLabel("Detection band:")
+        band_label.setStyleSheet("color: #ccc;")
+        band_row.addWidget(band_label)
+        band_combo = QComboBox()
+        band_options = ['any', 'sub_bass', 'low_mid', 'mid', 'high']
+        band_combo.addItems(band_options)
+        current_band = self.config.beat.syncopation_band
+        if current_band in band_options:
+            band_combo.setCurrentIndex(band_options.index(current_band))
+        band_combo.currentTextChanged.connect(
+            lambda text: setattr(self.config.beat, 'syncopation_band', text)
+        )
+        band_row.addWidget(band_combo)
+        syncope_layout.addLayout(band_row)
+
+        # Syncopation window slider
+        syncope_window_slider = SliderWithLabel("Off-beat window (± beat fraction)", 0.05, 0.30, self.config.beat.syncopation_window, 2)
+        syncope_window_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'syncopation_window', v)
+        )
+        syncope_layout.addWidget(syncope_window_slider)
+
+        # BPM limit slider
+        syncope_bpm_slider = SliderWithLabel("BPM limit (disable above)", 80.0, 200.0, self.config.beat.syncopation_bpm_limit, 0)
+        syncope_bpm_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'syncopation_bpm_limit', v)
+        )
+        syncope_layout.addWidget(syncope_bpm_slider)
+
+        scroll_layout.addWidget(syncope_group)
+
+        # ===== Amplitude Gate Controls =====
+        gate_group = QGroupBox("Amplitude Gate (Stroke vs Creep)")
+        gate_layout = QVBoxLayout(gate_group)
+
+        gate_info = QLabel("Controls when full strokes activate vs quiet creep mode.\nLower = more sensitive (strokes on quieter audio).")
+        gate_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        gate_layout.addWidget(gate_info)
+
+        # Gate high slider (threshold to enter FULL_STROKE)
+        gate_high_slider = SliderWithLabel("Full stroke threshold (enter)", 0.01, 0.20, self.config.stroke.amplitude_gate_high, 3)
+        gate_high_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'amplitude_gate_high', v)
+        )
+        gate_layout.addWidget(gate_high_slider)
+
+        # Gate low slider (threshold to drop to CREEP_MICRO)
+        gate_low_slider = SliderWithLabel("Creep threshold (exit)", 0.005, 0.10, self.config.stroke.amplitude_gate_low, 3)
+        gate_low_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'amplitude_gate_low', v)
+        )
+        gate_layout.addWidget(gate_low_slider)
+
+        scroll_layout.addWidget(gate_group)
+
+        # ===== Noise Burst Controls (Hybrid System) =====
+        burst_group = QGroupBox("Noise Burst (Transient Reaction)")
+        burst_layout = QVBoxLayout(burst_group)
+
+        burst_info = QLabel("React immediately to sudden loud sounds between beats.\nCombines noise-driven speed with metronome-timed arcs.")
+        burst_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        burst_layout.addWidget(burst_info)
+
+        # On/Off checkbox
+        burst_enabled_cb = QCheckBox("Enable noise burst arcs")
+        burst_enabled_cb.setChecked(self.config.stroke.noise_burst_enabled)
+        burst_enabled_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'noise_burst_enabled', state == 2)
+        )
+        burst_layout.addWidget(burst_enabled_cb)
+
+        # Flux multiplier slider
+        burst_flux_slider = SliderWithLabel("Burst sensitivity (flux multiplier)", 1.0, 5.0, self.config.stroke.noise_burst_flux_multiplier, 1)
+        burst_flux_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'noise_burst_flux_multiplier', v)
+        )
+        burst_layout.addWidget(burst_flux_slider)
+
+        scroll_layout.addWidget(burst_group)
+
+        # ===== Beats Between Strokes =====
+        bbs_group = QGroupBox("Stroke Timing")
+        bbs_layout = QVBoxLayout(bbs_group)
+
+        bbs_info = QLabel("Only fire full arc strokes every Nth beat.\nHigher = slower motion. Downbeats always fire.")
+        bbs_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        bbs_layout.addWidget(bbs_info)
+
+        bbs_row = QHBoxLayout()
+        bbs_label = QLabel("Beats between strokes:")
+        bbs_label.setStyleSheet("color: #ccc;")
+        bbs_row.addWidget(bbs_label)
+        bbs_spin = QSpinBox()
+        bbs_spin.setMinimum(1)
+        bbs_spin.setMaximum(8)
+        bbs_spin.setValue(self.config.stroke.beats_between_strokes)
+        bbs_spin.setToolTip("1 = every beat, 2 = every 2nd, 4 = every 4th, 8 = every 8th")
+        bbs_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'beats_between_strokes', v)
+        )
+        bbs_row.addWidget(bbs_spin)
+        bbs_layout.addLayout(bbs_row)
+
+        scroll_layout.addWidget(bbs_group)
+
+        # ===== Noise-Primary Mode =====
+        noise_mode_group = QGroupBox("Noise vs Metronome Priority")
+        noise_mode_layout = QVBoxLayout(noise_mode_group)
+
+        noise_mode_info = QLabel("DEFAULT: metronome fires strokes, noise adds bursts.\n"
+                                 "REVERSED: noise fires strokes, metronome verifies timing.\n"
+                                 "Reversed mode reacts faster to transients.")
+        noise_mode_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        noise_mode_layout.addWidget(noise_mode_info)
+
+        noise_primary_cb = QCheckBox("Noise-primary mode (reversed)")
+        noise_primary_cb.setChecked(self.config.stroke.noise_primary_mode)
+        noise_primary_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'noise_primary_mode', state == 2)
+        )
+        noise_mode_layout.addWidget(noise_primary_cb)
+
+        scroll_layout.addWidget(noise_mode_group)
+
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         
@@ -3646,19 +3782,27 @@ bREadfan_69@hotmail.com"""
         self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         right_stack.addWidget(self.bpm_label)
 
-        # Beat & Downbeat indicators (bottom of right stack)
+        # Beat & Downbeat & Metronome Sync indicators (bottom of right stack)
         beat_row = QHBoxLayout()
         beat_row.setSpacing(4)
         self.beat_indicator = QLabel("●")
         self.beat_indicator.setStyleSheet("color: #333; font-size: 20px;")
         self.beat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.beat_indicator.setFixedWidth(30)
+        self.beat_indicator.setFixedWidth(24)
+        self.beat_indicator.setToolTip("Beat")
         beat_row.addWidget(self.beat_indicator)
         self.downbeat_indicator = QLabel("●")
         self.downbeat_indicator.setStyleSheet("color: #333; font-size: 20px;")
         self.downbeat_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.downbeat_indicator.setFixedWidth(30)
+        self.downbeat_indicator.setFixedWidth(24)
+        self.downbeat_indicator.setToolTip("Downbeat")
         beat_row.addWidget(self.downbeat_indicator)
+        self.metronome_sync_indicator = QLabel("●")
+        self.metronome_sync_indicator.setStyleSheet("color: #333; font-size: 20px;")
+        self.metronome_sync_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.metronome_sync_indicator.setFixedWidth(24)
+        self.metronome_sync_indicator.setToolTip("Metronome sync (gray=off, yellow=locking, green=locked)")
+        beat_row.addWidget(self.metronome_sync_indicator)
         right_stack.addLayout(beat_row)
 
         right_stack_widget = QWidget()
@@ -4042,6 +4186,8 @@ bREadfan_69@hotmail.com"""
             'audio_gain': self.audio_gain_slider.value(),
             'zscore_threshold': self.zscore_threshold_slider.value(),
             'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
+            'amp_gate_high': self.amp_gate_high_spin.value() if hasattr(self, 'amp_gate_high_spin') else 0.08,
+            'amp_gate_low': self.amp_gate_low_spin.value() if hasattr(self, 'amp_gate_low_spin') else 0.04,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
             
@@ -4112,6 +4258,10 @@ bREadfan_69@hotmail.com"""
             self._on_zscore_threshold_change(preset_data['zscore_threshold'])
         if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
             self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
+        if 'amp_gate_high' in preset_data and hasattr(self, 'amp_gate_high_spin'):
+            self.amp_gate_high_spin.setValue(preset_data['amp_gate_high'])
+        if 'amp_gate_low' in preset_data and hasattr(self, 'amp_gate_low_spin'):
+            self.amp_gate_low_spin.setValue(preset_data['amp_gate_low'])
         self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
         self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
         
@@ -4249,7 +4399,7 @@ bREadfan_69@hotmail.com"""
         pulse_mode_layout = QHBoxLayout()
         pulse_mode_layout.addWidget(QLabel("Mode:"))
         self.pulse_mode_combo = QComboBox()
-        self.pulse_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)"])
+        self.pulse_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)", "Band (sub_bass)"])
         self.pulse_mode_combo.setCurrentIndex(0)
         pulse_mode_layout.addWidget(self.pulse_mode_combo)
         self.pulse_invert_checkbox = QCheckBox("Invert")
@@ -4288,7 +4438,7 @@ bREadfan_69@hotmail.com"""
         f0_mode_layout = QHBoxLayout()
         f0_mode_layout.addWidget(QLabel("Mode:"))
         self.f0_mode_combo = QComboBox()
-        self.f0_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)"])
+        self.f0_mode_combo.addItems(["Hz (dominant freq)", "Speed (dot movement)", "Band (mid)"])
         self.f0_mode_combo.setCurrentIndex(0)
         f0_mode_layout.addWidget(self.f0_mode_combo)
         self.f0_invert_checkbox = QCheckBox("Invert")
@@ -4880,6 +5030,23 @@ bREadfan_69@hotmail.com"""
             self.stroke_mapper.motion_intensity = value
         print(f"[Config] Motion intensity set to {value:.2f}")
 
+    def _on_micro_effects_toggle(self, state):
+        """Toggle micro-effects (beat jerks) in the stroke mapper."""
+        enabled = state == 2
+        if hasattr(self, 'stroke_mapper') and self.stroke_mapper is not None:
+            self.stroke_mapper._micro_effects_enabled = enabled
+        print(f"[Config] Micro-effects {'enabled' if enabled else 'disabled'}")
+
+    def _on_amp_gate_high_change(self, value: float):
+        """Update amplitude gate high threshold (above this -> FULL_STROKE)."""
+        self.config.stroke.amplitude_gate_high = value
+        print(f"[Config] Amplitude gate high set to {value:.2f}")
+
+    def _on_amp_gate_low_change(self, value: float):
+        """Update amplitude gate low threshold (below this -> CREEP_MICRO)."""
+        self.config.stroke.amplitude_gate_low = value
+        print(f"[Config] Amplitude gate low set to {value:.3f}")
+
     def _set_motion_preset(self, preset: str):
         """Apply a quick motion preset: gentle / normal / intense.
         
@@ -5001,6 +5168,8 @@ bREadfan_69@hotmail.com"""
             'audio_gain': self.audio_gain_slider.value(),
             'zscore_threshold': self.zscore_threshold_slider.value(),
             'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
+            'amp_gate_high': self.amp_gate_high_spin.value() if hasattr(self, 'amp_gate_high_spin') else 0.08,
+            'amp_gate_low': self.amp_gate_low_spin.value() if hasattr(self, 'amp_gate_low_spin') else 0.04,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
             
@@ -5094,6 +5263,10 @@ bREadfan_69@hotmail.com"""
                 self._on_zscore_threshold_change(preset_data['zscore_threshold'])
             if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
                 self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
+            if 'amp_gate_high' in preset_data and hasattr(self, 'amp_gate_high_spin'):
+                self.amp_gate_high_spin.setValue(preset_data['amp_gate_high'])
+            if 'amp_gate_low' in preset_data and hasattr(self, 'amp_gate_low_spin'):
+                self.amp_gate_low_spin.setValue(preset_data['amp_gate_low'])
             if 'silence_reset_ms' in preset_data:
                 self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
             self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
@@ -5292,6 +5465,43 @@ bREadfan_69@hotmail.com"""
         motion_btn_layout.addWidget(self.motion_intense_btn)
         
         motion_layout.addLayout(motion_btn_layout)
+        
+        # Micro-effects toggle (jerks on beats during low-amplitude creep mode)
+        self.micro_effects_checkbox = QCheckBox("Micro-effects (beat jerks in creep mode)")
+        self.micro_effects_checkbox.setChecked(True)
+        self.micro_effects_checkbox.setToolTip("When enabled, small impulse jerks fire on beats during low-amplitude passages")
+        self.micro_effects_checkbox.stateChanged.connect(self._on_micro_effects_toggle)
+        motion_layout.addWidget(self.micro_effects_checkbox)
+        
+        # Amplitude gate thresholds (FULL_STROKE vs CREEP_MICRO switching)
+        gate_layout = QHBoxLayout()
+        gate_layout.addWidget(QLabel("Amp Gate:"))
+        
+        gate_layout.addWidget(QLabel("High"))
+        self.amp_gate_high_spin = QDoubleSpinBox()
+        self.amp_gate_high_spin.setRange(0.01, 0.50)
+        self.amp_gate_high_spin.setSingleStep(0.01)
+        self.amp_gate_high_spin.setDecimals(2)
+        self.amp_gate_high_spin.setValue(self.config.stroke.amplitude_gate_high)
+        self.amp_gate_high_spin.setToolTip("RMS above this triggers full arc strokes (FULL_STROKE mode)")
+        self.amp_gate_high_spin.setFixedWidth(70)
+        self.amp_gate_high_spin.valueChanged.connect(self._on_amp_gate_high_change)
+        gate_layout.addWidget(self.amp_gate_high_spin)
+        
+        gate_layout.addWidget(QLabel("Low"))
+        self.amp_gate_low_spin = QDoubleSpinBox()
+        self.amp_gate_low_spin.setRange(0.001, 0.40)
+        self.amp_gate_low_spin.setSingleStep(0.01)
+        self.amp_gate_low_spin.setDecimals(3)
+        self.amp_gate_low_spin.setValue(self.config.stroke.amplitude_gate_low)
+        self.amp_gate_low_spin.setToolTip("RMS below this drops to creep rotation (CREEP_MICRO mode)")
+        self.amp_gate_low_spin.setFixedWidth(70)
+        self.amp_gate_low_spin.valueChanged.connect(self._on_amp_gate_low_change)
+        gate_layout.addWidget(self.amp_gate_low_spin)
+        
+        gate_layout.addStretch()
+        motion_layout.addLayout(gate_layout)
+        
         layout.addWidget(motion_group)
         
         # ===== STROKE PARAMETERS =====
@@ -5379,7 +5589,7 @@ bREadfan_69@hotmail.com"""
         self.creep_enabled.stateChanged.connect(lambda s: setattr(self.config.creep, 'enabled', s == 2))
         effects_layout.addWidget(self.creep_enabled)
 
-        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 0.1, 0.02, 3)
+        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 1.0, 0.02, 3)
         self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
         effects_layout.addWidget(self.creep_speed_slider)
 
@@ -5574,6 +5784,8 @@ bREadfan_69@hotmail.com"""
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
             self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
+            if hasattr(self, 'micro_effects_checkbox'):
+                self.stroke_mapper._micro_effects_enabled = self.micro_effects_checkbox.isChecked()
             # Start volume ramp from 0 to set value over 1.3s
             self._volume_ramp_active = True
             self._volume_ramp_start_time = time.time()
@@ -5641,6 +5853,8 @@ bREadfan_69@hotmail.com"""
 
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
         self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
+        if hasattr(self, 'micro_effects_checkbox'):
+            self.stroke_mapper._micro_effects_enabled = self.micro_effects_checkbox.isChecked()
 
         # Network engine is already started on program launch via _auto_connect_tcp
         # Only create if somehow missing
@@ -5704,12 +5918,9 @@ bREadfan_69@hotmail.com"""
         """Stop all engines and background threads"""
         self.is_running = False
 
-        # Stop stroke mapper arc thread if running
-        if self.stroke_mapper and hasattr(self.stroke_mapper, '_arc_thread'):
-            arc_thread = getattr(self.stroke_mapper, '_arc_thread', None)
-            if arc_thread and arc_thread.is_alive():
-                self.stroke_mapper._stop_arc = True
-                arc_thread.join(timeout=1.0)
+        # Clear any active trajectory on the stroke mapper
+        if self.stroke_mapper and hasattr(self.stroke_mapper, '_trajectory'):
+            self.stroke_mapper._trajectory = None
         self.stroke_mapper = None
 
         if self.audio_engine:
@@ -5800,6 +6011,13 @@ bREadfan_69@hotmail.com"""
                 in_low = self.config.pulse_freq.monitor_freq_min
                 in_high = self.config.pulse_freq.monitor_freq_max
                 norm = (p0_dom_freq - in_low) / max(1.0, in_high - in_low)
+            elif pulse_mode == 2:  # Band (sub_bass) mode
+                # Use sub_bass band energy directly — long booming bass = "feeling" the pulse
+                sub_bass_energy = 0.0
+                if self.audio_engine and hasattr(self.audio_engine, '_band_energies'):
+                    sub_bass_energy = self.audio_engine._band_energies.get('sub_bass', 0.0)
+                # Normalize: typical sub_bass energy 0-0.3 after gain
+                norm = min(1.0, sub_bass_energy * 4.0)
             else:  # Speed mode
                 norm = min(1.0, dot_speed / 10.0)
             
@@ -5860,6 +6078,13 @@ bREadfan_69@hotmail.com"""
                 f0_in_low = self.config.carrier_freq.monitor_freq_min
                 f0_in_high = self.config.carrier_freq.monitor_freq_max
                 f0_norm = (f0_dom_freq - f0_in_low) / max(1.0, f0_in_high - f0_in_low)
+            elif f0_mode == 2:  # Band (mid) mode — voice, brass, dominant strings (500-2000 Hz)
+                # Use mid band energy directly — strict rate limit below
+                mid_energy = 0.0
+                if self.audio_engine and hasattr(self.audio_engine, '_band_energies'):
+                    mid_energy = self.audio_engine._band_energies.get('mid', 0.0)
+                # Normalize: typical mid energy 0-0.2 after gain
+                f0_norm = min(1.0, mid_energy * 5.0)
             else:  # Speed mode
                 f0_norm = min(1.0, dot_speed / 10.0)
             
@@ -5892,8 +6117,38 @@ bREadfan_69@hotmail.com"""
             f0_val_raw = int(f0_tcode_min + f0_avg_norm * (f0_tcode_max - f0_tcode_min))
             f0_val_raw = max(0, min(9999, f0_val_raw))
             
-            # Smooth F0: limit change to ±300 tcode per send for smoother transitions
-            if self._f0_last_sent_tcode is not None:
+            # Smooth F0: limit change rate for smoother transitions
+            if f0_mode == 2:
+                # Band (mid) mode: strict rate limiter — ±500 tcode per 2 seconds
+                # Must finish traveling to current target before accepting new one
+                if self._c0_band_current is None:
+                    self._c0_band_current = f0_val_raw
+                    self._c0_band_target = f0_val_raw
+
+                # Check if we've arrived at current target
+                at_target = (self._c0_band_target is not None
+                             and abs(self._c0_band_current - self._c0_band_target) < 5)
+
+                if at_target:
+                    # Accept new target only if different enough (>50 tcode)
+                    if abs(f0_val_raw - self._c0_band_target) > 50:
+                        # Clamp new target: max ±500 from current position
+                        delta_from_current = f0_val_raw - self._c0_band_current
+                        delta_from_current = max(-500, min(500, delta_from_current))
+                        self._c0_band_target = self._c0_band_current + delta_from_current
+                        self._c0_band_target = max(0, min(9999, self._c0_band_target))
+                        self._c0_band_last_target_time = now
+
+                # Travel toward target at _c0_band_travel_rate tcode/sec (=250/s → 500 per 2s)
+                if self._c0_band_target is not None and self._c0_band_current != self._c0_band_target:
+                    max_step = max(1, int(self._c0_band_travel_rate * dt))
+                    diff = self._c0_band_target - self._c0_band_current
+                    step = max(-max_step, min(max_step, diff))
+                    self._c0_band_current += step
+                    self._c0_band_current = max(0, min(9999, self._c0_band_current))
+
+                f0_val = int(self._c0_band_current)
+            elif self._f0_last_sent_tcode is not None:
                 delta = f0_val_raw - self._f0_last_sent_tcode
                 if abs(delta) > self._f0_max_change_per_send:
                     if delta > 0:
@@ -6075,6 +6330,17 @@ bREadfan_69@hotmail.com"""
     
     def _on_beat(self, event: BeatEvent):
         """Handle beat event in GUI thread"""
+        # ===== METRONOME SYNC INDICATOR (updates every frame, not just on beat) =====
+        acf_conf = getattr(event, 'acf_confidence', 0.0)
+        metro_bpm = getattr(event, 'metronome_bpm', 0.0)
+        if hasattr(self, 'metronome_sync_indicator') and self.metronome_sync_indicator is not None:
+            if metro_bpm <= 0 or acf_conf < 0.05:
+                self.metronome_sync_indicator.setStyleSheet("color: #333; font-size: 20px;")  # Off
+            elif acf_conf < 0.25:
+                self.metronome_sync_indicator.setStyleSheet("color: #cc0; font-size: 20px;")  # Yellow: locking
+            else:
+                self.metronome_sync_indicator.setStyleSheet("color: #0f0; font-size: 20px;")  # Green: locked
+
         if event.is_beat:
             # Track beat time for auto-adjustment feature
             self._last_beat_time_for_auto = time.time()
@@ -6120,13 +6386,19 @@ bREadfan_69@hotmail.com"""
                         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
                             pass  # downbeat recording removed
                     
-                    # Format BPM display - simple, no beat position counter
-                    bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
-                    # Add confidence/stability indicator
-                    if confidence < 0.5:
-                        bpm_display += " (~)"
-                    elif stability < 0.5:
-                        bpm_display += " (~)"
+                    # Format BPM display — show ACF info when metronome is active
+                    acf_active = tempo_info.get('acf_active', False)
+                    if acf_active:
+                        bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
+                        acf_c = tempo_info.get('acf_confidence', 0.0)
+                        if acf_c < 0.15:
+                            bpm_display += " (~)"
+                    else:
+                        bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
+                        if confidence < 0.5:
+                            bpm_display += " (~)"
+                        elif stability < 0.5:
+                            bpm_display += " (~)"
                     if hasattr(self, 'bpm_label') and self.bpm_label is not None:
                         self.bpm_label.setText(bpm_display)
         # Show reset in GUI and console if tempo was reset
@@ -6353,49 +6625,11 @@ bREadfan_69@hotmail.com"""
                         red=any_adjusting
                     )
 
-    def _log_experimental_spinbox_shutdown_values(self):
-        """Log final experimental spinbox values at shutdown for documentation"""
-        try:
-            print("\n" + "="*70)
-            print("EXPERIMENTAL SPINBOX SHUTDOWN VALUES")
-            print("="*70)
-            
-            # These spinboxes may not exist in current build
-            spinbox_names = [
-                "sensitivity_step_spin", "peak_floor_step_spin", "peak_decay_step_spin",
-                "rise_sens_step_spin", "flux_mult_step_spin", "audio_amp_step_spin"
-            ]
-            found_any = False
-            print("\nParameter        │ Step Size")
-            print("-" * 35)
-            for name in spinbox_names:
-                if hasattr(self, name):
-                    step_spin = getattr(self, name)
-                    step_val = step_spin.value()
-                    param = name.replace("_step_spin", "")
-                    print(f"{param:16} │ {step_val:.4f}")
-                    found_any = True
-            
-            if not found_any:
-                print("(No experimental spinboxes found)")
-            
-            print("-" * 35)
-            if hasattr(self, 'auto_consec_beats_spin'):
-                consec_beat_val = self.auto_consec_beats_spin.value()
-                print(f"Consecutive-beat lock threshold: {consec_beat_val:.0f} beats (in 60-180 BPM range)")
-            print(f"Oscillation rule: 3/4 of step size (automatic)")
-            print("="*70 + "\n")
-        except Exception as e:
-            print(f"[Shutdown] Could not log spinbox values: {e}")
-
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
         self._stop_engines()
         if self.network_engine:
             self.network_engine.stop()
-
-        # Log experimental spinbox shutdown values
-        self._log_experimental_spinbox_shutdown_values()
 
         # Save all settings from sliders to config before closing
         self.config.stroke.phase_advance = self.phase_advance_slider.value()
@@ -6462,7 +6696,8 @@ def main():
     window = BREadbeatsWindow()
     
     print("\nInitialization complete. Starting GUI...\n")
-    sys.stdout.flush()
+    if sys.stdout:
+        sys.stdout.flush()
     
     # Close splash and show main window
     if splash:

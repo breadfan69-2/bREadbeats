@@ -119,6 +119,9 @@ class BeatEvent:
     phase_error_ms: float = 0.0  # How far off from predicted downbeat timing (milliseconds)
     beat_band: str = 'sub_bass'   # Which multi-band z-score sub-band is currently primary
     fired_bands: list = None      # Which z-score bands actually fired on THIS beat (per-beat, not global)
+    metronome_bpm: float = 0.0    # Current internal metronome BPM (for stroke timing)
+    acf_confidence: float = 0.0   # ACF peak confidence (0-1, for UI sync indicator)
+    is_syncopated: bool = False   # True if an off-beat "and" onset was detected near this beat
 
 
 class AudioEngine:
@@ -137,6 +140,18 @@ class AudioEngine:
         self.downbeat_confidence = 0.0
         # Reset pattern matching state
         self._reset_downbeat_pattern()
+        # Reset ACF metronome
+        if hasattr(self, '_acf_metronome_enabled'):
+            self._reset_acf_metronome()
+        # Reset syncopation detection
+        if hasattr(self, '_raw_onset_times'):
+            self._raw_onset_times.clear()
+            self._syncopation_detected = False
+            self._syncopation_streak = 0
+            self._syncopation_had_offbeat = False
+            self._syncopation_confirmed = False
+            self._any_band_onset = False
+            self._syncopation_armed = False
         # Reset ALL multi-band z-score detectors so they get fresh baselines
         if hasattr(self, '_zscore_detectors'):
             for det in self._zscore_detectors.values():
@@ -333,6 +348,42 @@ class AudioEngine:
         self._bps_adjustment_speed: float = 0.5         # 0.0=fine, 1.0=aggressive (scales step size)
         self._bps_base_step: float = 0.002              # Base step for peak_floor adjustment
         
+        # ===== ACF AUTO-METRONOME =====
+        # Autocorrelation-based tempo estimator + internal metronome clock.
+        # Replaces interval-based beat-counting with robust signal-level tempo detection.
+        self._acf_metronome_enabled: bool = True         # Master toggle
+        # Onset signal buffer (spectral flux values, one per audio callback)
+        self._onset_buffer: list[float] = []
+        self._onset_buffer_max: int = 260               # ~6 seconds at ~43 fps (44100/1024)
+        self._onset_callback_count: int = 0             # For computing effective sample rate
+        self._onset_first_time: float = 0.0             # Timestamp of first onset sample
+        # ACF estimation
+        self._acf_interval_ms: float = 500.0            # Run ACF every 500ms
+        self._last_acf_time: float = 0.0
+        self._acf_bpm: float = 0.0                      # Latest raw ACF BPM estimate
+        self._acf_bpm_smoothed: float = 0.0             # Exponentially smoothed ACF BPM
+        self._acf_confidence: float = 0.0               # Peak prominence (0-1)
+        self._acf_onset_fps: float = 43.0               # Effective onset sample rate (calibrated)
+        # Internal metronome
+        self._metronome_phase: float = 0.0              # Continuous phase (integer crossings = beats)
+        self._metronome_beat_count: int = 0             # Total beats since start (for downbeat)
+        self._metronome_last_time: float = 0.0
+        self._metronome_bpm: float = 0.0                # BPM the metronome is running at
+        self._metronome_beat_fired: bool = False         # Did metronome fire a beat THIS frame?
+        self._metronome_downbeat_fired: bool = False     # Did metronome fire a downbeat THIS frame?
+        self._metronome_last_beat_time: float = 0.0      # When the metronome last ticked a beat
+        # ===== Syncopation / double-stroke detection =====
+        # Track raw onset times to detect off-beat ("and") hits between metronome beats
+        self._raw_onset_times: list[float] = []          # Recent raw beat detection timestamps
+        self._raw_onset_max: int = 16                    # Keep last 16 raw onsets
+        self._syncopation_detected: bool = False         # True when an off-beat onset detected this frame
+        self._syncopation_window: float = self.config.beat.syncopation_window  # from config
+        self._any_band_onset: bool = False               # True if ANY z-score band fired this frame (wider detection)
+        self._syncopation_streak: int = 0                # Consecutive beat periods with off-beat onsets
+        self._syncopation_had_offbeat: bool = False      # Off-beat onset seen in current beat period
+        self._syncopation_confirmed: bool = False        # True after confirmation
+        self._syncopation_armed: bool = False            # Armed on first off-beat, fires on second in same period
+
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""
         if not HAS_SCIPY or not self._use_butterworth:
@@ -544,6 +595,14 @@ class AudioEngine:
         # Extract energy per sub-band from the full unfiltered spectrum,
         # feed each to its z-score detector, and track which band fires.
         self._update_multiband_zscore(spectrum)
+
+        # Wider-band onset: did ANY z-score band fire? (for syncopation detection)
+        # Respects config: 'any' = any band, or a specific band name
+        sync_band = self.config.beat.syncopation_band
+        if sync_band == 'any':
+            self._any_band_onset = any(s == 1 for s in self._band_zscore_signals.values())
+        else:
+            self._any_band_onset = self._band_zscore_signals.get(sync_band, 0) == 1
         
         # Debug: print every 20 frames to see levels
         if not hasattr(self, '_debug_counter'):
@@ -597,17 +656,105 @@ class AudioEngine:
         # Store last flux for flux balance metric
         self._last_spectral_flux = spectral_flux
         
-        is_beat = self._detect_beat(band_energy, spectral_flux)
+        # ===== ACF ONSET BUFFERING =====
+        self._onset_buffer.append(spectral_flux)
+        if len(self._onset_buffer) > self._onset_buffer_max:
+            self._onset_buffer.pop(0)
+        # Calibrate effective onset sample rate
+        self._onset_callback_count += 1
+        if self._onset_first_time == 0.0:
+            self._onset_first_time = current_time
+        elif self._onset_callback_count > 60:  # After ~1.5 seconds, calibrate fps
+            elapsed = current_time - self._onset_first_time
+            if elapsed > 0:
+                self._acf_onset_fps = self._onset_callback_count / elapsed
+        
+        # Run ACF tempo estimation periodically
+        if current_time - self._last_acf_time > self._acf_interval_ms / 1000.0:
+            self._last_acf_time = current_time
+            self._estimate_tempo_acf()
+        
+        # Raw beat detection (still runs for onset detection + phase-lock + fallback)
+        raw_is_beat = self._detect_beat(band_energy, spectral_flux)
+        
+        # Track raw onset times for syncopation detection
+        if raw_is_beat:
+            self._raw_onset_times.append(current_time)
+            if len(self._raw_onset_times) > self._raw_onset_max:
+                self._raw_onset_times.pop(0)
+        
+        # Advance internal metronome
+        self._advance_metronome(current_time)
+        
+        # Phase-lock: nudge metronome when a strong onset is detected near a beat
+        if raw_is_beat and self._metronome_bpm > 0:
+            onset_strength = min(1.0, band_energy / max(0.001, self.peak_envelope))
+            self._nudge_metronome_phase(onset_strength)
+        
+        # ===== SYNCOPATION DETECTION =====
+        # Detect off-beat ("and") onsets using configurable z-score band(s).
+        # Fast reaction: fires on the FIRST off-beat onset if the previous beat
+        # period also had one (streak >= 1). For the very first period, arms on
+        # first off-beat and fires on the second off-beat in the same period.
+        # Drops immediately on first beat period without any off-beat onset.
+        self._syncopation_detected = False
+        if (self.config.beat.syncopation_enabled
+                and self._metronome_bpm > 0
+                and self._any_band_onset
+                and not self._metronome_beat_fired):
+            bpm_limit = self.config.beat.syncopation_bpm_limit
+            if self._metronome_bpm <= bpm_limit:
+                phase_frac = self._metronome_phase % 1.0
+                window = self.config.beat.syncopation_window
+                dist_to_half = abs(phase_frac - 0.5)
+                if dist_to_half < window:
+                    self._syncopation_had_offbeat = True
+                    if self._syncopation_streak >= 1:
+                        # Previous beat period had off-beats → fire immediately
+                        self._syncopation_detected = True
+                        log_event("INFO", "Syncopation", "Off-beat onset detected",
+                                  phase=f"{phase_frac:.2f}", bpm=f"{self._metronome_bpm:.1f}")
+                    elif self._syncopation_armed:
+                        # Second off-beat in same period → fire (fast first-time reaction)
+                        self._syncopation_detected = True
+                        self._syncopation_streak = 1  # pre-confirm for next period
+                        log_event("INFO", "Syncopation", "Armed → firing (2nd onset)",
+                                  phase=f"{phase_frac:.2f}", bpm=f"{self._metronome_bpm:.1f}")
+                    else:
+                        # First off-beat onset ever → arm for second
+                        self._syncopation_armed = True
+
+        # Predictive drop-off: if we're past the off-beat window (phase > 0.65)
+        # and no off-beat onset was detected this beat period, preemptively
+        # reset streak so the NEXT beat won't produce a false syncopation.
+        if self._metronome_bpm > 0 and not self._metronome_beat_fired:
+            phase_frac = self._metronome_phase % 1.0
+            window = self.config.beat.syncopation_window
+            if phase_frac > (0.5 + window) and not self._syncopation_had_offbeat:
+                # Past the "and" window with no onset → pattern broken
+                if self._syncopation_streak > 0 or self._syncopation_armed:
+                    self._syncopation_streak = 0
+                    self._syncopation_confirmed = False
+                    self._syncopation_armed = False
+                    log_event("INFO", "Syncopation", "Predictive drop-off (no onset in window)")
+        
+        # Choose beat source: metronome (when running) or raw detection (fallback)
+        if self._acf_metronome_enabled and self._metronome_bpm > 0:
+            is_beat = self._metronome_beat_fired
+            is_downbeat_flag = self._metronome_downbeat_fired
+            current_bpm = self._metronome_bpm
+            tempo_is_locked = self._acf_confidence > 0.2
+            # Update last_beat_time for tempo timeout check
+            if is_beat:
+                self._metronome_last_beat_time = current_time
+        else:
+            is_beat = raw_is_beat
+            is_downbeat_flag = self.is_downbeat if is_beat else False
+            current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else self.last_known_tempo
+            tempo_is_locked = self.consecutive_matching_downbeats >= self.consecutive_match_threshold
         
         # Estimate dominant frequency
         freq = self._estimate_frequency(spectrum)
-        
-        # Create beat event using correct structure
-        # Use last_known_tempo if smoothed_tempo was reset
-        current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else self.last_known_tempo
-        
-        # Check if tempo is locked (consecutive downbeats matching predicted pattern)
-        tempo_is_locked = self.consecutive_matching_downbeats >= self.consecutive_match_threshold
         
         event = BeatEvent(
             timestamp=time.time(),
@@ -616,13 +763,16 @@ class AudioEngine:
             is_beat=is_beat,
             spectral_flux=spectral_flux,
             peak_energy=band_energy,
-            is_downbeat=self.is_downbeat if is_beat else False,  # Only downbeat if it's an actual beat
+            is_downbeat=is_downbeat_flag,
             bpm=current_bpm,
             tempo_reset=tempo_reset_flag,
             tempo_locked=tempo_is_locked,
             phase_error_ms=self.phase_error_ms,
             beat_band=self._primary_beat_band,
-            fired_bands=[n for n, s in self._band_zscore_signals.items() if s == 1] if is_beat else []
+            fired_bands=[n for n, s in self._band_zscore_signals.items() if s == 1] if is_beat else [],
+            metronome_bpm=self._metronome_bpm,
+            acf_confidence=self._acf_confidence,
+            is_syncopated=self._syncopation_detected,
         )
         
         # Notify callback
@@ -730,6 +880,252 @@ class AudioEngine:
                 self._zscore_detector = self._zscore_detectors[best_band]  # legacy alias
                 log_event("INFO", "MultiBand", "Primary band switched",
                           band=best_band, fires=str(best_score))
+
+    # ------------------------------------------------------------------
+    # ACF Tempo Estimator + Internal Metronome
+    # ------------------------------------------------------------------
+
+    def _estimate_tempo_acf(self):
+        """Estimate tempo via autocorrelation of the onset strength signal.
+        Finds the dominant periodic peak in the spectral flux buffer.
+        Called every ~500ms from the audio callback."""
+        n = len(self._onset_buffer)
+        if n < 120:  # Need at least ~3 seconds of data
+            return
+
+        signal = np.array(self._onset_buffer, dtype=np.float64)
+        signal = signal - np.mean(signal)  # Remove DC
+
+        # Autocorrelation via FFT (much faster than np.correlate for long signals)
+        n_fft = 1
+        while n_fft < 2 * n:
+            n_fft *= 2
+        fft_sig = np.fft.rfft(signal, n=n_fft)
+        acf = np.fft.irfft(fft_sig * np.conj(fft_sig))[:n]
+
+        if acf[0] > 0:
+            acf = acf / acf[0]  # Normalize
+        else:
+            return
+
+        fps = self._acf_onset_fps  # Calibrated onset sample rate
+
+        # Lag range for 55-185 BPM
+        min_lag = max(1, int(fps * 60.0 / 185.0))  # Fastest tempo
+        max_lag = min(n - 1, int(fps * 60.0 / 55.0))  # Slowest tempo
+        if min_lag >= max_lag:
+            return
+
+        search = acf[min_lag:max_lag + 1]
+        peak_idx = int(np.argmax(search))
+        peak_value = float(search[peak_idx])
+
+        if peak_value < 0.08:  # Below noise floor — no clear tempo
+            self._acf_confidence *= 0.9  # Fade confidence
+            return
+
+        # Parabolic interpolation for sub-sample precision
+        raw_lag = min_lag + peak_idx
+        if peak_idx > 0 and peak_idx < len(search) - 1:
+            alpha = float(search[peak_idx - 1])
+            beta = float(search[peak_idx])
+            gamma = float(search[peak_idx + 1])
+            denom = alpha - 2.0 * beta + gamma
+            if abs(denom) > 1e-10:
+                correction = 0.5 * (alpha - gamma) / denom
+            else:
+                correction = 0.0
+            refined_lag = raw_lag + correction
+        else:
+            refined_lag = float(raw_lag)
+
+        bpm = 60.0 * fps / refined_lag
+
+        # Octave disambiguation: collect candidate tempos at 1x, 2x, and 0.5x
+        # and pick the one closest to target BPM (if set), otherwise prefer
+        # the faster tempo when the half-period peak is strong enough.
+        candidates = [(bpm, peak_value)]  # (bpm, confidence)
+
+        # Half-period candidate (double BPM)
+        half_lag = raw_lag // 2
+        if half_lag >= min_lag:
+            half_val = float(acf[half_lag])
+            if half_val > peak_value * 0.60:
+                bpm_half = 60.0 * fps / half_lag
+                if 55 <= bpm_half <= 185:
+                    candidates.append((bpm_half, half_val))
+
+        # Double-period candidate (half BPM)
+        double_lag = raw_lag * 2
+        if double_lag <= max_lag:
+            double_val = float(acf[double_lag])
+            if double_val > peak_value * 0.60:
+                bpm_double = 60.0 * fps / double_lag
+                if 55 <= bpm_double <= 185:
+                    candidates.append((bpm_double, double_val))
+
+        # Pick best candidate: prefer closest to target BPM if enabled
+        target_bpm_hint = self._target_bps * 60.0 if self._target_bps_enabled and self._target_bps > 0 else 0.0
+        if target_bpm_hint > 0 and len(candidates) > 1:
+            # Score by distance to target BPM, weighted by confidence
+            def octave_score(c):
+                bpm_c, conf_c = c
+                # Distance as ratio (penalises being far from target)
+                ratio = abs(bpm_c - target_bpm_hint) / target_bpm_hint
+                # Confidence bonus (higher confidence = better)
+                return ratio - conf_c * 0.3  # Lower score = better
+            candidates.sort(key=octave_score)
+            bpm, peak_value = candidates[0]
+            log_event("DEBUG", "ACF", "Octave disambig (target-guided)",
+                      target=f"{target_bpm_hint:.0f}",
+                      chosen=f"{bpm:.1f}",
+                      candidates=str([(f"{c[0]:.1f}", f"{c[1]:.2f}") for c in candidates]))
+        else:
+            # No target BPM: prefer faster tempo if half-period peak is strong
+            if len(candidates) > 1:
+                # Sort by BPM descending (prefer faster), filter by reasonable confidence
+                fast = [c for c in candidates if c[1] > peak_value * 0.75]
+                if fast:
+                    fast.sort(key=lambda c: -c[0])
+                    bpm, peak_value = fast[0]
+
+        # Clamp to sane range
+        if bpm < 55 or bpm > 185:
+            return
+
+        self._acf_confidence = float(peak_value)
+        self._acf_bpm = bpm
+
+        # Smooth the BPM estimate
+        if self._acf_bpm_smoothed > 0:
+            ratio = abs(bpm - self._acf_bpm_smoothed) / self._acf_bpm_smoothed
+            if ratio < 0.15:  # Within 15% — smooth
+                self._acf_bpm_smoothed = 0.85 * self._acf_bpm_smoothed + 0.15 * bpm
+            elif peak_value > 0.25:  # Large jump but confident
+                # Guard against octave jumps when target BPM is set
+                # If the jump looks like a doubling/halving and we have a target,
+                # only accept if the new BPM is closer to target than current
+                if target_bpm_hint > 0 and (0.45 < ratio < 0.55 or 0.90 < ratio < 1.10):
+                    old_dist = abs(self._acf_bpm_smoothed - target_bpm_hint)
+                    new_dist = abs(bpm - target_bpm_hint)
+                    if new_dist < old_dist:
+                        self._acf_bpm_smoothed = bpm
+                        log_event("INFO", "ACF", "Tempo jump (target-validated)",
+                                  bpm=f"{bpm:.1f}", target=f"{target_bpm_hint:.0f}",
+                                  confidence=f"{peak_value:.3f}")
+                    else:
+                        log_event("INFO", "ACF", "Tempo jump REJECTED (farther from target)",
+                                  bpm=f"{bpm:.1f}", target=f"{target_bpm_hint:.0f}",
+                                  current=f"{self._acf_bpm_smoothed:.1f}")
+                else:
+                    self._acf_bpm_smoothed = bpm
+                    log_event("INFO", "ACF", "Tempo jump",
+                              bpm=f"{bpm:.1f}", confidence=f"{peak_value:.3f}")
+            # else: ignore noisy outlier
+        else:
+            self._acf_bpm_smoothed = bpm
+            log_event("INFO", "ACF", "Initial tempo lock",
+                      bpm=f"{bpm:.1f}", confidence=f"{peak_value:.3f}",
+                      fps=f"{fps:.1f}")
+
+    def _advance_metronome(self, now: float):
+        """Advance the internal metronome phase accumulator.
+        Fires _metronome_beat_fired / _metronome_downbeat_fired when
+        the phase crosses integer boundaries."""
+        self._metronome_beat_fired = False
+        self._metronome_downbeat_fired = False
+
+        # Need a valid ACF BPM to run
+        target_bpm = self._acf_bpm_smoothed
+        if target_bpm <= 0 or self._acf_confidence < 0.10:
+            self._metronome_bpm = 0.0
+            return
+
+        # Boot the metronome on first valid tempo
+        if self._metronome_bpm <= 0:
+            self._metronome_bpm = target_bpm
+            self._metronome_last_time = now
+            self._metronome_phase = 0.0
+            self._metronome_beat_count = 0
+            log_event("INFO", "Metronome", "Started",
+                      bpm=f"{target_bpm:.1f}")
+            return
+
+        # Smoothly track ACF BPM changes
+        self._metronome_bpm = 0.95 * self._metronome_bpm + 0.05 * target_bpm
+
+        dt = now - self._metronome_last_time
+        self._metronome_last_time = now
+        if dt <= 0 or dt > 0.5:  # Skip huge gaps
+            return
+
+        # Advance phase
+        beats_per_sec = self._metronome_bpm / 60.0
+        old_phase = self._metronome_phase
+        self._metronome_phase += beats_per_sec * dt
+
+        # Detect beat boundary crossing
+        old_beat = int(old_phase)
+        new_beat = int(self._metronome_phase)
+        if new_beat > old_beat:
+            self._metronome_beat_fired = True
+            self._metronome_beat_count += 1
+            bpm = self.beats_per_measure
+            self._metronome_downbeat_fired = (self._metronome_beat_count % bpm == 1)
+
+            # Track syncopation confirmation per beat period
+            if self._syncopation_had_offbeat:
+                self._syncopation_streak += 1
+            else:
+                self._syncopation_streak = 0
+                self._syncopation_confirmed = False
+                self._syncopation_armed = False
+            self._syncopation_had_offbeat = False  # reset for next beat period
+            if self._syncopation_streak >= 1:
+                self._syncopation_confirmed = True
+
+            src = "DB" if self._metronome_downbeat_fired else "bt"
+            log_event("INFO", "Metronome", f"Tick [{src}]",
+                      beat=f"{((self._metronome_beat_count - 1) % bpm) + 1}/{bpm}",
+                      bpm=f"{self._metronome_bpm:.1f}",
+                      acf_conf=f"{self._acf_confidence:.2f}")
+
+    def _nudge_metronome_phase(self, onset_strength: float):
+        """Phase-lock loop: nudge metronome phase toward nearest beat
+        boundary when a strong onset is detected.  Keeps the metronome
+        aligned with the actual music."""
+        if self._metronome_bpm <= 0:
+            return
+
+        phase_frac = self._metronome_phase % 1.0
+
+        # Distance to nearest beat boundary
+        if phase_frac < 0.5:
+            error = -phase_frac    # Just past last beat → pull backward
+        else:
+            error = 1.0 - phase_frac  # Approaching next beat → push forward
+
+        # Only nudge if onset is near a beat (within 25% of a beat period)
+        if abs(error) < 0.25:
+            # Correction proportional to error and onset strength
+            correction = error * 0.08 * min(1.0, onset_strength)
+            self._metronome_phase += correction
+
+    def _reset_acf_metronome(self):
+        """Reset ACF estimator and internal metronome."""
+        self._onset_buffer.clear()
+        self._onset_callback_count = 0
+        self._onset_first_time = 0.0
+        self._acf_bpm = 0.0
+        self._acf_bpm_smoothed = 0.0
+        self._acf_confidence = 0.0
+        self._metronome_phase = 0.0
+        self._metronome_beat_count = 0
+        self._metronome_bpm = 0.0
+        self._metronome_beat_fired = False
+        self._metronome_downbeat_fired = False
+        self._metronome_last_beat_time = 0.0
+        log_event("INFO", "ACF", "Metronome reset")
 
     def _detect_beat(self, energy: float, flux: float) -> bool:
         """Detect if current frame is a beat.
@@ -1087,18 +1483,31 @@ class AudioEngine:
         """Get current tempo information for UI display"""
         # Use stable_tempo for display if available, otherwise fall back to smoothed
         display_bpm = self.stable_tempo if self.stable_tempo > 0 else self.smoothed_tempo
+        # ACF metronome info (when active, these take priority)
+        acf_active = self._acf_metronome_enabled and self._metronome_bpm > 0
+        if acf_active:
+            display_bpm = self._metronome_bpm
+            beat_pos = ((self._metronome_beat_count - 1) % self.beats_per_measure) + 1 if self._metronome_beat_count > 0 else 0
+        else:
+            beat_pos = self.beat_position_in_measure
+
         return {
             'bpm': display_bpm,
             'raw_bpm': self.smoothed_tempo,
             'stable_bpm': self.stable_tempo,
-            'beat_position': self.beat_position_in_measure,
+            'beat_position': beat_pos,
             'is_downbeat': self.is_downbeat,
             'predicted_next_beat': self.predicted_next_beat,
             'interval_count': len(self.beat_intervals),
-            'confidence': min(1.0, len(self.beat_intervals) / 4.0),  # Confidence grows with more beats
-            'stability': self.beat_stability,  # 0.0 = chaotic, 1.0 = perfectly stable
-            'consecutive_matching_downbeats': self.consecutive_matching_downbeats,  # Pattern match counter
-            'phase_error_ms': self.phase_error_ms  # How far off from predicted (milliseconds)
+            'confidence': min(1.0, len(self.beat_intervals) / 4.0),
+            'stability': self.beat_stability,
+            'consecutive_matching_downbeats': self.consecutive_matching_downbeats,
+            'phase_error_ms': self.phase_error_ms,
+            # ACF metronome fields
+            'acf_bpm': self._acf_bpm_smoothed,
+            'acf_confidence': self._acf_confidence,
+            'acf_active': acf_active,
+            'metronome_bpm': self._metronome_bpm,
         }
             
     def _estimate_frequency(self, spectrum: np.ndarray) -> float:

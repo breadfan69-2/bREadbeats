@@ -45,6 +45,12 @@ class BeatDetectionConfig:
     consecutive_match_threshold: int = 3       # N consecutive matching downbeats to lock tempo
     downbeat_pattern_enabled: bool = True      # Enable/disable strict downbeat pattern matching
 
+    # Syncopation / double-stroke detection
+    syncopation_enabled: bool = True             # Master on/off for syncopation detection
+    syncopation_band: str = 'any'                # Which z-score band triggers syncope: 'any', 'sub_bass', 'low_mid', 'mid', 'high'
+    syncopation_window: float = 0.15             # ±fraction of beat period to detect off-beat (0.05-0.30)
+    syncopation_bpm_limit: float = 160.0         # Disable syncopation above this BPM
+
 @dataclass
 class StrokeConfig:
     """Stroke generation parameters"""
@@ -79,6 +85,19 @@ class StrokeConfig:
     # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
     phase_advance: float = 0.25
 
+    # Amplitude gate thresholds for FULL_STROKE vs CREEP_MICRO mode switching
+    amplitude_gate_high: float = 0.08  # RMS above this -> FULL_STROKE
+    amplitude_gate_low: float = 0.04   # RMS below this -> CREEP_MICRO
+
+    # Beats-between-strokes: only fire full arcs every Nth beat (1/2/4/8)
+    beats_between_strokes: int = 1           # 1=every beat, 2=every 2nd, 4=every 4th, 8=every 8th
+
+    # Noise-burst reactive arc (hybrid with metronome system)
+    # Fires a quick partial arc on sudden loud transients between beats
+    noise_burst_enabled: bool = True        # Allow transient-reactive arcs between beats
+    noise_burst_flux_multiplier: float = 2.0  # Fire burst when flux > flux_threshold * this
+    noise_primary_mode: bool = False        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
+
 @dataclass
 class JitterConfig:
     """Jitter - micro-circles when no beat detected"""
@@ -90,7 +109,7 @@ class JitterConfig:
 class CreepConfig:
     """Creep - very slow movement when idle"""
     enabled: bool = True
-    speed: float = 0.02               # Multiplier for creep rotation (0.0-0.1) - lower = slower drift
+    speed: float = 0.02               # Multiplier for creep rotation (0.0-1.0) - lower = slower drift
 
 @dataclass 
 class ConnectionConfig:
