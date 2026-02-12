@@ -29,9 +29,12 @@ def load_presets_data(
             shutil.copy(factory_presets, presets_file)
 
     if presets_file.exists():
-        with open(presets_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        try:
+            with open(presets_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
 
     return {}
 
