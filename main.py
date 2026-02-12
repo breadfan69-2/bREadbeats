@@ -51,6 +51,7 @@ from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
+from transport_wiring import begin_volume_ramp, send_zero_volume_immediate, set_transport_sending
 from stroke_mapper import StrokeMapper
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
@@ -5816,17 +5817,13 @@ bREadfan_69@hotmail.com"""
             self.start_btn.setText("■ Stop")
             self.play_btn.setEnabled(True)
             # Enable TCode sending immediately on Start (V0=0 until Play is pressed)
-            if self.network_engine:
-                self.network_engine.set_sending_enabled(True)
-                zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=100)
-                self.network_engine.send_immediate(zero_cmd)
+            set_transport_sending(self.network_engine, True)
+            send_zero_volume_immediate(self.network_engine, duration_ms=100)
         else:
             # Send zero-volume command before stopping (always, not just when is_sending)
             self._volume_ramp_active = False
-            if self.network_engine:
-                zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=100)
-                self.network_engine.send_immediate(zero_cmd)
-                self.network_engine.set_sending_enabled(False)
+            send_zero_volume_immediate(self.network_engine, duration_ms=100)
+            set_transport_sending(self.network_engine, False)
             self._stop_engines()
             self.start_btn.setText("▶ Start")
             self.play_btn.setEnabled(False)
@@ -5845,19 +5842,17 @@ bREadfan_69@hotmail.com"""
             if hasattr(self, 'micro_effects_checkbox'):
                 self.stroke_mapper._micro_effects_enabled = self.micro_effects_checkbox.isChecked()
             # Start volume ramp from 0 to set value over 1.3s
-            self._volume_ramp_active = True
-            self._volume_ramp_start_time = time.time()
-            self._volume_ramp_from = 0.0
-            self._volume_ramp_to = 1.0
+            ramp_state = begin_volume_ramp(time.time())
+            self._volume_ramp_active = ramp_state['active']
+            self._volume_ramp_start_time = ramp_state['start_time']
+            self._volume_ramp_from = ramp_state['from']
+            self._volume_ramp_to = ramp_state['to']
             # sending_enabled already True from Start — no need to set again
         else:
             # Send V0=0 immediately with fade, but keep TCode pipeline active
             self._volume_ramp_active = False
-            if self.network_engine:
-                # Send zero-volume IMMEDIATELY (bypasses queue)
-                zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=500)
-                self.network_engine.send_immediate(zero_cmd)
-                # DON'T disable sending_enabled — connection stays active until Stop
+            send_zero_volume_immediate(self.network_engine, duration_ms=500)
+            # DON'T disable sending_enabled — connection stays active until Stop
         self.play_btn.setText("⏸ Pause" if checked else "▶ Play")
     
     def _on_detection_type_change(self, index: int):
