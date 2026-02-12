@@ -2,8 +2,10 @@ import unittest
 
 from transport_wiring import (
     begin_volume_ramp,
+    play_button_text,
     send_zero_volume_immediate,
     set_transport_sending,
+    start_stop_ui_state,
     trigger_network_test,
 )
 
@@ -81,6 +83,26 @@ class TestTransportWiring(unittest.TestCase):
         self.assertFalse(did_trigger)
         self.assertFalse(should_restore)
         self.assertEqual(engine.test_called, 0)
+
+    def test_start_stop_ui_state_running(self):
+        state = start_stop_ui_state(True)
+        self.assertEqual(state['start_text'], "■ Stop")
+        self.assertTrue(state['play_enabled'])
+        self.assertFalse(state['play_reset_checked'])
+        self.assertIsNone(state['play_text'])
+        self.assertIsNone(state['is_sending'])
+
+    def test_start_stop_ui_state_stopped(self):
+        state = start_stop_ui_state(False)
+        self.assertEqual(state['start_text'], "▶ Start")
+        self.assertFalse(state['play_enabled'])
+        self.assertTrue(state['play_reset_checked'])
+        self.assertEqual(state['play_text'], "▶ Play")
+        self.assertFalse(state['is_sending'])
+
+    def test_play_button_text(self):
+        self.assertEqual(play_button_text(True), "⏸ Pause")
+        self.assertEqual(play_button_text(False), "▶ Play")
 
 
 if __name__ == "__main__":
