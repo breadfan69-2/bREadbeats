@@ -1207,6 +1207,22 @@ class StrokeMapper:
                 self.state.creep_angle += 2 * np.pi
         traj.current_index = target_idx + 1
 
+        # ===== SNAP TO TARGET =====
+        # When arc is >90% complete and close to final point, snap to end
+        # so the dot doesn't visibly drift past the beat landing.
+        progress = traj.current_index / max(1, traj.n_points)
+        if progress > 0.90 and traj.current_index < traj.n_points:
+            final_a = float(traj.alpha_points[-1])
+            final_b = float(traj.beta_points[-1])
+            dist = np.sqrt((alpha - final_a)**2 + (beta - final_b)**2)
+            if dist < 0.08:
+                # Close enough — snap to final position
+                alpha = final_a
+                beta = final_b
+                self.state.alpha = alpha
+                self.state.beta = beta
+                traj.current_index = traj.n_points  # mark finished
+
         # Check if trajectory just completed
         if traj.finished:
             log_event("INFO", "StrokeMapper", "Arc complete", points=traj.n_points)
@@ -1522,8 +1538,16 @@ class StrokeMapper:
                     base_alpha = 0.0
                     base_beta = 0.0
         else:
-            base_alpha = alpha
-            base_beta = beta
+            # Creep disabled: smoothly drift toward center so dot
+            # doesn't get stuck at the edge after an arc finishes.
+            blend_rate = 0.04  # per frame (~60fps → ~1.5s to reach center)
+            base_alpha = alpha * (1.0 - blend_rate)
+            base_beta = beta * (1.0 - blend_rate)
+            # Snap to zero when close enough to avoid perpetual micro-drift
+            if abs(base_alpha) < 0.005:
+                base_alpha = 0.0
+            if abs(base_beta) < 0.005:
+                base_beta = 0.0
 
         # ---------- Jitter: sinusoidal micro-circles ----------
         if jitter_active:
