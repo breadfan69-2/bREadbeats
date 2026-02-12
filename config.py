@@ -22,7 +22,7 @@ class BeatDetectionConfig:
     """Beat detection parameters"""
     detection_type: BeatDetectionType = BeatDetectionType.COMBINED
     sensitivity: float = 0.5          # 0.0 - 1.0
-    peak_floor: float = 0.1           # Minimum threshold
+    peak_floor: float = 0.08          # Minimum threshold (aligned with reset defaults)
     peak_decay: float = 0.9           # How fast peaks decay (0.0-1.0)
     rise_sensitivity: float = 0.5     # How fast a peak must hit to register
     amplification: float = 1.0        # Audio amplification (slider 0-2)

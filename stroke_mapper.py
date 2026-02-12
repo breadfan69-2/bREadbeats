@@ -751,19 +751,22 @@ class StrokeMapper:
         now = time.time()
 
         # Beat duration — prefer metronome BPM if available
-        # One full revolution spans beats_between_strokes beats
-        beats_per_arc = max(1, cfg.beats_between_strokes if hasattr(cfg, 'beats_between_strokes') else 2)
+        # Downbeat arc spans the full measure for emphasis (beats_per_measure)
+        beats_in_measure = max(1, getattr(self.config.beat, 'beats_per_measure', 4))
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         if metro_bpm > 0:
             beat_interval_ms = 60000.0 / metro_bpm
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
-            measure_duration_ms = int(beat_interval_ms * beats_per_arc)
+            measure_duration_ms = int(beat_interval_ms * beats_in_measure)
         elif self.state.last_beat_time == 0.0:
-            measure_duration_ms = 500 * beats_per_arc
+            measure_duration_ms = 500 * beats_in_measure
         else:
             beat_interval_ms = (now - self.state.last_beat_time) * 1000
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
-            measure_duration_ms = int(beat_interval_ms * beats_per_arc)
+            measure_duration_ms = int(beat_interval_ms * beats_in_measure)
+
+        # Clamp to avoid huge sweeps at very low BPM
+        measure_duration_ms = max(cfg.min_interval_ms, min(4000, measure_duration_ms))
 
         # ===== PRE-FIRE: time arc to LAND on the next beat =====
         # Use predicted_next_beat for precise timing when metronome active.
@@ -784,7 +787,8 @@ class StrokeMapper:
 
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
         tempo_locked = getattr(event, 'tempo_locked', False)
-        lock_boost = 1.25 if tempo_locked else 1.0
+        # Slightly stronger downbeat boost than regular beats for emphasis
+        lock_boost = 1.35 if tempo_locked else 1.15
 
         stroke_len = cfg.stroke_max * flux_factor * lock_boost * self.motion_intensity
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max * 1.25, stroke_len))
