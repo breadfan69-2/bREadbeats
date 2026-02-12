@@ -11,7 +11,7 @@ from config import (
     migrate_config,
 )
 import config_persistence as config_persistence_module
-from main import (
+from config_facade import (
     load_config,
 )
 
