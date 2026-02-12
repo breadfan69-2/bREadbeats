@@ -86,9 +86,10 @@ class TestConfigMigration(unittest.TestCase):
         tmp.close()
         legacy_cfg = Config()
         legacy_cfg.version = 0
-        legacy_cfg.stroke.noise_burst_magnitude = None  # force migration path
+        legacy_data = asdict(legacy_cfg)
+        legacy_data["stroke"]["noise_burst_magnitude"] = None  # force migration path
         with open(tmp.name, "w") as f:
-            json.dump(asdict(legacy_cfg), f)
+            json.dump(legacy_data, f)
 
         # Monkeypatch get_config_file/save_config to use the temp file
         orig_get_config_file = get_config_file

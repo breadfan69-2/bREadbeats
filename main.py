@@ -2049,6 +2049,8 @@ class CollapsibleGroupBox(QGroupBox):
 
     def mousePressEvent(self, event):
         # Toggle collapse only when clicking in the title-bar area (top ~40px)
+        if event is None:
+            return
         if event.position().y() <= 40:
             self.setCollapsed(not self._collapsed)
             event.accept()
@@ -2069,6 +2071,8 @@ class CollapsibleGroupBox(QGroupBox):
         if layout:
             for i in range(layout.count()):
                 item = layout.itemAt(i)
+                if item is None:
+                    continue
                 widget = item.widget()
                 if widget:
                     widget.setVisible(visible)
@@ -2079,6 +2083,8 @@ class CollapsibleGroupBox(QGroupBox):
     def _set_layout_visible(self, layout, visible: bool):
         for i in range(layout.count()):
             item = layout.itemAt(i)
+            if item is None:
+                continue
             widget = item.widget()
             if widget:
                 widget.setVisible(visible)
@@ -6186,7 +6192,8 @@ bREadfan_69@hotmail.com"""
 
                 if at_target:
                     # Accept new target only if different enough (>50 tcode)
-                    if abs(f0_val_raw - self._c0_band_target) > 50:
+                    current_target = self._c0_band_target
+                    if current_target is not None and abs(f0_val_raw - current_target) > 50:
                         # Clamp new target: max ±500 from current position
                         delta_from_current = f0_val_raw - self._c0_band_current
                         delta_from_current = max(-500, min(500, delta_from_current))
@@ -6743,7 +6750,7 @@ def main():
     
     # Show splash screen while loading (fallback for direct main.py execution)
     if getattr(sys, 'frozen', False):
-        resource_dir = Path(sys._MEIPASS)
+        resource_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
     else:
         resource_dir = Path(__file__).parent
     
