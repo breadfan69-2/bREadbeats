@@ -87,8 +87,19 @@ def _track_slider_value(name: str, value: float) -> None:
 def get_config_dir() -> Path:
     """Get config directory - exe folder when packaged, home dir otherwise"""
     if getattr(sys, 'frozen', False):
-        # Running as packaged exe - save in same folder as exe
-        return Path(sys.executable).parent
+        # Running as packaged exe - prefer same folder as exe
+        exe_dir = Path(sys.executable).parent
+        probe = exe_dir / '.breadbeats_write_test.tmp'
+        try:
+            with open(probe, 'w', encoding='utf-8') as f:
+                f.write('ok')
+            probe.unlink(missing_ok=True)
+            return exe_dir
+        except Exception:
+            # Fallback when exe dir is not writable (e.g. Program Files)
+            config_dir = Path.home() / '.breadbeats'
+            config_dir.mkdir(parents=True, exist_ok=True)
+            return config_dir
     else:
         # Running from source - use home directory
         config_dir = Path.home() / '.breadbeats'
