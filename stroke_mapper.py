@@ -1001,6 +1001,13 @@ class StrokeMapper:
 
         self.state.alpha = alpha
         self.state.beta = beta
+        # Keep creep_angle in sync with actual position during trajectory playback
+        # so idle motion resumes smoothly after arc completes
+        r = np.sqrt(alpha**2 + beta**2)
+        if r > 0.05:
+            self.state.creep_angle = np.arctan2(alpha, beta)
+            if self.state.creep_angle < 0:
+                self.state.creep_angle += 2 * np.pi
         traj.current_index = target_idx + 1
 
         # Check if trajectory just completed
