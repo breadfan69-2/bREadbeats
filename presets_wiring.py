@@ -34,3 +34,16 @@ def load_presets_data(
         return data if isinstance(data, dict) else {}
 
     return {}
+
+
+def resolve_p0_tcode_bounds(preset_data: dict) -> tuple[int | None, int | None]:
+    """Resolve P0 tcode min/max supporting old preset keys and legacy Hz-scale values."""
+    p0_tcode_min = preset_data.get('tcode_min', preset_data.get('tcode_freq_min'))
+    p0_tcode_max = preset_data.get('tcode_max', preset_data.get('tcode_freq_max'))
+
+    if p0_tcode_min is not None and p0_tcode_min < 200:
+        p0_tcode_min = int(p0_tcode_min * 67)
+    if p0_tcode_max is not None and p0_tcode_max < 200:
+        p0_tcode_max = int(p0_tcode_max * 67)
+
+    return p0_tcode_min, p0_tcode_max
