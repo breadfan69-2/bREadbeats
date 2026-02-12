@@ -89,6 +89,11 @@ class StrokeConfig:
     amplitude_gate_high: float = 0.08  # RMS above this -> FULL_STROKE
     amplitude_gate_low: float = 0.04   # RMS below this -> CREEP_MICRO
 
+    # Noise-burst reactive arc (hybrid with metronome system)
+    # Fires a quick partial arc on sudden loud transients between beats
+    noise_burst_enabled: bool = True        # Allow transient-reactive arcs between beats
+    noise_burst_flux_multiplier: float = 2.0  # Fire burst when flux > flux_threshold * this
+
 @dataclass
 class JitterConfig:
     """Jitter - micro-circles when no beat detected"""

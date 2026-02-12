@@ -3157,6 +3157,55 @@ class BREadbeatsWindow(QMainWindow):
 
         scroll_layout.addWidget(syncope_group)
 
+        # ===== Amplitude Gate Controls =====
+        gate_group = QGroupBox("Amplitude Gate (Stroke vs Creep)")
+        gate_layout = QVBoxLayout(gate_group)
+
+        gate_info = QLabel("Controls when full strokes activate vs quiet creep mode.\nLower = more sensitive (strokes on quieter audio).")
+        gate_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        gate_layout.addWidget(gate_info)
+
+        # Gate high slider (threshold to enter FULL_STROKE)
+        gate_high_slider = SliderWithLabel("Full stroke threshold (enter)", 0.01, 0.20, self.config.stroke.amplitude_gate_high, 3)
+        gate_high_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'amplitude_gate_high', v)
+        )
+        gate_layout.addWidget(gate_high_slider)
+
+        # Gate low slider (threshold to drop to CREEP_MICRO)
+        gate_low_slider = SliderWithLabel("Creep threshold (exit)", 0.005, 0.10, self.config.stroke.amplitude_gate_low, 3)
+        gate_low_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'amplitude_gate_low', v)
+        )
+        gate_layout.addWidget(gate_low_slider)
+
+        scroll_layout.addWidget(gate_group)
+
+        # ===== Noise Burst Controls (Hybrid System) =====
+        burst_group = QGroupBox("Noise Burst (Transient Reaction)")
+        burst_layout = QVBoxLayout(burst_group)
+
+        burst_info = QLabel("React immediately to sudden loud sounds between beats.\nCombines noise-driven speed with metronome-timed arcs.")
+        burst_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        burst_layout.addWidget(burst_info)
+
+        # On/Off checkbox
+        burst_enabled_cb = QCheckBox("Enable noise burst arcs")
+        burst_enabled_cb.setChecked(self.config.stroke.noise_burst_enabled)
+        burst_enabled_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'noise_burst_enabled', state == 2)
+        )
+        burst_layout.addWidget(burst_enabled_cb)
+
+        # Flux multiplier slider
+        burst_flux_slider = SliderWithLabel("Burst sensitivity (flux multiplier)", 1.0, 5.0, self.config.stroke.noise_burst_flux_multiplier, 1)
+        burst_flux_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'noise_burst_flux_multiplier', v)
+        )
+        burst_layout.addWidget(burst_flux_slider)
+
+        scroll_layout.addWidget(burst_group)
+
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         
@@ -6641,7 +6690,8 @@ def main():
     window = BREadbeatsWindow()
     
     print("\nInitialization complete. Starting GUI...\n")
-    sys.stdout.flush()
+    if sys.stdout:
+        sys.stdout.flush()
     
     # Close splash and show main window
     if splash:

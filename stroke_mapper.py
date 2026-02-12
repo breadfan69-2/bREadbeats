@@ -399,6 +399,20 @@ class StrokeMapper:
                     cmd = self._generate_syncopated_stroke(event)
                     return self._apply_fade(cmd)
 
+        # ===== NOISE BURST: transient-reactive arc (hybrid system) =====
+        # React immediately to sudden loud flux spikes between beats,
+        # combining old noise-driven responsiveness with the new metronome system.
+        if (not event.is_beat
+                and cfg.noise_burst_enabled
+                and self._motion_mode == MotionMode.FULL_STROKE
+                and (self._trajectory is None or self._trajectory.finished)):
+            noise_thresh = cfg.flux_threshold * cfg.noise_burst_flux_multiplier
+            if event.spectral_flux >= noise_thresh:
+                time_since_stroke = (now - self.state.last_stroke_time) * 1000
+                if time_since_stroke >= cfg.min_interval_ms * 0.4:
+                    cmd = self._generate_noise_burst_stroke(event)
+                    return self._apply_fade(cmd)
+
         if event.is_beat:
             time_since_stroke = (now - self.state.last_stroke_time) * 1000
             if time_since_stroke < cfg.min_interval_ms:
@@ -693,19 +707,26 @@ class StrokeMapper:
         freq_factor = self._freq_to_factor(event.frequency)
         depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
 
-        n_points = max(6, int(half_beat_ms / 10))
+        n_points = max(12, int(half_beat_ms / 10))
         # Full-circle arc from current position at 2x speed (within half-beat duration)
+        # Use OUTER-EDGE radius (matching creep orbit) so the arc traces visibly
+        # around the circumference, not a tiny inner circle.
         current_phase = self.state.creep_angle / (2 * np.pi)
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
+
+        jitter_r = self.config.jitter.amplitude if self.config.jitter.enabled else 0.0
+        outer_radius = max(0.5, 0.98 - jitter_r)
+        arc_radius = outer_radius * max(0.5, intensity) * flux_factor
+        arc_radius = max(0.5, min(1.0, arc_radius))
+        alpha_weight = self.config.alpha_weight
+        beta_weight = self.config.beta_weight
+
         for i, phase in enumerate(arc_phases):
-            prev_phase = self.state.phase
-            self.state.phase = phase
-            a, b = self._get_stroke_target(stroke_len, depth, event)
-            alpha_arc[i] = a
-            beta_arc[i] = b
-            self.state.phase = prev_phase
+            angle = phase * 2 * np.pi
+            alpha_arc[i] = np.sin(angle) * arc_radius * alpha_weight
+            beta_arc[i] = np.cos(angle) * arc_radius * beta_weight
 
         step_durations = self._make_thump_durations(half_beat_ms, n_points)
 
@@ -721,7 +742,67 @@ class StrokeMapper:
 
         self.state.last_stroke_time = now
         log_event("INFO", "StrokeMapper", "Syncopated arc (double-stroke)",
-                  points=n_points, duration_ms=half_beat_ms)
+                  points=n_points, duration_ms=half_beat_ms,
+                  radius=f"{arc_radius:.2f}")
+        return None
+
+    # ------------------------------------------------------------------
+    # Noise-burst reactive arc (hybrid noise + metronome)
+    # ------------------------------------------------------------------
+
+    def _generate_noise_burst_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
+        """Quick partial arc fired on sudden loud transients between beats.
+        Uses the old noise-driven approach: react immediately to flux spikes
+        rather than waiting for the metronome.  Produces a quarter-circle
+        at the outer-edge radius in about 120ms."""
+        cfg = self.config.stroke
+        now = time.time()
+
+        burst_ms = 120  # short burst arc
+        n_points = max(8, int(burst_ms / 10))
+
+        # Quarter-circle arc from current creep angle
+        current_phase = self.state.creep_angle / (2 * np.pi)
+        arc_phases = np.linspace(current_phase, current_phase + 0.25, n_points, endpoint=False) % 1.0
+        alpha_arc = np.zeros(n_points)
+        beta_arc = np.zeros(n_points)
+
+        jitter_r = self.config.jitter.amplitude if self.config.jitter.enabled else 0.0
+        outer_radius = max(0.5, 0.98 - jitter_r)
+        intensity = event.intensity
+        flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
+        arc_radius = outer_radius * max(0.5, intensity) * flux_factor
+        arc_radius = max(0.5, min(1.0, arc_radius))
+        alpha_weight = self.config.alpha_weight
+        beta_weight = self.config.beta_weight
+
+        for i, phase in enumerate(arc_phases):
+            angle = phase * 2 * np.pi
+            alpha_arc[i] = np.sin(angle) * arc_radius * alpha_weight
+            beta_arc[i] = np.cos(angle) * arc_radius * beta_weight
+
+        base_step = max(5, burst_ms // n_points)
+        step_durations = [base_step] * n_points
+        # Adjust total to match burst_ms
+        actual = sum(step_durations)
+        if actual != burst_ms:
+            step_durations[-1] += (burst_ms - actual)
+
+        self._trajectory = PlannedTrajectory(
+            alpha_points=alpha_arc,
+            beta_points=beta_arc,
+            step_durations=step_durations,
+            n_points=n_points,
+            current_index=0,
+            band_volume=self._get_band_volume(event),
+            start_time=now,
+        )
+
+        self.state.last_stroke_time = now
+        log_event("INFO", "StrokeMapper", "Noise burst",
+                  points=n_points, duration_ms=burst_ms,
+                  flux=f"{event.spectral_flux:.3f}",
+                  radius=f"{arc_radius:.2f}")
         return None
 
     # ------------------------------------------------------------------
