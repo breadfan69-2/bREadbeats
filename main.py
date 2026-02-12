@@ -56,6 +56,7 @@ from transport_wiring import (
     play_button_text,
     send_zero_volume_immediate,
     set_transport_sending,
+    shutdown_runtime,
     start_stop_ui_state,
     trigger_network_test,
 )
@@ -6706,9 +6707,7 @@ bREadfan_69@hotmail.com"""
 
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
-        self._stop_engines()
-        if self.network_engine:
-            self.network_engine.stop()
+        shutdown_runtime(self._stop_engines, self.network_engine)
 
         # Save all settings from sliders to config before closing
         self.config.stroke.phase_advance = self.phase_advance_slider.value()

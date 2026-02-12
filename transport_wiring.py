@@ -61,3 +61,10 @@ def start_stop_ui_state(is_running: bool) -> dict:
 def play_button_text(is_playing: bool) -> str:
     """Return Play button text for playing/paused state."""
     return "⏸ Pause" if is_playing else "▶ Play"
+
+
+def shutdown_runtime(stop_engines_callback, network_engine) -> None:
+    """Stop local engines first, then stop network engine if present."""
+    stop_engines_callback()
+    if network_engine:
+        network_engine.stop()
