@@ -3212,7 +3212,7 @@ class BREadbeatsWindow(QMainWindow):
         burst_layout.addWidget(burst_enabled_cb)
 
         # Flux multiplier slider
-        burst_flux_slider = SliderWithLabel("Burst sensitivity (flux multiplier)", 0.5, 5.0, self.config.stroke.noise_burst_flux_multiplier, 1)
+        burst_flux_slider = SliderWithLabel("Burst sensitivity (flux multiplier)", 0.5, 10.0, self.config.stroke.noise_burst_flux_multiplier, 1)
         burst_flux_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'noise_burst_flux_multiplier', v)
         )
