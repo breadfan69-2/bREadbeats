@@ -3597,6 +3597,7 @@ bREadfan_69@hotmail.com"""
                 self.jitter_intensity_slider.setValue(self.config.jitter.intensity)
                 self.creep_enabled.setChecked(self.config.creep.enabled)
                 self.creep_speed_slider.setValue(self.config.creep.speed)
+                self.thump_enabled_cb.setChecked(self.config.stroke.thump_enabled)
 
                 # Axis weights tab
                 self.alpha_weight_slider.setValue(self.config.alpha_weight)
@@ -4219,6 +4220,7 @@ bREadfan_69@hotmail.com"""
             'jitter_intensity': self.jitter_intensity_slider.value(),
             'creep_enabled': self.creep_enabled.isChecked(),
             'creep_speed': self.creep_speed_slider.value(),
+            'thump_enabled': self.thump_enabled_cb.isChecked(),
 
             # Axis Weights Tab
             'alpha_weight': self.alpha_weight_slider.value(),
@@ -4300,6 +4302,8 @@ bREadfan_69@hotmail.com"""
         self.jitter_intensity_slider.setValue(preset_data['jitter_intensity'])
         self.creep_enabled.setChecked(preset_data['creep_enabled'])
         self.creep_speed_slider.setValue(preset_data['creep_speed'])
+        if 'thump_enabled' in preset_data:
+            self.thump_enabled_cb.setChecked(preset_data['thump_enabled'])
         
         # Axis Weights Tab
         self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
@@ -5201,6 +5205,7 @@ bREadfan_69@hotmail.com"""
             'jitter_intensity': self.jitter_intensity_slider.value(),
             'creep_enabled': self.creep_enabled.isChecked(),
             'creep_speed': self.creep_speed_slider.value(),
+            'thump_enabled': self.thump_enabled_cb.isChecked(),
 
             # Axis Weights Tab
             'alpha_weight': self.alpha_weight_slider.value(),
@@ -5314,6 +5319,8 @@ bREadfan_69@hotmail.com"""
             self.jitter_intensity_slider.setValue(preset_data['jitter_intensity'])
             self.creep_enabled.setChecked(preset_data['creep_enabled'])
             self.creep_speed_slider.setValue(preset_data['creep_speed'])
+            if 'thump_enabled' in preset_data:
+                self.thump_enabled_cb.setChecked(preset_data['thump_enabled'])
             # Axis Weights Tab
             self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
             self.beta_weight_slider.setValue(preset_data['beta_weight'])
@@ -5589,9 +5596,14 @@ bREadfan_69@hotmail.com"""
         self.creep_enabled.stateChanged.connect(lambda s: setattr(self.config.creep, 'enabled', s == 2))
         effects_layout.addWidget(self.creep_enabled)
 
-        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 1.0, 0.02, 3)
+        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 2.0, 0.02, 3)
         self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
         effects_layout.addWidget(self.creep_speed_slider)
+
+        self.thump_enabled_cb = QCheckBox("Thump (arc acceleration)")
+        self.thump_enabled_cb.setChecked(self.config.stroke.thump_enabled)
+        self.thump_enabled_cb.stateChanged.connect(lambda s: setattr(self.config.stroke, 'thump_enabled', s == 2))
+        effects_layout.addWidget(self.thump_enabled_cb)
 
         layout.addWidget(effects_group)
 

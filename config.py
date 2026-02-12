@@ -92,6 +92,9 @@ class StrokeConfig:
     # Beats-between-strokes: only fire full arcs every Nth beat (1/2/4/8)
     beats_between_strokes: int = 1           # 1=every beat, 2=every 2nd, 4=every 4th, 8=every 8th
 
+    # Thump: accelerate the second half of arc strokes for a "landing" feel
+    thump_enabled: bool = False             # Enable thump acceleration on arc strokes
+
     # Noise-burst reactive arc (hybrid with metronome system)
     # Fires a quick partial arc on sudden loud transients between beats
     noise_burst_enabled: bool = True        # Allow transient-reactive arcs between beats
@@ -109,7 +112,7 @@ class JitterConfig:
 class CreepConfig:
     """Creep - very slow movement when idle"""
     enabled: bool = True
-    speed: float = 0.02               # Multiplier for creep rotation (0.0-1.0) - lower = slower drift
+    speed: float = 0.02               # Multiplier for creep rotation (0.0-2.0) - lower = slower drift
 
 @dataclass 
 class ConnectionConfig:
