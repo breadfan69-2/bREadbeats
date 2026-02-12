@@ -384,6 +384,69 @@ class AudioEngine:
         self._syncopation_confirmed: bool = False        # True after confirmation
         self._syncopation_armed: bool = False            # Armed on first off-beat, fires on second in same period
 
+        self._session_started_at: float = 0.0
+        self._session_frame_count: int = 0
+        self._session_raw_rms_min: float | None = None
+        self._session_raw_rms_max: float | None = None
+        self._session_band_energy_min: float | None = None
+        self._session_band_energy_max: float | None = None
+        self._session_flux_min: float | None = None
+        self._session_flux_max: float | None = None
+
+    def _reset_session_stats(self) -> None:
+        self._session_started_at = time.time()
+        self._session_frame_count = 0
+        self._session_raw_rms_min = None
+        self._session_raw_rms_max = None
+        self._session_band_energy_min = None
+        self._session_band_energy_max = None
+        self._session_flux_min = None
+        self._session_flux_max = None
+
+    def _update_session_stats(self, raw_rms: float, band_energy: float, spectral_flux: float) -> None:
+        self._session_frame_count += 1
+        if self._session_raw_rms_min is None or raw_rms < self._session_raw_rms_min:
+            self._session_raw_rms_min = raw_rms
+        if self._session_raw_rms_max is None or raw_rms > self._session_raw_rms_max:
+            self._session_raw_rms_max = raw_rms
+        if self._session_band_energy_min is None or band_energy < self._session_band_energy_min:
+            self._session_band_energy_min = band_energy
+        if self._session_band_energy_max is None or band_energy > self._session_band_energy_max:
+            self._session_band_energy_max = band_energy
+        if self._session_flux_min is None or spectral_flux < self._session_flux_min:
+            self._session_flux_min = spectral_flux
+        if self._session_flux_max is None or spectral_flux > self._session_flux_max:
+            self._session_flux_max = spectral_flux
+
+    def _log_shutdown_summary(self) -> None:
+        if self._session_frame_count <= 0:
+            return
+
+        elapsed_s = max(0.0, time.time() - self._session_started_at)
+        raw_min = float(self._session_raw_rms_min or 0.0)
+        raw_max = float(self._session_raw_rms_max or 0.0)
+        band_min = float(self._session_band_energy_min or 0.0)
+        band_max = float(self._session_band_energy_max or 0.0)
+        flux_min = float(self._session_flux_min or 0.0)
+        flux_max = float(self._session_flux_max or 0.0)
+
+        log_event(
+            "INFO",
+            "Audio",
+            "Shutdown levels summary",
+            frames=self._session_frame_count,
+            seconds=f"{elapsed_s:.1f}",
+            raw_rms_min=f"{raw_min:.6f}",
+            raw_rms_max=f"{raw_max:.6f}",
+            raw_rms_span=f"{(raw_max - raw_min):.6f}",
+            band_energy_min=f"{band_min:.6f}",
+            band_energy_max=f"{band_max:.6f}",
+            band_energy_span=f"{(band_max - band_min):.6f}",
+            flux_min=f"{flux_min:.4f}",
+            flux_max=f"{flux_max:.4f}",
+            flux_span=f"{(flux_max - flux_min):.4f}",
+        )
+
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""
         if not HAS_SCIPY or not self._use_butterworth:
@@ -420,6 +483,7 @@ class AudioEngine:
         if self.running:
             return
             
+        self._reset_session_stats()
         self.running = True
         
         # Initialize PyAudio
@@ -524,6 +588,7 @@ class AudioEngine:
     def stop(self) -> None:
         """Stop audio capture"""
         self.running = False
+        self._log_shutdown_summary()
         if self.stream:
             self.stream.stop_stream()
             self.stream.close()
@@ -588,6 +653,9 @@ class AudioEngine:
             band_spectrum = band_spectrum * self.config.audio.gain
             band_energy = np.sqrt(np.mean(band_spectrum ** 2)) if len(band_spectrum) > 0 else 0
             spectral_flux = self._compute_spectral_flux(band_spectrum)
+
+        raw_rms = np.sqrt(np.mean(mono ** 2))
+        self._update_session_stats(raw_rms, band_energy, spectral_flux)
         
         # Note: Audio gain already applied to band_spectrum above, no need to apply again
         
@@ -610,7 +678,6 @@ class AudioEngine:
         self._debug_counter += 1
         if self._debug_counter % 20 == 0:
             # Log raw audio level too
-            raw_rms = np.sqrt(np.mean(mono ** 2))
             full_spectrum_energy = np.sqrt(np.mean(spectrum ** 2)) if len(spectrum) > 0 else 0
             log_event(
                 "INFO",
