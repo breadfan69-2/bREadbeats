@@ -189,6 +189,13 @@ class StrokeMapper:
         # ---------- Beats-between-strokes counter ----------
         self._beats_since_stroke: int = 0  # counts how many beats have passed since last full stroke
 
+        # ---------- Stroke readiness gating ----------
+        # Strokes only fire when metronome + traffic light conditions are met:
+        #   Option A: metronome GREEN + traffic YELLOW or GREEN
+        #   Option B: metronome GREEN or YELLOW + traffic GREEN
+        # Otherwise: creep/jitter only
+        self._stroke_ready: bool = False
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -244,6 +251,45 @@ class StrokeMapper:
             self._rms_envelope += (energy - self._rms_envelope) * self._rms_attack
         else:
             self._rms_envelope += (energy - self._rms_envelope) * self._rms_release
+
+    def _update_stroke_readiness(self, event: BeatEvent) -> None:
+        """Determine if strokes should fire based on metronome + traffic light.
+        
+        Conditions for strokes to fire (either):
+          A) Metronome GREEN (acf_conf >= 0.25) AND traffic YELLOW or GREEN
+          B) Metronome GREEN or YELLOW (acf_conf >= 0.05) AND traffic GREEN
+        Otherwise: creep/jitter only.
+        
+        If no metrics are enabled (no traffic light), only metronome matters.
+        """
+        acf_conf = getattr(event, 'acf_confidence', 0.0)
+        metro_bpm = getattr(event, 'metronome_bpm', 0.0)
+        
+        metro_green = acf_conf >= 0.25 and metro_bpm > 0
+        metro_yellow = acf_conf >= 0.05 and metro_bpm > 0
+        
+        # Get traffic light state from audio_engine
+        traffic_green = False
+        traffic_yellow = False
+        traffic_has_metrics = False
+        if self.audio_engine and hasattr(self.audio_engine, 'get_metric_states'):
+            states = self.audio_engine.get_metric_states()
+            if states:
+                traffic_has_metrics = True
+                all_settled = all(s == 'SETTLED' for s in states.values())
+                any_settled = any(s == 'SETTLED' for s in states.values())
+                traffic_green = all_settled
+                traffic_yellow = any_settled and not all_settled
+        
+        if traffic_has_metrics:
+            # Option A: metronome GREEN + traffic YELLOW or GREEN
+            option_a = metro_green and (traffic_yellow or traffic_green)
+            # Option B: metronome GREEN or YELLOW + traffic GREEN
+            option_b = (metro_green or metro_yellow) and traffic_green
+            self._stroke_ready = option_a or option_b
+        else:
+            # No metrics enabled — just need metronome yellow or green
+            self._stroke_ready = metro_yellow
 
     def _update_motion_mode(self) -> None:
         """Switch between FULL_STROKE and CREEP_MICRO with hysteresis."""
@@ -345,6 +391,7 @@ class StrokeMapper:
         self._update_flux_history(event)
         self._update_envelope(event)
         self._update_motion_mode()
+        self._update_stroke_readiness(event)
         self._advance_phase(event)
         self._update_band_energies(event)
 
@@ -443,6 +490,13 @@ class StrokeMapper:
             time_since_stroke = (now - self.state.last_stroke_time) * 1000
             if time_since_stroke < cfg.min_interval_ms:
                 return None
+
+            # ===== STROKE READINESS GATE =====
+            # If metronome + traffic light conditions not met,
+            # fall through to idle motion (creep/jitter) instead of strokes
+            if not self._stroke_ready:
+                cmd = self._generate_idle_motion(event)
+                return self._apply_fade(cmd)
 
             # Beats-between-strokes gating: only fire every Nth beat
             beats_skip = cfg.beats_between_strokes if hasattr(cfg, 'beats_between_strokes') else 1
@@ -970,9 +1024,9 @@ class StrokeMapper:
         """
         now = time.time()
         # Base jerk magnitude: small displacement (0.02-0.10)
-        base_mag = 0.04
+        base_mag = 0.10
         if is_downbeat:
-            base_mag = 0.08  # stronger on downbeat
+            base_mag = 0.20  # stronger on downbeat
 
         # Scale by mid+high energy for musical responsiveness
         band_scale = 1.0 + (self._mid_energy + self._high_energy) * 5.0
@@ -1151,27 +1205,15 @@ class StrokeMapper:
                     base_alpha = target_alpha
                     base_beta = target_beta
             else:
-                # No tempo: return to center and oscillate/jitter there
-                # Use a fixed gentle rotation speed (~1 revolution per 6 seconds)
-                # so creep_cfg.speed still scales it but never stalls
-                no_tempo_speed = max(0.02, creep_cfg.speed) * 0.05
-                if not self.state.creep_reset_active:
-                    self.state.creep_angle += no_tempo_speed
-                    if self.state.creep_angle >= 2 * np.pi:
-                        self.state.creep_angle -= 2 * np.pi
-                # Small oscillation around center (0,0) — gentle wobble while waiting for tempo
-                osc_radius = 0.08
-                target_alpha = np.sin(self.state.creep_angle) * osc_radius
-                target_beta = np.cos(self.state.creep_angle) * osc_radius
-
-                # Smooth blend toward center
+                # No tempo: return to center, let jitter handle micro-motion
+                # No orbital oscillation — just smoothly blend position toward (0, 0)
                 if self._post_arc_blend < 1.0:
                     self._post_arc_blend = min(1.0, self._post_arc_blend + self._post_arc_blend_rate)
-                    base_alpha = alpha + (target_alpha - alpha) * self._post_arc_blend
-                    base_beta = beta + (target_beta - beta) * self._post_arc_blend
+                    base_alpha = alpha * (1.0 - self._post_arc_blend)
+                    base_beta = beta * (1.0 - self._post_arc_blend)
                 else:
-                    base_alpha = target_alpha
-                    base_beta = target_beta
+                    base_alpha = 0.0
+                    base_beta = 0.0
         else:
             base_alpha = alpha
             base_beta = beta

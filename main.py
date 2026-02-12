@@ -2305,7 +2305,7 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_duration: float = 1.3  # 1.3s ramp
         
         # Auto-align target BPM tracking (wall-clock time-based)
-        self._auto_align_target_enabled: bool = False
+        self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
         self._auto_align_stable_since: float = 0.0      # time.time() when stability started
         self._auto_align_is_stable: bool = False         # currently in stable state
         self._auto_align_required_seconds: float = 3.0   # seconds of stability before first alignment
@@ -4804,8 +4804,8 @@ bREadfan_69@hotmail.com"""
         bps_layout.addWidget(self.bpm_actual_label)
         
         self.auto_align_target_cb = QCheckBox("Auto-align")
-        self.auto_align_target_cb.setToolTip("Slowly align target BPM to match sensed BPM when tempo is stable")
-        self.auto_align_target_cb.setChecked(False)
+        self.auto_align_target_cb.setToolTip("Automatically align target BPM to match sensed BPM when tempo is stable")
+        self.auto_align_target_cb.setChecked(True)
         self.auto_align_target_cb.stateChanged.connect(lambda state: self._on_auto_align_toggle(state == 2))
         bps_layout.addWidget(self.auto_align_target_cb)
         
