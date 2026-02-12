@@ -173,6 +173,9 @@ class StrokeMapper:
         # ---------- Idle motion throttle (separate from beat stroke timing) ----------
         self._last_idle_time: float = 0.0
 
+        # ---------- Last known BPM (persist through confidence drops) ----------
+        self._last_known_bpm: float = 0.0
+
         # ---------- Post-arc smooth blend ----------
         # After an arc completes, smoothly blend from arc endpoint to creep orbit
         self._post_arc_blend: float = 1.0  # 1.0 = fully on creep orbit (start normal), reset to 0.0 after arc
@@ -422,6 +425,9 @@ class StrokeMapper:
 
             if self._motion_mode == MotionMode.FULL_STROKE:
                 # High amplitude -> full arc strokes
+                # New beat always overrides any running trajectory — this
+                # prevents the old arc from blocking the new beat and causing
+                # the motion to fall behind the actual tempo.
                 if is_downbeat:
                     cmd = self._generate_downbeat_stroke(event)
                     return self._apply_fade(cmd)
@@ -709,24 +715,20 @@ class StrokeMapper:
 
         n_points = max(12, int(half_beat_ms / 10))
         # Full-circle arc from current position at 2x speed (within half-beat duration)
-        # Use OUTER-EDGE radius (matching creep orbit) so the arc traces visibly
-        # around the circumference, not a tiny inner circle.
+        # Use SAME radius calculation as beat strokes via _get_stroke_target()
+        # so syncopation arcs match normal beat stroke radius exactly.
         current_phase = self.state.creep_angle / (2 * np.pi)
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
 
-        jitter_r = self.config.jitter.amplitude if self.config.jitter.enabled else 0.0
-        outer_radius = max(0.5, 0.98 - jitter_r)
-        arc_radius = outer_radius * max(0.5, intensity) * flux_factor
-        arc_radius = max(0.5, min(1.0, arc_radius))
-        alpha_weight = self.config.alpha_weight
-        beta_weight = self.config.beta_weight
-
         for i, phase in enumerate(arc_phases):
-            angle = phase * 2 * np.pi
-            alpha_arc[i] = np.sin(angle) * arc_radius * alpha_weight
-            beta_arc[i] = np.cos(angle) * arc_radius * beta_weight
+            prev_phase = self.state.phase
+            self.state.phase = phase
+            a, b = self._get_stroke_target(stroke_len, depth, event)
+            alpha_arc[i] = a
+            beta_arc[i] = b
+            self.state.phase = prev_phase
 
         step_durations = self._make_thump_durations(half_beat_ms, n_points)
 
@@ -742,8 +744,7 @@ class StrokeMapper:
 
         self.state.last_stroke_time = now
         log_event("INFO", "StrokeMapper", "Syncopated arc (double-stroke)",
-                  points=n_points, duration_ms=half_beat_ms,
-                  radius=f"{arc_radius:.2f}")
+                  points=n_points, duration_ms=half_beat_ms)
         return None
 
     # ------------------------------------------------------------------
@@ -754,12 +755,21 @@ class StrokeMapper:
         """Quick partial arc fired on sudden loud transients between beats.
         Uses the old noise-driven approach: react immediately to flux spikes
         rather than waiting for the metronome.  Produces a quarter-circle
-        at the outer-edge radius in about 120ms."""
+        using the same radius as beat strokes in about 120ms."""
         cfg = self.config.stroke
         now = time.time()
 
         burst_ms = 120  # short burst arc
         n_points = max(8, int(burst_ms / 10))
+
+        # Use same stroke_len/depth as beat strokes for consistent radius
+        intensity = event.intensity
+        flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
+        base_stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * intensity * cfg.stroke_fullness
+        stroke_len = base_stroke_len * flux_factor * self.motion_intensity
+        stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
+        freq_factor = self._freq_to_factor(event.frequency)
+        depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
 
         # Quarter-circle arc from current creep angle
         current_phase = self.state.creep_angle / (2 * np.pi)
@@ -767,19 +777,13 @@ class StrokeMapper:
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
 
-        jitter_r = self.config.jitter.amplitude if self.config.jitter.enabled else 0.0
-        outer_radius = max(0.5, 0.98 - jitter_r)
-        intensity = event.intensity
-        flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
-        arc_radius = outer_radius * max(0.5, intensity) * flux_factor
-        arc_radius = max(0.5, min(1.0, arc_radius))
-        alpha_weight = self.config.alpha_weight
-        beta_weight = self.config.beta_weight
-
         for i, phase in enumerate(arc_phases):
-            angle = phase * 2 * np.pi
-            alpha_arc[i] = np.sin(angle) * arc_radius * alpha_weight
-            beta_arc[i] = np.cos(angle) * arc_radius * beta_weight
+            prev_phase = self.state.phase
+            self.state.phase = phase
+            a, b = self._get_stroke_target(stroke_len, depth, event)
+            alpha_arc[i] = a
+            beta_arc[i] = b
+            self.state.phase = prev_phase
 
         base_step = max(5, burst_ms // n_points)
         step_durations = [base_step] * n_points
@@ -801,8 +805,7 @@ class StrokeMapper:
         self.state.last_stroke_time = now
         log_event("INFO", "StrokeMapper", "Noise burst",
                   points=n_points, duration_ms=burst_ms,
-                  flux=f"{event.spectral_flux:.3f}",
-                  radius=f"{arc_radius:.2f}")
+                  flux=f"{event.spectral_flux:.3f}")
         return None
 
     # ------------------------------------------------------------------
@@ -811,15 +814,34 @@ class StrokeMapper:
 
     def _advance_trajectory(self) -> Optional[TCodeCommand]:
         """Read the next point from the active trajectory.
-        Returns a TCodeCommand, or None if the trajectory just finished."""
+        Uses elapsed time to pick the correct point, so the arc stays in
+        sync with the beat even if the frame rate fluctuates."""
         traj = self._trajectory
         if traj is None or traj.finished:
             return None
 
-        idx = traj.current_index
-        alpha = float(traj.alpha_points[idx])
-        beta = float(traj.beta_points[idx])
-        step_ms = traj.step_durations[idx]
+        # Time-based index: advance based on wall-clock elapsed since arc start
+        # This prevents the 17ms throttle from stretching the arc beyond its
+        # designed duration and causing the motion to fall behind the beat.
+        now = time.time()
+        elapsed_ms = (now - traj.start_time) * 1000
+        # Find the target index from cumulative step durations
+        cumulative = 0
+        target_idx = 0
+        for i in range(traj.n_points):
+            cumulative += traj.step_durations[i]
+            if elapsed_ms < cumulative:
+                target_idx = i
+                break
+        else:
+            target_idx = traj.n_points - 1  # past end
+
+        # Jump to the time-correct index (skip frames if needed)
+        target_idx = max(target_idx, traj.current_index)
+
+        alpha = float(traj.alpha_points[target_idx])
+        beta = float(traj.beta_points[target_idx])
+        step_ms = traj.step_durations[target_idx]
 
         # Use short duration matching our update rate for smooth motion
         duration_ms = min(step_ms, 25)
@@ -829,7 +851,7 @@ class StrokeMapper:
 
         self.state.alpha = alpha
         self.state.beta = beta
-        traj.current_index += 1
+        traj.current_index = target_idx + 1
 
         # Check if trajectory just completed
         if traj.finished:
@@ -993,6 +1015,12 @@ class StrokeMapper:
             # This prevents the sync from fighting the tempo-based rotation.
             
             bpm = getattr(event, 'bpm', 0.0) if event else 0.0
+            # Persist last known BPM so creep continues at last tempo
+            # when metronome confidence drops (instead of stopping)
+            if bpm > 0:
+                self._last_known_bpm = bpm
+            elif self._last_known_bpm > 0:
+                bpm = self._last_known_bpm
 
             if bpm > 0:
                 beats_per_sec = bpm / 60.0
