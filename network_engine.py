@@ -94,6 +94,7 @@ class NetworkEngine:
         self.connected = False
         self.running = False
         self._user_disconnected = False  # True when user explicitly clicked disconnect
+        self._dry_run = False  # When True, log but do not send
         
         # Command queue (thread-safe)
         self.cmd_queue: queue.Queue[TCodeCommand] = queue.Queue()
@@ -241,6 +242,12 @@ class NetworkEngine:
         Used for shutdown/fade-out commands that must be sent regardless of state."""
         if self.connected:
             self._send_tcode(cmd)
+
+    def set_dry_run(self, enabled: bool) -> None:
+        """Enable/disable dry-run mode (log only, no network send)."""
+        self._dry_run = enabled
+        state = "ON" if enabled else "OFF"
+        log_event("INFO", "NetworkEngine", f"Dry-run {state}")
         
     def _worker_loop(self) -> None:
         """Background worker that sends queued commands"""
@@ -273,6 +280,10 @@ class NetworkEngine:
                 
     def _send_tcode(self, cmd: TCodeCommand) -> None:
         """Send a T-code command over the socket"""
+        if self._dry_run:
+            log_event("INFO", "NetworkEngine", "Dry-run", tcode=cmd.to_tcode().strip())
+            return
+
         if not self.socket:
             return
             

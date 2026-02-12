@@ -18,7 +18,8 @@ import json
 import os
 import random
 from pathlib import Path
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
+from enum import IntEnum
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -51,6 +52,9 @@ from stroke_mapper import StrokeMapper
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
 
 
+CURRENT_CONFIG_VERSION = 1
+
+
 # Config persistence - use exe folder when packaged, home dir when running from source
 def get_config_dir() -> Path:
     """Get config directory - exe folder when packaged, home dir otherwise"""
@@ -66,6 +70,62 @@ def get_config_dir() -> Path:
 def get_config_file() -> Path:
     """Get config file path"""
     return get_config_dir() / 'config.json'
+
+
+def _apply_dict_to_dataclass(target, data) -> None:
+    """Recursively apply values from a dict onto a dataclass instance.
+    Unknown keys are ignored; IntEnum fields are coerced when possible."""
+    if not isinstance(data, dict):
+        return
+
+    for key, value in data.items():
+        if not hasattr(target, key):
+            continue
+
+        current = getattr(target, key)
+
+        # Recurse into nested dataclasses
+        if is_dataclass(current) and isinstance(value, dict):
+            _apply_dict_to_dataclass(current, value)
+            continue
+
+        # Coerce IntEnum fields (e.g., StrokeMode)
+        if isinstance(current, IntEnum):
+            try:
+                setattr(target, key, current.__class__(value))
+                continue
+            except Exception:
+                print(f"[Config] Warning: Could not convert {key} to {current.__class__.__name__}, keeping default")
+                continue
+
+        setattr(target, key, value)
+
+
+def _migrate_config(config: Config, loaded_version) -> None:
+    """Upgrade older config structures to the current schema.
+    Adds defaults for newly introduced fields and bumps version."""
+    try:
+        version = int(loaded_version) if loaded_version is not None else 0
+    except Exception:
+        version = 0
+
+    # Migration to version 1: ensure new fields have sane defaults
+    if version < 1:
+        # stroke.noise_burst_magnitude introduced; sanitize zero/None
+        if getattr(config.stroke, 'noise_burst_magnitude', 1.0) in (None, 0):
+            config.stroke.noise_burst_magnitude = 1.0
+
+        # device_limits toggles introduced; sanitize None
+        if getattr(config.device_limits, 'p0_c0_sending_enabled', True) is None:
+            config.device_limits.p0_c0_sending_enabled = True
+        if getattr(config.device_limits, 'dont_show_on_startup', False) is None:
+            config.device_limits.dont_show_on_startup = False
+        if getattr(config.device_limits, 'prompted', False) is None:
+            config.device_limits.prompted = False
+        if getattr(config.device_limits, 'dry_run', False) is None:
+            config.device_limits.dry_run = False
+
+    config.version = CURRENT_CONFIG_VERSION
 
 def save_config(config: Config) -> bool:
     """Save config to JSON file"""
@@ -87,86 +147,22 @@ def load_config() -> Config:
         if config_file.exists():
             with open(config_file, 'r') as f:
                 data = json.load(f)
-            
+
             # Reconstruct Config from dict (handles nested dataclasses)
             config = Config()
-            
-            # Apply loaded values
-            if 'beat' in data:
-                for key, value in data['beat'].items():
-                    if hasattr(config.beat, key):
-                        setattr(config.beat, key, value)
-            
-            if 'stroke' in data:
-                for key, value in data['stroke'].items():
-                    if hasattr(config.stroke, key):
-                        setattr(config.stroke, key, value)
-                # Ensure mode is always a StrokeMode enum
-                if hasattr(config.stroke, 'mode') and not isinstance(config.stroke.mode, StrokeMode):
-                    try:
-                        config.stroke.mode = StrokeMode(config.stroke.mode)
-                    except Exception as e:
-                        print(f"[Config] Warning: Could not convert stroke.mode to StrokeMode enum: {e}")
-            
-            if 'jitter' in data:
-                for key, value in data['jitter'].items():
-                    if hasattr(config.jitter, key):
-                        setattr(config.jitter, key, value)
-            
-            if 'creep' in data:
-                for key, value in data['creep'].items():
-                    if hasattr(config.creep, key):
-                        setattr(config.creep, key, value)
-            
-            if 'connection' in data:
-                for key, value in data['connection'].items():
-                    if hasattr(config.connection, key):
-                        setattr(config.connection, key, value)
-            
-            if 'audio' in data:
-                for key, value in data['audio'].items():
-                    if hasattr(config.audio, key):
-                        setattr(config.audio, key, value)
-            
-            if 'pulse_freq' in data:
-                for key, value in data['pulse_freq'].items():
-                    if hasattr(config.pulse_freq, key):
-                        setattr(config.pulse_freq, key, value)
-            
-            if 'carrier_freq' in data:
-                for key, value in data['carrier_freq'].items():
-                    if hasattr(config.carrier_freq, key):
-                        setattr(config.carrier_freq, key, value)
-            
-            if 'auto_adjust' in data:
-                for key, value in data['auto_adjust'].items():
-                    if hasattr(config.auto_adjust, key):
-                        setattr(config.auto_adjust, key, value)
-            
-            if 'device_limits' in data:
-                for key, value in data['device_limits'].items():
-                    if hasattr(config.device_limits, key):
-                        setattr(config.device_limits, key, value)
-            
-            if 'pulse_width' in data:
-                for key, value in data['pulse_width'].items():
-                    if hasattr(config.pulse_width, key):
-                        setattr(config.pulse_width, key, value)
-            
-            if 'rise_time' in data:
-                for key, value in data['rise_time'].items():
-                    if hasattr(config.rise_time, key):
-                        setattr(config.rise_time, key, value)
-            
-            # Top-level values
-            if 'alpha_weight' in data:
-                config.alpha_weight = data['alpha_weight']
-            if 'beta_weight' in data:
-                config.beta_weight = data['beta_weight']
-            if 'volume' in data:
-                config.volume = data['volume']
-            
-            print(f"[Config] Loaded from {config_file}")
+            _apply_dict_to_dataclass(config, data)
+            loaded_version = data.get('version')
+            _migrate_config(config, loaded_version)
+
+            version = getattr(config, 'version', 'unknown')
+            print(f"[Config] Loaded from {config_file} (version={version})")
+
+            # Auto-save migrated configs so version bumps persist
+            if loaded_version != version:
+                try:
+                    save_config(config)
+                except Exception as e:
+                    print(f"[Config] Warning: could not auto-save migrated config: {e}")
             return config
         else:
             print(f"[Config] No saved config found, using defaults")
@@ -2211,6 +2207,7 @@ class BREadbeatsWindow(QMainWindow):
         self.audio_engine = None
         self.network_engine = None
         self.stroke_mapper = None
+        self._dry_run_enabled = bool(getattr(self.config.device_limits, 'dry_run', False))
         
         # Setup UI
         self._setup_ui()
@@ -5968,7 +5965,11 @@ bREadfan_69@hotmail.com"""
         # Only create if somehow missing
         if self.network_engine is None:
             self.network_engine = NetworkEngine(self.config, self._network_status_callback)
+            self.network_engine.set_dry_run(self._dry_run_enabled)
             self.network_engine.start()
+        else:
+            # If reusing an existing engine, ensure dry-run flag matches config
+            self.network_engine.set_dry_run(self._dry_run_enabled)
 
         self.is_running = True
     

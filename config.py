@@ -169,6 +169,7 @@ class DeviceLimitsConfig:
     prompted: bool = False            # Whether user has been prompted on first run
     p0_c0_sending_enabled: bool = True  # Whether to actually send P0/C0 TCode to device
     dont_show_on_startup: bool = False  # User opted out of startup device limits dialog
+    dry_run: bool = False             # When True, do not send network commands (log-only)
 
 @dataclass
 class PulseWidthConfig:
@@ -236,6 +237,7 @@ class AudioConfig:
 @dataclass
 class Config:
     """Master configuration"""
+    version: int = 1                  # Schema version for persisted configs
     beat: BeatDetectionConfig = field(default_factory=BeatDetectionConfig)
     stroke: StrokeConfig = field(default_factory=StrokeConfig)
     jitter: JitterConfig = field(default_factory=JitterConfig)
