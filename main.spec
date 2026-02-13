@@ -1,15 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+from pathlib import Path
 
 # Collect PyQt6 properly
 pyqt_datas, pyqt_binaries, pyqt_hiddenimports = collect_all('PyQt6')
 
+datas = [
+    ('bREadbeats.ico', '.'),
+    ('splash_screen.png', '.'),
+    ('C:\\Users\\andre\\.bREadbeats\\presets.json', '.bREadbeats'),
+]
+
+if Path('config.json').exists():
+    datas.append(('config.json', '.'))
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=pyqt_binaries,
-    datas=[('bREadbeats.ico', '.'), ('splash_screen.png', '.'), ('C:\\Users\\andre\\.bREadbeats\\presets.json', '.bREadbeats')] + pyqt_datas,
+    datas=datas + pyqt_datas,
     hiddenimports=['scipy', 'scipy.signal', 'scipy.signal._sosfilt', 'scipy.signal._lfilter', 'pyqtgraph', 'fonttools', 'comtypes', 'pillow'] + pyqt_hiddenimports,
     hookspath=[],
     hooksconfig={},
