@@ -560,6 +560,13 @@ class StrokeMapper:
         self._update_band_energies(event)
         self._update_bass_jitter_drive(event)
 
+        # ===== STRICT BASS Z-SCORE GATE =====
+        # Only allow beat/syncopation-triggered stroke motion when bass
+        # z-score bands actually fired on this frame.
+        bass_bands = {'sub_bass', 'low_mid'}
+        fired_bands = set(getattr(event, 'fired_bands', None) or [])
+        bass_motion_allowed = bool(fired_bands.intersection(bass_bands))
+
         # ===== FLUX-DROP FALLBACK =====
         # Track recent flux for drop detection — if upper spectrum flux
         # drops significantly, force back to creep mode
@@ -581,7 +588,7 @@ class StrokeMapper:
 
         # ===== NO-BEAT TIMEOUT =====
         # Track last confirmed beat (stroke_ready + is_beat)
-        if event.is_beat and self._stroke_ready:
+        if event.is_beat and self._stroke_ready and bass_motion_allowed:
             self._last_confirmed_beat_time = now
         # If no confirmed beat for 2s, cancel trajectory and return to center+jitter
         if (self._last_confirmed_beat_time > 0
@@ -640,7 +647,7 @@ class StrokeMapper:
             self.state.idle_time = now - self.state.last_beat_time if self.state.last_beat_time > 0 else 0.0
 
         # ===== FLUX FACTOR (for stroke scaling) =====
-        if event.is_beat:
+        if event.is_beat and bass_motion_allowed:
             flux_ratio = event.spectral_flux / max(cfg.flux_threshold, 0.001)
             flux_ratio = np.clip(flux_ratio, 0.2, 3.0)
             base_factor = 0.5 + (flux_ratio / 3.0)
@@ -653,7 +660,7 @@ class StrokeMapper:
         # 2x-speed full-circle "double" arc for the duh-DUH effect.
         is_syncopated = getattr(event, 'is_syncopated', False)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
-        if is_syncopated and self._motion_mode == MotionMode.FULL_STROKE:
+        if is_syncopated and bass_motion_allowed and self._motion_mode == MotionMode.FULL_STROKE:
             # BPM limit from config
             bpm_limit = beat_cfg.syncopation_bpm_limit if hasattr(beat_cfg, 'syncopation_bpm_limit') else 160.0
             if metro_bpm > bpm_limit:
@@ -698,6 +705,10 @@ class StrokeMapper:
                     return self._apply_fade(cmd)
 
         if event.is_beat:
+            if not bass_motion_allowed:
+                cmd = self._generate_idle_motion(event)
+                return self._apply_fade(cmd)
+
             time_since_stroke = (now - self.state.last_stroke_time) * 1000
             if time_since_stroke < cfg.min_interval_ms:
                 return None
