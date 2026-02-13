@@ -215,7 +215,7 @@ class SpectrumCanvas(pg.PlotWidget):
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
         # Positioned at negative X to be off to the left of main display
-        bar_width = 5.0  # Width of each bar (larger for waterfall scale)
+        bar_width = 4.6  # Width of each bar (about 8% thinner)
         bar_spacing = 0.8  # Gap between bars
         bar_x_start = -18.0  # Start position (leftmost bar)
         
@@ -248,7 +248,7 @@ class SpectrumCanvas(pg.PlotWidget):
         
         # Store bar positions
         self._bar_width = bar_width
-        self._bar_scale = self.history_len  # Scale heights to match Y range
+        self._bar_scale = self.history_len * 0.82  # Visual calibration to reduce top saturation
         
     def _hz_to_bin(self, hz: float) -> float:
         """Convert Hz to log-spaced bin index (0 to num_bins)"""
@@ -386,10 +386,10 @@ class SpectrumCanvas(pg.PlotWidget):
         if hasattr(self, 'peak_actual_bar'):
             # Scale to waterfall Y range (0 to history_len)
             scale = getattr(self, '_bar_scale', self.history_len)
-            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value) * scale])
+            self.peak_actual_bar.setOpts(height=[min(1.0, peak_value) * scale])
         if hasattr(self, 'peak_decay_bar'):
             scale = getattr(self, '_bar_scale', self.history_len)
-            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value) * scale])
+            self.peak_decay_bar.setOpts(height=[min(1.0, flux_value) * scale])
     
     def set_peak_floor(self, peak_floor: float):
         """Update peak floor bar height"""
@@ -509,7 +509,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         self.freq_values = np.linspace(0, self.num_bins, self.num_bins)
         
         # Set view range (left margin includes peak indicator bars at negative X)
-        self.setXRange(-9, self.num_bins)
+        self.setXRange(-16, self.num_bins)
         self.setYRange(-120, 0)
 
         self._carrier_label_y = -33
@@ -606,13 +606,14 @@ class MountainRangeCanvas(pg.PlotWidget):
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
         # These are positioned at negative X to be off to the left of the main spectrum display
-        bar_width = 2.0  # Width of each bar
-        bar_spacing = 0.4  # Gap between bars
-        bar_x_start = -8.0  # Start position (leftmost bar)
+        bar_width = 4.4  # Width of each bar (10% wider for parity)
+        bar_spacing = 0.8  # Gap between bars
+        bar_x_start = -15.0  # Start position (leftmost bar)
         
         # Bar 1: Actual Peak (green) - current band energy level
         self.peak_actual_bar = pg.BarGraphItem(
             x=[bar_x_start],
+            y0=[-120],
             height=[0],
             width=bar_width,
             brush='#00FF00'  # Green
@@ -622,6 +623,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Bar 2: Peak Floor (yellow) - threshold setting
         self.peak_floor_bar = pg.BarGraphItem(
             x=[bar_x_start + bar_width + bar_spacing],
+            y0=[-120],
             height=[0],
             width=bar_width,
             brush='#FFD700'  # Gold/Yellow
@@ -631,6 +633,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Bar 3: Peak Decay (orange) - decayed peak tracker
         self.peak_decay_bar = pg.BarGraphItem(
             x=[bar_x_start + 2 * (bar_width + bar_spacing)],
+            y0=[-120],
             height=[0],
             width=bar_width,
             brush='#FF8C00'  # Dark orange
@@ -763,19 +766,21 @@ class MountainRangeCanvas(pg.PlotWidget):
         """Update peak indicator bars - actual peak and peak decay (tracked peak)"""
         peak_db = float(np.clip(20 * np.log10(max(peak_value, 1e-6)), -120, 0))
         flux_db = float(np.clip(20 * np.log10(max(flux_value, 1e-6)), -120, 0))
+        peak_h = (peak_db + 120.0) * 0.90
+        flux_h = (flux_db + 120.0) * 0.90
         if hasattr(self, 'peak_actual_bar'):
             # Update actual peak bar (green) - current band energy level
-            self.peak_actual_bar.setOpts(height=[peak_db])
+            self.peak_actual_bar.setOpts(y0=[-120], height=[peak_h])
         if hasattr(self, 'peak_decay_bar'):
             # Update peak decay bar (orange) - this shows the decayed/tracked peak
             # flux_value here represents the tracked/decayed peak from audio engine
-            self.peak_decay_bar.setOpts(height=[flux_db])
+            self.peak_decay_bar.setOpts(y0=[-120], height=[flux_h])
     
     def set_peak_floor(self, peak_floor: float):
         """Update peak floor bar height"""
         if hasattr(self, 'peak_floor_bar'):
             peak_floor_db = float(np.clip(20 * np.log10(max(peak_floor, 1e-6)), -120, 0))
-            self.peak_floor_bar.setOpts(height=[peak_floor_db])
+            self.peak_floor_bar.setOpts(y0=[-120], height=[(peak_floor_db + 120.0) * 0.90])
     
     def set_peak_indicators_visible(self, visible: bool):
         """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
@@ -959,7 +964,7 @@ class BarGraphCanvas(pg.PlotWidget):
         self._smoothing = 0.4
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        bar_width = 1.8  # Width of each bar
+        bar_width = 1.42  # Width of each bar (~7% thinner than prior tweak)
         bar_spacing = 0.4  # Gap between bars
         bar_x_start = -7.5  # Start position (leftmost bar)
         
@@ -1283,7 +1288,7 @@ class PhosphorCanvas(pg.PlotWidget):
         self._updating = False
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        bar_width = 5.0  # Width of each bar (larger for phosphor scale)
+        bar_width = 4.6  # Width of each bar (about 8% thinner)
         bar_spacing = 0.8  # Gap between bars
         bar_x_start = -18.0  # Start position (leftmost bar)
         
@@ -1315,7 +1320,7 @@ class PhosphorCanvas(pg.PlotWidget):
         self.addItem(self.peak_decay_bar)
         
         # Store scale for Y axis
-        self._bar_scale = self.num_mag_levels
+        self._bar_scale = self.num_mag_levels * 0.82
         
     def _hz_to_bin(self, hz: float) -> float:
         nyquist = self.sample_rate / 2
@@ -1431,10 +1436,10 @@ class PhosphorCanvas(pg.PlotWidget):
         """Update peak indicator bars - actual peak and peak decay"""
         if hasattr(self, 'peak_actual_bar'):
             scale = getattr(self, '_bar_scale', self.num_mag_levels)
-            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value) * scale])
+            self.peak_actual_bar.setOpts(height=[min(1.0, peak_value) * scale])
         if hasattr(self, 'peak_decay_bar'):
             scale = getattr(self, '_bar_scale', self.num_mag_levels)
-            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value) * scale])
+            self.peak_decay_bar.setOpts(height=[min(1.0, flux_value) * scale])
     
     def set_peak_floor(self, peak_floor: float):
         """Update peak floor bar height"""
