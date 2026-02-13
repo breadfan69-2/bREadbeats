@@ -443,9 +443,9 @@ class SpectrumCanvas(pg.PlotWidget):
         # Normalize: full range -6 to 0 for normalized input, map to 0-1
         spectrum = np.clip((spectrum + 6) / 6, 0, 1)
         
-        # Scroll waterfall up: shift all rows up by 1, put new data at bottom (row 0)
-        self.waterfall_data[1:, :] = self.waterfall_data[:-1, :]
-        self.waterfall_data[0, :] = spectrum
+        # Scroll waterfall up: shift existing rows toward top and put new data at bottom
+        self.waterfall_data[:-1, :] = self.waterfall_data[1:, :]
+        self.waterfall_data[-1, :] = spectrum
         
         # Create RGB image with frequency-based hue and amplitude-based brightness
         # Pre-compute base colors for each frequency bin if not done
@@ -504,23 +504,26 @@ class MountainRangeCanvas(pg.PlotWidget):
         
         # Spectrum dimensions
         self.num_bins = 256
+        self._display_floor_db = -72.0
+        self._display_ceil_db = 0.0
+        self._display_span = self._display_ceil_db - self._display_floor_db
         
         # Frequency values for x-axis (will be updated with sample rate)
         self.freq_values = np.linspace(0, self.num_bins, self.num_bins)
         
         # Set view range (left margin includes peak indicator bars at negative X)
         self.setXRange(-16, self.num_bins)
-        self.setYRange(-120, 0)
+        self.setYRange(0, self._display_span)
 
-        self._carrier_label_y = -33
-        self._pulse_label_y = -24
-        self._depth_label_y = -15
-        self._beat_label_y = -6
+        self._carrier_label_y = self._display_span * 0.73
+        self._pulse_label_y = self._display_span * 0.81
+        self._depth_label_y = self._display_span * 0.89
+        self._beat_label_y = self._display_span * 0.97
         
         # Main spectrum curve (mountain peaks) - cyan fill with bright outline
         self.spectrum_curve = pg.PlotCurveItem(
             pen=pg.mkPen(QColor(100, 200, 255, 255), width=2),  # Bright cyan outline
-            fillLevel=-120,
+            fillLevel=0,
             brush=pg.mkBrush(QColor(0, 120, 200, 120))  # Semi-transparent cyan fill
         )
         self.addItem(self.spectrum_curve)
@@ -528,7 +531,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Glow effect - slightly larger, more transparent version behind
         self.glow_curve = pg.PlotCurveItem(
             pen=pg.mkPen(QColor(0, 150, 255, 80), width=6),
-            fillLevel=-120,
+            fillLevel=0,
             brush=pg.mkBrush(QColor(0, 80, 180, 40))
         )
         self.addItem(self.glow_curve)
@@ -613,7 +616,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Bar 1: Actual Peak (green) - current band energy level
         self.peak_actual_bar = pg.BarGraphItem(
             x=[bar_x_start],
-            y0=[-120],
+            y0=[0],
             height=[0],
             width=bar_width,
             brush='#00FF00'  # Green
@@ -623,7 +626,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Bar 2: Peak Floor (yellow) - threshold setting
         self.peak_floor_bar = pg.BarGraphItem(
             x=[bar_x_start + bar_width + bar_spacing],
-            y0=[-120],
+            y0=[0],
             height=[0],
             width=bar_width,
             brush='#FFD700'  # Gold/Yellow
@@ -633,7 +636,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Bar 3: Peak Decay (orange) - decayed peak tracker
         self.peak_decay_bar = pg.BarGraphItem(
             x=[bar_x_start + 2 * (bar_width + bar_spacing)],
-            y0=[-120],
+            y0=[0],
             height=[0],
             width=bar_width,
             brush='#FF8C00'  # Dark orange
@@ -649,6 +652,10 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Smoothing buffer for smoother animation
         self._smooth_spectrum = np.full(self.num_bins, -120.0)
         self._smoothing = 0.3  # 0 = no smoothing, 1 = max smoothing
+
+    def _db_to_display(self, db_value: float) -> float:
+        """Map dB value into the canvas display range."""
+        return float(np.clip(db_value - self._display_floor_db, 0.0, self._display_span))
         
     def _hz_to_bin(self, hz: float) -> float:
         """Convert Hz to log-spaced bin index"""
@@ -766,21 +773,21 @@ class MountainRangeCanvas(pg.PlotWidget):
         """Update peak indicator bars - actual peak and peak decay (tracked peak)"""
         peak_db = float(np.clip(20 * np.log10(max(peak_value, 1e-6)), -120, 0))
         flux_db = float(np.clip(20 * np.log10(max(flux_value, 1e-6)), -120, 0))
-        peak_h = (peak_db + 120.0) * 0.90
-        flux_h = (flux_db + 120.0) * 0.90
+        peak_h = self._db_to_display(peak_db)
+        flux_h = self._db_to_display(flux_db)
         if hasattr(self, 'peak_actual_bar'):
             # Update actual peak bar (green) - current band energy level
-            self.peak_actual_bar.setOpts(y0=[-120], height=[peak_h])
+            self.peak_actual_bar.setOpts(y0=[0], height=[peak_h])
         if hasattr(self, 'peak_decay_bar'):
             # Update peak decay bar (orange) - this shows the decayed/tracked peak
             # flux_value here represents the tracked/decayed peak from audio engine
-            self.peak_decay_bar.setOpts(y0=[-120], height=[flux_h])
+            self.peak_decay_bar.setOpts(y0=[0], height=[flux_h])
     
     def set_peak_floor(self, peak_floor: float):
         """Update peak floor bar height"""
         if hasattr(self, 'peak_floor_bar'):
             peak_floor_db = float(np.clip(20 * np.log10(max(peak_floor, 1e-6)), -120, 0))
-            self.peak_floor_bar.setOpts(y0=[-120], height=[(peak_floor_db + 120.0) * 0.90])
+            self.peak_floor_bar.setOpts(y0=[0], height=[self._db_to_display(peak_floor_db)])
     
     def set_peak_indicators_visible(self, visible: bool):
         """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
@@ -833,10 +840,11 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Smooth the spectrum for less jittery animation
         self._smooth_spectrum = self._smoothing * self._smooth_spectrum + (1 - self._smoothing) * spectrum
         
-        # Update curves
+        # Update curves (display domain: 0 = floor dB at bottom, span = 0 dB near top)
+        display_spectrum = np.clip(self._smooth_spectrum - self._display_floor_db, 0.0, self._display_span)
         x = np.arange(self.num_bins)
-        self.spectrum_curve.setData(x, self._smooth_spectrum)
-        self.glow_curve.setData(x, np.clip(self._smooth_spectrum + 1.5, -120, 0))
+        self.spectrum_curve.setData(x, display_spectrum)
+        self.glow_curve.setData(x, np.clip(self._smooth_spectrum + 1.5 - self._display_floor_db, 0.0, self._display_span))
         
         # Find and mark peaks (local maxima above threshold)
         if peak_energy and peak_energy > 0.3:
@@ -847,7 +855,7 @@ class MountainRangeCanvas(pg.PlotWidget):
                     self._smooth_spectrum[i] > self._smooth_spectrum[i+1] and
                     self._smooth_spectrum[i] > -40):
                     peaks.append(i)
-                    peak_vals.append(self._smooth_spectrum[i])
+                    peak_vals.append(self._db_to_display(float(self._smooth_spectrum[i])))
             if peaks:
                 self.peak_scatter.setData(peaks, peak_vals)
             else:
@@ -2178,6 +2186,10 @@ class BREadbeatsWindow(QMainWindow):
         self._spectrum_timer = QTimer()
         self._spectrum_timer.timeout.connect(self._do_spectrum_update)
         self._spectrum_timer.start(33)  # ~30 FPS max
+        # Visual-only metric state (decoupled from beat detector thresholds)
+        self._viz_prev_spectrum: Optional[np.ndarray] = None
+        self._viz_peak_ref: float = 0.10
+        self._viz_flux_ref: float = 0.02
         
         # Cached P0/F0 values for thread-safe access (written by audio thread, read by GUI + send_direct)
         self._cached_p0_val: Optional[int] = None  # Last computed P0 TCode value
@@ -3311,11 +3323,28 @@ class BREadbeatsWindow(QMainWindow):
         gate_layout.addWidget(gate_low_slider)
 
         bass_gate_cb = QCheckBox("Require bass z-score bands for beat/sync stroke motion")
-        bass_gate_cb.setChecked(getattr(self.config.beat, 'strict_bass_motion_gate_enabled', True))
+        bass_gate_cb.setChecked(getattr(self.config.beat, 'strict_bass_motion_gate_enabled', False))
         bass_gate_cb.stateChanged.connect(
             lambda state: setattr(self.config.beat, 'strict_bass_motion_gate_enabled', state == 2)
         )
         gate_layout.addWidget(bass_gate_cb)
+
+        motion_cutoff_row = QHBoxLayout()
+        motion_cutoff_label = QLabel("Allow motion only below (Hz):")
+        motion_cutoff_label.setToolTip("When Bass Gating is enabled: stroke motion is allowed only for fired bands whose lower edge is below this cutoff")
+        motion_cutoff_row.addWidget(motion_cutoff_label)
+
+        self.motion_freq_cutoff_spin = QSpinBox()
+        self.motion_freq_cutoff_spin.setRange(0, 2000)
+        self.motion_freq_cutoff_spin.setSingleStep(20)
+        self.motion_freq_cutoff_spin.setValue(int(getattr(self.config.beat, 'motion_freq_cutoff', 500)))
+        self.motion_freq_cutoff_spin.setSuffix(" Hz")
+        self.motion_freq_cutoff_spin.setFixedWidth(90)
+        self.motion_freq_cutoff_spin.setToolTip("0 disables cutoff filtering (while Bass Gating is enabled)")
+        self.motion_freq_cutoff_spin.valueChanged.connect(self._on_motion_freq_cutoff_change)
+        motion_cutoff_row.addWidget(self.motion_freq_cutoff_spin)
+        motion_cutoff_row.addStretch()
+        gate_layout.addLayout(motion_cutoff_row)
 
         scroll_layout.addWidget(gate_group)
 
@@ -5119,24 +5148,6 @@ bREadfan_69@hotmail.com"""
         beat_slider_row.addWidget(self.beat_band_toggle)
         levels_layout.addLayout(beat_slider_row)
         
-        # Motion frequency cutoff: only generate strokes from bands below this Hz
-        motion_cutoff_row = QHBoxLayout()
-        motion_cutoff_label = QLabel("Motion Band Cutoff (Hz):")
-        motion_cutoff_label.setStyleSheet("color: #CCC; font-size: 9px;")
-        motion_cutoff_label.setToolTip("Only generate motion from beat bands below this frequency.\nHigher-band beats (hi-hat, cymbals) still feed BPM tracking but won't produce strokes.")
-        motion_cutoff_row.addWidget(motion_cutoff_label)
-        self.motion_freq_cutoff_spin = QSpinBox()
-        self.motion_freq_cutoff_spin.setRange(60, 2000)
-        self.motion_freq_cutoff_spin.setSingleStep(20)
-        self.motion_freq_cutoff_spin.setValue(int(self.config.beat.motion_freq_cutoff))
-        self.motion_freq_cutoff_spin.setSuffix(" Hz")
-        self.motion_freq_cutoff_spin.setFixedWidth(80)
-        self.motion_freq_cutoff_spin.setToolTip("Bands with lower Hz >= this value are filtered from motion generation")
-        self.motion_freq_cutoff_spin.valueChanged.connect(self._on_motion_freq_cutoff_change)
-        motion_cutoff_row.addWidget(self.motion_freq_cutoff_spin)
-        motion_cutoff_row.addStretch()
-        levels_layout.addLayout(motion_cutoff_row)
-        
         # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud)
         aa_min, aa_max = BEAT_RANGE_LIMITS['audio_amp']
         self.audio_gain_slider = SliderWithLabel("Audio Amplification", aa_min, aa_max, self.config.audio.gain, 2)
@@ -5194,7 +5205,7 @@ bREadfan_69@hotmail.com"""
     def _on_motion_freq_cutoff_change(self, value: int):
         """Handle motion frequency cutoff spinbox change"""
         self.config.beat.motion_freq_cutoff = float(value)
-        print(f"[Config] Motion band cutoff: {value} Hz (bands with lower Hz >= {value} filtered from motion)")
+        print(f"[Config] Allow motion only below: {value} Hz (bands with lower edge >= {value} are filtered)")
     
     def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""
@@ -6779,6 +6790,32 @@ bREadfan_69@hotmail.com"""
     def _on_spectrum(self, spectrum: np.ndarray):
         """Queue spectrum for throttled update"""
         self._pending_spectrum = spectrum
+
+    def _compute_visual_metrics(self, spectrum: np.ndarray) -> tuple[float, float]:
+        """Compute visual peak/flux from spectrum only (independent of detection thresholds)."""
+        arr = np.asarray(spectrum, dtype=np.float32)
+        if arr.size == 0:
+            return (0.0, 0.0)
+
+        peak_raw = float(np.max(arr))
+        if self._viz_prev_spectrum is None or len(self._viz_prev_spectrum) != len(arr):
+            flux_raw = 0.0
+        else:
+            diff = arr - self._viz_prev_spectrum
+            flux_raw = float(np.mean(np.maximum(0.0, diff)))
+        self._viz_prev_spectrum = arr.copy()
+
+        # Auto-reference with slow decay / fast capture for stable visual scaling
+        self._viz_peak_ref = max(1e-4, self._viz_peak_ref * 0.995)
+        self._viz_flux_ref = max(1e-5, self._viz_flux_ref * 0.995)
+        if peak_raw > self._viz_peak_ref:
+            self._viz_peak_ref = peak_raw
+        if flux_raw > self._viz_flux_ref:
+            self._viz_flux_ref = flux_raw
+
+        peak_norm = float(np.clip(peak_raw / self._viz_peak_ref, 0.0, 1.0))
+        flux_norm = float(np.clip(flux_raw / self._viz_flux_ref, 0.0, 1.0))
+        return (peak_norm, flux_norm)
     
     def _do_spectrum_update(self):
         """Actually update spectrum at throttled rate - only update visible visualizer"""
@@ -6786,8 +6823,7 @@ bREadfan_69@hotmail.com"""
             # Handle both old format (numpy array) and new format (dict with stats)
             if isinstance(self._pending_spectrum, dict):
                 spectrum = self._pending_spectrum['spectrum']
-                peak = self._pending_spectrum.get('peak_energy', 0)
-                flux = self._pending_spectrum.get('spectral_flux', 0)
+                peak, flux = self._compute_visual_metrics(spectrum)
                 # Only update the currently visible visualizer for performance
                 if self.spectrum_canvas.isVisible():
                     self.spectrum_canvas.update_spectrum(spectrum, peak, flux)
@@ -6799,14 +6835,15 @@ bREadfan_69@hotmail.com"""
                     self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
             else:
                 # Legacy format - only update visible visualizer
+                peak, flux = self._compute_visual_metrics(self._pending_spectrum)
                 if self.spectrum_canvas.isVisible():
-                    self.spectrum_canvas.update_spectrum(self._pending_spectrum)
+                    self.spectrum_canvas.update_spectrum(self._pending_spectrum, peak, flux)
                 elif hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
-                    self.mountain_canvas.update_spectrum(self._pending_spectrum)
+                    self.mountain_canvas.update_spectrum(self._pending_spectrum, peak, flux)
                 elif hasattr(self, 'bar_canvas') and self.bar_canvas is not None and self.bar_canvas.isVisible():
-                    self.bar_canvas.update_spectrum(self._pending_spectrum)
+                    self.bar_canvas.update_spectrum(self._pending_spectrum, peak, flux)
                 elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
-                    self.phosphor_canvas.update_spectrum(self._pending_spectrum)
+                    self.phosphor_canvas.update_spectrum(self._pending_spectrum, peak, flux)
             self._pending_spectrum = None
     
     def _on_status_change(self, message: str, connected: bool):
