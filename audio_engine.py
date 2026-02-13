@@ -372,6 +372,8 @@ class AudioEngine:
         self._metronome_beat_fired: bool = False         # Did metronome fire a beat THIS frame?
         self._metronome_downbeat_fired: bool = False     # Did metronome fire a downbeat THIS frame?
         self._metronome_last_beat_time: float = 0.0      # When the metronome last ticked a beat
+        self._metronome_conf_hold_s: float = 1.2          # Keep metronome running through short ACF confidence dips
+        self._metronome_conf_lost_at: float = 0.0         # Timestamp when ACF confidence dropped below threshold
         # ===== Syncopation / double-stroke detection =====
         # Track raw onset times to detect off-beat ("and") hits between metronome beats
         self._raw_onset_times: list[float] = []          # Recent raw beat detection timestamps
@@ -1137,8 +1139,21 @@ class AudioEngine:
         # Need a valid ACF BPM to run
         target_bpm = self._acf_bpm_smoothed
         if target_bpm <= 0 or self._acf_confidence < 0.10:
-            self._metronome_bpm = 0.0
-            return
+            if self._metronome_bpm > 0:
+                if self._metronome_conf_lost_at <= 0:
+                    self._metronome_conf_lost_at = now
+                if (now - self._metronome_conf_lost_at) <= self._metronome_conf_hold_s:
+                    target_bpm = self._metronome_bpm
+                else:
+                    self._metronome_bpm = 0.0
+                    self._metronome_conf_lost_at = 0.0
+                    return
+            else:
+                self._metronome_bpm = 0.0
+                self._metronome_conf_lost_at = 0.0
+                return
+        else:
+            self._metronome_conf_lost_at = 0.0
 
         # Boot the metronome on first valid tempo
         if self._metronome_bpm <= 0:
@@ -1296,6 +1311,7 @@ class AudioEngine:
         self._acf_confidence = 0.0
         self._metronome_phase = 0.0
         self._metronome_beat_count = 0
+        self._metronome_conf_lost_at = 0.0
         self._metronome_bpm = 0.0
         self._metronome_beat_fired = False
         self._metronome_downbeat_fired = False
