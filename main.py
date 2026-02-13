@@ -2277,11 +2277,26 @@ class BREadbeatsWindow(QMainWindow):
         # State
         self.is_running = False
         self.is_sending = False
+        self._transport_ready = False
         self._transport_transition = False
         self._transport_pending_start = False
+        self._transport_pending_stop = False
+        self._transport_pending_play: bool | None = None
         
         # Auto-connect TCP on startup
         self._auto_connect_tcp()
+
+        # Mark transport UI as ready on the first event-loop turn.
+        # This guarantees an early single Start click is queued then applied,
+        # instead of feeling like it was dropped during startup warm-up.
+        QTimer.singleShot(0, self._mark_transport_ready)
+
+    def _mark_transport_ready(self) -> None:
+        """Enable transport input after startup and apply queued Start, if any."""
+        self._transport_ready = True
+        if self._transport_pending_start and not self.is_running:
+            self._transport_pending_start = False
+            QTimer.singleShot(0, self._apply_pending_start)
         
     def _get_stylesheet(self) -> str:
         """Restim-Coyote3 darkmode theme with #3d3d3d background"""
@@ -3998,15 +4013,13 @@ bREadfan_69@hotmail.com"""
         
         # Start/Stop audio capture
         self.start_btn = QPushButton("▶ Start")
-        self.start_btn.setCheckable(True)
-        self.start_btn.clicked.connect(self._on_start_stop)
+        self.start_btn.clicked.connect(lambda _checked=False: self._on_start_stop())
         self.start_btn.setFixedSize(100, 40)
         btn_layout.addWidget(self.start_btn, 0, 0)
         
         # Play/Pause sending
         self.play_btn = QPushButton("▶ Play")
-        self.play_btn.setCheckable(True)
-        self.play_btn.clicked.connect(self._on_play_pause)
+        self.play_btn.clicked.connect(lambda _checked=False: self._on_play_pause())
         self.play_btn.setEnabled(False)
         self.play_btn.setFixedSize(100, 40)
         btn_layout.addWidget(self.play_btn, 0, 1)
@@ -6172,11 +6185,9 @@ bREadfan_69@hotmail.com"""
         self.start_btn.blockSignals(True)
         self.play_btn.blockSignals(True)
         try:
-            self.start_btn.setChecked(bool(self.is_running))
             self.start_btn.setText("■ Stop" if self.is_running else "▶ Start")
 
             self.play_btn.setEnabled(bool(self.is_running))
-            self.play_btn.setChecked(bool(self.is_sending and self.is_running))
             self.play_btn.setText(play_button_text(bool(self.is_sending and self.is_running)))
         finally:
             self.start_btn.blockSignals(False)
@@ -6186,27 +6197,41 @@ bREadfan_69@hotmail.com"""
         """Apply a queued start request captured during stop transition."""
         if self._transport_transition or self.is_running:
             return
-        self.start_btn.blockSignals(True)
-        try:
-            self.start_btn.setChecked(True)
-        finally:
-            self.start_btn.blockSignals(False)
         self._on_start_stop(True)
+
+    def _apply_pending_stop(self) -> None:
+        """Apply a queued stop request captured during start transition."""
+        if self._transport_transition or not self.is_running:
+            return
+        self._on_start_stop(False)
+
+    def _apply_pending_play(self) -> None:
+        """Apply queued play/pause request captured during transport transition."""
+        if self._transport_transition or not self.is_running:
+            return
+        desired = bool(self._transport_pending_play)
+        self._on_play_pause(desired)
     
-    def _on_start_stop(self, checked: bool):
+    def _on_start_stop(self, checked: bool | None = None):
         """Start/stop audio capture and TCode pipeline.
         Start enables TCode sending (V0=0 until Play). Stop kills everything."""
-        if self._transport_transition:
+        if checked is None:
+            checked = not self.is_running
+
+        if not self._transport_ready:
             if checked and not self.is_running:
                 self._transport_pending_start = True
             self._sync_transport_buttons()
             return
 
-        # Idempotent guard: ignore duplicate UI toggles into same state.
-        if checked and self.is_running:
-            self._sync_transport_buttons()
-            return
-        if not checked and not self.is_running:
+        if self._transport_transition:
+            if checked and not self.is_running:
+                self._transport_pending_start = True
+            elif not checked:
+                # Stop should never be dropped; prioritize it over pending start.
+                self._transport_pending_stop = True
+                self._transport_pending_start = False
+                self._transport_pending_play = None
             self._sync_transport_buttons()
             return
 
@@ -6230,9 +6255,7 @@ bREadfan_69@hotmail.com"""
                 # Stop should immediately clear play/sending state before shutdown work.
                 self._volume_ramp_active = False
                 self.is_sending = False
-                self.play_btn.blockSignals(True)
-                self.play_btn.setChecked(False)
-                self.play_btn.blockSignals(False)
+                self._transport_pending_play = None
 
                 # Make stop visually immediate and prevent second-click feel.
                 self.is_running = False
@@ -6246,23 +6269,34 @@ bREadfan_69@hotmail.com"""
         finally:
             self._transport_transition = False
             self._sync_transport_buttons()
+
+            # Stop wins over start when both were requested during transition.
+            if self._transport_pending_stop and self.is_running:
+                self._transport_pending_stop = False
+                QTimer.singleShot(0, self._apply_pending_stop)
+                return
+
             if self._transport_pending_start and not self.is_running:
                 self._transport_pending_start = False
                 QTimer.singleShot(0, self._apply_pending_start)
+                return
+
+            if self._transport_pending_play is not None and self.is_running:
+                QTimer.singleShot(0, self._apply_pending_play)
     
-    def _on_play_pause(self, checked: bool):
+    def _on_play_pause(self, checked: bool | None = None):
         """Play/pause motion generation. Pause sends V0=0 but keeps TCode pipeline active."""
+        if checked is None:
+            checked = not self.is_sending
+
         if self._transport_transition:
+            self._transport_pending_play = bool(checked)
             self._sync_transport_buttons()
             return
 
         if not self.is_running:
             self.is_sending = False
-            self._sync_transport_buttons()
-            return
-
-        # Idempotent guard: ignore duplicate transitions
-        if checked == self.is_sending:
+            self._transport_pending_play = None
             self._sync_transport_buttons()
             return
         self.is_sending = checked
@@ -6283,7 +6317,8 @@ bREadfan_69@hotmail.com"""
             self._volume_ramp_active = False
             send_zero_volume_immediate(self.network_engine, duration_ms=500)
             # DON'T disable sending_enabled — connection stays active until Stop
-        self.play_btn.setText(play_button_text(checked))
+        self._transport_pending_play = None
+        self._sync_transport_buttons()
     
     def _on_detection_type_change(self, index: int):
         """Change beat detection type"""
