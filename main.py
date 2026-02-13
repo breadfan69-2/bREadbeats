@@ -3155,6 +3155,12 @@ class BREadbeatsWindow(QMainWindow):
         tempo_resp_info.setStyleSheet("color: #aaa; font-size: 11px;")
         tempo_resp_layout.addWidget(tempo_resp_info)
 
+        def _set_slider_row_tooltip(widget: SliderWithLabel, text: str):
+            widget.setToolTip(text)
+            widget.label.setToolTip(text)
+            widget.slider.setToolTip(text)
+            widget.value_label.setToolTip(text)
+
         acf_row = QHBoxLayout()
         acf_label = QLabel("ACF interval (ms):")
         acf_label.setStyleSheet("color: #ccc;")
@@ -3165,53 +3171,80 @@ class BREadbeatsWindow(QMainWindow):
         acf_spin.setSingleStep(10)
         acf_spin.setValue(int(getattr(self.config.beat, 'acf_interval_ms', 250)))
         acf_spin.setToolTip("How often to run ACF tempo estimation")
+        acf_label.setToolTip("How often to run ACF tempo estimation. Lower = faster tempo updates, higher = steadier updates.")
         acf_spin.valueChanged.connect(self._on_acf_interval_change)
         acf_row.addWidget(acf_spin)
         tempo_resp_layout.addLayout(acf_row)
 
         alpha_slow_slider = SliderWithLabel("BPM alpha (slow)", 0.01, 0.20, getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03), 3)
         alpha_slow_slider.valueChanged.connect(self._on_metronome_bpm_alpha_slow_change)
+        _set_slider_row_tooltip(alpha_slow_slider, "Smoothing used when confidence is low. Lower = steadier but slower relock; higher = faster catch-up.")
         tempo_resp_layout.addWidget(alpha_slow_slider)
 
         alpha_fast_slider = SliderWithLabel("BPM alpha (fast)", 0.05, 0.40, getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22), 3)
         alpha_fast_slider.valueChanged.connect(self._on_metronome_bpm_alpha_fast_change)
+        _set_slider_row_tooltip(alpha_fast_slider, "Smoothing used when confidence is high. Higher values react faster to tempo changes.")
         tempo_resp_layout.addWidget(alpha_fast_slider)
 
         pll_window_slider = SliderWithLabel("PLL window", 0.10, 0.50, getattr(self.config.beat, 'metronome_pll_window', 0.35), 2)
         pll_window_slider.valueChanged.connect(self._on_metronome_pll_window_change)
+        _set_slider_row_tooltip(pll_window_slider, "How far from expected phase an onset can be and still correct metronome timing.")
         tempo_resp_layout.addWidget(pll_window_slider)
 
         pll_base_slider = SliderWithLabel("PLL gain (base)", 0.01, 0.20, getattr(self.config.beat, 'metronome_pll_base_gain', 0.09), 3)
         pll_base_slider.valueChanged.connect(self._on_metronome_pll_base_gain_change)
+        _set_slider_row_tooltip(pll_base_slider, "Base strength of phase correction on each accepted onset.")
         tempo_resp_layout.addWidget(pll_base_slider)
 
         pll_conf_slider = SliderWithLabel("PLL gain (conf)", 0.00, 0.20, getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08), 3)
         pll_conf_slider.valueChanged.connect(self._on_metronome_pll_conf_gain_change)
+        _set_slider_row_tooltip(pll_conf_slider, "Extra phase-correction gain added as confidence rises.")
         tempo_resp_layout.addWidget(pll_conf_slider)
 
         fusion_min_slider = SliderWithLabel("Fusion min ACF wt", 0.00, 0.80, getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20), 2)
         fusion_min_slider.valueChanged.connect(self._on_tempo_fusion_min_acf_weight_change)
+        _set_slider_row_tooltip(fusion_min_slider, "Minimum ACF contribution when blending ACF BPM with onset BPM.")
         tempo_resp_layout.addWidget(fusion_min_slider)
 
         fusion_max_slider = SliderWithLabel("Fusion max ACF wt", 0.20, 1.00, getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95), 2)
         fusion_max_slider.valueChanged.connect(self._on_tempo_fusion_max_acf_weight_change)
+        _set_slider_row_tooltip(fusion_max_slider, "Maximum ACF contribution when confidence is high.")
         tempo_resp_layout.addWidget(fusion_max_slider)
+
+        dedup_slider = SliderWithLabel("Beat de-dup frac", 0.10, 0.35, getattr(self.config.beat, 'beat_dedup_fraction', 0.22), 2)
+        dedup_slider.valueChanged.connect(self._on_beat_dedup_fraction_change)
+        _set_slider_row_tooltip(dedup_slider, "Reject a second raw onset if it arrives within this fraction of the current beat period. Reduces double-beat chatter.")
+        tempo_resp_layout.addWidget(dedup_slider)
+
+        phase_accept_slider = SliderWithLabel("Phase accept win ms", 20.0, 220.0, getattr(self.config.beat, 'phase_accept_window_ms', 85.0), 0)
+        phase_accept_slider.valueChanged.connect(self._on_phase_accept_window_ms_change)
+        _set_slider_row_tooltip(phase_accept_slider, "Accept raw onsets only when they are this close (ms) to expected beat phase.")
+        tempo_resp_layout.addWidget(phase_accept_slider)
+
+        low_conf_mult_slider = SliderWithLabel("Low-conf win x", 1.00, 3.50, getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0), 2)
+        low_conf_mult_slider.valueChanged.connect(self._on_phase_accept_low_conf_mult_change)
+        _set_slider_row_tooltip(low_conf_mult_slider, "Multiplies phase-accept window when confidence is low, so relock stays flexible.")
+        tempo_resp_layout.addWidget(low_conf_mult_slider)
 
         aggressive_snap_cb = QCheckBox("Aggressive tempo snap when lock is confident")
         aggressive_snap_cb.setChecked(getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False))
+        aggressive_snap_cb.setToolTip("When enabled, metronome BPM can hard-snap to target under strict confidence/phase safeguards.")
         aggressive_snap_cb.stateChanged.connect(lambda state: self._on_aggressive_tempo_snap_toggle(state == 2))
         tempo_resp_layout.addWidget(aggressive_snap_cb)
 
         snap_conf_slider = SliderWithLabel("Snap min confidence", 0.20, 0.90, getattr(self.config.beat, 'aggressive_snap_confidence', 0.55), 2)
         snap_conf_slider.valueChanged.connect(self._on_aggressive_snap_confidence_change)
+        _set_slider_row_tooltip(snap_conf_slider, "Minimum ACF confidence required before aggressive snap is allowed.")
         tempo_resp_layout.addWidget(snap_conf_slider)
 
         snap_phase_slider = SliderWithLabel("Snap max phase err ms", 10.0, 120.0, getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0), 0)
         snap_phase_slider.valueChanged.connect(self._on_aggressive_snap_phase_error_ms_change)
+        _set_slider_row_tooltip(snap_phase_slider, "Only snap if beat phase error is below this many milliseconds.")
         tempo_resp_layout.addWidget(snap_phase_slider)
 
         snap_jump_slider = SliderWithLabel("Snap max BPM jump", 0.03, 0.30, getattr(self.config.beat, 'aggressive_snap_max_bpm_jump_ratio', 0.12), 2)
         snap_jump_slider.valueChanged.connect(self._on_aggressive_snap_max_jump_change)
+        _set_slider_row_tooltip(snap_jump_slider, "Maximum one-step relative BPM change allowed during aggressive snap.")
         tempo_resp_layout.addWidget(snap_jump_slider)
 
         snap_match_row = QHBoxLayout()
@@ -3222,6 +3255,8 @@ class BREadbeatsWindow(QMainWindow):
         snap_match_spin.setMinimum(0)
         snap_match_spin.setMaximum(4)
         snap_match_spin.setValue(int(getattr(self.config.beat, 'aggressive_snap_min_matches', 1)))
+        snap_match_label.setToolTip("Require this many matching downbeats before aggressive tempo snap can trigger.")
+        snap_match_spin.setToolTip("Require this many matching downbeats before aggressive tempo snap can trigger.")
         snap_match_spin.valueChanged.connect(self._on_aggressive_snap_min_matches_change)
         snap_match_row.addWidget(snap_match_spin)
         tempo_resp_layout.addLayout(snap_match_row)
@@ -3238,6 +3273,9 @@ class BREadbeatsWindow(QMainWindow):
             pll_conf_slider.setValue(0.08)
             fusion_min_slider.setValue(0.20)
             fusion_max_slider.setValue(0.95)
+            dedup_slider.setValue(0.22)
+            phase_accept_slider.setValue(85.0)
+            low_conf_mult_slider.setValue(2.0)
             aggressive_snap_cb.setChecked(False)
             snap_conf_slider.setValue(0.55)
             snap_phase_slider.setValue(35.0)
@@ -4375,6 +4413,9 @@ bREadfan_69@hotmail.com"""
             'metronome_pll_conf_gain': getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08),
             'tempo_fusion_min_acf_weight': getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20),
             'tempo_fusion_max_acf_weight': getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95),
+            'beat_dedup_fraction': getattr(self.config.beat, 'beat_dedup_fraction', 0.22),
+            'phase_accept_window_ms': getattr(self.config.beat, 'phase_accept_window_ms', 85.0),
+            'phase_accept_low_conf_mult': getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0),
             'aggressive_tempo_snap_enabled': getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False),
             'aggressive_snap_confidence': getattr(self.config.beat, 'aggressive_snap_confidence', 0.55),
             'aggressive_snap_phase_error_ms': getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0),
@@ -4477,6 +4518,12 @@ bREadfan_69@hotmail.com"""
             self._on_tempo_fusion_min_acf_weight_change(preset_data['tempo_fusion_min_acf_weight'])
         if 'tempo_fusion_max_acf_weight' in preset_data:
             self._on_tempo_fusion_max_acf_weight_change(preset_data['tempo_fusion_max_acf_weight'])
+        if 'beat_dedup_fraction' in preset_data:
+            self._on_beat_dedup_fraction_change(preset_data['beat_dedup_fraction'])
+        if 'phase_accept_window_ms' in preset_data:
+            self._on_phase_accept_window_ms_change(preset_data['phase_accept_window_ms'])
+        if 'phase_accept_low_conf_mult' in preset_data:
+            self._on_phase_accept_low_conf_mult_change(preset_data['phase_accept_low_conf_mult'])
         if 'aggressive_tempo_snap_enabled' in preset_data:
             self._on_aggressive_tempo_snap_toggle(bool(preset_data['aggressive_tempo_snap_enabled']))
         if 'aggressive_snap_confidence' in preset_data:
@@ -5376,6 +5423,24 @@ bREadfan_69@hotmail.com"""
         if self.audio_engine:
             self.audio_engine._tempo_fusion_max_acf_weight = value
 
+    def _on_beat_dedup_fraction_change(self, value: float):
+        """Update raw-onset de-dup fraction in config and audio engine."""
+        self.config.beat.beat_dedup_fraction = value
+        if self.audio_engine:
+            self.audio_engine._beat_dedup_fraction = value
+
+    def _on_phase_accept_window_ms_change(self, value: float):
+        """Update phase acceptance window in ms in config and audio engine."""
+        self.config.beat.phase_accept_window_ms = float(value)
+        if self.audio_engine:
+            self.audio_engine._phase_accept_window_ms = float(value)
+
+    def _on_phase_accept_low_conf_mult_change(self, value: float):
+        """Update low-confidence expansion multiplier for phase acceptance window."""
+        self.config.beat.phase_accept_low_conf_mult = value
+        if self.audio_engine:
+            self.audio_engine._phase_accept_low_conf_mult = value
+
     def _on_aggressive_tempo_snap_toggle(self, enabled: bool):
         """Toggle confidence-gated aggressive metronome BPM snapping."""
         self.config.beat.aggressive_tempo_snap_enabled = enabled
@@ -5475,6 +5540,9 @@ bREadfan_69@hotmail.com"""
             'metronome_pll_conf_gain': getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08),
             'tempo_fusion_min_acf_weight': getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20),
             'tempo_fusion_max_acf_weight': getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95),
+            'beat_dedup_fraction': getattr(self.config.beat, 'beat_dedup_fraction', 0.22),
+            'phase_accept_window_ms': getattr(self.config.beat, 'phase_accept_window_ms', 85.0),
+            'phase_accept_low_conf_mult': getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0),
             'aggressive_tempo_snap_enabled': getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False),
             'aggressive_snap_confidence': getattr(self.config.beat, 'aggressive_snap_confidence', 0.55),
             'aggressive_snap_phase_error_ms': getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0),
@@ -5606,6 +5674,12 @@ bREadfan_69@hotmail.com"""
                 self._on_tempo_fusion_min_acf_weight_change(preset_data['tempo_fusion_min_acf_weight'])
             if 'tempo_fusion_max_acf_weight' in preset_data:
                 self._on_tempo_fusion_max_acf_weight_change(preset_data['tempo_fusion_max_acf_weight'])
+            if 'beat_dedup_fraction' in preset_data:
+                self._on_beat_dedup_fraction_change(preset_data['beat_dedup_fraction'])
+            if 'phase_accept_window_ms' in preset_data:
+                self._on_phase_accept_window_ms_change(preset_data['phase_accept_window_ms'])
+            if 'phase_accept_low_conf_mult' in preset_data:
+                self._on_phase_accept_low_conf_mult_change(preset_data['phase_accept_low_conf_mult'])
             if 'aggressive_tempo_snap_enabled' in preset_data:
                 self._on_aggressive_tempo_snap_toggle(bool(preset_data['aggressive_tempo_snap_enabled']))
             if 'aggressive_snap_confidence' in preset_data:
