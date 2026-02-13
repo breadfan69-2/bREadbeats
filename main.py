@@ -6230,14 +6230,22 @@ bREadfan_69@hotmail.com"""
 
     def _apply_pending_start(self) -> None:
         """Apply a queued start request captured during stop transition."""
-        if self._transport_transition or self.is_running:
+        if self._transport_transition:
             return
+        if self.is_running:
+            self._transport_pending_start = False
+            return
+        self._transport_pending_start = False
         self._on_start_stop(True)
 
     def _apply_pending_stop(self) -> None:
         """Apply a queued stop request captured during start transition."""
-        if self._transport_transition or not self.is_running:
+        if self._transport_transition:
             return
+        if not self.is_running:
+            self._transport_pending_stop = False
+            return
+        self._transport_pending_stop = False
         self._on_start_stop(False)
 
     def _apply_pending_play(self) -> None:
@@ -6274,6 +6282,11 @@ bREadfan_69@hotmail.com"""
         try:
             if checked:
                 try:
+                    # Reflect start intent immediately so a quick follow-up click
+                    # during startup is interpreted as Stop, not another Start.
+                    self.is_running = True
+                    self._sync_transport_buttons()
+
                     self._start_engines()
                     ui_state = start_stop_ui_state(True)
                     self.start_btn.setText(ui_state.start_text)
@@ -6304,6 +6317,12 @@ bREadfan_69@hotmail.com"""
         finally:
             self._transport_transition = False
             self._sync_transport_buttons()
+
+            # Clear stale pending flags that no longer match runtime state.
+            if self._transport_pending_start and self.is_running:
+                self._transport_pending_start = False
+            if self._transport_pending_stop and not self.is_running:
+                self._transport_pending_stop = False
 
             # Stop wins over start when both were requested during transition.
             if self._transport_pending_stop and self.is_running:
