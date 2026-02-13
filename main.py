@@ -3391,8 +3391,8 @@ class BREadbeatsWindow(QMainWindow):
         floor_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
         flb_layout = QVBoxLayout(floor_box)
         flb_layout.setSpacing(2)
-        flb_layout.addWidget(QLabel("[Beat Detection] Check peak floor:"))
-        floor_reset_btn = QPushButton("Reset to 0")
+        flb_layout.addWidget(QLabel("[Beat Detection] Check depth:"))
+        floor_reset_btn = QPushButton("Reset Depth to 0")
         floor_reset_btn.clicked.connect(lambda: self.peak_floor_slider.setValue(0.0))
         flb_layout.addWidget(floor_reset_btn)
         g2_layout.addWidget(floor_box)
@@ -4763,13 +4763,13 @@ bREadfan_69@hotmail.com"""
         # Global enable/disable checkbox for all metrics
         self.metrics_global_cb = QCheckBox("Enable Auto-Adjust")
         self.metrics_global_cb.setChecked(self.config.auto_adjust.metrics_global_enabled)
-        self.metrics_global_cb.setToolTip("Master toggle: enable/disable all metric auto-adjustments")
+        self.metrics_global_cb.setToolTip("Master toggle for all auto-adjust controls")
         self.metrics_global_cb.setStyleSheet("font-weight: bold; font-size: 10px;")
         self.metrics_global_cb.stateChanged.connect(self._on_metrics_global_toggle)
         metric_layout.addWidget(self.metrics_global_cb)
         
         # Butterworth filter (mandatory for metrics)
-        self.butterworth_checkbox = QCheckBox("Butterworth bandpass filter (better bass isolation)")
+        self.butterworth_checkbox = QCheckBox("Butterworth bandpass filter")
         self.butterworth_checkbox.setChecked(getattr(self.config.audio, 'use_butterworth', True))
         self.butterworth_checkbox.stateChanged.connect(self._on_butterworth_toggle)
         metric_layout.addWidget(self.butterworth_checkbox)
@@ -4777,8 +4777,8 @@ bREadfan_69@hotmail.com"""
         # Metric controls row
         metric_ctrl_layout = QHBoxLayout()
         
-        self.metric_peak_floor_cb = QCheckBox("Peak Floor Margin")
-        self.metric_peak_floor_cb.setToolTip("Auto-adjust peak_floor to track energy valley level (scales with amplification)")
+        self.metric_peak_floor_cb = QCheckBox("Depth Margin")
+        self.metric_peak_floor_cb.setToolTip("Auto-adjust depth threshold to track energy valley level (scales with amplification)")
         self.metric_peak_floor_cb.stateChanged.connect(lambda state: self._on_metric_toggle('peak_floor', state == 2))
         metric_ctrl_layout.addWidget(self.metric_peak_floor_cb)
         
@@ -4787,7 +4787,7 @@ bREadfan_69@hotmail.com"""
         self.metric_audio_amp_cb.stateChanged.connect(lambda state: self._on_metric_toggle('audio_amp', state == 2))
         metric_ctrl_layout.addWidget(self.metric_audio_amp_cb)
         
-        self.metric_flux_balance_cb = QCheckBox("Flux Balance (Bars)")
+        self.metric_flux_balance_cb = QCheckBox("Flux Balance")
         self.metric_flux_balance_cb.setToolTip("Auto-adjust flux_mult to keep flux ≈ energy bar heights (0.01 steps/500ms)")
         self.metric_flux_balance_cb.stateChanged.connect(lambda state: self._on_metric_toggle('flux_balance', state == 2))
         metric_ctrl_layout.addWidget(self.metric_flux_balance_cb)
@@ -4799,7 +4799,7 @@ bREadfan_69@hotmail.com"""
         bps_layout = QHBoxLayout()
         
         self.metric_target_bps_cb = QCheckBox("Target BPM")
-        self.metric_target_bps_cb.setToolTip("Adjust peak_floor to achieve target beats per minute")
+        self.metric_target_bps_cb.setToolTip("Adjust depth threshold to achieve target beats per minute")
         self.metric_target_bps_cb.stateChanged.connect(lambda state: self._on_metric_toggle('target_bps', state == 2))
         bps_layout.addWidget(self.metric_target_bps_cb)
         
@@ -4930,14 +4930,14 @@ bREadfan_69@hotmail.com"""
         
         layout.addWidget(levels_group)
         
-        # ===== PEAKS GROUP: Peak Floor, Peak Decay, Rise Sensitivity =====
-        peaks_group = CollapsibleGroupBox("Peaks", collapsed=True)
+        # ===== DEPTH/PEAKS GROUP: Depth, Peak Decay, Rise Sensitivity =====
+        peaks_group = CollapsibleGroupBox("Depth & Peaks", collapsed=True)
         peaks_layout = QVBoxLayout(peaks_group)
         
         # Peak floor: minimum energy to consider (0 = disabled)
         # Range 0.01-0.15: typical band_energy is 0.08-0.15 with default gain
         pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
-        self.peak_floor_slider = SliderWithLabel("Peak Floor", pf_min, pf_max, self.config.beat.peak_floor, 3)
+        self.peak_floor_slider = SliderWithLabel("Depth", pf_min, pf_max, self.config.beat.peak_floor, 3)
         self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
         peaks_layout.addWidget(self.peak_floor_slider)
         
