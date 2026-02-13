@@ -801,6 +801,69 @@ class StrokeMapper:
         still reach full amplitude."""
         return max(0.0, min(1.0, intensity)) ** power
 
+    def _compute_arc_point(self,
+                           phase: float,
+                           radius: float,
+                           stroke_len: float,
+                           depth: float,
+                           event: BeatEvent) -> Tuple[float, float]:
+        """Compute one arc point based on current stroke mode.
+
+        Important constraints:
+        - Keep timing/trajectory generation unchanged (this is geometry only)
+        - Mode 3 (TEARDROP) is rotated 90° CCW relative to legacy display
+        - Mode 3 pattern traversal runs at half draw rate
+        """
+        mode = self.config.stroke.mode
+        alpha_weight = self.config.alpha_weight
+        beta_weight = self.config.beta_weight
+        angle = phase * 2 * np.pi
+
+        if mode == StrokeMode.TEARDROP:
+            # Half-rate pattern draw: teardrop progresses at 0.5x of other modes
+            teardrop_phase = (phase * 0.5) % 1.0
+            t = (teardrop_phase - 0.5) * 2 * np.pi
+            min_radius = 0.2
+            curved_intensity = self._intensity_curve(event.intensity)
+            a = min_radius + (stroke_len * depth - min_radius) * curved_intensity
+            a = max(min_radius, min(1.0, a))
+
+            # Piriform
+            x = a * (np.sin(t) - 0.5 * np.sin(2 * t))
+            y = -a * np.cos(t)
+
+            # Legacy used +π/2. Display rotated since then; apply +90° CCW more.
+            rot = np.pi
+            alpha = (x * np.cos(rot) - y * np.sin(rot)) * alpha_weight
+            beta = (x * np.sin(rot) + y * np.cos(rot)) * beta_weight
+            alpha = np.clip(alpha, -1.0, 1.0)
+            beta = np.clip(beta, -1.0, 1.0)
+            return alpha, beta
+
+        if mode == StrokeMode.USER:
+            flux_ref = max(0.001, self.config.stroke.flux_threshold * 3)
+            flux_norm = np.clip(event.spectral_flux / flux_ref, 0, 1)
+            peak_norm = np.clip(event.peak_energy, 0, 1)
+
+            alpha_blend = alpha_weight / 2.0
+            beta_blend = beta_weight / 2.0
+            alpha_response = flux_norm * (1 - alpha_blend) + peak_norm * alpha_blend
+            beta_response = flux_norm * (1 - beta_blend) + peak_norm * beta_blend
+
+            min_radius = 0.2
+            alpha_radius = min_radius + (stroke_len * depth - min_radius) * alpha_response
+            beta_radius = min_radius + (stroke_len * depth - min_radius) * beta_response
+            alpha = np.cos(angle) * alpha_radius
+            beta = np.sin(angle) * beta_radius
+            alpha = np.clip(alpha, -1.0, 1.0)
+            beta = np.clip(beta, -1.0, 1.0)
+            return alpha, beta
+
+        # SIMPLE_CIRCLE / fallback geometry
+        alpha = np.sin(angle) * radius * alpha_weight
+        beta = np.cos(angle) * radius * beta_weight
+        return alpha, beta
+
     def _generate_downbeat_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
         """Full measure-length arc on downbeat.  When tempo LOCKED -> 25% boost.
         Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
@@ -862,9 +925,6 @@ class StrokeMapper:
         radius = min_radius + (1.0 - min_radius) * flux_factor * lock_boost * curved_intensity
         radius = max(min_radius, min(1.0, radius))
 
-        alpha_weight = self.config.alpha_weight
-        beta_weight = self.config.beta_weight
-
         n_points = max(16, int(measure_duration_ms / 20))
         # Arc starts from current creep angle, sweeps exactly 360° over
         # one beat interval.  Creep is steered to top/bottom before we get here.
@@ -872,12 +932,16 @@ class StrokeMapper:
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
+        arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity
+        arc_radius = max(min_radius, min(1.0, arc_radius))
         for i, phase in enumerate(arc_phases):
-            angle = phase * 2 * np.pi
-            r = min_radius + (stroke_len * depth - min_radius) * curved_intensity
-            r = max(min_radius, min(1.0, r))
-            alpha_arc[i] = np.sin(angle) * r * alpha_weight
-            beta_arc[i] = np.cos(angle) * r * beta_weight
+            alpha_arc[i], beta_arc[i] = self._compute_arc_point(
+                phase=phase,
+                radius=arc_radius,
+                stroke_len=stroke_len,
+                depth=depth,
+                event=event,
+            )
 
         # Apply timing shape: thump (accelerate into landing),
         # landing (ease-in-out tap feel), or uniform
@@ -974,9 +1038,6 @@ class StrokeMapper:
         radius = base_radius * flux_factor
         radius = max(min_radius, min(1.0, radius))
 
-        alpha_weight = self.config.alpha_weight
-        beta_weight = self.config.beta_weight
-
         if cfg.mode == StrokeMode.SPIRAL:
             N = self.spiral_revolutions
             prev_index = getattr(self, 'spiral_beat_index', 0)
@@ -987,6 +1048,8 @@ class StrokeMapper:
             thetas = np.linspace(theta_prev, theta_next, n_points)
             alpha_arc = np.zeros(n_points)
             beta_arc = np.zeros(n_points)
+            alpha_weight = self.config.alpha_weight
+            beta_weight = self.config.beta_weight
             for i, theta in enumerate(thetas):
                 margin = 0.1
                 b_coeff = (1.0 - margin) / (2 * np.pi * N)
@@ -1003,13 +1066,17 @@ class StrokeMapper:
             arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
             alpha_arc = np.zeros(n_points)
             beta_arc = np.zeros(n_points)
+            arc_radius = min_radius + (max_radius - min_radius) * curved_intensity
+            arc_radius = arc_radius * flux_factor
+            arc_radius = max(min_radius, min(1.0, arc_radius))
             for i, phase in enumerate(arc_phases):
-                angle = phase * 2 * np.pi
-                r = min_radius + (max_radius - min_radius) * curved_intensity
-                r = r * flux_factor
-                r = max(min_radius, min(1.0, r))
-                alpha_arc[i] = np.sin(angle) * r * alpha_weight
-                beta_arc[i] = np.cos(angle) * r * beta_weight
+                alpha_arc[i], beta_arc[i] = self._compute_arc_point(
+                    phase=phase,
+                    radius=arc_radius,
+                    stroke_len=stroke_len,
+                    depth=depth,
+                    event=event,
+                )
 
         # Apply timing shape: thump or landing (tap feel)
         if cfg.thump_enabled:
@@ -1093,15 +1160,17 @@ class StrokeMapper:
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
 
-        alpha_weight = self.config.alpha_weight
-        beta_weight = self.config.beta_weight
         min_radius = 0.15
+        arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity * 0.7
+        arc_radius = max(min_radius, min(0.8, arc_radius))
         for i, phase in enumerate(arc_phases):
-            angle = phase * 2 * np.pi
-            r = min_radius + (stroke_len * depth - min_radius) * curved_intensity * 0.7
-            r = max(min_radius, min(0.8, r))
-            alpha_arc[i] = np.sin(angle) * r * alpha_weight
-            beta_arc[i] = np.cos(angle) * r * beta_weight
+            alpha_arc[i], beta_arc[i] = self._compute_arc_point(
+                phase=phase,
+                radius=arc_radius,
+                stroke_len=stroke_len,
+                depth=depth,
+                event=event,
+            )
 
         # Always landing durations for tap feel
         step_durations = self._make_landing_durations(duration_ms, n_points)
