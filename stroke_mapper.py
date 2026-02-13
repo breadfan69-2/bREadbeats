@@ -850,7 +850,6 @@ class StrokeMapper:
                 and not event.is_beat
                 and cfg.noise_burst_enabled
                 and self._motion_mode == MotionMode.CREEP_MICRO
-                and self.config.creep.enabled
                 and (self._trajectory is None or self._trajectory.finished)):
             noise_thresh = cfg.flux_threshold * cfg.noise_burst_flux_multiplier
             if event.spectral_flux >= noise_thresh:
@@ -858,6 +857,22 @@ class StrokeMapper:
                 if time_since_stroke >= cfg.min_interval_ms * 0.4:
                     cmd = self._generate_noise_burst_stroke(event)
                     self._note_motion_resumed("noise_burst")
+                    return self._apply_fade(cmd)
+
+        # ===== NOISE BURST (non-primary): FULL_STROKE transient texture =====
+        # In loud/full-stroke passages, allow micro-pattern bursts on only
+        # stronger transients so texture isn't completely suppressed.
+        if (not cfg.noise_primary_mode
+                and not event.is_beat
+                and cfg.noise_burst_enabled
+                and self._motion_mode == MotionMode.FULL_STROKE
+                and (self._trajectory is None or self._trajectory.finished)):
+            noise_thresh = cfg.flux_threshold * cfg.noise_burst_flux_multiplier * 1.5
+            if event.spectral_flux >= noise_thresh:
+                time_since_stroke = (now - self.state.last_stroke_time) * 1000
+                if time_since_stroke >= cfg.min_interval_ms * 0.6:
+                    cmd = self._generate_noise_burst_stroke(event)
+                    self._note_motion_resumed("noise_burst_full")
                     return self._apply_fade(cmd)
 
         if event.is_beat:
@@ -1493,16 +1508,25 @@ class StrokeMapper:
         # Pick a random micro-pattern type
         pattern = random.choice(['jerk', 'swirl', 'star', 'zigzag'])
         magnitude_scale = getattr(self.config.stroke, 'noise_burst_magnitude', 1.0)
-        jerk_mag = random.uniform(0.15, 0.40) * self.motion_intensity * magnitude_scale
+        energy_scale = 1.0 + (self._mid_energy + self._high_energy) * 2.0
+        energy_scale = min(energy_scale, 2.0)
+        jerk_mag = random.uniform(0.15, 0.40) * self.motion_intensity * magnitude_scale * energy_scale
         base_angle = self.state.creep_angle
         n_points = random.randint(4, 8)
         duration_ms = random.randint(60, 120)
 
-        # Current creep position as center of the micro-pattern
-        jitter_r = self.config.jitter.amplitude if self.config.jitter.enabled else 0.0
-        creep_radius = max(0.1, 0.5 - jitter_r)
-        center_a = np.sin(base_angle) * creep_radius
-        center_b = np.cos(base_angle) * creep_radius
+        # Current creep position as center of the micro-pattern.
+        # Keep burst center radius independent from jitter amplitude so
+        # transient bursts stay visible even when jitter is high.
+        if self.config.creep.enabled:
+            creep_radius = 0.30
+            center_a = np.sin(base_angle) * creep_radius
+            center_b = np.cos(base_angle) * creep_radius
+        else:
+            center_a = float(self.state.alpha)
+            center_b = float(self.state.beta)
+            if abs(center_a) > 1e-6 or abs(center_b) > 1e-6:
+                base_angle = np.arctan2(center_a, center_b)
 
         alpha_pts = np.zeros(n_points)
         beta_pts = np.zeros(n_points)
@@ -1666,7 +1690,9 @@ class StrokeMapper:
 
             if getattr(traj, 'is_micro', False):
                 # Micro patterns (noise jitter): resume creep
-                self._post_arc_blend = 0.0
+                # Micro trajectories are short; resume to creep quickly so
+                # rapid bursts don't stack against a long blend tail.
+                self._post_arc_blend = 0.7
                 self._trajectory = None
             elif (self._motion_mode == MotionMode.FULL_STROKE
                     and self._stroke_ready
@@ -1951,13 +1977,11 @@ class StrokeMapper:
                     if self.state.creep_angle >= 2 * np.pi:
                         self.state.creep_angle -= 2 * np.pi
 
-                jitter_r = jitter_cfg.amplitude if jitter_active else 0.0
-
                 if self._motion_mode == MotionMode.CREEP_MICRO:
                     # CREEP_MICRO: smaller radius, drift toward center not edges
-                    creep_radius = max(0.05, 0.20 - jitter_r)
+                    creep_radius = 0.20
                 else:
-                    creep_radius = max(0.1, 0.98 - jitter_r)
+                    creep_radius = 0.50
 
                 target_alpha = np.sin(self.state.creep_angle) * creep_radius
                 target_beta = np.cos(self.state.creep_angle) * creep_radius
