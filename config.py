@@ -114,8 +114,14 @@ class StrokeConfig:
     amplitude_gate_high: float = 0.08  # RMS above this -> FULL_STROKE
     amplitude_gate_low: float = 0.04   # RMS below this -> CREEP_MICRO
 
-    # Beats-between-strokes: only fire full arcs every Nth beat (1/2/4/8)
-    beats_between_strokes: int = 1           # 1=every beat, 2=every 2nd, 4=every 4th, 8=every 8th
+    # Stroke timing cadence:
+    # - 1 beat/stroke only allowed at very slow tempo (< single_stroke_bpm_cutoff)
+    # - otherwise auto-select 2/4/8 beats per stroke from BPM cutoffs
+    # - beats_between_strokes acts as fallback when BPM is unavailable (2/4/8)
+    single_stroke_bpm_cutoff: float = 90.0   # Allow 1 beat/stroke only below this BPM
+    bpm_cutoff_2_to_4: float = 60.0          # BPM at/above this moves 2 -> 4 beats/stroke
+    bpm_cutoff_4_to_8: float = 155.0         # BPM at/above this moves 4 -> 8 beats/stroke
+    beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
 
     # Thump: legacy setting, replaced by landing durations
     thump_enabled: bool = False             # Kept for preset compatibility, not used in UI

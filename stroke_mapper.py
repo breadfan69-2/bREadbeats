@@ -238,6 +238,24 @@ class StrokeMapper:
         # ---------- Flux-drop fallback ----------
         self._recent_flux_values: deque = deque(maxlen=60)  # ~1s of flux history for drop detection
 
+        # ---------- Motion-block diagnostics (throttled) ----------
+        self._motion_block_active: bool = False
+        self._last_block_reason: str = ""
+        self._last_block_log_time: float = 0.0
+        self._block_log_interval_s: float = 0.75
+        self._block_summary_interval_s: float = 10.0
+        self._block_summary_window_start: float = time.time()
+        self._block_reason_order: List[str] = [
+            'bass_gate',
+            'stroke_ready',
+            'beat_divisor',
+            'flux_gate',
+            'mode_creep_micro',
+        ]
+        self._block_reason_counts = {reason: 0 for reason in self._block_reason_order}
+        self._motion_resumed_count: int = 0
+        self._blocked_beat_events: int = 0
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -246,6 +264,72 @@ class StrokeMapper:
         """Minimum allowed volume given vol_reduction_limit config."""
         limit_pct = self.config.stroke.vol_reduction_limit / 100.0
         return base_vol * (1.0 - limit_pct)
+
+    def _note_motion_block(self, reason: str, **details) -> None:
+        """Emit throttled diagnostics when beat motion is suppressed by a gate."""
+        now = time.time()
+        self._emit_block_summary_if_due(now)
+        if reason not in self._block_reason_counts:
+            self._block_reason_counts[reason] = 0
+        self._block_reason_counts[reason] += 1
+        self._blocked_beat_events += 1
+        should_log = (
+            (reason != self._last_block_reason)
+            or ((now - self._last_block_log_time) >= self._block_log_interval_s)
+        )
+        self._motion_block_active = True
+        if not should_log:
+            return
+
+        payload = {
+            'reason': reason,
+            'mode': self._motion_mode,
+        }
+        payload.update(details)
+        log_event("INFO", "StrokeMapper", "Motion blocked", **payload)
+        self._last_block_reason = reason
+        self._last_block_log_time = now
+
+    def _note_motion_resumed(self, context: str = "") -> None:
+        """Emit one-shot diagnostic when motion resumes after being blocked."""
+        now = time.time()
+        self._emit_block_summary_if_due(now)
+        if not self._motion_block_active:
+            return
+        payload = {'mode': self._motion_mode}
+        if context:
+            payload['context'] = context
+        log_event("INFO", "StrokeMapper", "Motion resumed", **payload)
+        self._motion_block_active = False
+        self._last_block_reason = ""
+        self._motion_resumed_count += 1
+
+    def _emit_block_summary_if_due(self, now: Optional[float] = None) -> None:
+        """Emit compact blocker summary once per time window."""
+        if now is None:
+            now = time.time()
+        elapsed = now - self._block_summary_window_start
+        if elapsed < self._block_summary_interval_s:
+            return
+
+        summary_payload = {
+            'window_s': f"{elapsed:.1f}",
+            'blocked_events': self._blocked_beat_events,
+            'resumed_events': self._motion_resumed_count,
+        }
+        for reason in self._block_reason_order:
+            summary_payload[reason] = self._block_reason_counts.get(reason, 0)
+        for reason, count in sorted(self._block_reason_counts.items()):
+            if reason not in self._block_reason_order:
+                summary_payload[reason] = count
+
+        log_event("INFO", "StrokeMapper", "Motion block summary", **summary_payload)
+
+        self._block_summary_window_start = now
+        for key in list(self._block_reason_counts.keys()):
+            self._block_reason_counts[key] = 0
+        self._motion_resumed_count = 0
+        self._blocked_beat_events = 0
 
     def _update_flux_history(self, event: BeatEvent) -> None:
         now = event.timestamp
@@ -273,21 +357,40 @@ class StrokeMapper:
         return self._band_speed_scale.get(band, 1.0)
 
     def _get_adaptive_beat_divisor(self, event: BeatEvent) -> int:
-        """Return beat thinning divisor from tempo.
+        """Return beats-per-stroke divisor from tempo.
 
-        Slow/medium tempo -> 1 (every beat)
-        Fast tempo        -> 2 (every other beat)
-        Very fast tempo   -> 4 (every fourth beat)
+        Rules:
+        - 1 beat/stroke only allowed at very slow BPM (< single_stroke_bpm_cutoff)
+        - Otherwise auto-select 2 / 4 / 8 from BPM cutoffs
+        - If BPM unavailable, use configured fallback (beats_between_strokes; 2/4/8)
         """
         tempo_bpm = float(getattr(event, 'metronome_bpm', 0.0) or 0.0)
         if tempo_bpm <= 0:
             tempo_bpm = float(getattr(event, 'bpm', 0.0) or 0.0)
 
-        if tempo_bpm >= 170.0:
-            return 4
-        if tempo_bpm >= 130.0:
+        cfg = self.config.stroke
+        try:
+            fallback_divisor = int(getattr(cfg, 'beats_between_strokes', 2) or 2)
+        except Exception:
+            fallback_divisor = 2
+        if fallback_divisor not in (2, 4, 8):
+            fallback_divisor = 2
+
+        single_cutoff = float(getattr(cfg, 'single_stroke_bpm_cutoff', 90.0) or 90.0)
+        cutoff_2_to_4 = float(getattr(cfg, 'bpm_cutoff_2_to_4', 120.0) or 120.0)
+        cutoff_4_to_8 = float(getattr(cfg, 'bpm_cutoff_4_to_8', 155.0) or 155.0)
+        if cutoff_4_to_8 <= cutoff_2_to_4:
+            cutoff_4_to_8 = cutoff_2_to_4 + 1.0
+
+        if tempo_bpm <= 0:
+            return fallback_divisor
+        if tempo_bpm < single_cutoff:
+            return 1
+        if tempo_bpm < cutoff_2_to_4:
             return 2
-        return 1
+        if tempo_bpm < cutoff_4_to_8:
+            return 4
+        return 8
 
     def _freq_to_factor(self, freq: float) -> float:
         """Convert frequency -> 0-1 factor.  Lower (bass) -> 0 -> deeper strokes."""
@@ -705,6 +808,7 @@ class StrokeMapper:
                 time_since_stroke = (now - self.state.last_stroke_time) * 1000
                 if time_since_stroke >= cfg.min_interval_ms * 0.5:
                     cmd = self._generate_syncopated_stroke(event)
+                    self._note_motion_resumed("syncopation")
                     return self._apply_fade(cmd)
 
         # ===== NOISE-PRIMARY MODE =====
@@ -722,6 +826,7 @@ class StrokeMapper:
                     # In noise-primary mode, fire a FULL beat stroke (not a burst)
                     # using the metronome BPM for duration if available
                     cmd = self._generate_beat_stroke(event)
+                    self._note_motion_resumed("noise_primary")
                     return self._apply_fade(cmd)
 
         # ===== NOISE BURST (non-primary): small jitter on flux spikes =====
@@ -738,10 +843,23 @@ class StrokeMapper:
                 time_since_stroke = (now - self.state.last_stroke_time) * 1000
                 if time_since_stroke >= cfg.min_interval_ms * 0.4:
                     cmd = self._generate_noise_burst_stroke(event)
+                    self._note_motion_resumed("noise_burst")
                     return self._apply_fade(cmd)
 
         if event.is_beat:
+            # Real beat detected — burst-scheduling yields to metronome
+            if self._burst_scheduled_active:
+                self._burst_scheduled_active = False
+                log_event("INFO", "StrokeMapper",
+                          "Burst-schedule deactivated (real beat detected)")
             if not bass_motion_allowed:
+                self._note_motion_block(
+                    "bass_gate",
+                    strict_gate=strict_gate_enabled,
+                    cutoff_hz=f"{cutoff:.1f}",
+                    beat_band=primary_band or "none",
+                    fired_bands=','.join(sorted(fired_bands)) if fired_bands else "none",
+                )
                 cmd = self._generate_idle_motion(event)
                 return self._apply_fade(cmd)
 
@@ -749,6 +867,7 @@ class StrokeMapper:
             # If metronome + traffic light conditions not met,
             # fall through to idle motion (creep/jitter) instead of strokes
             if not self._stroke_ready:
+                self._note_motion_block("stroke_ready", stroke_ready=False)
                 cmd = self._generate_idle_motion(event)
                 return self._apply_fade(cmd)
 
@@ -758,9 +877,9 @@ class StrokeMapper:
             else:
                 self.state.beat_counter += 1
 
-            adaptive_divisor = self._get_adaptive_beat_divisor(event)
-            manual_divisor = max(1, int(getattr(cfg, 'beats_between_strokes', 1) or 1))
-            effective_divisor = max(adaptive_divisor, manual_divisor)
+            effective_divisor = self._get_adaptive_beat_divisor(event)
+            if cfg.mode == StrokeMode.TEARDROP:
+                effective_divisor *= 2
 
             if self._motion_mode == MotionMode.FULL_STROKE:
                 # High amplitude -> fire arc immediately from current position.
@@ -771,18 +890,32 @@ class StrokeMapper:
                 is_downbeat = getattr(event, 'is_downbeat', False)
                 if is_downbeat:
                     cmd = self._generate_downbeat_stroke(event)
+                    self._note_motion_resumed("downbeat")
                     return self._apply_fade(cmd)
                 else:
                     if effective_divisor > 1 and (self.state.beat_counter % effective_divisor) != 1:
+                        self._note_motion_block(
+                            "beat_divisor",
+                            divisor=effective_divisor,
+                            mode=str(cfg.mode.name if hasattr(cfg.mode, 'name') else cfg.mode),
+                            beat_counter=self.state.beat_counter,
+                        )
                         return None
                     is_high_flux = event.spectral_flux >= cfg.flux_threshold
                     if not is_high_flux:
+                        self._note_motion_block(
+                            "flux_gate",
+                            flux=f"{event.spectral_flux:.4f}",
+                            threshold=f"{cfg.flux_threshold:.4f}",
+                        )
                         return None
                     cmd = self._generate_beat_stroke(event)
+                    self._note_motion_resumed("beat")
                     return self._apply_fade(cmd)
 
             else:  # CREEP_MICRO
                 # Low amplitude -> micro-effects on beats, plus produce creep motion
+                self._note_motion_block("mode_creep_micro", envelope=f"{self._rms_envelope:.4f}")
                 if self._micro_effects_enabled:
                     self._trigger_micro_jerk(event, is_downbeat)
                 # Generate creep motion on beats too (not just idle)
