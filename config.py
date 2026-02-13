@@ -48,6 +48,16 @@ class BeatDetectionConfig:
     consecutive_match_threshold: int = 3       # N consecutive matching downbeats to lock tempo
     downbeat_pattern_enabled: bool = True      # Enable/disable strict downbeat pattern matching
 
+    # Tempo response tuning (advanced)
+    acf_interval_ms: float = 250.0              # ACF update cadence in milliseconds
+    metronome_bpm_alpha_slow: float = 0.03      # BPM smoothing alpha when confidence is low
+    metronome_bpm_alpha_fast: float = 0.22      # BPM smoothing alpha when confidence is high
+    metronome_pll_window: float = 0.35          # Phase-lock correction window (beat fraction)
+    metronome_pll_base_gain: float = 0.09       # Base PLL gain
+    metronome_pll_conf_gain: float = 0.08       # Extra PLL gain from confidence
+    tempo_fusion_min_acf_weight: float = 0.20   # Minimum ACF weight in ACF/onset tempo fusion
+    tempo_fusion_max_acf_weight: float = 0.95   # Maximum ACF weight in ACF/onset tempo fusion
+
     # Syncopation / double-stroke detection
     syncopation_enabled: bool = True             # Master on/off for syncopation detection
     syncopation_band: str = 'any'                # Which z-score band triggers syncope: 'any', 'sub_bass', 'low_mid', 'mid', 'high'

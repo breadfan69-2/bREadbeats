@@ -358,7 +358,7 @@ class AudioEngine:
         self._onset_callback_count: int = 0             # For computing effective sample rate
         self._onset_first_time: float = 0.0             # Timestamp of first onset sample
         # ACF estimation
-        self._acf_interval_ms: float = 500.0            # Run ACF every 500ms
+        self._acf_interval_ms: float = float(getattr(config.beat, 'acf_interval_ms', 250.0))
         self._last_acf_time: float = 0.0
         self._acf_bpm: float = 0.0                      # Latest raw ACF BPM estimate
         self._acf_bpm_smoothed: float = 0.0             # Exponentially smoothed ACF BPM
@@ -374,6 +374,13 @@ class AudioEngine:
         self._metronome_last_beat_time: float = 0.0      # When the metronome last ticked a beat
         self._metronome_conf_hold_s: float = 1.2          # Keep metronome running through short ACF confidence dips
         self._metronome_conf_lost_at: float = 0.0         # Timestamp when ACF confidence dropped below threshold
+        self._metronome_bpm_alpha_slow: float = float(getattr(config.beat, 'metronome_bpm_alpha_slow', 0.03))
+        self._metronome_bpm_alpha_fast: float = float(getattr(config.beat, 'metronome_bpm_alpha_fast', 0.22))
+        self._metronome_pll_window: float = float(getattr(config.beat, 'metronome_pll_window', 0.35))
+        self._metronome_pll_base_gain: float = float(getattr(config.beat, 'metronome_pll_base_gain', 0.09))
+        self._metronome_pll_conf_gain: float = float(getattr(config.beat, 'metronome_pll_conf_gain', 0.08))
+        self._tempo_fusion_min_acf_weight: float = float(getattr(config.beat, 'tempo_fusion_min_acf_weight', 0.20))
+        self._tempo_fusion_max_acf_weight: float = float(getattr(config.beat, 'tempo_fusion_max_acf_weight', 0.95))
         # ===== Syncopation / double-stroke detection =====
         # Track raw onset times to detect off-beat ("and") hits between metronome beats
         self._raw_onset_times: list[float] = []          # Recent raw beat detection timestamps
@@ -771,6 +778,7 @@ class AudioEngine:
         
         # Advance internal metronome (pass band_energy for energy-based downbeat detection)
         self._advance_metronome(current_time, band_energy)
+        self._predict_next_beat(current_time)
         
         # Phase-lock: nudge metronome when a strong onset is detected near a beat
         if raw_is_beat and self._metronome_bpm > 0:
@@ -1124,6 +1132,25 @@ class AudioEngine:
                       bpm=f"{bpm:.1f}", confidence=f"{peak_value:.3f}",
                       fps=f"{fps:.1f}")
 
+    def _estimate_onset_bpm(self) -> float:
+        """Estimate BPM from recent raw onset intervals for fast fallback/fusion."""
+        if len(self._raw_onset_times) < 3:
+            return 0.0
+
+        intervals = np.diff(np.array(self._raw_onset_times[-8:], dtype=np.float64))
+        if len(intervals) == 0:
+            return 0.0
+
+        valid = intervals[(intervals >= 0.15) & (intervals <= 1.2)]
+        if len(valid) < 2:
+            return 0.0
+
+        median_interval = float(np.median(valid))
+        bpm = 60.0 / median_interval if median_interval > 0 else 0.0
+        if 55.0 <= bpm <= 185.0:
+            return bpm
+        return 0.0
+
     def _advance_metronome(self, now: float, band_energy: float = 0.0):
         """Advance the internal metronome phase accumulator.
         Fires _metronome_beat_fired / _metronome_downbeat_fired when
@@ -1136,9 +1163,22 @@ class AudioEngine:
         self._metronome_beat_fired = False
         self._metronome_downbeat_fired = False
 
-        # Need a valid ACF BPM to run
+        acf_conf = max(0.0, min(1.0, self._acf_confidence))
+        onset_bpm = self._estimate_onset_bpm()
         target_bpm = self._acf_bpm_smoothed
-        if target_bpm <= 0 or self._acf_confidence < 0.10:
+        if onset_bpm > 0:
+            if target_bpm <= 0:
+                target_bpm = onset_bpm
+            else:
+                min_w = self._tempo_fusion_min_acf_weight
+                max_w = self._tempo_fusion_max_acf_weight
+                if max_w < min_w:
+                    min_w, max_w = max_w, min_w
+                acf_weight = min_w + (max_w - min_w) * acf_conf
+                acf_weight = max(min_w, min(max_w, acf_weight))
+                target_bpm = acf_weight * target_bpm + (1.0 - acf_weight) * onset_bpm
+
+        if target_bpm <= 0 or (acf_conf < 0.10 and onset_bpm <= 0):
             if self._metronome_bpm > 0:
                 if self._metronome_conf_lost_at <= 0:
                     self._metronome_conf_lost_at = now
@@ -1165,8 +1205,11 @@ class AudioEngine:
                       bpm=f"{target_bpm:.1f}")
             return
 
-        # Smoothly track ACF BPM changes
-        self._metronome_bpm = 0.95 * self._metronome_bpm + 0.05 * target_bpm
+        smoothing_conf = acf_conf if acf_conf > 0 else (0.20 if onset_bpm > 0 else 0.0)
+        alpha = self._metronome_bpm_alpha_slow + (
+            self._metronome_bpm_alpha_fast - self._metronome_bpm_alpha_slow
+        ) * max(0.0, min(1.0, smoothing_conf))
+        self._metronome_bpm = (1.0 - alpha) * self._metronome_bpm + alpha * target_bpm
 
         dt = now - self._metronome_last_time
         self._metronome_last_time = now
@@ -1295,10 +1338,12 @@ class AudioEngine:
         else:
             error = 1.0 - phase_frac  # Approaching next beat → push forward
 
-        # Only nudge if onset is near a beat (within 25% of a beat period)
-        if abs(error) < 0.25:
-            # Correction proportional to error and onset strength
-            correction = error * 0.08 * min(1.0, onset_strength)
+        if abs(error) < self._metronome_pll_window:
+            conf = max(0.0, min(1.0, self._acf_confidence))
+            gain = self._metronome_pll_base_gain + self._metronome_pll_conf_gain * conf
+            error_scale = 0.5 + 0.5 * min(1.0, abs(error) / 0.25)
+            correction = error * gain * min(1.0, onset_strength) * error_scale
+            correction = max(-0.14, min(0.14, correction))
             self._metronome_phase += correction
 
     def _reset_acf_metronome(self):
@@ -1616,7 +1661,14 @@ class AudioEngine:
         self.last_beat_time = current_time
     
     def _predict_next_beat(self, current_time: float):
-        """Predict the time of the next beat based on smoothed tempo"""
+        """Predict the time of the next beat using metronome when active."""
+        if self._acf_metronome_enabled and self._metronome_bpm > 0:
+            phase_frac = self._metronome_phase % 1.0
+            beats_to_next = 1.0 - phase_frac if phase_frac > 1e-9 else 1.0
+            predicted_interval = beats_to_next * (60.0 / self._metronome_bpm)
+            self.predicted_next_beat = current_time + predicted_interval
+            return
+
         if self.smoothed_tempo > 0:
             predicted_interval = 60.0 / self.smoothed_tempo
             self.predicted_next_beat = current_time + predicted_interval
