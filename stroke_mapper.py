@@ -297,13 +297,11 @@ class StrokeMapper:
     def _update_stroke_readiness(self, event: BeatEvent) -> None:
         """Determine if strokes should fire based on metronome + traffic light.
         
-        Rules (both lights = metronome + traffic):
-          - Both GREEN → fire strokes
-          - One GREEN + one YELLOW → fire strokes
-          - Both YELLOW → fire strokes ONLY if previously had at least one
-            light on (not coming from red/off state cold-start), OR if the
-            current frame has a confirmed beat/downbeat indicator
-          - Anything below both-yellow → don't fire (grace period applies)
+                Rules (both lights = metronome + traffic):
+                    - If metronome has lock confidence (yellow/green), allow strokes
+                        regardless of traffic color.
+                    - Traffic still boosts confidence/recovery behavior, but no longer
+                        hard-blocks strokes while metrics are actively adjusting (red).
         
         Grace period: when conditions drop, strokes continue for 1300ms
         before reverting to jitter. This prevents brief dips from
@@ -376,9 +374,13 @@ class StrokeMapper:
                                and (metro_green or metro_yellow))
             # Fallback: metronome green stable >2s, any traffic state
             option_stable = metro_stable_2s
+            # Metronome-first: if metronome is yellow/green, don't hard-block
+            # on red traffic while metrics are still hunting.
+            option_metronome = metro_yellow
             
             conditions_met = (both_green or mixed_green_yellow
-                              or both_yellow_ok or option_recovery or option_stable)
+                              or both_yellow_ok or option_recovery
+                              or option_stable or option_metronome)
         else:
             conditions_met = metro_yellow
 
