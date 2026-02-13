@@ -14,11 +14,9 @@ print("\n[Startup] main.py loading heavy modules...", flush=True)
 import numpy as np
 import queue
 import threading
-import json
 import os
 import random
 from pathlib import Path
-from dataclasses import asdict
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -40,140 +38,60 @@ from config import (
     BEAT_RESET_DEFAULTS,
     BeatDetectionType,
     Config,
+    CURRENT_CONFIG_VERSION,
     DeviceLimitsConfig,
     StrokeMode,
+    apply_dict_to_dataclass,
+    migrate_config,
 )
 from logging_utils import get_log_level, set_log_level
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
+from network_lifecycle import ensure_network_engine, toggle_user_connection
+from command_wiring import attach_cached_tcode_values, apply_volume_ramp
+from close_persist_wiring import persist_runtime_ui_to_config
+from config_facade import (
+    get_config_dir,
+    get_config_file,
+    load_config,
+    save_config,
+)
+from frequency_utils import extract_dominant_freq
+from presets_wiring import get_presets_file_path, load_presets_data, resolve_p0_tcode_bounds, save_presets_data
+from slider_tuning_tracker import SliderTuningTracker
+from transport_wiring import (
+    begin_volume_ramp,
+    play_button_text,
+    send_zero_volume_immediate,
+    set_transport_sending,
+    shutdown_runtime,
+    start_stop_ui_state,
+    trigger_network_test,
+)
 from stroke_mapper import StrokeMapper
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
 
 
-# Config persistence - use exe folder when packaged, home dir when running from source
-def get_config_dir() -> Path:
-    """Get config directory - exe folder when packaged, home dir otherwise"""
-    if getattr(sys, 'frozen', False):
-        # Running as packaged exe - save in same folder as exe
-        return Path(sys.executable).parent
-    else:
-        # Running from source - use home directory
-        config_dir = Path.home() / '.breadbeats'
-        config_dir.mkdir(parents=True, exist_ok=True)
-        return config_dir
+_active_slider_tracker: Optional[SliderTuningTracker] = None
 
-def get_config_file() -> Path:
-    """Get config file path"""
-    return get_config_dir() / 'config.json'
 
-def save_config(config: Config) -> bool:
-    """Save config to JSON file"""
+def _set_active_slider_tracker(tracker: Optional[SliderTuningTracker]) -> None:
+    global _active_slider_tracker
+    _active_slider_tracker = tracker
+
+
+def _track_slider_value(name: str, value: float) -> None:
+    if _active_slider_tracker is None:
+        return
     try:
-        config_file = get_config_file()
-        config_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_file, 'w') as f:
-            json.dump(asdict(config), f, indent=2)
-        print(f"[Config] Saved to {config_file}")
-        return True
-    except Exception as e:
-        print(f"[Config] Failed to save: {e}")
-        return False
+        _active_slider_tracker.record_value(name, value)
+    except Exception:
+        pass
 
-def load_config() -> Config:
-    """Load config from JSON file, returns default if not found"""
-    try:
-        config_file = get_config_file()
-        if config_file.exists():
-            with open(config_file, 'r') as f:
-                data = json.load(f)
-            
-            # Reconstruct Config from dict (handles nested dataclasses)
-            config = Config()
-            
-            # Apply loaded values
-            if 'beat' in data:
-                for key, value in data['beat'].items():
-                    if hasattr(config.beat, key):
-                        setattr(config.beat, key, value)
-            
-            if 'stroke' in data:
-                for key, value in data['stroke'].items():
-                    if hasattr(config.stroke, key):
-                        setattr(config.stroke, key, value)
-                # Ensure mode is always a StrokeMode enum
-                if hasattr(config.stroke, 'mode') and not isinstance(config.stroke.mode, StrokeMode):
-                    try:
-                        config.stroke.mode = StrokeMode(config.stroke.mode)
-                    except Exception as e:
-                        print(f"[Config] Warning: Could not convert stroke.mode to StrokeMode enum: {e}")
-            
-            if 'jitter' in data:
-                for key, value in data['jitter'].items():
-                    if hasattr(config.jitter, key):
-                        setattr(config.jitter, key, value)
-            
-            if 'creep' in data:
-                for key, value in data['creep'].items():
-                    if hasattr(config.creep, key):
-                        setattr(config.creep, key, value)
-            
-            if 'connection' in data:
-                for key, value in data['connection'].items():
-                    if hasattr(config.connection, key):
-                        setattr(config.connection, key, value)
-            
-            if 'audio' in data:
-                for key, value in data['audio'].items():
-                    if hasattr(config.audio, key):
-                        setattr(config.audio, key, value)
-            
-            if 'pulse_freq' in data:
-                for key, value in data['pulse_freq'].items():
-                    if hasattr(config.pulse_freq, key):
-                        setattr(config.pulse_freq, key, value)
-            
-            if 'carrier_freq' in data:
-                for key, value in data['carrier_freq'].items():
-                    if hasattr(config.carrier_freq, key):
-                        setattr(config.carrier_freq, key, value)
-            
-            if 'auto_adjust' in data:
-                for key, value in data['auto_adjust'].items():
-                    if hasattr(config.auto_adjust, key):
-                        setattr(config.auto_adjust, key, value)
-            
-            if 'device_limits' in data:
-                for key, value in data['device_limits'].items():
-                    if hasattr(config.device_limits, key):
-                        setattr(config.device_limits, key, value)
-            
-            if 'pulse_width' in data:
-                for key, value in data['pulse_width'].items():
-                    if hasattr(config.pulse_width, key):
-                        setattr(config.pulse_width, key, value)
-            
-            if 'rise_time' in data:
-                for key, value in data['rise_time'].items():
-                    if hasattr(config.rise_time, key):
-                        setattr(config.rise_time, key, value)
-            
-            # Top-level values
-            if 'alpha_weight' in data:
-                config.alpha_weight = data['alpha_weight']
-            if 'beta_weight' in data:
-                config.beta_weight = data['beta_weight']
-            if 'volume' in data:
-                config.volume = data['volume']
-            
-            print(f"[Config] Loaded from {config_file}")
-            return config
-        else:
-            print(f"[Config] No saved config found, using defaults")
-            return Config()
-    except Exception as e:
-        print(f"[Config] Failed to load: {e}, using defaults")
-        return Config()
+
+_apply_dict_to_dataclass = apply_dict_to_dataclass
+_migrate_config = migrate_config
 
 
 class SignalBridge(QObject):
@@ -297,7 +215,7 @@ class SpectrumCanvas(pg.PlotWidget):
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
         # Positioned at negative X to be off to the left of main display
-        bar_width = 5.0  # Width of each bar (larger for waterfall scale)
+        bar_width = 4.6  # Width of each bar (about 8% thinner)
         bar_spacing = 0.8  # Gap between bars
         bar_x_start = -18.0  # Start position (leftmost bar)
         
@@ -330,7 +248,7 @@ class SpectrumCanvas(pg.PlotWidget):
         
         # Store bar positions
         self._bar_width = bar_width
-        self._bar_scale = self.history_len  # Scale heights to match Y range
+        self._bar_scale = self.history_len * 0.82  # Visual calibration to reduce top saturation
         
     def _hz_to_bin(self, hz: float) -> float:
         """Convert Hz to log-spaced bin index (0 to num_bins)"""
@@ -468,10 +386,10 @@ class SpectrumCanvas(pg.PlotWidget):
         if hasattr(self, 'peak_actual_bar'):
             # Scale to waterfall Y range (0 to history_len)
             scale = getattr(self, '_bar_scale', self.history_len)
-            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value) * scale])
+            self.peak_actual_bar.setOpts(height=[min(1.0, peak_value) * scale])
         if hasattr(self, 'peak_decay_bar'):
             scale = getattr(self, '_bar_scale', self.history_len)
-            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value) * scale])
+            self.peak_decay_bar.setOpts(height=[min(1.0, flux_value) * scale])
     
     def set_peak_floor(self, peak_floor: float):
         """Update peak floor bar height"""
@@ -579,7 +497,9 @@ class MountainRangeCanvas(pg.PlotWidget):
         self.setMouseEnabled(x=False, y=False)
         self.setMenuEnabled(False)
         self.showGrid(x=False, y=False, alpha=0)
-        self.hideAxis('left')
+        self.showAxis('left')
+        self.getAxis('left').setTextPen(pg.mkPen('#888888'))
+        self.getAxis('left').setTickPen(pg.mkPen('#666666'))
         self.hideAxis('bottom')
         
         # Spectrum dimensions
@@ -589,13 +509,18 @@ class MountainRangeCanvas(pg.PlotWidget):
         self.freq_values = np.linspace(0, self.num_bins, self.num_bins)
         
         # Set view range (left margin includes peak indicator bars at negative X)
-        self.setXRange(-9, self.num_bins)
-        self.setYRange(0, 1.2)
+        self.setXRange(-16, self.num_bins)
+        self.setYRange(-120, 0)
+
+        self._carrier_label_y = -33
+        self._pulse_label_y = -24
+        self._depth_label_y = -15
+        self._beat_label_y = -6
         
         # Main spectrum curve (mountain peaks) - cyan fill with bright outline
         self.spectrum_curve = pg.PlotCurveItem(
             pen=pg.mkPen(QColor(100, 200, 255, 255), width=2),  # Bright cyan outline
-            fillLevel=0,
+            fillLevel=-120,
             brush=pg.mkBrush(QColor(0, 120, 200, 120))  # Semi-transparent cyan fill
         )
         self.addItem(self.spectrum_curve)
@@ -603,7 +528,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Glow effect - slightly larger, more transparent version behind
         self.glow_curve = pg.PlotCurveItem(
             pen=pg.mkPen(QColor(0, 150, 255, 80), width=6),
-            fillLevel=0,
+            fillLevel=-120,
             brush=pg.mkBrush(QColor(0, 80, 180, 40))
         )
         self.addItem(self.glow_curve)
@@ -658,19 +583,19 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Labels placed at top of each respective band
         # Each label sits just inside the upper limit of its own box
         self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, 0.73)
+        self.carrier_label.setPos(5, self._carrier_label_y)
         self.addItem(self.carrier_label)
         
         self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, 0.81)
+        self.pulse_label.setPos(5, self._pulse_label_y)
         self.addItem(self.pulse_label)
         
         self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, 0.89)
+        self.depth_label.setPos(5, self._depth_label_y)
         self.addItem(self.depth_label)
         
         self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
-        self.beat_label.setPos(5, 0.97)
+        self.beat_label.setPos(5, self._beat_label_y)
         self.addItem(self.beat_label)
         
         # Reference to parent window
@@ -681,13 +606,14 @@ class MountainRangeCanvas(pg.PlotWidget):
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
         # These are positioned at negative X to be off to the left of the main spectrum display
-        bar_width = 2.0  # Width of each bar
-        bar_spacing = 0.4  # Gap between bars
-        bar_x_start = -8.0  # Start position (leftmost bar)
+        bar_width = 4.4  # Width of each bar (10% wider for parity)
+        bar_spacing = 0.8  # Gap between bars
+        bar_x_start = -15.0  # Start position (leftmost bar)
         
         # Bar 1: Actual Peak (green) - current band energy level
         self.peak_actual_bar = pg.BarGraphItem(
             x=[bar_x_start],
+            y0=[-120],
             height=[0],
             width=bar_width,
             brush='#00FF00'  # Green
@@ -697,6 +623,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Bar 2: Peak Floor (yellow) - threshold setting
         self.peak_floor_bar = pg.BarGraphItem(
             x=[bar_x_start + bar_width + bar_spacing],
+            y0=[-120],
             height=[0],
             width=bar_width,
             brush='#FFD700'  # Gold/Yellow
@@ -706,6 +633,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Bar 3: Peak Decay (orange) - decayed peak tracker
         self.peak_decay_bar = pg.BarGraphItem(
             x=[bar_x_start + 2 * (bar_width + bar_spacing)],
+            y0=[-120],
             height=[0],
             width=bar_width,
             brush='#FF8C00'  # Dark orange
@@ -719,7 +647,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         self._bar_width = bar_width
         
         # Smoothing buffer for smoother animation
-        self._smooth_spectrum = np.zeros(self.num_bins)
+        self._smooth_spectrum = np.full(self.num_bins, -120.0)
         self._smoothing = 0.3  # 0 = no smoothing, 1 = max smoothing
         
     def _hz_to_bin(self, hz: float) -> float:
@@ -750,7 +678,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, 0.97)
+        self.beat_label.setPos(center_bin, self._beat_label_y)
     
     def _on_depth_band_changed(self):
         if self._updating:
@@ -764,7 +692,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, 0.89)
+        self.depth_label.setPos(center_bin, self._depth_label_y)
     
     def _on_p0_band_changed(self):
         if self._updating:
@@ -778,7 +706,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, 0.81)
+        self.pulse_label.setPos(center_bin, self._pulse_label_y)
     
     def _on_f0_band_changed(self):
         if self._updating:
@@ -792,7 +720,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, 0.73)
+        self.carrier_label.setPos(center_bin, self._carrier_label_y)
     
     def set_sample_rate(self, sr: int):
         self.sample_rate = sr
@@ -804,7 +732,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_norm * nyquist)
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, 0.97)
+        self.beat_label.setPos(center_bin, self._beat_label_y)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -813,7 +741,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, 0.89)
+        self.depth_label.setPos(center_bin, self._depth_label_y)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -822,7 +750,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, 0.81)
+        self.pulse_label.setPos(center_bin, self._pulse_label_y)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -831,23 +759,28 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.f0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, 0.73)
+        self.carrier_label.setPos(center_bin, self._carrier_label_y)
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
         """Update peak indicator bars - actual peak and peak decay (tracked peak)"""
+        peak_db = float(np.clip(20 * np.log10(max(peak_value, 1e-6)), -120, 0))
+        flux_db = float(np.clip(20 * np.log10(max(flux_value, 1e-6)), -120, 0))
+        peak_h = (peak_db + 120.0) * 0.90
+        flux_h = (flux_db + 120.0) * 0.90
         if hasattr(self, 'peak_actual_bar'):
             # Update actual peak bar (green) - current band energy level
-            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value)])
+            self.peak_actual_bar.setOpts(y0=[-120], height=[peak_h])
         if hasattr(self, 'peak_decay_bar'):
             # Update peak decay bar (orange) - this shows the decayed/tracked peak
             # flux_value here represents the tracked/decayed peak from audio engine
-            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value)])
+            self.peak_decay_bar.setOpts(y0=[-120], height=[flux_h])
     
     def set_peak_floor(self, peak_floor: float):
         """Update peak floor bar height"""
         if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setOpts(height=[peak_floor])
+            peak_floor_db = float(np.clip(20 * np.log10(max(peak_floor, 1e-6)), -120, 0))
+            self.peak_floor_bar.setOpts(y0=[-120], height=[(peak_floor_db + 120.0) * 0.90])
     
     def set_peak_indicators_visible(self, visible: bool):
         """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
@@ -894,26 +827,8 @@ class MountainRangeCanvas(pg.PlotWidget):
             x_new = np.linspace(0, 1, self.num_bins)
             spectrum = np.interp(x_new, x_old, spectrum)
         
-        # Apply log scaling
-        spectrum = np.log10(spectrum + 1e-6)
-        spectrum = np.clip((spectrum + 6) / 6, 0, 1)
-        
-        # Sharpen peaks - enhance local maxima to make peaks pointy
-        sharpened = spectrum.copy()
-        for i in range(1, len(spectrum) - 1):
-            # Calculate how much this point is above its neighbors
-            left = spectrum[i-1]
-            right = spectrum[i+1]
-            center = spectrum[i]
-            avg_neighbors = (left + right) / 2
-            # If this is a local peak, boost it
-            if center > left and center > right:
-                peak_boost = (center - avg_neighbors) * 1.5  # Amplify peaks
-                sharpened[i] = min(1.2, center + peak_boost)
-            # If this is a valley, deepen it slightly
-            elif center < left and center < right:
-                sharpened[i] = max(0, center * 0.9)
-        spectrum = sharpened
+        # Convert magnitude to dB for display
+        spectrum = 20 * np.log10(spectrum + 1e-6)
         
         # Smooth the spectrum for less jittery animation
         self._smooth_spectrum = self._smoothing * self._smooth_spectrum + (1 - self._smoothing) * spectrum
@@ -921,7 +836,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Update curves
         x = np.arange(self.num_bins)
         self.spectrum_curve.setData(x, self._smooth_spectrum)
-        self.glow_curve.setData(x, self._smooth_spectrum * 1.02)  # Slightly larger for glow
+        self.glow_curve.setData(x, np.clip(self._smooth_spectrum + 1.5, -120, 0))
         
         # Find and mark peaks (local maxima above threshold)
         if peak_energy and peak_energy > 0.3:
@@ -930,7 +845,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             for i in range(2, self.num_bins - 2):
                 if (self._smooth_spectrum[i] > self._smooth_spectrum[i-1] and 
                     self._smooth_spectrum[i] > self._smooth_spectrum[i+1] and
-                    self._smooth_spectrum[i] > 0.5):
+                    self._smooth_spectrum[i] > -40):
                     peaks.append(i)
                     peak_vals.append(self._smooth_spectrum[i])
             if peaks:
@@ -1049,7 +964,7 @@ class BarGraphCanvas(pg.PlotWidget):
         self._smoothing = 0.4
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        bar_width = 1.8  # Width of each bar
+        bar_width = 1.42  # Width of each bar (~7% thinner than prior tweak)
         bar_spacing = 0.4  # Gap between bars
         bar_x_start = -7.5  # Start position (leftmost bar)
         
@@ -1373,7 +1288,7 @@ class PhosphorCanvas(pg.PlotWidget):
         self._updating = False
         
         # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        bar_width = 5.0  # Width of each bar (larger for phosphor scale)
+        bar_width = 4.6  # Width of each bar (about 8% thinner)
         bar_spacing = 0.8  # Gap between bars
         bar_x_start = -18.0  # Start position (leftmost bar)
         
@@ -1405,7 +1320,7 @@ class PhosphorCanvas(pg.PlotWidget):
         self.addItem(self.peak_decay_bar)
         
         # Store scale for Y axis
-        self._bar_scale = self.num_mag_levels
+        self._bar_scale = self.num_mag_levels * 0.82
         
     def _hz_to_bin(self, hz: float) -> float:
         nyquist = self.sample_rate / 2
@@ -1521,10 +1436,10 @@ class PhosphorCanvas(pg.PlotWidget):
         """Update peak indicator bars - actual peak and peak decay"""
         if hasattr(self, 'peak_actual_bar'):
             scale = getattr(self, '_bar_scale', self.num_mag_levels)
-            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value) * scale])
+            self.peak_actual_bar.setOpts(height=[min(1.0, peak_value) * scale])
         if hasattr(self, 'peak_decay_bar'):
             scale = getattr(self, '_bar_scale', self.num_mag_levels)
-            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value) * scale])
+            self.peak_decay_bar.setOpts(height=[min(1.0, flux_value) * scale])
     
     def set_peak_floor(self, peak_floor: float):
         """Update peak floor bar height"""
@@ -1956,6 +1871,9 @@ class RangeSliderWithLabel(QWidget):
     
     def _on_change(self, low: float, high: float):
         self.value_label.setText(f"{low:.{self.decimals}f}-{high:.{self.decimals}f}")
+        base_name = self.label.text()
+        _track_slider_value(f"{base_name} [low]", low)
+        _track_slider_value(f"{base_name} [high]", high)
         self.rangeChanged.emit(low, high)
     
     def low(self) -> float:
@@ -2011,6 +1929,7 @@ class SliderWithLabel(QWidget):
     def _on_change(self, value: int):
         real_value = value / self.multiplier
         self.value_label.setText(f"{real_value:.{self.decimals}f}")
+        _track_slider_value(self.label.text(), real_value)
         self.valueChanged.emit(real_value)
         
     def value(self) -> float:
@@ -2103,6 +2022,8 @@ class CollapsibleGroupBox(QGroupBox):
 
     def mousePressEvent(self, event):
         # Toggle collapse only when clicking in the title-bar area (top ~40px)
+        if event is None:
+            return
         if event.position().y() <= 40:
             self.setCollapsed(not self._collapsed)
             event.accept()
@@ -2123,6 +2044,8 @@ class CollapsibleGroupBox(QGroupBox):
         if layout:
             for i in range(layout.count()):
                 item = layout.itemAt(i)
+                if item is None:
+                    continue
                 widget = item.widget()
                 if widget:
                     widget.setVisible(visible)
@@ -2133,6 +2056,8 @@ class CollapsibleGroupBox(QGroupBox):
     def _set_layout_visible(self, layout, visible: bool):
         for i in range(layout.count()):
             item = layout.itemAt(i)
+            if item is None:
+                continue
             widget = item.widget()
             if widget:
                 widget.setVisible(visible)
@@ -2200,6 +2125,8 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
+        self._slider_tracker = SliderTuningTracker(get_config_dir())
+        _set_active_slider_tracker(self._slider_tracker)
         # Apply persisted log level early so downstream modules inherit
         set_log_level(getattr(self.config, 'log_level', 'INFO'))
         self.signals = SignalBridge()
@@ -2211,6 +2138,7 @@ class BREadbeatsWindow(QMainWindow):
         self.audio_engine = None
         self.network_engine = None
         self.stroke_mapper = None
+        self._dry_run_enabled = bool(getattr(self.config.device_limits, 'dry_run', False))
         
         # Setup UI
         self._setup_ui()
@@ -3463,8 +3391,8 @@ class BREadbeatsWindow(QMainWindow):
         floor_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
         flb_layout = QVBoxLayout(floor_box)
         flb_layout.setSpacing(2)
-        flb_layout.addWidget(QLabel("[Beat Detection] Check peak floor:"))
-        floor_reset_btn = QPushButton("Reset to 0")
+        flb_layout.addWidget(QLabel("[Beat Detection] Check depth:"))
+        floor_reset_btn = QPushButton("Reset Depth to 0")
         floor_reset_btn.clicked.connect(lambda: self.peak_floor_slider.setValue(0.0))
         flb_layout.addWidget(floor_reset_btn)
         g2_layout.addWidget(floor_box)
@@ -4835,13 +4763,13 @@ bREadfan_69@hotmail.com"""
         # Global enable/disable checkbox for all metrics
         self.metrics_global_cb = QCheckBox("Enable Auto-Adjust")
         self.metrics_global_cb.setChecked(self.config.auto_adjust.metrics_global_enabled)
-        self.metrics_global_cb.setToolTip("Master toggle: enable/disable all metric auto-adjustments")
+        self.metrics_global_cb.setToolTip("Master toggle for all auto-adjust controls")
         self.metrics_global_cb.setStyleSheet("font-weight: bold; font-size: 10px;")
         self.metrics_global_cb.stateChanged.connect(self._on_metrics_global_toggle)
         metric_layout.addWidget(self.metrics_global_cb)
         
         # Butterworth filter (mandatory for metrics)
-        self.butterworth_checkbox = QCheckBox("Butterworth bandpass filter (better bass isolation)")
+        self.butterworth_checkbox = QCheckBox("Butterworth bandpass filter")
         self.butterworth_checkbox.setChecked(getattr(self.config.audio, 'use_butterworth', True))
         self.butterworth_checkbox.stateChanged.connect(self._on_butterworth_toggle)
         metric_layout.addWidget(self.butterworth_checkbox)
@@ -4849,8 +4777,8 @@ bREadfan_69@hotmail.com"""
         # Metric controls row
         metric_ctrl_layout = QHBoxLayout()
         
-        self.metric_peak_floor_cb = QCheckBox("Peak Floor Margin")
-        self.metric_peak_floor_cb.setToolTip("Auto-adjust peak_floor to track energy valley level (scales with amplification)")
+        self.metric_peak_floor_cb = QCheckBox("Depth Margin")
+        self.metric_peak_floor_cb.setToolTip("Auto-adjust depth threshold to track energy valley level (scales with amplification)")
         self.metric_peak_floor_cb.stateChanged.connect(lambda state: self._on_metric_toggle('peak_floor', state == 2))
         metric_ctrl_layout.addWidget(self.metric_peak_floor_cb)
         
@@ -4859,7 +4787,7 @@ bREadfan_69@hotmail.com"""
         self.metric_audio_amp_cb.stateChanged.connect(lambda state: self._on_metric_toggle('audio_amp', state == 2))
         metric_ctrl_layout.addWidget(self.metric_audio_amp_cb)
         
-        self.metric_flux_balance_cb = QCheckBox("Flux Balance (Bars)")
+        self.metric_flux_balance_cb = QCheckBox("Flux Balance")
         self.metric_flux_balance_cb.setToolTip("Auto-adjust flux_mult to keep flux ≈ energy bar heights (0.01 steps/500ms)")
         self.metric_flux_balance_cb.stateChanged.connect(lambda state: self._on_metric_toggle('flux_balance', state == 2))
         metric_ctrl_layout.addWidget(self.metric_flux_balance_cb)
@@ -4871,7 +4799,7 @@ bREadfan_69@hotmail.com"""
         bps_layout = QHBoxLayout()
         
         self.metric_target_bps_cb = QCheckBox("Target BPM")
-        self.metric_target_bps_cb.setToolTip("Adjust peak_floor to achieve target beats per minute")
+        self.metric_target_bps_cb.setToolTip("Adjust depth threshold to achieve target beats per minute")
         self.metric_target_bps_cb.stateChanged.connect(lambda state: self._on_metric_toggle('target_bps', state == 2))
         bps_layout.addWidget(self.metric_target_bps_cb)
         
@@ -5002,14 +4930,14 @@ bREadfan_69@hotmail.com"""
         
         layout.addWidget(levels_group)
         
-        # ===== PEAKS GROUP: Peak Floor, Peak Decay, Rise Sensitivity =====
-        peaks_group = CollapsibleGroupBox("Peaks", collapsed=True)
+        # ===== DEPTH/PEAKS GROUP: Depth, Peak Decay, Rise Sensitivity =====
+        peaks_group = CollapsibleGroupBox("Depth & Peaks", collapsed=True)
         peaks_layout = QVBoxLayout(peaks_group)
         
         # Peak floor: minimum energy to consider (0 = disabled)
         # Range 0.01-0.15: typical band_energy is 0.08-0.15 with default gain
         pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
-        self.peak_floor_slider = SliderWithLabel("Peak Floor", pf_min, pf_max, self.config.beat.peak_floor, 3)
+        self.peak_floor_slider = SliderWithLabel("Depth", pf_min, pf_max, self.config.beat.peak_floor, 3)
         self.peak_floor_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'peak_floor', v))
         peaks_layout.addWidget(self.peak_floor_slider)
         
@@ -5435,17 +5363,11 @@ bREadfan_69@hotmail.com"""
                 self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
             if 'pulse_freq_high' in preset_data:
                 self.pulse_freq_range_slider.setHigh(preset_data['pulse_freq_high'])
-            # Support both new (tcode_min) and old (tcode_freq_min) preset keys
-            p0_tcode_min = preset_data.get('tcode_min', preset_data.get('tcode_freq_min'))
-            p0_tcode_max = preset_data.get('tcode_max', preset_data.get('tcode_freq_max'))
+            # Support both new/old preset keys and legacy Hz-scale values
+            p0_tcode_min, p0_tcode_max = resolve_p0_tcode_bounds(preset_data)
             if p0_tcode_min is not None:
-                # Backward compat: old presets stored Hz values (typically < 200)
-                if p0_tcode_min < 200:
-                    p0_tcode_min = int(p0_tcode_min * 67)
                 self.tcode_freq_range_slider.setLow(p0_tcode_min)
             if p0_tcode_max is not None:
-                if p0_tcode_max < 200:
-                    p0_tcode_max = int(p0_tcode_max * 67)
                 self.tcode_freq_range_slider.setHigh(p0_tcode_max)
             if 'freq_weight' in preset_data:
                 self.freq_weight_slider.setValue(preset_data['freq_weight'])
@@ -5471,19 +5393,17 @@ bREadfan_69@hotmail.com"""
     
     def _get_presets_file_path(self) -> Path:
         """Get the path to the presets file - exe folder when packaged, workspace when developing"""
-        if getattr(sys, 'frozen', False):
-            # Running as packaged exe - save in same folder as exe
-            return Path(sys.executable).parent / "presets.json"
-        else:
-            # Running from source - use workspace folder (for editing factory presets)
-            return Path(__file__).parent / "presets.json"
+        return get_presets_file_path(
+            frozen=getattr(sys, 'frozen', False),
+            executable_path=str(sys.executable),
+            source_file=__file__,
+        )
     
     def _save_presets_to_disk(self):
         """Save all custom presets to disk"""
         try:
             presets_file = self._get_presets_file_path()
-            with open(presets_file, 'w') as f:
-                json.dump(self.custom_beat_presets, f, indent=2)
+            save_presets_data(presets_file, self.custom_beat_presets)
             print(f"[Presets] Saved {len(self.custom_beat_presets)} presets to {presets_file}")
         except Exception as e:
             print(f"[Presets] Error saving presets: {e}")
@@ -5492,20 +5412,17 @@ bREadfan_69@hotmail.com"""
         """Load custom presets from disk"""
         try:
             presets_file = self._get_presets_file_path()
-            
-            # If no user presets file exists, try to copy factory presets from bundled location
-            if not presets_file.exists() and getattr(sys, 'frozen', False):
-                meipass = getattr(sys, '_MEIPASS', None)
-                if meipass:
-                    factory_presets = Path(meipass) / 'presets.json'
-                    if factory_presets.exists():
-                        import shutil
-                        shutil.copy(factory_presets, presets_file)
-                        print(f"[Presets] Copied factory presets to {presets_file}")
-            
-            if presets_file.exists():
-                with open(presets_file, 'r') as f:
-                    self.custom_beat_presets = json.load(f)
+            was_missing = not presets_file.exists()
+            self.custom_beat_presets = load_presets_data(
+                presets_file,
+                frozen=getattr(sys, 'frozen', False),
+                meipass=getattr(sys, '_MEIPASS', None),
+            )
+
+            if was_missing and presets_file.exists() and self.custom_beat_presets:
+                print(f"[Presets] Copied factory presets to {presets_file}")
+
+            if self.custom_beat_presets:
                 # Mark buttons that have saved presets and apply custom names
                 for idx, preset_data in self.custom_beat_presets.items():
                     idx_int = int(idx)
@@ -5516,7 +5433,6 @@ bREadfan_69@hotmail.com"""
                             self.preset_buttons[idx_int].setText(preset_data['preset_name'])
                 print(f"[Presets] Loaded {len(self.custom_beat_presets)} presets from {presets_file}")
             else:
-                self.custom_beat_presets = {}
                 print(f"[Presets] No presets file found, starting with empty presets")
         except Exception as e:
             print(f"[Presets] Error loading presets: {e}")
@@ -5830,8 +5746,12 @@ bREadfan_69@hotmail.com"""
         """Auto-connect TCP on program startup"""
         self.config.connection.host = self.host_edit.text()
         self.config.connection.port = self.port_spin.value()
-        self.network_engine = NetworkEngine(self.config, self._network_status_callback)
-        self.network_engine.start()
+        self.network_engine = ensure_network_engine(
+            self.network_engine,
+            self.config,
+            self._network_status_callback,
+            force_new=True,
+        )
         print("[Main] Auto-connecting TCP on startup")
 
     def _on_connect(self):
@@ -5839,50 +5759,47 @@ bREadfan_69@hotmail.com"""
         if self.network_engine is None:
             self.config.connection.host = self.host_edit.text()
             self.config.connection.port = self.port_spin.value()
-            self.network_engine = NetworkEngine(self.config, self._network_status_callback)
-            self.network_engine.start()
+            self.network_engine = ensure_network_engine(
+                self.network_engine,
+                self.config,
+                self._network_status_callback,
+            )
         else:
-            if self.network_engine.connected:
-                self.network_engine.user_disconnect()
-            else:
-                self.network_engine.user_connect()
+            toggle_user_connection(self.network_engine)
     
     def _on_test(self):
         """Send test pattern"""
-        if self.network_engine and self.network_engine.connected:
-            # Temporarily enable sending for test
-            was_sending = self.network_engine.sending_enabled
-            self.network_engine.set_sending_enabled(True)
-            self.network_engine.send_test()
-            # Restore after a delay (test takes ~2.5 seconds)
-            if not was_sending:
-                QTimer.singleShot(3000, lambda: self.network_engine.set_sending_enabled(was_sending) if self.network_engine else None)
+        _, should_restore = trigger_network_test(self.network_engine)
+        # Restore after a delay (test takes ~2.5 seconds)
+        if should_restore:
+            QTimer.singleShot(3000, lambda: set_transport_sending(self.network_engine, False))
     
     def _on_start_stop(self, checked: bool):
         """Start/stop audio capture and TCode pipeline.
         Start enables TCode sending (V0=0 until Play). Stop kills everything."""
         if checked:
             self._start_engines()
-            self.start_btn.setText("■ Stop")
-            self.play_btn.setEnabled(True)
+            ui_state = start_stop_ui_state(True)
+            self.start_btn.setText(ui_state.start_text)
+            self.play_btn.setEnabled(ui_state.play_enabled)
             # Enable TCode sending immediately on Start (V0=0 until Play is pressed)
-            if self.network_engine:
-                self.network_engine.set_sending_enabled(True)
-                zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=100)
-                self.network_engine.send_immediate(zero_cmd)
+            set_transport_sending(self.network_engine, True)
+            send_zero_volume_immediate(self.network_engine, duration_ms=100)
         else:
             # Send zero-volume command before stopping (always, not just when is_sending)
             self._volume_ramp_active = False
-            if self.network_engine:
-                zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=100)
-                self.network_engine.send_immediate(zero_cmd)
-                self.network_engine.set_sending_enabled(False)
+            send_zero_volume_immediate(self.network_engine, duration_ms=100)
+            set_transport_sending(self.network_engine, False)
             self._stop_engines()
-            self.start_btn.setText("▶ Start")
-            self.play_btn.setEnabled(False)
-            self.play_btn.setChecked(False)
-            self.play_btn.setText("▶ Play")  # Reset play button text
-            self.is_sending = False
+            ui_state = start_stop_ui_state(False)
+            self.start_btn.setText(ui_state.start_text)
+            self.play_btn.setEnabled(ui_state.play_enabled)
+            if ui_state.play_reset_checked:
+                self.play_btn.setChecked(False)
+            if ui_state.play_text is not None:
+                self.play_btn.setText(ui_state.play_text)
+            if ui_state.is_sending is not None:
+                self.is_sending = ui_state.is_sending
             # Note: Auto-range state is preserved across stop/start - no reset here
     
     def _on_play_pause(self, checked: bool):
@@ -5895,20 +5812,18 @@ bREadfan_69@hotmail.com"""
             if hasattr(self, 'micro_effects_checkbox'):
                 self.stroke_mapper._micro_effects_enabled = self.micro_effects_checkbox.isChecked()
             # Start volume ramp from 0 to set value over 1.3s
-            self._volume_ramp_active = True
-            self._volume_ramp_start_time = time.time()
-            self._volume_ramp_from = 0.0
-            self._volume_ramp_to = 1.0
+            ramp_state = begin_volume_ramp(time.time())
+            self._volume_ramp_active = ramp_state.active
+            self._volume_ramp_start_time = ramp_state.start_time
+            self._volume_ramp_from = ramp_state.from_volume
+            self._volume_ramp_to = ramp_state.to_volume
             # sending_enabled already True from Start — no need to set again
         else:
             # Send V0=0 immediately with fade, but keep TCode pipeline active
             self._volume_ramp_active = False
-            if self.network_engine:
-                # Send zero-volume IMMEDIATELY (bypasses queue)
-                zero_cmd = TCodeCommand(alpha=0.5, beta=0.5, volume=0.0, duration_ms=500)
-                self.network_engine.send_immediate(zero_cmd)
-                # DON'T disable sending_enabled — connection stays active until Stop
-        self.play_btn.setText("⏸ Pause" if checked else "▶ Play")
+            send_zero_volume_immediate(self.network_engine, duration_ms=500)
+            # DON'T disable sending_enabled — connection stays active until Stop
+        self.play_btn.setText(play_button_text(checked))
     
     def _on_detection_type_change(self, index: int):
         """Change beat detection type"""
@@ -5966,9 +5881,12 @@ bREadfan_69@hotmail.com"""
 
         # Network engine is already started on program launch via _auto_connect_tcp
         # Only create if somehow missing
-        if self.network_engine is None:
-            self.network_engine = NetworkEngine(self.config, self._network_status_callback)
-            self.network_engine.start()
+        self.network_engine = ensure_network_engine(
+            self.network_engine,
+            self.config,
+            self._network_status_callback,
+            dry_run_enabled=self._dry_run_enabled,
+        )
 
         self.is_running = True
     
@@ -5996,32 +5914,27 @@ bREadfan_69@hotmail.com"""
     def _send_command_direct(self, cmd: TCodeCommand):
         """Send a command directly (used by StrokeMapper for arc strokes). Thread-safe."""
         if self.network_engine and self.is_sending:
-            # Attach cached P0/F0 values (computed by audio callback)
-            # Only send P0/C0 if device limits has sending enabled
-            p0c0_enabled = self.config.device_limits.p0_c0_sending_enabled
-            if p0c0_enabled and self._cached_p0_enabled and self._cached_p0_val is not None:
-                cmd.pulse_freq = self._cached_p0_val
-            if p0c0_enabled and self._cached_f0_enabled and self._cached_f0_val is not None:
-                if cmd.tcode_tags is None:
-                    cmd.tcode_tags = {}
-                cmd.tcode_tags['C0'] = self._cached_f0_val  # restim uses C0 for carrier
-            # Attach cached P1/P3 values
-            if self._cached_p1_enabled and self._cached_p1_val is not None:
-                if cmd.tcode_tags is None:
-                    cmd.tcode_tags = {}
-                cmd.tcode_tags['P1'] = self._cached_p1_val
-                cmd.tcode_tags['P1_duration'] = int(self._freq_window_ms)
-            if self._cached_p3_enabled and self._cached_p3_val is not None:
-                if cmd.tcode_tags is None:
-                    cmd.tcode_tags = {}
-                cmd.tcode_tags['P3'] = self._cached_p3_val
-                cmd.tcode_tags['P3_duration'] = int(self._freq_window_ms)
-            # Apply volume ramp multiplier (don't override volume - stroke mapper computed it)
-            if self._volume_ramp_active:
-                elapsed = time.time() - self._volume_ramp_start_time
-                progress = min(1.0, elapsed / self._volume_ramp_duration)
-                ramp_mult = self._volume_ramp_from + (self._volume_ramp_to - self._volume_ramp_from) * progress
-                cmd.volume = cmd.volume * ramp_mult
+            attach_cached_tcode_values(
+                cmd,
+                p0c0_enabled=self.config.device_limits.p0_c0_sending_enabled,
+                cached_p0_enabled=self._cached_p0_enabled,
+                cached_p0_val=self._cached_p0_val,
+                cached_f0_enabled=self._cached_f0_enabled,
+                cached_f0_val=self._cached_f0_val,
+                cached_p1_enabled=self._cached_p1_enabled,
+                cached_p1_val=self._cached_p1_val,
+                cached_p3_enabled=self._cached_p3_enabled,
+                cached_p3_val=self._cached_p3_val,
+                freq_window_ms=int(self._freq_window_ms),
+            )
+            apply_volume_ramp(
+                cmd,
+                volume_ramp_active=self._volume_ramp_active,
+                volume_ramp_start_time=self._volume_ramp_start_time,
+                volume_ramp_duration=self._volume_ramp_duration,
+                volume_ramp_from=self._volume_ramp_from,
+                volume_ramp_to=self._volume_ramp_to,
+            )
             self.network_engine.send_command(cmd)
     
     def _stop_engines(self):
@@ -6060,12 +5973,14 @@ bREadfan_69@hotmail.com"""
             if cmd and self.network_engine:
                 # Compute P0/F0 and attach to command (thread-safe, no widget access)
                 self._compute_and_attach_tcode(cmd, event, spectrum)
-                # Apply volume ramp multiplier
-                if self._volume_ramp_active:
-                    elapsed = time.time() - self._volume_ramp_start_time
-                    progress = min(1.0, elapsed / self._volume_ramp_duration)
-                    ramp_mult = self._volume_ramp_from + (self._volume_ramp_to - self._volume_ramp_from) * progress
-                    cmd.volume = cmd.volume * ramp_mult
+                apply_volume_ramp(
+                    cmd,
+                    volume_ramp_active=self._volume_ramp_active,
+                    volume_ramp_start_time=self._volume_ramp_start_time,
+                    volume_ramp_duration=self._volume_ramp_duration,
+                    volume_ramp_from=self._volume_ramp_from,
+                    volume_ramp_to=self._volume_ramp_to,
+                )
                 self.network_engine.send_command(cmd)
         elif event.is_beat and not self.is_sending:
             print("[Main] Beat detected but Play not enabled")
@@ -6073,16 +5988,7 @@ bREadfan_69@hotmail.com"""
     def _extract_dominant_freq(self, spectrum: np.ndarray, sample_rate: int,
                                freq_low: float, freq_high: float) -> float:
         """Extract dominant frequency from a specific Hz range of the spectrum. Thread-safe."""
-        if spectrum is None or len(spectrum) == 0:
-            return 0.0
-        freq_per_bin = sample_rate / (2 * len(spectrum))
-        low_bin = max(0, int(freq_low / freq_per_bin))
-        high_bin = min(len(spectrum) - 1, int(freq_high / freq_per_bin))
-        if low_bin >= high_bin:
-            return 0.0
-        band = spectrum[low_bin:high_bin + 1]
-        peak_bin = low_bin + int(np.argmax(band))
-        return peak_bin * freq_per_bin
+        return extract_dominant_freq(spectrum, sample_rate, freq_low, freq_high)
     
     def _compute_and_attach_tcode(self, cmd: TCodeCommand, event: BeatEvent, spectrum: Optional[np.ndarray] = None):
         """Compute P0/F0 TCode values and attach to command. Thread-safe (no widget access)."""
@@ -6241,7 +6147,8 @@ bREadfan_69@hotmail.com"""
 
                 if at_target:
                     # Accept new target only if different enough (>50 tcode)
-                    if abs(f0_val_raw - self._c0_band_target) > 50:
+                    current_target = self._c0_band_target
+                    if current_target is not None and abs(f0_val_raw - current_target) > 50:
                         # Clamp new target: max ±500 from current position
                         delta_from_current = f0_val_raw - self._c0_band_current
                         delta_from_current = max(-500, min(500, delta_from_current))
@@ -6746,44 +6653,18 @@ bREadfan_69@hotmail.com"""
 
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
-        self._stop_engines()
-        if self.network_engine:
-            self.network_engine.stop()
+        shutdown_runtime(self._stop_engines, self.network_engine)
 
-        # Save all settings from sliders to config before closing
-        self.config.stroke.phase_advance = self.phase_advance_slider.value()
-        self.config.pulse_freq.monitor_freq_min = self.pulse_freq_range_slider.low()
-        self.config.pulse_freq.monitor_freq_max = self.pulse_freq_range_slider.high()
-        self.config.pulse_freq.tcode_min = int(self.tcode_freq_range_slider.low())
-        self.config.pulse_freq.tcode_max = int(self.tcode_freq_range_slider.high())
-        self.config.pulse_freq.freq_weight = self.freq_weight_slider.value()
-        
-        # Save carrier freq (F0) settings
-        self.config.carrier_freq.monitor_freq_min = self.f0_freq_range_slider.low()
-        self.config.carrier_freq.monitor_freq_max = self.f0_freq_range_slider.high()
-        self.config.carrier_freq.tcode_min = int(self.f0_tcode_range_slider.low())
-        self.config.carrier_freq.tcode_max = int(self.f0_tcode_range_slider.high())
-        self.config.carrier_freq.freq_weight = self.f0_weight_slider.value()
-        
-        self.config.volume = self.volume_slider.value() / 100.0
-        
-        # Save axis weights from Effects tab
-        self.config.alpha_weight = self.alpha_weight_slider.value()
-        self.config.beta_weight = self.beta_weight_slider.value()
-        
-        # Save tempo tracking settings
-        self.config.beat.tempo_tracking_enabled = self.tempo_tracking_checkbox.isChecked()
-        beats_map = {0: 4, 1: 3, 2: 6}
-        self.config.beat.beats_per_measure = beats_map.get(self.time_sig_combo.currentIndex(), 4)
-        self.config.beat.stability_threshold = self.stability_threshold_slider.value()
-        self.config.beat.tempo_timeout_ms = int(self.tempo_timeout_slider.value())
-        self.config.beat.phase_snap_weight = self.phase_snap_slider.value()
-        
-        # Save auto-adjust global toggle
-        self.config.auto_adjust.metrics_global_enabled = self.metrics_global_cb.isChecked()
+        persist_runtime_ui_to_config(self, self.config)
         
         # Save config before closing
         save_config(self.config)
+
+        # Save slider tuning report
+        try:
+            self._slider_tracker.save_reports()
+        except Exception as e:
+            print(f"[Tracker] Failed to save slider tuning report: {e}")
 
         # Save presets to disk
         self._save_presets_to_disk()
@@ -6798,7 +6679,7 @@ def main():
     
     # Show splash screen while loading (fallback for direct main.py execution)
     if getattr(sys, 'frozen', False):
-        resource_dir = Path(sys._MEIPASS)
+        resource_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
     else:
         resource_dir = Path(__file__).parent
     

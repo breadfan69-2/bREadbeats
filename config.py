@@ -1,9 +1,12 @@
 # bREadbeats Configuration
 # All default values and constants
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
 from typing import Dict, Literal
 from enum import IntEnum
+
+
+CURRENT_CONFIG_VERSION = 1
 
 class StrokeMode(IntEnum):
     """Stroke mapping modes - all use alpha/beta circular coordinates"""
@@ -169,6 +172,7 @@ class DeviceLimitsConfig:
     prompted: bool = False            # Whether user has been prompted on first run
     p0_c0_sending_enabled: bool = True  # Whether to actually send P0/C0 TCode to device
     dont_show_on_startup: bool = False  # User opted out of startup device limits dialog
+    dry_run: bool = False             # When True, do not send network commands (log-only)
 
 @dataclass
 class PulseWidthConfig:
@@ -236,6 +240,7 @@ class AudioConfig:
 @dataclass
 class Config:
     """Master configuration"""
+    version: int = 1                  # Schema version for persisted configs
     beat: BeatDetectionConfig = field(default_factory=BeatDetectionConfig)
     stroke: StrokeConfig = field(default_factory=StrokeConfig)
     jitter: JitterConfig = field(default_factory=JitterConfig)
@@ -254,6 +259,57 @@ class Config:
     beta_weight: float = 1.0          # Per-axis mix for beta
     volume: float = 1.0               # Output volume (0.0-1.0)
     log_level: str = "INFO"           # Logging level (DEBUG/INFO/WARNING/ERROR)
+
+
+def apply_dict_to_dataclass(target, data) -> None:
+    """Recursively apply values from a dict onto a dataclass instance.
+    Unknown keys are ignored; IntEnum fields are coerced when possible."""
+    if not isinstance(data, dict):
+        return
+
+    for key, value in data.items():
+        if not hasattr(target, key):
+            continue
+
+        current = getattr(target, key)
+
+        if is_dataclass(current) and isinstance(value, dict):
+            apply_dict_to_dataclass(current, value)
+            continue
+
+        if isinstance(current, IntEnum):
+            try:
+                setattr(target, key, current.__class__(value))
+                continue
+            except Exception:
+                print(f"[Config] Warning: Could not convert {key} to {current.__class__.__name__}, keeping default")
+                continue
+
+        setattr(target, key, value)
+
+
+def migrate_config(config: Config, loaded_version) -> None:
+    """Upgrade older config structures to the current schema.
+    Adds defaults for newly introduced fields and bumps version."""
+    try:
+        version = int(loaded_version) if loaded_version is not None else 0
+    except Exception:
+        version = 0
+
+    if version < 1:
+        if getattr(config.stroke, 'noise_burst_magnitude', 1.0) in (None, 0):
+            config.stroke.noise_burst_magnitude = 1.0
+
+        if getattr(config.device_limits, 'p0_c0_sending_enabled', True) is None:
+            config.device_limits.p0_c0_sending_enabled = True
+        if getattr(config.device_limits, 'dont_show_on_startup', False) is None:
+            config.device_limits.dont_show_on_startup = False
+        if getattr(config.device_limits, 'prompted', False) is None:
+            config.device_limits.prompted = False
+        if getattr(config.device_limits, 'dry_run', False) is None:
+            config.device_limits.dry_run = False
+
+    config.version = CURRENT_CONFIG_VERSION
 
 
 # Default config instance
