@@ -543,15 +543,22 @@ class StrokeMapper:
         cfg = self.config.stroke
         beat_cfg = self.config.beat
 
-        # ===== LOW-BAND MOTION FILTER =====
+        # ===== SPECTRUM-TUNABLE MOTION GATE =====
+        # Uses a configurable frequency cutoff over a COMBINATION of sources:
+        # - bands that fired this frame (fired_bands)
+        # - current primary beat band (beat_band)
+        # Set motion_freq_cutoff <= 0 to disable this gate.
         _BAND_LOWER_HZ = {'sub_bass': 30, 'low_mid': 100, 'mid': 500, 'high': 2000}
-        cutoff = beat_cfg.motion_freq_cutoff
-        if cutoff > 0 and event.is_beat:
-            fired = getattr(event, 'fired_bands', None) or []
-            if fired:
-                has_low_band = any(_BAND_LOWER_HZ.get(b, 0) < cutoff for b in fired)
-                if not has_low_band:
-                    return None
+        cutoff = float(getattr(beat_cfg, 'motion_freq_cutoff', 0.0))
+        fired_bands = set(getattr(event, 'fired_bands', None) or [])
+        primary_band = getattr(event, 'beat_band', '')
+        candidate_bands = set(fired_bands)
+        if primary_band:
+            candidate_bands.add(primary_band)
+        if cutoff <= 0:
+            bass_motion_allowed = True
+        else:
+            bass_motion_allowed = any(_BAND_LOWER_HZ.get(b, 99999) < cutoff for b in candidate_bands)
 
         # Update continuous trackers
         self._update_flux_history(event)
@@ -561,14 +568,6 @@ class StrokeMapper:
         self._advance_phase(event)
         self._update_band_energies(event)
         self._update_bass_jitter_drive(event)
-
-        # ===== STRICT BASS Z-SCORE GATE =====
-        # Only allow beat/syncopation-triggered stroke motion when bass
-        # z-score bands actually fired on this frame.
-        bass_bands = {'sub_bass', 'low_mid'}
-        fired_bands = set(getattr(event, 'fired_bands', None) or [])
-        strict_bass_gate_enabled = bool(getattr(beat_cfg, 'strict_bass_motion_gate_enabled', True))
-        bass_motion_allowed = (not strict_bass_gate_enabled) or bool(fired_bands.intersection(bass_bands))
 
         # ===== FLUX-DROP FALLBACK =====
         # Track recent flux for drop detection — if upper spectrum flux
@@ -712,26 +711,12 @@ class StrokeMapper:
                 cmd = self._generate_idle_motion(event)
                 return self._apply_fade(cmd)
 
-            time_since_stroke = (now - self.state.last_stroke_time) * 1000
-            if time_since_stroke < cfg.min_interval_ms:
-                return None
-
             # ===== STROKE READINESS GATE =====
             # If metronome + traffic light conditions not met,
             # fall through to idle motion (creep/jitter) instead of strokes
             if not self._stroke_ready:
                 cmd = self._generate_idle_motion(event)
                 return self._apply_fade(cmd)
-
-            # Beats-between-strokes gating: only fire every Nth beat
-            beats_skip = cfg.beats_between_strokes if hasattr(cfg, 'beats_between_strokes') else 1
-            if beats_skip > 1:
-                self._beats_since_stroke += 1
-                is_downbeat = getattr(event, 'is_downbeat', False)
-                # Always allow downbeats through, otherwise count
-                if not is_downbeat and self._beats_since_stroke < beats_skip:
-                    return None
-                self._beats_since_stroke = 0
 
             is_downbeat = getattr(event, 'is_downbeat', False)
 
@@ -1083,9 +1068,8 @@ class StrokeMapper:
             beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
         else:
             beat_interval_ms = cfg.min_interval_ms
-        # 2x duration adjusted by beats_between_strokes: arc fills the full span
-        beats_per_arc = max(1, cfg.beats_between_strokes if hasattr(cfg, 'beats_between_strokes') else 2)
-        beat_interval_ms = int(beat_interval_ms * beats_per_arc)
+        # Use single-beat arc span; beat skipping gate has been removed.
+        beat_interval_ms = int(beat_interval_ms)
 
         # ===== PRE-FIRE: time arc to LAND on the next beat =====
         beat_target_time = 0.0
@@ -1513,8 +1497,7 @@ class StrokeMapper:
             self._trajectory = None
             return
 
-        beats_per_arc = max(1, cfg.beats_between_strokes if hasattr(cfg, 'beats_between_strokes') else 2)
-        beat_interval_ms = int(60000.0 / bpm * beats_per_arc)
+        beat_interval_ms = int(60000.0 / bpm)
         beat_interval_ms = max(cfg.min_interval_ms, min(4000, beat_interval_ms))
 
         # ===== PRE-FIRE: time arc to LAND on beat =====
