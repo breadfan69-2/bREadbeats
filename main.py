@@ -2277,6 +2277,8 @@ class BREadbeatsWindow(QMainWindow):
         # State
         self.is_running = False
         self.is_sending = False
+        self._transport_transition = False
+        self._transport_pending_start = False
         
         # Auto-connect TCP on startup
         self._auto_connect_tcp()
@@ -6164,37 +6166,105 @@ bREadfan_69@hotmail.com"""
         # Restore after a delay (test takes ~2.5 seconds)
         if should_restore:
             QTimer.singleShot(3000, lambda: set_transport_sending(self.network_engine, False))
+
+    def _sync_transport_buttons(self) -> None:
+        """Force transport button visual state to match runtime state."""
+        self.start_btn.blockSignals(True)
+        self.play_btn.blockSignals(True)
+        try:
+            self.start_btn.setChecked(bool(self.is_running))
+            self.start_btn.setText("■ Stop" if self.is_running else "▶ Start")
+
+            self.play_btn.setEnabled(bool(self.is_running))
+            self.play_btn.setChecked(bool(self.is_sending and self.is_running))
+            self.play_btn.setText(play_button_text(bool(self.is_sending and self.is_running)))
+        finally:
+            self.start_btn.blockSignals(False)
+            self.play_btn.blockSignals(False)
+
+    def _apply_pending_start(self) -> None:
+        """Apply a queued start request captured during stop transition."""
+        if self._transport_transition or self.is_running:
+            return
+        self.start_btn.blockSignals(True)
+        try:
+            self.start_btn.setChecked(True)
+        finally:
+            self.start_btn.blockSignals(False)
+        self._on_start_stop(True)
     
     def _on_start_stop(self, checked: bool):
         """Start/stop audio capture and TCode pipeline.
         Start enables TCode sending (V0=0 until Play). Stop kills everything."""
-        if checked:
-            self._start_engines()
-            ui_state = start_stop_ui_state(True)
-            self.start_btn.setText(ui_state.start_text)
-            self.play_btn.setEnabled(ui_state.play_enabled)
-            # Enable TCode sending immediately on Start (V0=0 until Play is pressed)
-            set_transport_sending(self.network_engine, True)
-            send_zero_volume_immediate(self.network_engine, duration_ms=100)
-        else:
-            # Send zero-volume command before stopping (always, not just when is_sending)
-            self._volume_ramp_active = False
-            send_zero_volume_immediate(self.network_engine, duration_ms=100)
-            set_transport_sending(self.network_engine, False)
-            self._stop_engines()
-            ui_state = start_stop_ui_state(False)
-            self.start_btn.setText(ui_state.start_text)
-            self.play_btn.setEnabled(ui_state.play_enabled)
-            if ui_state.play_reset_checked:
+        if self._transport_transition:
+            if checked and not self.is_running:
+                self._transport_pending_start = True
+            self._sync_transport_buttons()
+            return
+
+        # Idempotent guard: ignore duplicate UI toggles into same state.
+        if checked and self.is_running:
+            self._sync_transport_buttons()
+            return
+        if not checked and not self.is_running:
+            self._sync_transport_buttons()
+            return
+
+        self._transport_transition = True
+        try:
+            if checked:
+                try:
+                    self._start_engines()
+                    ui_state = start_stop_ui_state(True)
+                    self.start_btn.setText(ui_state.start_text)
+                    self.play_btn.setEnabled(ui_state.play_enabled)
+                    # Enable TCode sending immediately on Start (V0=0 until Play is pressed)
+                    set_transport_sending(self.network_engine, True)
+                    send_zero_volume_immediate(self.network_engine, duration_ms=100)
+                except Exception as e:
+                    print(f"[Main] Start failed: {e}")
+                    self._stop_engines()
+                    self.is_sending = False
+                    set_transport_sending(self.network_engine, False)
+            else:
+                # Stop should immediately clear play/sending state before shutdown work.
+                self._volume_ramp_active = False
+                self.is_sending = False
+                self.play_btn.blockSignals(True)
                 self.play_btn.setChecked(False)
-            if ui_state.play_text is not None:
-                self.play_btn.setText(ui_state.play_text)
-            if ui_state.is_sending is not None:
-                self.is_sending = ui_state.is_sending
-            # Note: Auto-range state is preserved across stop/start - no reset here
+                self.play_btn.blockSignals(False)
+
+                # Make stop visually immediate and prevent second-click feel.
+                self.is_running = False
+                self._sync_transport_buttons()
+
+                # Send zero-volume command before stopping (always, not just when is_sending)
+                send_zero_volume_immediate(self.network_engine, duration_ms=100)
+                set_transport_sending(self.network_engine, False)
+                self._stop_engines()
+                # Note: Auto-range state is preserved across stop/start - no reset here
+        finally:
+            self._transport_transition = False
+            self._sync_transport_buttons()
+            if self._transport_pending_start and not self.is_running:
+                self._transport_pending_start = False
+                QTimer.singleShot(0, self._apply_pending_start)
     
     def _on_play_pause(self, checked: bool):
         """Play/pause motion generation. Pause sends V0=0 but keeps TCode pipeline active."""
+        if self._transport_transition:
+            self._sync_transport_buttons()
+            return
+
+        if not self.is_running:
+            self.is_sending = False
+            self._sync_transport_buttons()
+            return
+
+        # Idempotent guard: ignore duplicate transitions
+        if checked == self.is_sending:
+            self._sync_transport_buttons()
+            return
         self.is_sending = checked
         if checked:
             # Re-instantiate StrokeMapper with current config (for live mode switching)
