@@ -819,9 +819,12 @@ class StrokeMapper:
         beta_weight = self.config.beta_weight
         angle = phase * 2 * np.pi
 
+        radius_cap = max(0.05, min(1.0, radius))
+
         if mode == StrokeMode.TEARDROP:
-            # Half-rate pattern draw: teardrop progresses at 0.5x of other modes
-            teardrop_phase = (phase * 0.5) % 1.0
+            # Trace full piriform each arc so it descends one side and
+            # mirrors back up the other side.
+            teardrop_phase = phase % 1.0
             t = (teardrop_phase - 0.5) * 2 * np.pi
             min_radius = 0.2
             curved_intensity = self._intensity_curve(event.intensity)
@@ -836,6 +839,17 @@ class StrokeMapper:
             rot = np.pi
             alpha = (x * np.cos(rot) - y * np.sin(rot)) * alpha_weight
             beta = (x * np.sin(rot) + y * np.cos(rot)) * beta_weight
+
+            # Vertical flip for current display orientation: swap top/bottom.
+            beta = -beta
+
+            # Hard arc-boundary cap: do not exceed current arc radius
+            norm = np.hypot(alpha, beta)
+            if norm > radius_cap and norm > 0:
+                scale = radius_cap / norm
+                alpha *= scale
+                beta *= scale
+
             alpha = np.clip(alpha, -1.0, 1.0)
             beta = np.clip(beta, -1.0, 1.0)
             return alpha, beta
@@ -855,6 +869,14 @@ class StrokeMapper:
             beta_radius = min_radius + (stroke_len * depth - min_radius) * beta_response
             alpha = np.cos(angle) * alpha_radius
             beta = np.sin(angle) * beta_radius
+
+            # Hard arc-boundary cap: do not exceed current arc radius
+            norm = np.hypot(alpha, beta)
+            if norm > radius_cap and norm > 0:
+                scale = radius_cap / norm
+                alpha *= scale
+                beta *= scale
+
             alpha = np.clip(alpha, -1.0, 1.0)
             beta = np.clip(beta, -1.0, 1.0)
             return alpha, beta
