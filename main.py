@@ -4247,8 +4247,8 @@ bREadfan_69@hotmail.com"""
             'audio_gain': self.audio_gain_slider.value(),
             'zscore_threshold': self.zscore_threshold_slider.value(),
             'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
-            'amp_gate_high': self.amp_gate_high_spin.value() if hasattr(self, 'amp_gate_high_spin') else 0.08,
-            'amp_gate_low': self.amp_gate_low_spin.value() if hasattr(self, 'amp_gate_low_spin') else 0.04,
+            'amp_gate_high': self.config.stroke.amplitude_gate_high,
+            'amp_gate_low': self.config.stroke.amplitude_gate_low,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
             
@@ -4320,10 +4320,10 @@ bREadfan_69@hotmail.com"""
             self._on_zscore_threshold_change(preset_data['zscore_threshold'])
         if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
             self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
-        if 'amp_gate_high' in preset_data and hasattr(self, 'amp_gate_high_spin'):
-            self.amp_gate_high_spin.setValue(preset_data['amp_gate_high'])
-        if 'amp_gate_low' in preset_data and hasattr(self, 'amp_gate_low_spin'):
-            self.amp_gate_low_spin.setValue(preset_data['amp_gate_low'])
+        if 'amp_gate_high' in preset_data:
+            self.config.stroke.amplitude_gate_high = preset_data['amp_gate_high']
+        if 'amp_gate_low' in preset_data:
+            self.config.stroke.amplitude_gate_low = preset_data['amp_gate_low']
         self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
         self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
         
@@ -5079,13 +5079,6 @@ bREadfan_69@hotmail.com"""
             self.stroke_mapper.motion_intensity = value
         print(f"[Config] Motion intensity set to {value:.2f}")
 
-    def _on_micro_effects_toggle(self, state):
-        """Toggle micro-effects (beat jerks) in the stroke mapper."""
-        enabled = state == 2
-        if hasattr(self, 'stroke_mapper') and self.stroke_mapper is not None:
-            self.stroke_mapper._micro_effects_enabled = enabled
-        print(f"[Config] Micro-effects {'enabled' if enabled else 'disabled'}")
-
     def _on_amp_gate_high_change(self, value: float):
         """Update amplitude gate high threshold (above this -> FULL_STROKE)."""
         self.config.stroke.amplitude_gate_high = value
@@ -5217,8 +5210,8 @@ bREadfan_69@hotmail.com"""
             'audio_gain': self.audio_gain_slider.value(),
             'zscore_threshold': self.zscore_threshold_slider.value(),
             'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
-            'amp_gate_high': self.amp_gate_high_spin.value() if hasattr(self, 'amp_gate_high_spin') else 0.08,
-            'amp_gate_low': self.amp_gate_low_spin.value() if hasattr(self, 'amp_gate_low_spin') else 0.04,
+            'amp_gate_high': self.config.stroke.amplitude_gate_high,
+            'amp_gate_low': self.config.stroke.amplitude_gate_low,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
             
@@ -5313,10 +5306,10 @@ bREadfan_69@hotmail.com"""
                 self._on_zscore_threshold_change(preset_data['zscore_threshold'])
             if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
                 self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
-            if 'amp_gate_high' in preset_data and hasattr(self, 'amp_gate_high_spin'):
-                self.amp_gate_high_spin.setValue(preset_data['amp_gate_high'])
-            if 'amp_gate_low' in preset_data and hasattr(self, 'amp_gate_low_spin'):
-                self.amp_gate_low_spin.setValue(preset_data['amp_gate_low'])
+            if 'amp_gate_high' in preset_data:
+                self.config.stroke.amplitude_gate_high = preset_data['amp_gate_high']
+            if 'amp_gate_low' in preset_data:
+                self.config.stroke.amplitude_gate_low = preset_data['amp_gate_low']
             if 'silence_reset_ms' in preset_data:
                 self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
             self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
@@ -5505,42 +5498,6 @@ bREadfan_69@hotmail.com"""
         motion_btn_layout.addWidget(self.motion_intense_btn)
         
         motion_layout.addLayout(motion_btn_layout)
-        
-        # Micro-effects toggle (jerks on beats during low-amplitude creep mode)
-        self.micro_effects_checkbox = QCheckBox("Micro-effects (beat jerks in creep mode)")
-        self.micro_effects_checkbox.setChecked(True)
-        self.micro_effects_checkbox.setToolTip("When enabled, small impulse jerks fire on beats during low-amplitude passages")
-        self.micro_effects_checkbox.stateChanged.connect(self._on_micro_effects_toggle)
-        motion_layout.addWidget(self.micro_effects_checkbox)
-        
-        # Amplitude gate thresholds (FULL_STROKE vs CREEP_MICRO switching)
-        gate_layout = QHBoxLayout()
-        gate_layout.addWidget(QLabel("Amp Gate:"))
-        
-        gate_layout.addWidget(QLabel("High"))
-        self.amp_gate_high_spin = QDoubleSpinBox()
-        self.amp_gate_high_spin.setRange(0.01, 0.50)
-        self.amp_gate_high_spin.setSingleStep(0.01)
-        self.amp_gate_high_spin.setDecimals(2)
-        self.amp_gate_high_spin.setValue(self.config.stroke.amplitude_gate_high)
-        self.amp_gate_high_spin.setToolTip("RMS above this triggers full arc strokes (FULL_STROKE mode)")
-        self.amp_gate_high_spin.setFixedWidth(70)
-        self.amp_gate_high_spin.valueChanged.connect(self._on_amp_gate_high_change)
-        gate_layout.addWidget(self.amp_gate_high_spin)
-        
-        gate_layout.addWidget(QLabel("Low"))
-        self.amp_gate_low_spin = QDoubleSpinBox()
-        self.amp_gate_low_spin.setRange(0.001, 0.40)
-        self.amp_gate_low_spin.setSingleStep(0.01)
-        self.amp_gate_low_spin.setDecimals(3)
-        self.amp_gate_low_spin.setValue(self.config.stroke.amplitude_gate_low)
-        self.amp_gate_low_spin.setToolTip("RMS below this drops to creep rotation (CREEP_MICRO mode)")
-        self.amp_gate_low_spin.setFixedWidth(70)
-        self.amp_gate_low_spin.valueChanged.connect(self._on_amp_gate_low_change)
-        gate_layout.addWidget(self.amp_gate_low_spin)
-        
-        gate_layout.addStretch()
-        motion_layout.addLayout(gate_layout)
         
         layout.addWidget(motion_group)
         
@@ -5825,8 +5782,7 @@ bREadfan_69@hotmail.com"""
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
             self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
-            if hasattr(self, 'micro_effects_checkbox'):
-                self.stroke_mapper._micro_effects_enabled = self.micro_effects_checkbox.isChecked()
+            self.stroke_mapper._micro_effects_enabled = True
             # Start volume ramp from 0 to set value over 1.3s
             ramp_state = begin_volume_ramp(time.time())
             self._volume_ramp_active = ramp_state.active
@@ -5892,8 +5848,7 @@ bREadfan_69@hotmail.com"""
 
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
         self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
-        if hasattr(self, 'micro_effects_checkbox'):
-            self.stroke_mapper._micro_effects_enabled = self.micro_effects_checkbox.isChecked()
+        self.stroke_mapper._micro_effects_enabled = True
 
         # Network engine is already started on program launch via _auto_connect_tcp
         # Only create if somehow missing
