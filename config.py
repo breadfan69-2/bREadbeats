@@ -55,6 +55,7 @@ class BeatDetectionConfig:
     syncopation_bpm_limit: float = 160.0         # Disable syncopation above this BPM
     syncopation_arc_size: float = 0.5              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
     syncopation_speed: float = 0.5                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
+    scheduled_lead_ms: int = 0                     # Land scheduled arcs this many ms before predicted beat (0-200)
 
 @dataclass
 class StrokeConfig:
