@@ -3384,24 +3384,68 @@ class BREadbeatsWindow(QMainWindow):
         bbs_group = QGroupBox("Stroke Timing")
         bbs_layout = QVBoxLayout(bbs_group)
 
-        bbs_info = QLabel("Only fire full arc strokes every Nth beat.\nHigher = slower motion. Downbeats always fire.")
+        bbs_info = QLabel(
+            "Auto cadence by BPM: 1 stroke/beat only below 90 BPM, then 2/4/8 beats per stroke by cutoffs.\n"
+            "Teardrop mode runs 2x slower than other modes. Downbeats always fire."
+        )
         bbs_info.setStyleSheet("color: #aaa; font-size: 11px;")
         bbs_layout.addWidget(bbs_info)
 
         bbs_row = QHBoxLayout()
-        bbs_label = QLabel("Beats between strokes:")
+        bbs_label = QLabel("Fallback beats/stroke (no BPM):")
         bbs_label.setStyleSheet("color: #ccc;")
         bbs_row.addWidget(bbs_label)
-        bbs_spin = QSpinBox()
-        bbs_spin.setMinimum(1)
-        bbs_spin.setMaximum(8)
-        bbs_spin.setValue(self.config.stroke.beats_between_strokes)
-        bbs_spin.setToolTip("1 = every beat, 2 = every 2nd, 4 = every 4th, 8 = every 8th")
-        bbs_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'beats_between_strokes', v)
+        bbs_combo = QComboBox()
+        bbs_combo.addItems(["2", "4", "8"])
+        fallback_beats = int(getattr(self.config.stroke, 'beats_between_strokes', 2) or 2)
+        if fallback_beats not in (2, 4, 8):
+            fallback_beats = 2
+        bbs_combo.setCurrentText(str(fallback_beats))
+        bbs_combo.setToolTip("Used only when BPM is unavailable")
+        bbs_combo.currentTextChanged.connect(
+            lambda text: setattr(self.config.stroke, 'beats_between_strokes', int(text))
         )
-        bbs_row.addWidget(bbs_spin)
+        bbs_row.addWidget(bbs_combo)
         bbs_layout.addLayout(bbs_row)
+
+        cutoff_2_to_4_row = QHBoxLayout()
+        cutoff_2_to_4_label = QLabel("Auto cutoff 2→4 beats (BPM):")
+        cutoff_2_to_4_label.setStyleSheet("color: #ccc;")
+        cutoff_2_to_4_row.addWidget(cutoff_2_to_4_label)
+        cutoff_2_to_4_spin = QSpinBox()
+        cutoff_2_to_4_spin.setRange(40, 220)
+        cutoff_2_to_4_spin.setSingleStep(1)
+        cutoff_2_to_4_spin.setValue(int(getattr(self.config.stroke, 'bpm_cutoff_2_to_4', 60)))
+        cutoff_2_to_4_spin.setSuffix(" BPM")
+        cutoff_2_to_4_spin.setToolTip("At/above this BPM, cadence moves from 2 to 4 beats per stroke")
+        cutoff_2_to_4_row.addWidget(cutoff_2_to_4_spin)
+        bbs_layout.addLayout(cutoff_2_to_4_row)
+
+        cutoff_4_to_8_row = QHBoxLayout()
+        cutoff_4_to_8_label = QLabel("Auto cutoff 4→8 beats (BPM):")
+        cutoff_4_to_8_label.setStyleSheet("color: #ccc;")
+        cutoff_4_to_8_row.addWidget(cutoff_4_to_8_label)
+        cutoff_4_to_8_spin = QSpinBox()
+        cutoff_4_to_8_spin.setRange(100, 260)
+        cutoff_4_to_8_spin.setSingleStep(1)
+        cutoff_4_to_8_spin.setValue(int(getattr(self.config.stroke, 'bpm_cutoff_4_to_8', 155)))
+        cutoff_4_to_8_spin.setSuffix(" BPM")
+        cutoff_4_to_8_spin.setToolTip("At/above this BPM, cadence moves from 4 to 8 beats per stroke")
+
+        def _on_cutoff_2_to_4_change(value: int):
+            self.config.stroke.bpm_cutoff_2_to_4 = float(value)
+            if cutoff_4_to_8_spin.value() <= value:
+                cutoff_4_to_8_spin.setValue(value + 1)
+
+        cutoff_2_to_4_spin.valueChanged.connect(_on_cutoff_2_to_4_change)
+
+        def _on_cutoff_4_to_8_change(value: int):
+            low = float(getattr(self.config.stroke, 'bpm_cutoff_2_to_4', 60.0) or 60.0)
+            self.config.stroke.bpm_cutoff_4_to_8 = float(max(value, int(low) + 1))
+
+        cutoff_4_to_8_spin.valueChanged.connect(_on_cutoff_4_to_8_change)
+        cutoff_4_to_8_row.addWidget(cutoff_4_to_8_spin)
+        bbs_layout.addLayout(cutoff_4_to_8_row)
 
         lead_row = QHBoxLayout()
         lead_label = QLabel("Scheduled lead (ms):")
