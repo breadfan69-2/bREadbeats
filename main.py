@@ -4405,10 +4405,6 @@ bREadfan_69@hotmail.com"""
         """Handle Show Peak Indicators toggle from Options menu"""
         self._on_show_peak_indicators_toggle(checked)
 
-    def _on_show_range_indicators_menu_toggle(self, checked: bool):
-        """Handle Show Range Indicators toggle from Options menu"""
-        self._on_show_range_indicators_toggle(checked)
-
     def _on_toggle_beat_band(self, checked: bool):
         """Toggle visibility of beat detection band (red) on all visualizers"""
         for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
@@ -5399,16 +5395,6 @@ bREadfan_69@hotmail.com"""
         if hasattr(self, 'stroke_mapper') and self.stroke_mapper is not None:
             self.stroke_mapper.motion_intensity = value
         print(f"[Config] Motion intensity set to {value:.2f}")
-
-    def _on_amp_gate_high_change(self, value: float):
-        """Update amplitude gate high threshold (above this -> FULL_STROKE)."""
-        self.config.stroke.amplitude_gate_high = value
-        print(f"[Config] Amplitude gate high set to {value:.2f}")
-
-    def _on_amp_gate_low_change(self, value: float):
-        """Update amplitude gate low threshold (below this -> CREEP_MICRO)."""
-        self.config.stroke.amplitude_gate_low = value
-        print(f"[Config] Amplitude gate low set to {value:.3f}")
 
     def _set_motion_preset(self, preset: str):
         """Apply a quick motion preset: gentle / normal / intense.
