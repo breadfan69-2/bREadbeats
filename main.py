@@ -3226,6 +3226,22 @@ class BREadbeatsWindow(QMainWindow):
         bbs_row.addWidget(bbs_spin)
         bbs_layout.addLayout(bbs_row)
 
+        lead_row = QHBoxLayout()
+        lead_label = QLabel("Scheduled lead (ms):")
+        lead_label.setStyleSheet("color: #ccc;")
+        lead_row.addWidget(lead_label)
+        lead_spin = QSpinBox()
+        lead_spin.setMinimum(0)
+        lead_spin.setMaximum(200)
+        lead_spin.setSingleStep(1)
+        lead_spin.setValue(int(getattr(self.config.beat, 'scheduled_lead_ms', 0)))
+        lead_spin.setToolTip("Land scheduled arcs this many milliseconds before predicted beat")
+        lead_spin.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'scheduled_lead_ms', int(v))
+        )
+        lead_row.addWidget(lead_spin)
+        bbs_layout.addLayout(lead_row)
+
         scroll_layout.addWidget(bbs_group)
 
         # ===== Noise-Primary Mode =====
