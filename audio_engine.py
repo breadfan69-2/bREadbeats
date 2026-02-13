@@ -712,7 +712,13 @@ class AudioEngine:
         # Always compute FFT for frequency estimation (needed for dominant freq detection)
         windowed = mono * self._hanning_window
         spectrum = np.abs(np.fft.rfft(windowed))
-        spectrum_viz = (spectrum / max(1, len(spectrum))) * 2.0
+
+        # Visualizer normalization: normalize by frame size to keep FFT magnitude scale
+        # consistent with input amplitude (0..1-ish input should stay in a stable range).
+        # Keep a small display gain so existing visual intensity remains close to prior behavior.
+        frame_len = max(1, len(windowed))
+        viz_gain = (2.0 * frame_len) / max(1, len(spectrum))
+        spectrum_viz = (spectrum / frame_len) * viz_gain
         
         # Store full spectrum for visualization (only on scheduled frames, if enabled)
         if update_spectrum_viz:
@@ -908,8 +914,11 @@ class AudioEngine:
             current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else self.last_known_tempo
             tempo_is_locked = self.consecutive_matching_downbeats >= self.consecutive_match_threshold
         
-        # Estimate dominant frequency
-        freq = self._estimate_frequency(spectrum)
+        # Estimate dominant frequency in the configured depth band so
+        # stroke depth mapping responds directly to depth band selection.
+        depth_low = float(getattr(self.config.stroke, 'depth_freq_low', 0.0))
+        depth_high = float(getattr(self.config.stroke, 'depth_freq_high', self.config.audio.sample_rate / 2))
+        freq = self._estimate_frequency(spectrum, depth_low, depth_high)
         
         event = BeatEvent(
             timestamp=time.time(),
@@ -1850,17 +1859,31 @@ class AudioEngine:
             'metronome_bpm': self._metronome_bpm,
         }
             
-    def _estimate_frequency(self, spectrum: np.ndarray) -> float:
-        """Estimate dominant frequency from spectrum"""
+    def _estimate_frequency(self, spectrum: np.ndarray, low_hz: Optional[float] = None, high_hz: Optional[float] = None) -> float:
+        """Estimate dominant frequency from spectrum, optionally within a frequency band."""
         if len(spectrum) == 0:
             return 0.0
-            
-        # Find peak bin
-        peak_bin = np.argmax(spectrum)
-        
-        # Convert to frequency
-        freq = peak_bin * self.config.audio.sample_rate / (2 * len(spectrum))
-        return freq
+
+        freq_per_bin = self.config.audio.sample_rate / (2 * len(spectrum))
+        low_bin = 0
+        high_bin = len(spectrum) - 1
+
+        if low_hz is not None and high_hz is not None:
+            low = max(0.0, float(low_hz))
+            high = max(low, float(high_hz))
+            low_bin = max(0, int(low / freq_per_bin))
+            high_bin = min(len(spectrum) - 1, int(high / freq_per_bin))
+            if high_bin <= low_bin:
+                low_bin = 0
+                high_bin = len(spectrum) - 1
+
+        band_slice = spectrum[low_bin:high_bin + 1]
+        if len(band_slice) == 0:
+            return 0.0
+
+        peak_offset = int(np.argmax(band_slice))
+        peak_bin = low_bin + peak_offset
+        return float(peak_bin * freq_per_bin)
         
     def get_spectrum(self) -> Optional[np.ndarray]:
         """Get current spectrum data for visualization"""

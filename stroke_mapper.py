@@ -299,6 +299,19 @@ class StrokeMapper:
             return 1.0
         return (freq - low) / (high - low)
 
+    def _radius_cap_from_depth(self, depth: float, max_cap: float = 1.0) -> float:
+        """Compute per-stroke radius cap.
+
+        - `stroke_fullness` sets the baseline max radius (headroom by default).
+        - `freq_depth_factor` with higher depth can expand toward `max_cap`.
+        """
+        cfg = self.config.stroke
+        base_cap = float(np.clip(cfg.stroke_fullness, 0.05, max_cap))
+        depth_norm = float(np.clip(depth, 0.0, 1.0))
+        freq_push = float(np.clip(cfg.freq_depth_factor, 0.0, 1.0)) * depth_norm
+        cap = base_cap + (max_cap - base_cap) * freq_push
+        return float(np.clip(cap, 0.05, max_cap))
+
     # ------------------------------------------------------------------
     # Amplitude envelope & mode gate
     # ------------------------------------------------------------------
@@ -564,15 +577,19 @@ class StrokeMapper:
         # Uses a configurable frequency cutoff over a COMBINATION of sources:
         # - bands that fired this frame (fired_bands)
         # - current primary beat band (beat_band)
-        # Set motion_freq_cutoff <= 0 to disable this gate.
+        # Gate applies only when strict_bass_motion_gate_enabled is True.
+        # Set motion_freq_cutoff <= 0 to disable cutoff filtering while strict mode is on.
         _BAND_LOWER_HZ = {'sub_bass': 30, 'low_mid': 100, 'mid': 500, 'high': 2000}
         cutoff = float(getattr(beat_cfg, 'motion_freq_cutoff', 0.0))
+        strict_gate_enabled = bool(getattr(beat_cfg, 'strict_bass_motion_gate_enabled', True))
         fired_bands = set(getattr(event, 'fired_bands', None) or [])
         primary_band = getattr(event, 'beat_band', '')
         candidate_bands = set(fired_bands)
         if primary_band:
             candidate_bands.add(primary_band)
-        if cutoff <= 0:
+        if not strict_gate_enabled:
+            bass_motion_allowed = True
+        elif cutoff <= 0:
             bass_motion_allowed = True
         else:
             bass_motion_allowed = any(_BAND_LOWER_HZ.get(b, 99999) < cutoff for b in candidate_bands)
@@ -900,7 +917,7 @@ class StrokeMapper:
         beta_weight = self.config.beta_weight
         angle = phase * 2 * np.pi
 
-        radius_cap = max(0.05, min(1.0, radius))
+        radius_cap = min(max(0.05, min(1.0, radius)), self._radius_cap_from_depth(depth, 1.0))
 
         if mode == StrokeMode.TEARDROP:
             # Trace full piriform each arc so it descends one side and
@@ -965,6 +982,12 @@ class StrokeMapper:
         # SIMPLE_CIRCLE / fallback geometry
         alpha = np.sin(angle) * radius * alpha_weight
         beta = np.cos(angle) * radius * beta_weight
+        # Apply hard cap here too so alpha/beta weights don't pin at edges.
+        norm = np.hypot(alpha, beta)
+        if norm > radius_cap and norm > 0:
+            scale = radius_cap / norm
+            alpha *= scale
+            beta *= scale
         return alpha, beta
 
     def _generate_downbeat_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
@@ -1039,7 +1062,7 @@ class StrokeMapper:
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
         arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity
-        arc_radius = max(min_radius, min(1.0, arc_radius))
+        arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 1.0), arc_radius))
         for i, phase in enumerate(arc_phases):
             alpha_arc[i], beta_arc[i] = self._compute_arc_point(
                 phase=phase,
@@ -1164,6 +1187,12 @@ class StrokeMapper:
                 r = b_coeff * theta * stroke_len * depth * curved_intensity
                 a = r * np.cos(theta) * alpha_weight
                 b_ = r * np.sin(theta) * beta_weight
+                spiral_cap = self._radius_cap_from_depth(depth, 1.0)
+                norm = float(np.hypot(a, b_))
+                if norm > spiral_cap and norm > 0:
+                    scale = spiral_cap / norm
+                    a *= scale
+                    b_ *= scale
                 alpha_arc[i] = np.clip(a, -1.0, 1.0)
                 beta_arc[i] = np.clip(b_, -1.0, 1.0)
             self.spiral_beat_index = next_index % N
@@ -1176,7 +1205,7 @@ class StrokeMapper:
             beta_arc = np.zeros(n_points)
             arc_radius = min_radius + (max_radius - min_radius) * curved_intensity
             arc_radius = arc_radius * flux_factor
-            arc_radius = max(min_radius, min(1.0, arc_radius))
+            arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 1.0), arc_radius))
             for i, phase in enumerate(arc_phases):
                 alpha_arc[i], beta_arc[i] = self._compute_arc_point(
                     phase=phase,
@@ -1273,7 +1302,7 @@ class StrokeMapper:
 
         min_radius = 0.15
         arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity * 0.7
-        arc_radius = max(min_radius, min(0.8, arc_radius))
+        arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 0.8), arc_radius))
         for i, phase in enumerate(arc_phases):
             alpha_arc[i], beta_arc[i] = self._compute_arc_point(
                 phase=phase,
