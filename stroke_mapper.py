@@ -137,6 +137,7 @@ class StrokeMapper:
         self._mid_energy: float = 0.0
         self._high_energy: float = 0.0
         self._bass_jitter_speed_mult: float = 1.0
+        self._bass_jitter_size_mult: float = 1.0
         self._bass_jitter_attack: float = 0.25
         self._bass_jitter_release: float = 0.06
 
@@ -642,6 +643,11 @@ class StrokeMapper:
                 and getattr(event, 'peak_energy', 0.0) > 0.001):
             has_bass_context = True
 
+        speed_influence_pct = float(getattr(self.config.stroke, 'bass_jitter_speed_influence_percent', 100.0) or 0.0)
+        size_influence_pct = float(getattr(self.config.stroke, 'bass_jitter_size_influence_percent', 0.0) or 0.0)
+        speed_influence = np.clip(speed_influence_pct / 100.0, 0.0, 2.0)
+        size_influence = np.clip(size_influence_pct / 100.0, 0.0, 2.0)
+
         if has_bass_context:
             bass_low_hz = 30.0
             bass_high_hz = 220.0
@@ -651,14 +657,19 @@ class StrokeMapper:
             # Lower bass -> slower jitter, higher bass -> faster jitter.
             depth = 0.03 + (0.045 * pitch_norm)
             centered = (pitch_norm * 2.0) - 1.0
-            target_mult = 1.0 + (centered * depth)  # ~0.97..1.075
+            delta = centered * depth
+            target_speed_mult = 1.0 + (delta * speed_influence)
+            target_size_mult = 1.0 + (delta * size_influence)
             smooth = self._bass_jitter_attack
         else:
-            target_mult = 1.0
+            target_speed_mult = 1.0
+            target_size_mult = 1.0
             smooth = self._bass_jitter_release
 
-        self._bass_jitter_speed_mult += (target_mult - self._bass_jitter_speed_mult) * smooth
+        self._bass_jitter_speed_mult += (target_speed_mult - self._bass_jitter_speed_mult) * smooth
+        self._bass_jitter_size_mult += (target_size_mult - self._bass_jitter_size_mult) * smooth
         self._bass_jitter_speed_mult = float(np.clip(self._bass_jitter_speed_mult, 0.92, 1.10))
+        self._bass_jitter_size_mult = float(np.clip(self._bass_jitter_size_mult, 0.85, 1.20))
 
     def _get_scheduled_lead_seconds(self) -> float:
         """Return configured pre-landing lead offset in seconds."""
@@ -1223,16 +1234,6 @@ class StrokeMapper:
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
-        arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity
-        arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 1.0), arc_radius))
-        for i, phase in enumerate(arc_phases):
-            alpha_arc[i], beta_arc[i] = self._compute_arc_point(
-                phase=phase,
-                radius=arc_radius,
-                stroke_len=stroke_len,
-                depth=depth,
-                event=event,
-            )
 
         # Apply timing shape: thump (accelerate into landing),
         # landing (ease-in-out tap feel), or uniform
@@ -1241,6 +1242,55 @@ class StrokeMapper:
         else:
             # Landing emphasis: slow at start/end (tap feel), fast through middle
             step_durations = self._make_landing_durations(measure_duration_ms, n_points)
+
+        # Downbeat jitter blend: apply a time-evolving fraction of the live
+        # jitter vector so shape/speed remain coherent during the full arc.
+        jitter_base_angle = float(self.state.jitter_angle)
+        jitter_speed = 0.0
+        jitter_r = 0.0
+        blend_scale = 0.0
+        jitter_cfg = self.config.jitter
+        if jitter_cfg.enabled:
+            jitter_speed = float(jitter_cfg.intensity) * (0.08 if self._motion_mode == MotionMode.CREEP_MICRO else 0.15)
+            jitter_r = float(jitter_cfg.amplitude)
+            if self._motion_mode == MotionMode.CREEP_MICRO:
+                jitter_r *= 0.5
+                if self._micro_effects_enabled:
+                    energy_mod = 1.0 + (self._mid_energy + self._high_energy) * 3.0
+                    energy_mod = min(energy_mod, 2.5)
+                    jitter_r *= energy_mod
+                    jitter_speed *= (0.8 + energy_mod * 0.2)
+            jitter_speed *= self._bass_jitter_speed_mult
+            jitter_r *= self._bass_jitter_size_mult
+            blend_pct = float(getattr(self.config.stroke, 'downbeat_jitter_vector_percent', 50.0) or 0.0)
+            blend_pct = max(0.0, min(100.0, blend_pct))
+            blend_scale = blend_pct / 100.0
+
+        arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity
+        arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 1.0), arc_radius))
+
+        elapsed_ms = 0.0
+        for i, phase in enumerate(arc_phases):
+            alpha_i, beta_i = self._compute_arc_point(
+                phase=phase,
+                radius=arc_radius,
+                stroke_len=stroke_len,
+                depth=depth,
+                event=event,
+            )
+            if blend_scale > 0.0 and jitter_r > 0.0:
+                jitter_phase = jitter_base_angle + jitter_speed * (elapsed_ms / 17.0)
+                offset_a = np.cos(jitter_phase) * jitter_r * blend_scale
+                offset_b = np.sin(jitter_phase) * jitter_r * blend_scale
+            else:
+                offset_a = 0.0
+                offset_b = 0.0
+            alpha_arc[i] = np.clip(alpha_i + offset_a, -1.0, 1.0)
+            beta_arc[i] = np.clip(beta_i + offset_b, -1.0, 1.0)
+            elapsed_ms += float(step_durations[i])
+
+        if jitter_cfg.enabled and jitter_speed != 0.0:
+            self.state.jitter_angle = (jitter_base_angle + jitter_speed * (measure_duration_ms / 17.0)) % (2 * np.pi)
 
         # Store trajectory for frame-by-frame playback (no thread)
         self._trajectory = PlannedTrajectory(
@@ -2036,6 +2086,7 @@ class StrokeMapper:
             # Bass pitch mapping: higher bass pitch -> faster jitter,
             # lower bass pitch -> slower jitter.
             jitter_speed *= self._bass_jitter_speed_mult
+            jitter_r *= self._bass_jitter_size_mult
 
             self.state.jitter_angle += jitter_speed
             if self.state.jitter_angle >= 2 * np.pi:
@@ -2174,6 +2225,7 @@ class StrokeMapper:
         self._micro_jerk_beta = 0.0
         self._last_micro_jerk_time = 0.0
         self._bass_jitter_speed_mult = 1.0
+        self._bass_jitter_size_mult = 1.0
         self._trajectory = None
         self._beats_since_stroke = 0
 

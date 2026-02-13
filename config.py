@@ -133,6 +133,9 @@ class StrokeConfig:
     noise_burst_enabled: bool = True        # Allow transient-reactive arcs between beats
     noise_burst_flux_multiplier: float = 2.0  # Fire burst when flux > flux_threshold * this
     noise_burst_magnitude: float = 1.0      # Magnitude scaling for noise burst patterns (0.5-5.0)
+    downbeat_jitter_vector_percent: float = 50.0  # % of current jitter vector added to downbeat arc points
+    bass_jitter_speed_influence_percent: float = 100.0  # % depth of bass-frequency influence on jitter speed
+    bass_jitter_size_influence_percent: float = 0.0     # % depth of bass-frequency influence on jitter size
     noise_primary_mode: bool = False        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
 
     # Flux-drop detection: if recent flux drops below this fraction of older flux, force creep
@@ -329,6 +332,13 @@ def migrate_config(config: Config, loaded_version) -> None:
         if getattr(config.stroke, 'noise_burst_magnitude', 1.0) in (None, 0):
             config.stroke.noise_burst_magnitude = 1.0
 
+        if getattr(config.stroke, 'downbeat_jitter_vector_percent', None) is None:
+            config.stroke.downbeat_jitter_vector_percent = 50.0
+        if getattr(config.stroke, 'bass_jitter_speed_influence_percent', None) is None:
+            config.stroke.bass_jitter_speed_influence_percent = 100.0
+        if getattr(config.stroke, 'bass_jitter_size_influence_percent', None) is None:
+            config.stroke.bass_jitter_size_influence_percent = 0.0
+
         if getattr(config.device_limits, 'p0_c0_sending_enabled', True) is None:
             config.device_limits.p0_c0_sending_enabled = True
         if getattr(config.device_limits, 'dont_show_on_startup', False) is None:
@@ -337,6 +347,25 @@ def migrate_config(config: Config, loaded_version) -> None:
             config.device_limits.prompted = False
         if getattr(config.device_limits, 'dry_run', False) is None:
             config.device_limits.dry_run = False
+
+    # Always clamp safety range for downbeat jitter blend
+    try:
+        value = float(getattr(config.stroke, 'downbeat_jitter_vector_percent', 50.0))
+    except Exception:
+        value = 50.0
+    config.stroke.downbeat_jitter_vector_percent = max(0.0, min(100.0, value))
+
+    try:
+        speed_inf = float(getattr(config.stroke, 'bass_jitter_speed_influence_percent', 100.0))
+    except Exception:
+        speed_inf = 100.0
+    config.stroke.bass_jitter_speed_influence_percent = max(0.0, min(200.0, speed_inf))
+
+    try:
+        size_inf = float(getattr(config.stroke, 'bass_jitter_size_influence_percent', 0.0))
+    except Exception:
+        size_inf = 0.0
+    config.stroke.bass_jitter_size_influence_percent = max(0.0, min(200.0, size_inf))
 
     config.version = CURRENT_CONFIG_VERSION
 
