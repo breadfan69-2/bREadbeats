@@ -113,6 +113,7 @@ class StrokeConfig:
     # Amplitude gate thresholds for FULL_STROKE vs CREEP_MICRO mode switching
     amplitude_gate_high: float = 0.08  # RMS above this -> FULL_STROKE
     amplitude_gate_low: float = 0.04   # RMS below this -> CREEP_MICRO
+    full_stroke_dwell_bias: float = 0.0  # +/- RMS hysteresis bias (0 = disabled)
 
     # Stroke timing cadence:
     # - 1 beat/stroke only allowed at very slow tempo (< single_stroke_bpm_cutoff)
@@ -122,6 +123,7 @@ class StrokeConfig:
     bpm_cutoff_2_to_4: float = 60.0          # BPM at/above this moves 2 -> 4 beats/stroke
     bpm_cutoff_4_to_8: float = 155.0         # BPM at/above this moves 4 -> 8 beats/stroke
     beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
+    cadence_cutoff_bias_bpm: float = 0.0     # +/- BPM shift applied to cadence cutoffs (0 = disabled)
 
     # Thump: legacy setting, replaced by landing durations
     thump_enabled: bool = False             # Kept for preset compatibility, not used in UI
