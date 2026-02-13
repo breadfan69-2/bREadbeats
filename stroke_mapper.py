@@ -272,6 +272,23 @@ class StrokeMapper:
         band = getattr(event, 'beat_band', 'sub_bass')
         return self._band_speed_scale.get(band, 1.0)
 
+    def _get_adaptive_beat_divisor(self, event: BeatEvent) -> int:
+        """Return beat thinning divisor from tempo.
+
+        Slow/medium tempo -> 1 (every beat)
+        Fast tempo        -> 2 (every other beat)
+        Very fast tempo   -> 4 (every fourth beat)
+        """
+        tempo_bpm = float(getattr(event, 'metronome_bpm', 0.0) or 0.0)
+        if tempo_bpm <= 0:
+            tempo_bpm = float(getattr(event, 'bpm', 0.0) or 0.0)
+
+        if tempo_bpm >= 170.0:
+            return 4
+        if tempo_bpm >= 130.0:
+            return 2
+        return 1
+
     def _freq_to_factor(self, freq: float) -> float:
         """Convert frequency -> 0-1 factor.  Lower (bass) -> 0 -> deeper strokes."""
         cfg = self.config.stroke
@@ -719,6 +736,14 @@ class StrokeMapper:
                 return self._apply_fade(cmd)
 
             is_downbeat = getattr(event, 'is_downbeat', False)
+            if is_downbeat:
+                self.state.beat_counter = 1
+            else:
+                self.state.beat_counter += 1
+
+            adaptive_divisor = self._get_adaptive_beat_divisor(event)
+            manual_divisor = max(1, int(getattr(cfg, 'beats_between_strokes', 1) or 1))
+            effective_divisor = max(adaptive_divisor, manual_divisor)
 
             if self._motion_mode == MotionMode.FULL_STROKE:
                 # High amplitude -> fire arc immediately from current position.
@@ -731,6 +756,8 @@ class StrokeMapper:
                     cmd = self._generate_downbeat_stroke(event)
                     return self._apply_fade(cmd)
                 else:
+                    if effective_divisor > 1 and (self.state.beat_counter % effective_divisor) != 1:
+                        return None
                     is_high_flux = event.spectral_flux >= cfg.flux_threshold
                     if not is_high_flux:
                         return None
