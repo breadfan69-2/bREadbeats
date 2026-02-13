@@ -57,6 +57,11 @@ class BeatDetectionConfig:
     metronome_pll_conf_gain: float = 0.08       # Extra PLL gain from confidence
     tempo_fusion_min_acf_weight: float = 0.20   # Minimum ACF weight in ACF/onset tempo fusion
     tempo_fusion_max_acf_weight: float = 0.95   # Maximum ACF weight in ACF/onset tempo fusion
+    aggressive_tempo_snap_enabled: bool = False  # Hard-snap metronome BPM when lock confidence is high
+    aggressive_snap_confidence: float = 0.55     # Min ACF confidence required for aggressive snap
+    aggressive_snap_phase_error_ms: float = 35.0 # Max phase error allowed for aggressive snap
+    aggressive_snap_min_matches: int = 1         # Min consecutive matching downbeats for snap
+    aggressive_snap_max_bpm_jump_ratio: float = 0.12  # Max relative BPM jump allowed per snap
 
     # Syncopation / double-stroke detection
     syncopation_enabled: bool = True             # Master on/off for syncopation detection
@@ -221,6 +226,7 @@ class AutoAdjustConfig:
     consec_beats: int = 8             # Consecutive beats required to lock
     auto_range_enabled: bool = False  # Global auto-range toggle persistence
     metrics_global_enabled: bool = True  # Master toggle for all metric auto-adjust
+    metric_response_speed: float = 1.0   # 1.0 = legacy speed, >1 faster cadence/adjustment
     enabled_params: Dict[str, bool] = field(default_factory=lambda: {
         'audio_amp': False,
         'peak_floor': False,

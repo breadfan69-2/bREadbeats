@@ -307,6 +307,7 @@ class AudioEngine:
         self._audio_amp_escalate_pct: float = 0.02     # 2% of range per check
         self._last_audio_amp_check: float = 0.0         # Last time we checked
         self._audio_amp_hysteresis_count: int = 0       # Consecutive out-of-zone checks (hysteresis)
+        self._metric_response_speed: float = float(getattr(config.auto_adjust, 'metric_response_speed', 1.0))
         
         # Metric 5: Flux Balance (keep flux ≈ energy bars at similar height)
         self._metric_flux_balance_enabled: bool = False
@@ -381,6 +382,11 @@ class AudioEngine:
         self._metronome_pll_conf_gain: float = float(getattr(config.beat, 'metronome_pll_conf_gain', 0.08))
         self._tempo_fusion_min_acf_weight: float = float(getattr(config.beat, 'tempo_fusion_min_acf_weight', 0.20))
         self._tempo_fusion_max_acf_weight: float = float(getattr(config.beat, 'tempo_fusion_max_acf_weight', 0.95))
+        self._aggressive_tempo_snap_enabled: bool = bool(getattr(config.beat, 'aggressive_tempo_snap_enabled', False))
+        self._aggressive_snap_confidence: float = float(getattr(config.beat, 'aggressive_snap_confidence', 0.55))
+        self._aggressive_snap_phase_error_ms: float = float(getattr(config.beat, 'aggressive_snap_phase_error_ms', 35.0))
+        self._aggressive_snap_min_matches: int = int(getattr(config.beat, 'aggressive_snap_min_matches', 1))
+        self._aggressive_snap_max_bpm_jump_ratio: float = float(getattr(config.beat, 'aggressive_snap_max_bpm_jump_ratio', 0.12))
         # ===== Syncopation / double-stroke detection =====
         # Track raw onset times to detect off-beat ("and") hits between metronome beats
         self._raw_onset_times: list[float] = []          # Recent raw beat detection timestamps
@@ -1206,10 +1212,21 @@ class AudioEngine:
             return
 
         smoothing_conf = acf_conf if acf_conf > 0 else (0.20 if onset_bpm > 0 else 0.0)
-        alpha = self._metronome_bpm_alpha_slow + (
-            self._metronome_bpm_alpha_fast - self._metronome_bpm_alpha_slow
-        ) * max(0.0, min(1.0, smoothing_conf))
-        self._metronome_bpm = (1.0 - alpha) * self._metronome_bpm + alpha * target_bpm
+        aggressive_ready = (
+            self._aggressive_tempo_snap_enabled
+            and acf_conf >= self._aggressive_snap_confidence
+            and abs(self.phase_error_ms) <= self._aggressive_snap_phase_error_ms
+            and self.consecutive_matching_downbeats >= self._aggressive_snap_min_matches
+            and self._metronome_bpm > 0
+        )
+        jump_ratio = abs(target_bpm - self._metronome_bpm) / max(1e-6, self._metronome_bpm)
+        if aggressive_ready and jump_ratio <= self._aggressive_snap_max_bpm_jump_ratio:
+            self._metronome_bpm = target_bpm
+        else:
+            alpha = self._metronome_bpm_alpha_slow + (
+                self._metronome_bpm_alpha_fast - self._metronome_bpm_alpha_slow
+            ) * max(0.0, min(1.0, smoothing_conf))
+            self._metronome_bpm = (1.0 - alpha) * self._metronome_bpm + alpha * target_bpm
 
         dt = now - self._metronome_last_time
         self._metronome_last_time = now
@@ -1913,6 +1930,7 @@ class AudioEngine:
         
         # Scale step size proportional to valley level for amp-agnostic adjustment
         step = max(self._energy_margin_adjustment_step, avg_valley * 0.05)
+        step = self._scaled_metric_step(step)
         
         if callback and should_adjust:
             # Decay settled counter instead of hard reset (drop by 3, not to 0)
@@ -1928,7 +1946,7 @@ class AudioEngine:
         elif not should_adjust:
             # In zone — increment settled counter
             self._metric_settled_counts['peak_floor'] = self._metric_settled_counts.get('peak_floor', 0) + 1
-            if self._metric_settled_counts['peak_floor'] >= self._metric_settled_threshold:
+            if self._metric_settled_counts['peak_floor'] >= self._effective_metric_settled_threshold():
                 self._metric_settled_flags['peak_floor'] = True
                 log_event("INFO", "Metric", "Peak Floor SETTLED",
                           valley=f"{avg_valley:.4f}", pf=f"{current_pf:.4f}")
@@ -1992,6 +2010,7 @@ class AudioEngine:
         if callback and should_adjust:
             # Scale step by adjustment speed (0.5 = normal, 1.0 = 2x aggressive)
             step = self._bps_base_step * (1.0 + self._bps_adjustment_speed)
+            step = self._scaled_metric_step(step)
             callback({
                 'metric': 'target_bps',
                 'actual_bps': actual_bps,
@@ -2014,6 +2033,29 @@ class AudioEngine:
     def set_bps_tolerance(self, tolerance: float):
         """Set the BPS tolerance (how close to target before adjusting)"""
         self._target_bps_tolerance = max(0.05, min(1.0, tolerance))
+
+    def set_metric_response_speed(self, speed: float):
+        """Set auto-range response speed (1.0=legacy, >1 faster, <1 slower)."""
+        self._metric_response_speed = max(0.5, min(3.0, float(speed)))
+
+    def _effective_metric_speed(self) -> float:
+        return max(0.5, min(3.0, self._metric_response_speed))
+
+    def _scaled_metric_interval_s(self, interval_ms: float) -> float:
+        return (interval_ms / 1000.0) / self._effective_metric_speed()
+
+    def _scaled_metric_step(self, base_step: float) -> float:
+        return base_step * self._effective_metric_speed()
+
+    def _effective_metric_hysteresis_required(self) -> int:
+        speed = self._effective_metric_speed()
+        if speed <= 1.0:
+            return self._metric_hysteresis_required
+        return max(1, int(round(self._metric_hysteresis_required / speed)))
+
+    def _effective_metric_settled_threshold(self) -> int:
+        speed = self._effective_metric_speed()
+        return max(4, int(round(self._metric_settled_threshold / speed)))
 
     # ===== TIMER-DRIVEN METRIC FEEDBACK (audio_amp) =====
     # These are called from main.py's _update_display timer, NOT from _on_beat,
@@ -2052,7 +2094,7 @@ class AudioEngine:
             return
         
         # Only check every ~500ms
-        if now - self._last_flux_balance_check < self._flux_balance_check_interval_ms / 1000.0:
+        if now - self._last_flux_balance_check < self._scaled_metric_interval_s(self._flux_balance_check_interval_ms):
             return
         self._last_flux_balance_check = now
         
@@ -2087,6 +2129,7 @@ class AudioEngine:
         fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
         fm_range = fm_max - fm_min
         step = fm_range * self._flux_balance_step_pct  # 1% of range
+        step = self._scaled_metric_step(step)
         
         wants_adjustment = False
         adjustment_direction = 0
@@ -2106,7 +2149,7 @@ class AudioEngine:
         # Hysteresis: require 2 consecutive out-of-zone checks before adjusting
         if wants_adjustment:
             self._flux_balance_hysteresis_count += 1
-            if self._flux_balance_hysteresis_count >= self._metric_hysteresis_required:
+            if self._flux_balance_hysteresis_count >= self._effective_metric_hysteresis_required():
                 # Actually adjust now
                 # Decay settled counter instead of hard reset (drop by 3, not to 0)
                 self._metric_settled_counts['flux_balance'] = max(0, self._metric_settled_counts.get('flux_balance', 0) - 3)
@@ -2123,7 +2166,7 @@ class AudioEngine:
             # In zone — reset hysteresis counter and increment settled
             self._flux_balance_hysteresis_count = 0
             self._metric_settled_counts['flux_balance'] = self._metric_settled_counts.get('flux_balance', 0) + 1
-            if self._metric_settled_counts['flux_balance'] >= self._metric_settled_threshold:
+            if self._metric_settled_counts['flux_balance'] >= self._effective_metric_settled_threshold():
                 self._metric_settled_flags['flux_balance'] = True
                 log_event("INFO", "Metric", "Flux Balance SETTLED",
                           ratio=f"{avg_ratio:.2f}")
@@ -2143,7 +2186,7 @@ class AudioEngine:
             return
         
         # Only check every ~2.5s
-        if now - self._last_audio_amp_check < self._audio_amp_check_interval_ms / 1000.0:
+        if now - self._last_audio_amp_check < self._scaled_metric_interval_s(self._audio_amp_check_interval_ms):
             return
         self._last_audio_amp_check = now
         
@@ -2156,6 +2199,7 @@ class AudioEngine:
         amp_min, amp_max = BEAT_RANGE_LIMITS['audio_amp']
         amp_range = amp_max - amp_min
         step = amp_range * self._audio_amp_escalate_pct  # 2% of range
+        step = self._scaled_metric_step(step)
         
         # Check time since last beat
         time_since_beat = now - self.last_beat_time if self.last_beat_time > 0 else float('inf')
@@ -2180,7 +2224,7 @@ class AudioEngine:
         # Hysteresis: require 2 consecutive out-of-zone checks before adjusting
         if wants_adjustment or wants_lower:
             self._audio_amp_hysteresis_count += 1
-            if self._audio_amp_hysteresis_count >= self._metric_hysteresis_required:
+            if self._audio_amp_hysteresis_count >= self._effective_metric_hysteresis_required():
                 # Actually adjust now
                 # Decay settled counter instead of hard reset (drop by 3, not to 0)
                 self._metric_settled_counts['audio_amp'] = max(0, self._metric_settled_counts.get('audio_amp', 0) - 3)
@@ -2206,11 +2250,11 @@ class AudioEngine:
             # In zone — reset hysteresis counter and increment settled
             self._audio_amp_hysteresis_count = 0
             self._metric_settled_counts['audio_amp'] = self._metric_settled_counts.get('audio_amp', 0) + 1
-            if self._metric_settled_counts['audio_amp'] >= self._metric_settled_threshold:
+            if self._metric_settled_counts['audio_amp'] >= self._effective_metric_settled_threshold():
                 self._metric_settled_flags['audio_amp'] = True
                 log_event("INFO", "Metric", "Audio Amp SETTLED",
                           count=f"{self._metric_settled_counts['audio_amp']}",
-                          threshold=f"{self._metric_settled_threshold}")
+                          threshold=f"{self._effective_metric_settled_threshold()}")
 
 
 
