@@ -3052,6 +3052,7 @@ class BREadbeatsWindow(QMainWindow):
         dialog.setMinimumWidth(450)
         dialog.setMinimumHeight(400)
         dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, False)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         # Clear reference when dialog is closed
         dialog.destroyed.connect(lambda: setattr(self, '_advanced_controls_dialog', None))
@@ -3335,14 +3336,14 @@ class BREadbeatsWindow(QMainWindow):
         burst_layout.addWidget(burst_enabled_cb)
 
         # Flux multiplier slider
-        burst_flux_slider = SliderWithLabel("Burst sensitivity (flux multiplier)", 0.5, 10.0, self.config.stroke.noise_burst_flux_multiplier, 1)
+        burst_flux_slider = SliderWithLabel("Burst sensitivity (flux multiplier)", 0.05, 10.0, self.config.stroke.noise_burst_flux_multiplier, 2)
         burst_flux_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'noise_burst_flux_multiplier', v)
         )
         burst_layout.addWidget(burst_flux_slider)
 
         # Magnitude slider — scale the size of noise burst patterns
-        burst_mag_slider = SliderWithLabel("Burst magnitude (pattern size)", 0.5, 10.0, self.config.stroke.noise_burst_magnitude, 1)
+        burst_mag_slider = SliderWithLabel("Burst magnitude (pattern size)", 0.05, 10.0, self.config.stroke.noise_burst_magnitude, 2)
         burst_mag_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'noise_burst_magnitude', v)
         )
