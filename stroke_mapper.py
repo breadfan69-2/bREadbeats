@@ -136,6 +136,9 @@ class StrokeMapper:
         # ---------- Band energy trackers (updated from BeatEvent) ----------
         self._mid_energy: float = 0.0
         self._high_energy: float = 0.0
+        self._bass_jitter_speed_mult: float = 1.0
+        self._bass_jitter_attack: float = 0.25
+        self._bass_jitter_release: float = 0.06
 
         # ---------- Band-based scaling tables ----------
         self._band_volume_scale = {
@@ -468,6 +471,57 @@ class StrokeMapper:
             self._mid_energy += (energies.get('mid', 0.0) - self._mid_energy) * alpha
             self._high_energy += (energies.get('high', 0.0) - self._high_energy) * alpha
 
+    def _update_bass_jitter_drive(self, event: BeatEvent) -> None:
+        """Update jitter speed multiplier from bass z-score context + pitch.
+
+        Higher bass pitch -> faster jitter, lower bass pitch -> slower jitter.
+        Uses sub_bass/low_mid fired bands when available, with smoothing
+        to avoid twitchy frame-to-frame changes.
+        """
+        fired_bands = set(getattr(event, 'fired_bands', None) or [])
+        beat_band = getattr(event, 'beat_band', '')
+
+        has_bass_context = (
+            'sub_bass' in fired_bands
+            or 'low_mid' in fired_bands
+            or beat_band in ('sub_bass', 'low_mid')
+        )
+
+        freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+        if (not has_bass_context
+                and 30.0 <= freq <= 220.0
+                and getattr(event, 'peak_energy', 0.0) > 0.001):
+            has_bass_context = True
+
+        if has_bass_context:
+            bass_low_hz = 30.0
+            bass_high_hz = 220.0
+            bass_freq = np.clip(freq, bass_low_hz, bass_high_hz)
+            pitch_norm = (bass_freq - bass_low_hz) / (bass_high_hz - bass_low_hz)
+            # Bass-speed modulation depth range requested: 0.03 .. 0.075.
+            # Lower bass -> slower jitter, higher bass -> faster jitter.
+            depth = 0.03 + (0.045 * pitch_norm)
+            centered = (pitch_norm * 2.0) - 1.0
+            target_mult = 1.0 + (centered * depth)  # ~0.97..1.075
+            smooth = self._bass_jitter_attack
+        else:
+            target_mult = 1.0
+            smooth = self._bass_jitter_release
+
+        self._bass_jitter_speed_mult += (target_mult - self._bass_jitter_speed_mult) * smooth
+        self._bass_jitter_speed_mult = float(np.clip(self._bass_jitter_speed_mult, 0.92, 1.10))
+
+    def _get_scheduled_lead_seconds(self) -> float:
+        """Return configured pre-landing lead offset in seconds."""
+        lead_ms = float(getattr(self.config.beat, 'scheduled_lead_ms', 0.0) or 0.0)
+        lead_ms = float(np.clip(lead_ms, 0.0, 200.0))
+        return lead_ms / 1000.0
+
+    def _adjust_predicted_target(self, predicted: float, now: float) -> float:
+        """Shift predicted beat target earlier by configured lead time."""
+        target = predicted - self._get_scheduled_lead_seconds()
+        return target if target > now else 0.0
+
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
@@ -504,6 +558,15 @@ class StrokeMapper:
         self._update_stroke_readiness(event)
         self._advance_phase(event)
         self._update_band_energies(event)
+        self._update_bass_jitter_drive(event)
+
+        # ===== STRICT BASS Z-SCORE GATE =====
+        # Only allow beat/syncopation-triggered stroke motion when bass
+        # z-score bands actually fired on this frame.
+        bass_bands = {'sub_bass', 'low_mid'}
+        fired_bands = set(getattr(event, 'fired_bands', None) or [])
+        strict_bass_gate_enabled = bool(getattr(beat_cfg, 'strict_bass_motion_gate_enabled', True))
+        bass_motion_allowed = (not strict_bass_gate_enabled) or bool(fired_bands.intersection(bass_bands))
 
         # ===== FLUX-DROP FALLBACK =====
         # Track recent flux for drop detection — if upper spectrum flux
@@ -526,7 +589,7 @@ class StrokeMapper:
 
         # ===== NO-BEAT TIMEOUT =====
         # Track last confirmed beat (stroke_ready + is_beat)
-        if event.is_beat and self._stroke_ready:
+        if event.is_beat and self._stroke_ready and bass_motion_allowed:
             self._last_confirmed_beat_time = now
         # If no confirmed beat for 2s, cancel trajectory and return to center+jitter
         if (self._last_confirmed_beat_time > 0
@@ -585,7 +648,7 @@ class StrokeMapper:
             self.state.idle_time = now - self.state.last_beat_time if self.state.last_beat_time > 0 else 0.0
 
         # ===== FLUX FACTOR (for stroke scaling) =====
-        if event.is_beat:
+        if event.is_beat and bass_motion_allowed:
             flux_ratio = event.spectral_flux / max(cfg.flux_threshold, 0.001)
             flux_ratio = np.clip(flux_ratio, 0.2, 3.0)
             base_factor = 0.5 + (flux_ratio / 3.0)
@@ -598,7 +661,7 @@ class StrokeMapper:
         # 2x-speed full-circle "double" arc for the duh-DUH effect.
         is_syncopated = getattr(event, 'is_syncopated', False)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
-        if is_syncopated and self._motion_mode == MotionMode.FULL_STROKE:
+        if is_syncopated and bass_motion_allowed and self._motion_mode == MotionMode.FULL_STROKE:
             # BPM limit from config
             bpm_limit = beat_cfg.syncopation_bpm_limit if hasattr(beat_cfg, 'syncopation_bpm_limit') else 160.0
             if metro_bpm > bpm_limit:
@@ -643,6 +706,10 @@ class StrokeMapper:
                     return self._apply_fade(cmd)
 
         if event.is_beat:
+            if not bass_motion_allowed:
+                cmd = self._generate_idle_motion(event)
+                return self._apply_fade(cmd)
+
             time_since_stroke = (now - self.state.last_stroke_time) * 1000
             if time_since_stroke < cfg.min_interval_ms:
                 return None
@@ -801,6 +868,91 @@ class StrokeMapper:
         still reach full amplitude."""
         return max(0.0, min(1.0, intensity)) ** power
 
+    def _compute_arc_point(self,
+                           phase: float,
+                           radius: float,
+                           stroke_len: float,
+                           depth: float,
+                           event: BeatEvent) -> Tuple[float, float]:
+        """Compute one arc point based on current stroke mode.
+
+        Important constraints:
+        - Keep timing/trajectory generation unchanged (this is geometry only)
+        - Mode 3 (TEARDROP) is rotated 90° CCW relative to legacy display
+        - Mode 3 pattern traversal runs at half draw rate
+        """
+        mode = self.config.stroke.mode
+        alpha_weight = self.config.alpha_weight
+        beta_weight = self.config.beta_weight
+        angle = phase * 2 * np.pi
+
+        radius_cap = max(0.05, min(1.0, radius))
+
+        if mode == StrokeMode.TEARDROP:
+            # Trace full piriform each arc so it descends one side and
+            # mirrors back up the other side.
+            teardrop_phase = phase % 1.0
+            t = (teardrop_phase - 0.5) * 2 * np.pi
+            min_radius = 0.2
+            curved_intensity = self._intensity_curve(event.intensity)
+            a = min_radius + (stroke_len * depth - min_radius) * curved_intensity
+            a = max(min_radius, min(1.0, a))
+
+            # Piriform
+            x = a * (np.sin(t) - 0.5 * np.sin(2 * t))
+            y = -a * np.cos(t)
+
+            # Legacy used +π/2. Display rotated since then; apply +90° CCW more.
+            rot = np.pi
+            alpha = (x * np.cos(rot) - y * np.sin(rot)) * alpha_weight
+            beta = (x * np.sin(rot) + y * np.cos(rot)) * beta_weight
+
+            # Vertical flip for current display orientation: swap top/bottom.
+            beta = -beta
+
+            # Hard arc-boundary cap: do not exceed current arc radius
+            norm = np.hypot(alpha, beta)
+            if norm > radius_cap and norm > 0:
+                scale = radius_cap / norm
+                alpha *= scale
+                beta *= scale
+
+            alpha = np.clip(alpha, -1.0, 1.0)
+            beta = np.clip(beta, -1.0, 1.0)
+            return alpha, beta
+
+        if mode == StrokeMode.USER:
+            flux_ref = max(0.001, self.config.stroke.flux_threshold * 3)
+            flux_norm = np.clip(event.spectral_flux / flux_ref, 0, 1)
+            peak_norm = np.clip(event.peak_energy, 0, 1)
+
+            alpha_blend = alpha_weight / 2.0
+            beta_blend = beta_weight / 2.0
+            alpha_response = flux_norm * (1 - alpha_blend) + peak_norm * alpha_blend
+            beta_response = flux_norm * (1 - beta_blend) + peak_norm * beta_blend
+
+            min_radius = 0.2
+            alpha_radius = min_radius + (stroke_len * depth - min_radius) * alpha_response
+            beta_radius = min_radius + (stroke_len * depth - min_radius) * beta_response
+            alpha = np.cos(angle) * alpha_radius
+            beta = np.sin(angle) * beta_radius
+
+            # Hard arc-boundary cap: do not exceed current arc radius
+            norm = np.hypot(alpha, beta)
+            if norm > radius_cap and norm > 0:
+                scale = radius_cap / norm
+                alpha *= scale
+                beta *= scale
+
+            alpha = np.clip(alpha, -1.0, 1.0)
+            beta = np.clip(beta, -1.0, 1.0)
+            return alpha, beta
+
+        # SIMPLE_CIRCLE / fallback geometry
+        alpha = np.sin(angle) * radius * alpha_weight
+        beta = np.cos(angle) * radius * beta_weight
+        return alpha, beta
+
     def _generate_downbeat_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
         """Full measure-length arc on downbeat.  When tempo LOCKED -> 25% boost.
         Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
@@ -833,10 +985,13 @@ class StrokeMapper:
             tempo_info = self.audio_engine.get_tempo_info()
             predicted = tempo_info.get('predicted_next_beat', 0.0)
             if predicted > now:
-                time_to_beat_ms = (predicted - now) * 1000
+                target_time = self._adjust_predicted_target(predicted, now)
+                if target_time <= 0:
+                    target_time = predicted
+                time_to_beat_ms = (target_time - now) * 1000
                 if measure_duration_ms * 0.4 < time_to_beat_ms < measure_duration_ms * 2.0:
                     measure_duration_ms = int(time_to_beat_ms)
-                    beat_target_time = predicted
+                    beat_target_time = target_time
         # Also account for event age (processing latency)
         event_age_ms = (now - event.timestamp) * 1000
         if beat_target_time == 0.0 and 0 < event_age_ms < measure_duration_ms * 0.3:
@@ -862,9 +1017,6 @@ class StrokeMapper:
         radius = min_radius + (1.0 - min_radius) * flux_factor * lock_boost * curved_intensity
         radius = max(min_radius, min(1.0, radius))
 
-        alpha_weight = self.config.alpha_weight
-        beta_weight = self.config.beta_weight
-
         n_points = max(16, int(measure_duration_ms / 20))
         # Arc starts from current creep angle, sweeps exactly 360° over
         # one beat interval.  Creep is steered to top/bottom before we get here.
@@ -872,12 +1024,16 @@ class StrokeMapper:
         arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
+        arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity
+        arc_radius = max(min_radius, min(1.0, arc_radius))
         for i, phase in enumerate(arc_phases):
-            angle = phase * 2 * np.pi
-            r = min_radius + (stroke_len * depth - min_radius) * curved_intensity
-            r = max(min_radius, min(1.0, r))
-            alpha_arc[i] = np.sin(angle) * r * alpha_weight
-            beta_arc[i] = np.cos(angle) * r * beta_weight
+            alpha_arc[i], beta_arc[i] = self._compute_arc_point(
+                phase=phase,
+                radius=arc_radius,
+                stroke_len=stroke_len,
+                depth=depth,
+                event=event,
+            )
 
         # Apply timing shape: thump (accelerate into landing),
         # landing (ease-in-out tap feel), or uniform
@@ -935,10 +1091,13 @@ class StrokeMapper:
             tempo_info = self.audio_engine.get_tempo_info()
             predicted = tempo_info.get('predicted_next_beat', 0.0)
             if predicted > now:
-                time_to_beat_ms = (predicted - now) * 1000
+                target_time = self._adjust_predicted_target(predicted, now)
+                if target_time <= 0:
+                    target_time = predicted
+                time_to_beat_ms = (target_time - now) * 1000
                 if beat_interval_ms * 0.4 < time_to_beat_ms < beat_interval_ms * 2.0:
                     beat_interval_ms = int(time_to_beat_ms)
-                    beat_target_time = predicted
+                    beat_target_time = target_time
         # Fallback: account for event processing latency
         event_age_ms = (now - event.timestamp) * 1000
         if beat_target_time == 0.0 and 0 < event_age_ms < beat_interval_ms * 0.3:
@@ -974,9 +1133,6 @@ class StrokeMapper:
         radius = base_radius * flux_factor
         radius = max(min_radius, min(1.0, radius))
 
-        alpha_weight = self.config.alpha_weight
-        beta_weight = self.config.beta_weight
-
         if cfg.mode == StrokeMode.SPIRAL:
             N = self.spiral_revolutions
             prev_index = getattr(self, 'spiral_beat_index', 0)
@@ -987,6 +1143,8 @@ class StrokeMapper:
             thetas = np.linspace(theta_prev, theta_next, n_points)
             alpha_arc = np.zeros(n_points)
             beta_arc = np.zeros(n_points)
+            alpha_weight = self.config.alpha_weight
+            beta_weight = self.config.beta_weight
             for i, theta in enumerate(thetas):
                 margin = 0.1
                 b_coeff = (1.0 - margin) / (2 * np.pi * N)
@@ -1003,13 +1161,17 @@ class StrokeMapper:
             arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
             alpha_arc = np.zeros(n_points)
             beta_arc = np.zeros(n_points)
+            arc_radius = min_radius + (max_radius - min_radius) * curved_intensity
+            arc_radius = arc_radius * flux_factor
+            arc_radius = max(min_radius, min(1.0, arc_radius))
             for i, phase in enumerate(arc_phases):
-                angle = phase * 2 * np.pi
-                r = min_radius + (max_radius - min_radius) * curved_intensity
-                r = r * flux_factor
-                r = max(min_radius, min(1.0, r))
-                alpha_arc[i] = np.sin(angle) * r * alpha_weight
-                beta_arc[i] = np.cos(angle) * r * beta_weight
+                alpha_arc[i], beta_arc[i] = self._compute_arc_point(
+                    phase=phase,
+                    radius=arc_radius,
+                    stroke_len=stroke_len,
+                    depth=depth,
+                    event=event,
+                )
 
         # Apply timing shape: thump or landing (tap feel)
         if cfg.thump_enabled:
@@ -1069,10 +1231,13 @@ class StrokeMapper:
             tempo_info = self.audio_engine.get_tempo_info()
             predicted = tempo_info.get('predicted_next_beat', 0.0)
             if predicted > now:
-                time_to_beat_ms = (predicted - now) * 1000
+                target_time = self._adjust_predicted_target(predicted, now)
+                if target_time <= 0:
+                    target_time = predicted
+                time_to_beat_ms = (target_time - now) * 1000
                 if duration_ms * 0.5 < time_to_beat_ms < duration_ms * 3.0:
                     duration_ms = int(time_to_beat_ms)
-                    beat_target_time = predicted
+                    beat_target_time = target_time
 
         # Reduced amplitude for lighter feel (70% of normal)
         flux_factor = getattr(self, '_flux_stroke_factor', 1.0)
@@ -1093,15 +1258,17 @@ class StrokeMapper:
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
 
-        alpha_weight = self.config.alpha_weight
-        beta_weight = self.config.beta_weight
         min_radius = 0.15
+        arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity * 0.7
+        arc_radius = max(min_radius, min(0.8, arc_radius))
         for i, phase in enumerate(arc_phases):
-            angle = phase * 2 * np.pi
-            r = min_radius + (stroke_len * depth - min_radius) * curved_intensity * 0.7
-            r = max(min_radius, min(0.8, r))
-            alpha_arc[i] = np.sin(angle) * r * alpha_weight
-            beta_arc[i] = np.cos(angle) * r * beta_weight
+            alpha_arc[i], beta_arc[i] = self._compute_arc_point(
+                phase=phase,
+                radius=arc_radius,
+                stroke_len=stroke_len,
+                depth=depth,
+                event=event,
+            )
 
         # Always landing durations for tap feel
         step_durations = self._make_landing_durations(duration_ms, n_points)
@@ -1356,13 +1523,16 @@ class StrokeMapper:
             tempo_info = self.audio_engine.get_tempo_info()
             predicted = tempo_info.get('predicted_next_beat', 0.0)
             if predicted > now:
+                target_time = self._adjust_predicted_target(predicted, now)
+                if target_time <= 0:
+                    target_time = predicted
                 # Time until next predicted beat
-                time_to_beat_ms = (predicted - now) * 1000
+                time_to_beat_ms = (target_time - now) * 1000
                 # If the predicted beat is within a reasonable range (0.5x to 2x
                 # of our calculated interval), use it for precise timing
                 if beat_interval_ms * 0.5 < time_to_beat_ms < beat_interval_ms * 2.0:
                     beat_interval_ms = int(time_to_beat_ms)
-                    beat_target_time = predicted
+                    beat_target_time = target_time
                     log_event("DEBUG", "StrokeMapper", "Pre-fire: arc timed to land on beat",
                               time_to_beat_ms=f"{time_to_beat_ms:.0f}")
 
@@ -1651,6 +1821,10 @@ class StrokeMapper:
                 jitter_r *= energy_mod
                 jitter_speed *= (0.8 + energy_mod * 0.2)
 
+            # Bass pitch mapping: higher bass pitch -> faster jitter,
+            # lower bass pitch -> slower jitter.
+            jitter_speed *= self._bass_jitter_speed_mult
+
             self.state.jitter_angle += jitter_speed
             if self.state.jitter_angle >= 2 * np.pi:
                 self.state.jitter_angle -= 2 * np.pi
@@ -1787,6 +1961,7 @@ class StrokeMapper:
         self._micro_jerk_alpha = 0.0
         self._micro_jerk_beta = 0.0
         self._last_micro_jerk_time = 0.0
+        self._bass_jitter_speed_mult = 1.0
         self._trajectory = None
         self._beats_since_stroke = 0
 
