@@ -194,6 +194,10 @@ class StrokeMapper:
         # ---------- Beats-between-strokes counter ----------
         self._beats_since_stroke: int = 0  # counts how many beats have passed since last full stroke
 
+        # ---------- Burst scheduler state ----------
+        # Keep initialized for branches that reference scheduled burst deactivation.
+        self._burst_scheduled_active: bool = False
+
         # ---------- Pending arc: glide to top/bottom before firing ----------
         self._pending_arc_event: Optional[BeatEvent] = None
         self._pending_arc_target: float = 0.0       # 0.0 = top, π = bottom
