@@ -3339,6 +3339,24 @@ class BREadbeatsWindow(QMainWindow):
         )
         gate_layout.addWidget(gate_low_slider)
 
+        dwell_bias_row = QHBoxLayout()
+        dwell_bias_label = QLabel("Full-stroke dwell bias (±RMS):")
+        dwell_bias_label.setStyleSheet("color: #ccc;")
+        dwell_bias_row.addWidget(dwell_bias_label)
+        dwell_bias_spin = QDoubleSpinBox()
+        dwell_bias_spin.setDecimals(3)
+        dwell_bias_spin.setRange(-0.050, 0.050)
+        dwell_bias_spin.setSingleStep(0.001)
+        dwell_bias_spin.setValue(float(getattr(self.config.stroke, 'full_stroke_dwell_bias', 0.0) or 0.0))
+        dwell_bias_spin.setSuffix(" RMS")
+        dwell_bias_spin.setToolTip("0 disables bias. + keeps FULL_STROKE longer, - drops to CREEP_MICRO sooner")
+        dwell_bias_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'full_stroke_dwell_bias', float(v))
+        )
+        dwell_bias_row.addWidget(dwell_bias_spin)
+        dwell_bias_row.addStretch()
+        gate_layout.addLayout(dwell_bias_row)
+
         bass_gate_cb = QCheckBox("Require bass z-score bands for beat/sync stroke motion")
         bass_gate_cb.setChecked(getattr(self.config.beat, 'strict_bass_motion_gate_enabled', False))
         bass_gate_cb.stateChanged.connect(
@@ -3463,6 +3481,23 @@ class BREadbeatsWindow(QMainWindow):
         cutoff_4_to_8_spin.valueChanged.connect(_on_cutoff_4_to_8_change)
         cutoff_4_to_8_row.addWidget(cutoff_4_to_8_spin)
         bbs_layout.addLayout(cutoff_4_to_8_row)
+
+        cadence_bias_row = QHBoxLayout()
+        cadence_bias_label = QLabel("Cadence cutoff bias (±BPM):")
+        cadence_bias_label.setStyleSheet("color: #ccc;")
+        cadence_bias_row.addWidget(cadence_bias_label)
+        cadence_bias_spin = QSpinBox()
+        cadence_bias_spin.setRange(-120, 120)
+        cadence_bias_spin.setSingleStep(1)
+        cadence_bias_spin.setValue(int(round(float(getattr(self.config.stroke, 'cadence_cutoff_bias_bpm', 0.0) or 0.0))))
+        cadence_bias_spin.setSuffix(" BPM")
+        cadence_bias_spin.setToolTip("0 disables bias. + delays 2→4/4→8 shifts, - makes thinning more aggressive")
+        cadence_bias_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'cadence_cutoff_bias_bpm', float(v))
+        )
+        cadence_bias_row.addWidget(cadence_bias_spin)
+        cadence_bias_row.addStretch()
+        bbs_layout.addLayout(cadence_bias_row)
 
         lead_row = QHBoxLayout()
         lead_label = QLabel("Scheduled lead (ms):")

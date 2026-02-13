@@ -381,8 +381,11 @@ class StrokeMapper:
             fallback_divisor = 2
 
         single_cutoff = float(getattr(cfg, 'single_stroke_bpm_cutoff', 90.0) or 90.0)
-        cutoff_2_to_4 = float(getattr(cfg, 'bpm_cutoff_2_to_4', 120.0) or 120.0)
+        cutoff_2_to_4 = float(getattr(cfg, 'bpm_cutoff_2_to_4', 60.0) or 60.0)
         cutoff_4_to_8 = float(getattr(cfg, 'bpm_cutoff_4_to_8', 155.0) or 155.0)
+        cutoff_bias = float(getattr(cfg, 'cadence_cutoff_bias_bpm', 0.0) or 0.0)
+        cutoff_2_to_4 += cutoff_bias
+        cutoff_4_to_8 += cutoff_bias
         if cutoff_4_to_8 <= cutoff_2_to_4:
             cutoff_4_to_8 = cutoff_2_to_4 + 1.0
 
@@ -546,8 +549,15 @@ class StrokeMapper:
         """Switch between FULL_STROKE and CREEP_MICRO with hysteresis."""
         now = time.time()
         cfg = self.config.stroke
-        gate_high = cfg.amplitude_gate_high
-        gate_low = cfg.amplitude_gate_low
+        dwell_bias = float(getattr(cfg, 'full_stroke_dwell_bias', 0.0) or 0.0)
+        gate_high = float(cfg.amplitude_gate_high) - dwell_bias
+        gate_low = float(cfg.amplitude_gate_low) + dwell_bias
+        gate_high = float(np.clip(gate_high, 0.005, 0.95))
+        gate_low = float(np.clip(gate_low, 0.001, 0.94))
+        if gate_low >= gate_high:
+            midpoint = (gate_low + gate_high) * 0.5
+            gate_high = min(0.95, midpoint + 0.001)
+            gate_low = max(0.001, midpoint - 0.001)
         # Minimum dwell time in a mode before switching (500ms)
         if now - self._mode_switch_time < 0.5:
             return
