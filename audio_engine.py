@@ -648,11 +648,12 @@ class AudioEngine:
         # Always compute FFT for frequency estimation (needed for dominant freq detection)
         windowed = mono * self._hanning_window
         spectrum = np.abs(np.fft.rfft(windowed))
+        spectrum_viz = (spectrum / max(1, len(spectrum))) * 2.0
         
         # Store full spectrum for visualization (only on scheduled frames, if enabled)
         if update_spectrum_viz:
             with self.spectrum_lock:
-                self.spectrum_data = spectrum.copy()
+                self.spectrum_data = spectrum_viz.copy()
         
         # For beat detection: use Butterworth filtered signal if available, else FFT band filter
         if self._butter_sos is not None:

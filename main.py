@@ -497,7 +497,9 @@ class MountainRangeCanvas(pg.PlotWidget):
         self.setMouseEnabled(x=False, y=False)
         self.setMenuEnabled(False)
         self.showGrid(x=False, y=False, alpha=0)
-        self.hideAxis('left')
+        self.showAxis('left')
+        self.getAxis('left').setTextPen(pg.mkPen('#888888'))
+        self.getAxis('left').setTickPen(pg.mkPen('#666666'))
         self.hideAxis('bottom')
         
         # Spectrum dimensions
@@ -508,12 +510,17 @@ class MountainRangeCanvas(pg.PlotWidget):
         
         # Set view range (left margin includes peak indicator bars at negative X)
         self.setXRange(-9, self.num_bins)
-        self.setYRange(0, 1.2)
+        self.setYRange(-120, 0)
+
+        self._carrier_label_y = -33
+        self._pulse_label_y = -24
+        self._depth_label_y = -15
+        self._beat_label_y = -6
         
         # Main spectrum curve (mountain peaks) - cyan fill with bright outline
         self.spectrum_curve = pg.PlotCurveItem(
             pen=pg.mkPen(QColor(100, 200, 255, 255), width=2),  # Bright cyan outline
-            fillLevel=0,
+            fillLevel=-120,
             brush=pg.mkBrush(QColor(0, 120, 200, 120))  # Semi-transparent cyan fill
         )
         self.addItem(self.spectrum_curve)
@@ -521,7 +528,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Glow effect - slightly larger, more transparent version behind
         self.glow_curve = pg.PlotCurveItem(
             pen=pg.mkPen(QColor(0, 150, 255, 80), width=6),
-            fillLevel=0,
+            fillLevel=-120,
             brush=pg.mkBrush(QColor(0, 80, 180, 40))
         )
         self.addItem(self.glow_curve)
@@ -576,19 +583,19 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Labels placed at top of each respective band
         # Each label sits just inside the upper limit of its own box
         self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, 0.73)
+        self.carrier_label.setPos(5, self._carrier_label_y)
         self.addItem(self.carrier_label)
         
         self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, 0.81)
+        self.pulse_label.setPos(5, self._pulse_label_y)
         self.addItem(self.pulse_label)
         
         self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, 0.89)
+        self.depth_label.setPos(5, self._depth_label_y)
         self.addItem(self.depth_label)
         
         self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
-        self.beat_label.setPos(5, 0.97)
+        self.beat_label.setPos(5, self._beat_label_y)
         self.addItem(self.beat_label)
         
         # Reference to parent window
@@ -637,7 +644,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         self._bar_width = bar_width
         
         # Smoothing buffer for smoother animation
-        self._smooth_spectrum = np.zeros(self.num_bins)
+        self._smooth_spectrum = np.full(self.num_bins, -120.0)
         self._smoothing = 0.3  # 0 = no smoothing, 1 = max smoothing
         
     def _hz_to_bin(self, hz: float) -> float:
@@ -668,7 +675,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, 0.97)
+        self.beat_label.setPos(center_bin, self._beat_label_y)
     
     def _on_depth_band_changed(self):
         if self._updating:
@@ -682,7 +689,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, 0.89)
+        self.depth_label.setPos(center_bin, self._depth_label_y)
     
     def _on_p0_band_changed(self):
         if self._updating:
@@ -696,7 +703,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, 0.81)
+        self.pulse_label.setPos(center_bin, self._pulse_label_y)
     
     def _on_f0_band_changed(self):
         if self._updating:
@@ -710,7 +717,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
             self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, 0.73)
+        self.carrier_label.setPos(center_bin, self._carrier_label_y)
     
     def set_sample_rate(self, sr: int):
         self.sample_rate = sr
@@ -722,7 +729,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_norm * nyquist)
         self.beat_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, 0.97)
+        self.beat_label.setPos(center_bin, self._beat_label_y)
         self._updating = False
     
     def set_depth_band(self, low_hz: float, high_hz: float):
@@ -731,7 +738,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.depth_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, 0.89)
+        self.depth_label.setPos(center_bin, self._depth_label_y)
         self._updating = False
     
     def set_p0_band(self, low_hz: float, high_hz: float):
@@ -740,7 +747,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.p0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, 0.81)
+        self.pulse_label.setPos(center_bin, self._pulse_label_y)
         self._updating = False
     
     def set_f0_band(self, low_hz: float, high_hz: float):
@@ -749,23 +756,26 @@ class MountainRangeCanvas(pg.PlotWidget):
         high_bin = self._hz_to_bin(high_hz)
         self.f0_band.setRegion((low_bin, high_bin))
         center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, 0.73)
+        self.carrier_label.setPos(center_bin, self._carrier_label_y)
         self._updating = False
     
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
         """Update peak indicator bars - actual peak and peak decay (tracked peak)"""
+        peak_db = float(np.clip(20 * np.log10(max(peak_value, 1e-6)), -120, 0))
+        flux_db = float(np.clip(20 * np.log10(max(flux_value, 1e-6)), -120, 0))
         if hasattr(self, 'peak_actual_bar'):
             # Update actual peak bar (green) - current band energy level
-            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value)])
+            self.peak_actual_bar.setOpts(height=[peak_db])
         if hasattr(self, 'peak_decay_bar'):
             # Update peak decay bar (orange) - this shows the decayed/tracked peak
             # flux_value here represents the tracked/decayed peak from audio engine
-            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value)])
+            self.peak_decay_bar.setOpts(height=[flux_db])
     
     def set_peak_floor(self, peak_floor: float):
         """Update peak floor bar height"""
         if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setOpts(height=[peak_floor])
+            peak_floor_db = float(np.clip(20 * np.log10(max(peak_floor, 1e-6)), -120, 0))
+            self.peak_floor_bar.setOpts(height=[peak_floor_db])
     
     def set_peak_indicators_visible(self, visible: bool):
         """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
@@ -812,26 +822,8 @@ class MountainRangeCanvas(pg.PlotWidget):
             x_new = np.linspace(0, 1, self.num_bins)
             spectrum = np.interp(x_new, x_old, spectrum)
         
-        # Apply log scaling
-        spectrum = np.log10(spectrum + 1e-6)
-        spectrum = np.clip((spectrum + 6) / 6, 0, 1)
-        
-        # Sharpen peaks - enhance local maxima to make peaks pointy
-        sharpened = spectrum.copy()
-        for i in range(1, len(spectrum) - 1):
-            # Calculate how much this point is above its neighbors
-            left = spectrum[i-1]
-            right = spectrum[i+1]
-            center = spectrum[i]
-            avg_neighbors = (left + right) / 2
-            # If this is a local peak, boost it
-            if center > left and center > right:
-                peak_boost = (center - avg_neighbors) * 1.5  # Amplify peaks
-                sharpened[i] = min(1.2, center + peak_boost)
-            # If this is a valley, deepen it slightly
-            elif center < left and center < right:
-                sharpened[i] = max(0, center * 0.9)
-        spectrum = sharpened
+        # Convert magnitude to dB for display
+        spectrum = 20 * np.log10(spectrum + 1e-6)
         
         # Smooth the spectrum for less jittery animation
         self._smooth_spectrum = self._smoothing * self._smooth_spectrum + (1 - self._smoothing) * spectrum
@@ -839,7 +831,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Update curves
         x = np.arange(self.num_bins)
         self.spectrum_curve.setData(x, self._smooth_spectrum)
-        self.glow_curve.setData(x, self._smooth_spectrum * 1.02)  # Slightly larger for glow
+        self.glow_curve.setData(x, np.clip(self._smooth_spectrum + 1.5, -120, 0))
         
         # Find and mark peaks (local maxima above threshold)
         if peak_energy and peak_energy > 0.3:
@@ -848,7 +840,7 @@ class MountainRangeCanvas(pg.PlotWidget):
             for i in range(2, self.num_bins - 2):
                 if (self._smooth_spectrum[i] > self._smooth_spectrum[i-1] and 
                     self._smooth_spectrum[i] > self._smooth_spectrum[i+1] and
-                    self._smooth_spectrum[i] > 0.5):
+                    self._smooth_spectrum[i] > -40):
                     peaks.append(i)
                     peak_vals.append(self._smooth_spectrum[i])
             if peaks:
