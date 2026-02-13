@@ -3197,6 +3197,35 @@ class BREadbeatsWindow(QMainWindow):
         fusion_max_slider.valueChanged.connect(self._on_tempo_fusion_max_acf_weight_change)
         tempo_resp_layout.addWidget(fusion_max_slider)
 
+        aggressive_snap_cb = QCheckBox("Aggressive tempo snap when lock is confident")
+        aggressive_snap_cb.setChecked(getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False))
+        aggressive_snap_cb.stateChanged.connect(lambda state: self._on_aggressive_tempo_snap_toggle(state == 2))
+        tempo_resp_layout.addWidget(aggressive_snap_cb)
+
+        snap_conf_slider = SliderWithLabel("Snap min confidence", 0.20, 0.90, getattr(self.config.beat, 'aggressive_snap_confidence', 0.55), 2)
+        snap_conf_slider.valueChanged.connect(self._on_aggressive_snap_confidence_change)
+        tempo_resp_layout.addWidget(snap_conf_slider)
+
+        snap_phase_slider = SliderWithLabel("Snap max phase err ms", 10.0, 120.0, getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0), 0)
+        snap_phase_slider.valueChanged.connect(self._on_aggressive_snap_phase_error_ms_change)
+        tempo_resp_layout.addWidget(snap_phase_slider)
+
+        snap_jump_slider = SliderWithLabel("Snap max BPM jump", 0.03, 0.30, getattr(self.config.beat, 'aggressive_snap_max_bpm_jump_ratio', 0.12), 2)
+        snap_jump_slider.valueChanged.connect(self._on_aggressive_snap_max_jump_change)
+        tempo_resp_layout.addWidget(snap_jump_slider)
+
+        snap_match_row = QHBoxLayout()
+        snap_match_label = QLabel("Snap min downbeat matches:")
+        snap_match_label.setStyleSheet("color: #ccc;")
+        snap_match_row.addWidget(snap_match_label)
+        snap_match_spin = QSpinBox()
+        snap_match_spin.setMinimum(0)
+        snap_match_spin.setMaximum(4)
+        snap_match_spin.setValue(int(getattr(self.config.beat, 'aggressive_snap_min_matches', 1)))
+        snap_match_spin.valueChanged.connect(self._on_aggressive_snap_min_matches_change)
+        snap_match_row.addWidget(snap_match_spin)
+        tempo_resp_layout.addLayout(snap_match_row)
+
         reset_tempo_btn = QPushButton("Reset Tempo Response Defaults")
         reset_tempo_btn.setToolTip("Restore default values for all tempo-response tuning controls")
 
@@ -3209,6 +3238,11 @@ class BREadbeatsWindow(QMainWindow):
             pll_conf_slider.setValue(0.08)
             fusion_min_slider.setValue(0.20)
             fusion_max_slider.setValue(0.95)
+            aggressive_snap_cb.setChecked(False)
+            snap_conf_slider.setValue(0.55)
+            snap_phase_slider.setValue(35.0)
+            snap_jump_slider.setValue(0.12)
+            snap_match_spin.setValue(1)
 
         reset_tempo_btn.clicked.connect(_reset_tempo_response_defaults)
         tempo_resp_layout.addWidget(reset_tempo_btn)
@@ -4341,6 +4375,12 @@ bREadfan_69@hotmail.com"""
             'metronome_pll_conf_gain': getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08),
             'tempo_fusion_min_acf_weight': getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20),
             'tempo_fusion_max_acf_weight': getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95),
+            'aggressive_tempo_snap_enabled': getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False),
+            'aggressive_snap_confidence': getattr(self.config.beat, 'aggressive_snap_confidence', 0.55),
+            'aggressive_snap_phase_error_ms': getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0),
+            'aggressive_snap_min_matches': getattr(self.config.beat, 'aggressive_snap_min_matches', 1),
+            'aggressive_snap_max_bpm_jump_ratio': getattr(self.config.beat, 'aggressive_snap_max_bpm_jump_ratio', 0.12),
+            'metric_response_speed': getattr(self.config.auto_adjust, 'metric_response_speed', 1.0),
 
             # Stroke Settings Tab
             'stroke_mode': self.mode_combo.currentIndex(),
@@ -4437,6 +4477,18 @@ bREadfan_69@hotmail.com"""
             self._on_tempo_fusion_min_acf_weight_change(preset_data['tempo_fusion_min_acf_weight'])
         if 'tempo_fusion_max_acf_weight' in preset_data:
             self._on_tempo_fusion_max_acf_weight_change(preset_data['tempo_fusion_max_acf_weight'])
+        if 'aggressive_tempo_snap_enabled' in preset_data:
+            self._on_aggressive_tempo_snap_toggle(bool(preset_data['aggressive_tempo_snap_enabled']))
+        if 'aggressive_snap_confidence' in preset_data:
+            self._on_aggressive_snap_confidence_change(preset_data['aggressive_snap_confidence'])
+        if 'aggressive_snap_phase_error_ms' in preset_data:
+            self._on_aggressive_snap_phase_error_ms_change(preset_data['aggressive_snap_phase_error_ms'])
+        if 'aggressive_snap_min_matches' in preset_data:
+            self._on_aggressive_snap_min_matches_change(int(preset_data['aggressive_snap_min_matches']))
+        if 'aggressive_snap_max_bpm_jump_ratio' in preset_data:
+            self._on_aggressive_snap_max_jump_change(preset_data['aggressive_snap_max_bpm_jump_ratio'])
+        if 'metric_response_speed' in preset_data:
+            self._on_metric_response_speed_change(preset_data['metric_response_speed'])
         
         # Stroke Settings Tab
         self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
@@ -4824,6 +4876,13 @@ bREadfan_69@hotmail.com"""
         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
             self.audio_engine.set_bps_tolerance(bps_tol)
             print(f"[Config] BPM tolerance set to ±{value:.0f} (±{bps_tol:.2f} BPS)")
+
+    def _on_metric_response_speed_change(self, value: float):
+        """Handle metric auto-adjust response speed change."""
+        self.config.auto_adjust.metric_response_speed = value
+        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+            self.audio_engine.set_metric_response_speed(value)
+        print(f"[Metric] Auto-adjust speed set to {value:.2f}x")
     
     # _on_bps_speed_change removed — speed hardcoded to max in audio_engine
 
@@ -4909,6 +4968,16 @@ bREadfan_69@hotmail.com"""
         
         metric_ctrl_layout.addStretch()
         metric_layout.addLayout(metric_ctrl_layout)
+
+        self.metric_speed_slider = SliderWithLabel(
+            "Auto-Adjust Speed",
+            0.5,
+            3.0,
+            getattr(self.config.auto_adjust, 'metric_response_speed', 1.0),
+            2
+        )
+        self.metric_speed_slider.valueChanged.connect(self._on_metric_response_speed_change)
+        metric_layout.addWidget(self.metric_speed_slider)
         
         # ===== TARGET BPS CONTROLS =====
         bps_layout = QHBoxLayout()
@@ -5306,6 +5375,36 @@ bREadfan_69@hotmail.com"""
         self.config.beat.tempo_fusion_max_acf_weight = value
         if self.audio_engine:
             self.audio_engine._tempo_fusion_max_acf_weight = value
+
+    def _on_aggressive_tempo_snap_toggle(self, enabled: bool):
+        """Toggle confidence-gated aggressive metronome BPM snapping."""
+        self.config.beat.aggressive_tempo_snap_enabled = enabled
+        if self.audio_engine:
+            self.audio_engine._aggressive_tempo_snap_enabled = enabled
+
+    def _on_aggressive_snap_confidence_change(self, value: float):
+        """Update minimum ACF confidence for aggressive snap."""
+        self.config.beat.aggressive_snap_confidence = value
+        if self.audio_engine:
+            self.audio_engine._aggressive_snap_confidence = value
+
+    def _on_aggressive_snap_phase_error_ms_change(self, value: float):
+        """Update max phase error allowed for aggressive snap."""
+        self.config.beat.aggressive_snap_phase_error_ms = float(value)
+        if self.audio_engine:
+            self.audio_engine._aggressive_snap_phase_error_ms = float(value)
+
+    def _on_aggressive_snap_min_matches_change(self, value: int):
+        """Update minimum downbeat match count required for aggressive snap."""
+        self.config.beat.aggressive_snap_min_matches = int(value)
+        if self.audio_engine:
+            self.audio_engine._aggressive_snap_min_matches = int(value)
+
+    def _on_aggressive_snap_max_jump_change(self, value: float):
+        """Update max relative BPM jump allowed for aggressive snap."""
+        self.config.beat.aggressive_snap_max_bpm_jump_ratio = value
+        if self.audio_engine:
+            self.audio_engine._aggressive_snap_max_bpm_jump_ratio = value
     
     def _save_freq_preset(self, idx: int):
         """Save ALL settings from all 4 tabs to custom preset, with overwrite confirmation and optional rename"""
@@ -5376,6 +5475,12 @@ bREadfan_69@hotmail.com"""
             'metronome_pll_conf_gain': getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08),
             'tempo_fusion_min_acf_weight': getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20),
             'tempo_fusion_max_acf_weight': getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95),
+            'aggressive_tempo_snap_enabled': getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False),
+            'aggressive_snap_confidence': getattr(self.config.beat, 'aggressive_snap_confidence', 0.55),
+            'aggressive_snap_phase_error_ms': getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0),
+            'aggressive_snap_min_matches': getattr(self.config.beat, 'aggressive_snap_min_matches', 1),
+            'aggressive_snap_max_bpm_jump_ratio': getattr(self.config.beat, 'aggressive_snap_max_bpm_jump_ratio', 0.12),
+            'metric_response_speed': getattr(self.config.auto_adjust, 'metric_response_speed', 1.0),
 
             # Stroke Settings Tab
             'stroke_mode': self.mode_combo.currentIndex(),
@@ -5501,6 +5606,18 @@ bREadfan_69@hotmail.com"""
                 self._on_tempo_fusion_min_acf_weight_change(preset_data['tempo_fusion_min_acf_weight'])
             if 'tempo_fusion_max_acf_weight' in preset_data:
                 self._on_tempo_fusion_max_acf_weight_change(preset_data['tempo_fusion_max_acf_weight'])
+            if 'aggressive_tempo_snap_enabled' in preset_data:
+                self._on_aggressive_tempo_snap_toggle(bool(preset_data['aggressive_tempo_snap_enabled']))
+            if 'aggressive_snap_confidence' in preset_data:
+                self._on_aggressive_snap_confidence_change(preset_data['aggressive_snap_confidence'])
+            if 'aggressive_snap_phase_error_ms' in preset_data:
+                self._on_aggressive_snap_phase_error_ms_change(preset_data['aggressive_snap_phase_error_ms'])
+            if 'aggressive_snap_min_matches' in preset_data:
+                self._on_aggressive_snap_min_matches_change(int(preset_data['aggressive_snap_min_matches']))
+            if 'aggressive_snap_max_bpm_jump_ratio' in preset_data:
+                self._on_aggressive_snap_max_jump_change(preset_data['aggressive_snap_max_bpm_jump_ratio'])
+            if 'metric_response_speed' in preset_data:
+                self._on_metric_response_speed_change(preset_data['metric_response_speed'])
             
             # Stroke Settings Tab
             self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
@@ -6012,6 +6129,7 @@ bREadfan_69@hotmail.com"""
 
         self.audio_engine = AudioEngine(self.config, self._audio_callback)
         self.audio_engine.start()
+        self.audio_engine.set_metric_response_speed(getattr(self.config.auto_adjust, 'metric_response_speed', 1.0))
 
         # Sync metric checkbox states to the new audio engine
         # (checkboxes may already be checked from previous start)
