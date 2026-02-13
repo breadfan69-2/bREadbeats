@@ -3147,6 +3147,74 @@ class BREadbeatsWindow(QMainWindow):
 
         scroll_layout.addWidget(syncope_group)
 
+        # ===== Tempo Response Controls =====
+        tempo_resp_group = QGroupBox("Tempo Response")
+        tempo_resp_layout = QVBoxLayout(tempo_resp_group)
+
+        tempo_resp_info = QLabel("Tune lock/relock speed and phase correction behavior.\nLower smoothing = faster response, higher can be steadier.")
+        tempo_resp_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        tempo_resp_layout.addWidget(tempo_resp_info)
+
+        acf_row = QHBoxLayout()
+        acf_label = QLabel("ACF interval (ms):")
+        acf_label.setStyleSheet("color: #ccc;")
+        acf_row.addWidget(acf_label)
+        acf_spin = QSpinBox()
+        acf_spin.setMinimum(150)
+        acf_spin.setMaximum(800)
+        acf_spin.setSingleStep(10)
+        acf_spin.setValue(int(getattr(self.config.beat, 'acf_interval_ms', 250)))
+        acf_spin.setToolTip("How often to run ACF tempo estimation")
+        acf_spin.valueChanged.connect(self._on_acf_interval_change)
+        acf_row.addWidget(acf_spin)
+        tempo_resp_layout.addLayout(acf_row)
+
+        alpha_slow_slider = SliderWithLabel("BPM alpha (slow)", 0.01, 0.20, getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03), 3)
+        alpha_slow_slider.valueChanged.connect(self._on_metronome_bpm_alpha_slow_change)
+        tempo_resp_layout.addWidget(alpha_slow_slider)
+
+        alpha_fast_slider = SliderWithLabel("BPM alpha (fast)", 0.05, 0.40, getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22), 3)
+        alpha_fast_slider.valueChanged.connect(self._on_metronome_bpm_alpha_fast_change)
+        tempo_resp_layout.addWidget(alpha_fast_slider)
+
+        pll_window_slider = SliderWithLabel("PLL window", 0.10, 0.50, getattr(self.config.beat, 'metronome_pll_window', 0.35), 2)
+        pll_window_slider.valueChanged.connect(self._on_metronome_pll_window_change)
+        tempo_resp_layout.addWidget(pll_window_slider)
+
+        pll_base_slider = SliderWithLabel("PLL gain (base)", 0.01, 0.20, getattr(self.config.beat, 'metronome_pll_base_gain', 0.09), 3)
+        pll_base_slider.valueChanged.connect(self._on_metronome_pll_base_gain_change)
+        tempo_resp_layout.addWidget(pll_base_slider)
+
+        pll_conf_slider = SliderWithLabel("PLL gain (conf)", 0.00, 0.20, getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08), 3)
+        pll_conf_slider.valueChanged.connect(self._on_metronome_pll_conf_gain_change)
+        tempo_resp_layout.addWidget(pll_conf_slider)
+
+        fusion_min_slider = SliderWithLabel("Fusion min ACF wt", 0.00, 0.80, getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20), 2)
+        fusion_min_slider.valueChanged.connect(self._on_tempo_fusion_min_acf_weight_change)
+        tempo_resp_layout.addWidget(fusion_min_slider)
+
+        fusion_max_slider = SliderWithLabel("Fusion max ACF wt", 0.20, 1.00, getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95), 2)
+        fusion_max_slider.valueChanged.connect(self._on_tempo_fusion_max_acf_weight_change)
+        tempo_resp_layout.addWidget(fusion_max_slider)
+
+        reset_tempo_btn = QPushButton("Reset Tempo Response Defaults")
+        reset_tempo_btn.setToolTip("Restore default values for all tempo-response tuning controls")
+
+        def _reset_tempo_response_defaults():
+            acf_spin.setValue(250)
+            alpha_slow_slider.setValue(0.03)
+            alpha_fast_slider.setValue(0.22)
+            pll_window_slider.setValue(0.35)
+            pll_base_slider.setValue(0.09)
+            pll_conf_slider.setValue(0.08)
+            fusion_min_slider.setValue(0.20)
+            fusion_max_slider.setValue(0.95)
+
+        reset_tempo_btn.clicked.connect(_reset_tempo_response_defaults)
+        tempo_resp_layout.addWidget(reset_tempo_btn)
+
+        scroll_layout.addWidget(tempo_resp_group)
+
         # ===== Amplitude Gate Controls =====
         gate_group = QGroupBox("Amplitude Gate (Stroke vs Creep)")
         gate_layout = QVBoxLayout(gate_group)
@@ -4265,6 +4333,14 @@ bREadfan_69@hotmail.com"""
             'stability_threshold': self.stability_threshold_slider.value(),
             'tempo_timeout_ms': int(self.tempo_timeout_slider.value()),
             'phase_snap_weight': self.phase_snap_slider.value(),
+            'acf_interval_ms': getattr(self.config.beat, 'acf_interval_ms', 250.0),
+            'metronome_bpm_alpha_slow': getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03),
+            'metronome_bpm_alpha_fast': getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22),
+            'metronome_pll_window': getattr(self.config.beat, 'metronome_pll_window', 0.35),
+            'metronome_pll_base_gain': getattr(self.config.beat, 'metronome_pll_base_gain', 0.09),
+            'metronome_pll_conf_gain': getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08),
+            'tempo_fusion_min_acf_weight': getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20),
+            'tempo_fusion_max_acf_weight': getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95),
 
             # Stroke Settings Tab
             'stroke_mode': self.mode_combo.currentIndex(),
@@ -4345,6 +4421,22 @@ bREadfan_69@hotmail.com"""
         self._on_tempo_timeout_change(preset_data['tempo_timeout_ms'])
         self.phase_snap_slider.setValue(preset_data['phase_snap_weight'])
         self._on_phase_snap_change(preset_data['phase_snap_weight'])
+        if 'acf_interval_ms' in preset_data:
+            self._on_acf_interval_change(int(preset_data['acf_interval_ms']))
+        if 'metronome_bpm_alpha_slow' in preset_data:
+            self._on_metronome_bpm_alpha_slow_change(preset_data['metronome_bpm_alpha_slow'])
+        if 'metronome_bpm_alpha_fast' in preset_data:
+            self._on_metronome_bpm_alpha_fast_change(preset_data['metronome_bpm_alpha_fast'])
+        if 'metronome_pll_window' in preset_data:
+            self._on_metronome_pll_window_change(preset_data['metronome_pll_window'])
+        if 'metronome_pll_base_gain' in preset_data:
+            self._on_metronome_pll_base_gain_change(preset_data['metronome_pll_base_gain'])
+        if 'metronome_pll_conf_gain' in preset_data:
+            self._on_metronome_pll_conf_gain_change(preset_data['metronome_pll_conf_gain'])
+        if 'tempo_fusion_min_acf_weight' in preset_data:
+            self._on_tempo_fusion_min_acf_weight_change(preset_data['tempo_fusion_min_acf_weight'])
+        if 'tempo_fusion_max_acf_weight' in preset_data:
+            self._on_tempo_fusion_max_acf_weight_change(preset_data['tempo_fusion_max_acf_weight'])
         
         # Stroke Settings Tab
         self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
@@ -5166,6 +5258,54 @@ bREadfan_69@hotmail.com"""
         self.config.beat.phase_snap_weight = value
         if self.audio_engine:
             self.audio_engine.phase_snap_weight = value
+
+    def _on_acf_interval_change(self, value: int):
+        """Update ACF cadence in config and audio engine."""
+        self.config.beat.acf_interval_ms = float(value)
+        if self.audio_engine:
+            self.audio_engine._acf_interval_ms = float(value)
+
+    def _on_metronome_bpm_alpha_slow_change(self, value: float):
+        """Update slow BPM smoothing alpha in config and audio engine."""
+        self.config.beat.metronome_bpm_alpha_slow = value
+        if self.audio_engine:
+            self.audio_engine._metronome_bpm_alpha_slow = value
+
+    def _on_metronome_bpm_alpha_fast_change(self, value: float):
+        """Update fast BPM smoothing alpha in config and audio engine."""
+        self.config.beat.metronome_bpm_alpha_fast = value
+        if self.audio_engine:
+            self.audio_engine._metronome_bpm_alpha_fast = value
+
+    def _on_metronome_pll_window_change(self, value: float):
+        """Update PLL correction window in config and audio engine."""
+        self.config.beat.metronome_pll_window = value
+        if self.audio_engine:
+            self.audio_engine._metronome_pll_window = value
+
+    def _on_metronome_pll_base_gain_change(self, value: float):
+        """Update base PLL gain in config and audio engine."""
+        self.config.beat.metronome_pll_base_gain = value
+        if self.audio_engine:
+            self.audio_engine._metronome_pll_base_gain = value
+
+    def _on_metronome_pll_conf_gain_change(self, value: float):
+        """Update confidence PLL gain in config and audio engine."""
+        self.config.beat.metronome_pll_conf_gain = value
+        if self.audio_engine:
+            self.audio_engine._metronome_pll_conf_gain = value
+
+    def _on_tempo_fusion_min_acf_weight_change(self, value: float):
+        """Update min ACF fusion weight in config and audio engine."""
+        self.config.beat.tempo_fusion_min_acf_weight = value
+        if self.audio_engine:
+            self.audio_engine._tempo_fusion_min_acf_weight = value
+
+    def _on_tempo_fusion_max_acf_weight_change(self, value: float):
+        """Update max ACF fusion weight in config and audio engine."""
+        self.config.beat.tempo_fusion_max_acf_weight = value
+        if self.audio_engine:
+            self.audio_engine._tempo_fusion_max_acf_weight = value
     
     def _save_freq_preset(self, idx: int):
         """Save ALL settings from all 4 tabs to custom preset, with overwrite confirmation and optional rename"""
@@ -5228,6 +5368,14 @@ bREadfan_69@hotmail.com"""
             'stability_threshold': self.stability_threshold_slider.value(),
             'tempo_timeout_ms': int(self.tempo_timeout_slider.value()),
             'phase_snap_weight': self.phase_snap_slider.value(),
+            'acf_interval_ms': getattr(self.config.beat, 'acf_interval_ms', 250.0),
+            'metronome_bpm_alpha_slow': getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03),
+            'metronome_bpm_alpha_fast': getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22),
+            'metronome_pll_window': getattr(self.config.beat, 'metronome_pll_window', 0.35),
+            'metronome_pll_base_gain': getattr(self.config.beat, 'metronome_pll_base_gain', 0.09),
+            'metronome_pll_conf_gain': getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08),
+            'tempo_fusion_min_acf_weight': getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20),
+            'tempo_fusion_max_acf_weight': getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95),
 
             # Stroke Settings Tab
             'stroke_mode': self.mode_combo.currentIndex(),
@@ -5337,6 +5485,22 @@ bREadfan_69@hotmail.com"""
             if 'phase_snap_weight' in preset_data:
                 self.phase_snap_slider.setValue(preset_data['phase_snap_weight'])
                 self._on_phase_snap_change(preset_data['phase_snap_weight'])
+            if 'acf_interval_ms' in preset_data:
+                self._on_acf_interval_change(int(preset_data['acf_interval_ms']))
+            if 'metronome_bpm_alpha_slow' in preset_data:
+                self._on_metronome_bpm_alpha_slow_change(preset_data['metronome_bpm_alpha_slow'])
+            if 'metronome_bpm_alpha_fast' in preset_data:
+                self._on_metronome_bpm_alpha_fast_change(preset_data['metronome_bpm_alpha_fast'])
+            if 'metronome_pll_window' in preset_data:
+                self._on_metronome_pll_window_change(preset_data['metronome_pll_window'])
+            if 'metronome_pll_base_gain' in preset_data:
+                self._on_metronome_pll_base_gain_change(preset_data['metronome_pll_base_gain'])
+            if 'metronome_pll_conf_gain' in preset_data:
+                self._on_metronome_pll_conf_gain_change(preset_data['metronome_pll_conf_gain'])
+            if 'tempo_fusion_min_acf_weight' in preset_data:
+                self._on_tempo_fusion_min_acf_weight_change(preset_data['tempo_fusion_min_acf_weight'])
+            if 'tempo_fusion_max_acf_weight' in preset_data:
+                self._on_tempo_fusion_max_acf_weight_change(preset_data['tempo_fusion_max_acf_weight'])
             
             # Stroke Settings Tab
             self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
