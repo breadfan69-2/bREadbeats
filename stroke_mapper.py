@@ -565,7 +565,8 @@ class StrokeMapper:
         # z-score bands actually fired on this frame.
         bass_bands = {'sub_bass', 'low_mid'}
         fired_bands = set(getattr(event, 'fired_bands', None) or [])
-        bass_motion_allowed = bool(fired_bands.intersection(bass_bands))
+        strict_bass_gate_enabled = bool(getattr(beat_cfg, 'strict_bass_motion_gate_enabled', True))
+        bass_motion_allowed = (not strict_bass_gate_enabled) or bool(fired_bands.intersection(bass_bands))
 
         # ===== FLUX-DROP FALLBACK =====
         # Track recent flux for drop detection — if upper spectrum flux

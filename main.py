@@ -3169,6 +3169,13 @@ class BREadbeatsWindow(QMainWindow):
         )
         gate_layout.addWidget(gate_low_slider)
 
+        bass_gate_cb = QCheckBox("Require bass z-score bands for beat/sync stroke motion")
+        bass_gate_cb.setChecked(getattr(self.config.beat, 'strict_bass_motion_gate_enabled', True))
+        bass_gate_cb.stateChanged.connect(
+            lambda state: setattr(self.config.beat, 'strict_bass_motion_gate_enabled', state == 2)
+        )
+        gate_layout.addWidget(bass_gate_cb)
+
         scroll_layout.addWidget(gate_group)
 
         # ===== Noise Burst Controls (Hybrid System) =====

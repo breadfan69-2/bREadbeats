@@ -56,6 +56,7 @@ class BeatDetectionConfig:
     syncopation_arc_size: float = 0.5              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
     syncopation_speed: float = 0.5                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
     scheduled_lead_ms: int = 0                     # Land scheduled arcs this many ms before predicted beat (0-200)
+    strict_bass_motion_gate_enabled: bool = True   # Require sub_bass/low_mid z-score fired bands for beat/sync stroke motion
 
 @dataclass
 class StrokeConfig:
