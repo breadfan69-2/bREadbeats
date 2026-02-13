@@ -57,6 +57,9 @@ class BeatDetectionConfig:
     metronome_pll_conf_gain: float = 0.08       # Extra PLL gain from confidence
     tempo_fusion_min_acf_weight: float = 0.20   # Minimum ACF weight in ACF/onset tempo fusion
     tempo_fusion_max_acf_weight: float = 0.95   # Maximum ACF weight in ACF/onset tempo fusion
+    beat_dedup_fraction: float = 0.22            # Ignore second onset inside this fraction of a beat period
+    phase_accept_window_ms: float = 85.0         # Base raw-onset acceptance window around expected beat (ms)
+    phase_accept_low_conf_mult: float = 2.0      # Multiply phase window when metronome confidence is low
     aggressive_tempo_snap_enabled: bool = False  # Hard-snap metronome BPM when lock confidence is high
     aggressive_snap_confidence: float = 0.55     # Min ACF confidence required for aggressive snap
     aggressive_snap_phase_error_ms: float = 35.0 # Max phase error allowed for aggressive snap

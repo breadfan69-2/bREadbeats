@@ -382,6 +382,10 @@ class AudioEngine:
         self._metronome_pll_conf_gain: float = float(getattr(config.beat, 'metronome_pll_conf_gain', 0.08))
         self._tempo_fusion_min_acf_weight: float = float(getattr(config.beat, 'tempo_fusion_min_acf_weight', 0.20))
         self._tempo_fusion_max_acf_weight: float = float(getattr(config.beat, 'tempo_fusion_max_acf_weight', 0.95))
+        self._beat_dedup_fraction: float = float(getattr(config.beat, 'beat_dedup_fraction', 0.22))
+        self._phase_accept_window_ms: float = float(getattr(config.beat, 'phase_accept_window_ms', 85.0))
+        self._phase_accept_low_conf_mult: float = float(getattr(config.beat, 'phase_accept_low_conf_mult', 2.0))
+        self._last_accepted_raw_onset_time: float = 0.0
         self._aggressive_tempo_snap_enabled: bool = bool(getattr(config.beat, 'aggressive_tempo_snap_enabled', False))
         self._aggressive_snap_confidence: float = float(getattr(config.beat, 'aggressive_snap_confidence', 0.55))
         self._aggressive_snap_phase_error_ms: float = float(getattr(config.beat, 'aggressive_snap_phase_error_ms', 35.0))
@@ -423,6 +427,51 @@ class AudioEngine:
         self._session_raw_rms_sum = 0.0
         self._session_band_energy_sum = 0.0
         self._session_flux_sum = 0.0
+
+    def _reference_bpm_for_onset_filters(self) -> float:
+        if self._metronome_bpm > 0:
+            return self._metronome_bpm
+        if self._acf_bpm_smoothed > 0:
+            return self._acf_bpm_smoothed
+        if self.smoothed_tempo > 0:
+            return self.smoothed_tempo
+        return 0.0
+
+    def _effective_phase_accept_window_s(self) -> float:
+        base_ms = float(np.clip(self._phase_accept_window_ms, 10.0, 300.0))
+        low_conf_mult = float(np.clip(self._phase_accept_low_conf_mult, 1.0, 4.0))
+        conf = float(np.clip(self._acf_confidence, 0.0, 1.0))
+        if conf >= 0.25:
+            mult = 1.0
+        elif conf <= 0.05:
+            mult = low_conf_mult
+        else:
+            t = (conf - 0.05) / 0.20
+            mult = low_conf_mult + (1.0 - low_conf_mult) * t
+        return (base_ms * mult) / 1000.0
+
+    def _accept_raw_onset(self, now: float) -> bool:
+        bpm_ref = self._reference_bpm_for_onset_filters()
+        if bpm_ref > 0:
+            beat_period_s = 60.0 / bpm_ref
+            dedup_frac = float(np.clip(self._beat_dedup_fraction, 0.05, 0.45))
+            dedup_window_s = dedup_frac * beat_period_s
+        else:
+            dedup_window_s = 0.10
+
+        if self._last_accepted_raw_onset_time > 0 and (now - self._last_accepted_raw_onset_time) < dedup_window_s:
+            return False
+
+        if self._metronome_bpm > 0:
+            beat_period_s = 60.0 / self._metronome_bpm
+            phase_frac = self._metronome_phase % 1.0
+            phase_dist_frac = min(phase_frac, 1.0 - phase_frac)
+            phase_error_s = phase_dist_frac * beat_period_s
+            if phase_error_s > self._effective_phase_accept_window_s():
+                return False
+
+        self._last_accepted_raw_onset_time = now
+        return True
 
     def _update_session_stats(self, raw_rms: float, band_energy: float, spectral_flux: float) -> None:
         self._session_frame_count += 1
@@ -775,9 +824,10 @@ class AudioEngine:
         
         # Raw beat detection (still runs for onset detection + phase-lock + fallback)
         raw_is_beat = self._detect_beat(band_energy, spectral_flux)
+        accepted_raw_is_beat = raw_is_beat and self._accept_raw_onset(current_time)
         
         # Track raw onset times for syncopation detection
-        if raw_is_beat:
+        if accepted_raw_is_beat:
             self._raw_onset_times.append(current_time)
             if len(self._raw_onset_times) > self._raw_onset_max:
                 self._raw_onset_times.pop(0)
@@ -787,7 +837,7 @@ class AudioEngine:
         self._predict_next_beat(current_time)
         
         # Phase-lock: nudge metronome when a strong onset is detected near a beat
-        if raw_is_beat and self._metronome_bpm > 0:
+        if accepted_raw_is_beat and self._metronome_bpm > 0:
             onset_strength = min(1.0, band_energy / max(0.001, self.peak_envelope))
             self._nudge_metronome_phase(onset_strength)
         
@@ -853,7 +903,7 @@ class AudioEngine:
             if is_beat:
                 self._metronome_last_beat_time = current_time
         else:
-            is_beat = raw_is_beat
+            is_beat = accepted_raw_is_beat
             is_downbeat_flag = self.is_downbeat if is_beat else False
             current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else self.last_known_tempo
             tempo_is_locked = self.consecutive_matching_downbeats >= self.consecutive_match_threshold
