@@ -403,9 +403,9 @@ class StrokeMapper:
         return 8
 
     def _get_teardrop_beat_divisor(self) -> int:
-        """Return mode-3 cadence from Advanced Controls beats-per-stroke.
+        """Return mode cadence from Advanced Controls beats-per-stroke.
 
-        For TEARDROP only, cadence is driven by the configured
+        For TEARDROP (mode 3), cadence is driven by the configured
         beats_between_strokes value and doubled.
         """
         cfg = self.config.stroke
@@ -416,6 +416,22 @@ class StrokeMapper:
         if base_divisor <= 0:
             base_divisor = 2
         # Mode-3 rule: double the beats-per-stroke box value.
+        return max(4, min(16, base_divisor * 2))
+
+    def _get_spiral_beat_divisor(self) -> int:
+        """Return mode-2 cadence from Advanced Controls beats-per-stroke.
+
+        Mirrors TEARDROP cadence behavior so SPIRAL arcs have enough
+        room to complete full rotations instead of being interrupted.
+        """
+        cfg = self.config.stroke
+        try:
+            base_divisor = int(getattr(cfg, 'beats_between_strokes', 2) or 2)
+        except Exception:
+            base_divisor = 2
+        if base_divisor <= 0:
+            base_divisor = 2
+        # Mode-2 parity with mode-3: double beats-per-stroke value.
         return max(4, min(16, base_divisor * 2))
 
     def _freq_to_factor(self, freq: float) -> float:
@@ -848,8 +864,12 @@ class StrokeMapper:
             if metro_bpm > bpm_limit:
                 pass
             elif self._trajectory is None or self._trajectory.finished:
-                if cfg.mode == StrokeMode.TEARDROP:
-                    sync_divisor = self._get_teardrop_beat_divisor()
+                if cfg.mode in (StrokeMode.TEARDROP, StrokeMode.SPIRAL):
+                    sync_divisor = (
+                        self._get_teardrop_beat_divisor()
+                        if cfg.mode == StrokeMode.TEARDROP
+                        else self._get_spiral_beat_divisor()
+                    )
                     if sync_divisor > 1 and (self.state.beat_counter % sync_divisor) != 1:
                         self._note_motion_block(
                             "beat_divisor",
@@ -949,6 +969,8 @@ class StrokeMapper:
             effective_divisor = self._get_adaptive_beat_divisor(event)
             if cfg.mode == StrokeMode.TEARDROP:
                 effective_divisor = self._get_teardrop_beat_divisor()
+            elif cfg.mode == StrokeMode.SPIRAL:
+                effective_divisor = self._get_spiral_beat_divisor()
 
             if self._motion_mode == MotionMode.FULL_STROKE:
                 # High amplitude -> fire arc immediately from current position.
@@ -1163,6 +1185,29 @@ class StrokeMapper:
             beta = np.clip(beta, -1.0, 1.0)
             return alpha, beta
 
+        if mode == StrokeMode.SPIRAL:
+            # Archimedean-style spiral for generators that use phase-based
+            # arc sampling (downbeat/syncopation). Regular beat mode keeps its
+            # dedicated theta branch in _generate_beat_stroke.
+            curved_intensity = self._intensity_curve(event.intensity)
+            radial_drive = max(0.0, min(1.0, stroke_len * depth * curved_intensity))
+            phase_spiral = phase % 1.0
+            theta = (phase_spiral - 0.5) * 2 * np.pi
+            spiral_cap = self._radius_cap_from_depth(depth, 1.0)
+            r = max(0.05, spiral_cap * radial_drive * phase_spiral)
+            alpha = r * np.cos(theta) * alpha_weight
+            beta = r * np.sin(theta) * beta_weight
+
+            norm = np.hypot(alpha, beta)
+            if norm > spiral_cap and norm > 0:
+                scale = spiral_cap / norm
+                alpha *= scale
+                beta *= scale
+
+            alpha = np.clip(alpha, -1.0, 1.0)
+            beta = np.clip(beta, -1.0, 1.0)
+            return alpha, beta
+
         if mode == StrokeMode.USER:
             flux_ref = max(0.001, self.config.stroke.flux_threshold * 3)
             flux_norm = np.clip(event.spectral_flux / flux_ref, 0, 1)
@@ -1335,6 +1380,75 @@ class StrokeMapper:
         arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity
         arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 1.0), arc_radius))
 
+        if cfg.mode == StrokeMode.SPIRAL:
+            # Downbeat Spiral: sweep toward bottom edge, hold briefly (thump),
+            # then return to center so next cycle starts clean.
+            spiral_cap = self._radius_cap_from_depth(depth, 1.0)
+            radial_drive = max(0.0, min(1.0, stroke_len * depth * curved_intensity))
+            out_radius = max(0.15, spiral_cap * radial_drive)
+
+            hold_ms = min(120, max(80, int(measure_duration_ms * 0.08)))
+            moving_ms = max(120, measure_duration_ms - hold_ms)
+            out_ms = int(moving_ms * 0.72)
+            return_ms = moving_ms - out_ms
+
+            n_out = max(14, int(n_points * 0.68))
+            n_return = max(6, n_points - n_out)
+
+            alpha_out = np.zeros(n_out)
+            beta_out = np.zeros(n_out)
+            alpha_weight = self.config.alpha_weight
+            beta_weight = self.config.beta_weight
+            for i in range(n_out):
+                progress = i / max(1, n_out - 1)
+                theta = -np.pi / 2 + progress * (2 * np.pi)
+                r = out_radius * progress
+                a = r * np.cos(theta) * alpha_weight
+                b = r * np.sin(theta) * beta_weight
+                norm = float(np.hypot(a, b))
+                if norm > spiral_cap and norm > 0:
+                    scale = spiral_cap / norm
+                    a *= scale
+                    b *= scale
+                alpha_out[i] = np.clip(a, -1.0, 1.0)
+                beta_out[i] = np.clip(b, -1.0, 1.0)
+
+            bottom_a = float(alpha_out[-1])
+            bottom_b = float(beta_out[-1])
+
+            alpha_return = np.linspace(bottom_a, 0.0, n_return)
+            beta_return = np.linspace(bottom_b, 0.0, n_return)
+
+            alpha_arc = np.concatenate([alpha_out, alpha_return])
+            beta_arc = np.concatenate([beta_out, beta_return])
+
+            out_steps = [max(5, int(out_ms / max(1, n_out))) for _ in range(n_out)]
+            hold_steps = [hold_ms]
+            return_steps = [max(5, int(return_ms / max(1, n_return))) for _ in range(n_return)]
+            step_durations = out_steps[:-1] + hold_steps + return_steps
+            n_points = len(alpha_arc)
+
+            self._trajectory = PlannedTrajectory(
+                alpha_points=alpha_arc,
+                beta_points=beta_arc,
+                step_durations=step_durations,
+                n_points=n_points,
+                current_index=0,
+                band_volume=self._get_band_volume(event),
+                start_time=now,
+                original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
+                beat_target_time=beat_target_time,
+            )
+
+            self.state.last_stroke_time = now
+            self.state.last_beat_time = now
+            lock_str = "LOCKED+BOOST" if tempo_locked else "unlocked"
+            log_event("INFO", "StrokeMapper", "Arc start",
+                      mode=cfg.mode.name, points=n_points,
+                      duration_ms=measure_duration_ms, tempo_state=lock_str,
+                      pre_fire="yes" if beat_target_time > 0 else "no")
+            return None
+
         elapsed_ms = 0.0
         for i, phase in enumerate(arc_phases):
             alpha_i, beta_i = self._compute_arc_point(
@@ -1465,7 +1579,8 @@ class StrokeMapper:
             for i, theta in enumerate(thetas):
                 margin = 0.1
                 b_coeff = (1.0 - margin) / (2 * np.pi * N)
-                r = b_coeff * theta * stroke_len * depth * curved_intensity
+                radial_drive = max(0.0, min(1.0, stroke_len * depth * curved_intensity))
+                r = b_coeff * theta * radial_drive
                 a = r * np.cos(theta) * alpha_weight
                 b_ = r * np.sin(theta) * beta_weight
                 spiral_cap = self._radius_cap_from_depth(depth, 1.0)
@@ -1502,6 +1617,36 @@ class StrokeMapper:
         else:
             # Landing emphasis: slow at start/end (tap feel), fast through middle
             step_durations = self._make_landing_durations(beat_interval_ms, n_points)
+
+        if cfg.mode == StrokeMode.SPIRAL and len(alpha_arc) > 0:
+            # Regular beat accent: quick outward spike then brief hold.
+            spike_hold_ms = 100
+            end_a = float(alpha_arc[-1])
+            end_b = float(beta_arc[-1])
+            vec_norm = float(np.hypot(end_a, end_b))
+            if vec_norm > 1e-6:
+                dir_a, dir_b = end_a / vec_norm, end_b / vec_norm
+            else:
+                dir_a, dir_b = 0.0, -1.0
+            spiral_cap = self._radius_cap_from_depth(depth, 1.0)
+            spike_a = np.clip(dir_a * spiral_cap, -1.0, 1.0)
+            spike_b = np.clip(dir_b * spiral_cap, -1.0, 1.0)
+
+            alpha_spike = np.array([
+                end_a + (spike_a - end_a) * 0.65,
+                spike_a,
+                spike_a,
+            ])
+            beta_spike = np.array([
+                end_b + (spike_b - end_b) * 0.65,
+                spike_b,
+                spike_b,
+            ])
+
+            alpha_arc = np.concatenate([alpha_arc, alpha_spike])
+            beta_arc = np.concatenate([beta_arc, beta_spike])
+            step_durations.extend([20, 20, spike_hold_ms])
+            n_points = len(alpha_arc)
 
         # Store trajectory for frame-by-frame playback (no thread)
         self._trajectory = PlannedTrajectory(
