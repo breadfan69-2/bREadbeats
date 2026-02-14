@@ -76,10 +76,9 @@ class BeatDetectionConfig:
     syncopation_speed: float = 0.5                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
     scheduled_lead_ms: int = 0                     # Land scheduled arcs this many ms before predicted beat (0-200)
     strict_bass_motion_gate_enabled: bool = False  # Require sub_bass/low_mid z-score fired bands for beat/sync stroke motion
-    strict_zscore_gate_enabled: bool = False       # Require sustained z-score activations before beat stroke motion
-    strict_zscore_window_frames: int = 12          # Sliding frame window to count z-score activations
-    strict_zscore_min_fires: int = 3               # Required z-score activations inside window to allow strokes
-    strict_zscore_hold_frames: int = 8             # Keep strict z-score gate open for this many frames after passing
+    center_jitter_flux_guard_enabled: bool = False # Prevent no-beat center+jitter reset while flux activity is still high
+    center_jitter_flux_delta_threshold: float = 0.20  # Rising-flux threshold to hold center+jitter reset
+    center_jitter_flux_avg_threshold: float = 0.25    # Recent-average flux threshold to hold center+jitter reset
 
 @dataclass
 class StrokeConfig:
