@@ -75,6 +75,7 @@
     "noise_burst_enabled": true,
     "noise_burst_flux_multiplier": 2.0,
     "noise_burst_magnitude": 1.0,
+    "noise_burst_scale": 0.35,
     "noise_primary_mode": true,
     "flux_drop_ratio": 0.25,
     "post_silence_vol_reduction": 0.15,
