@@ -3690,7 +3690,11 @@ class BREadbeatsWindow(QMainWindow):
         flux_group = QGroupBox("Flux Sensitivity")
         flux_layout = QVBoxLayout(flux_group)
 
-        flux_info = QLabel("Controls how spectral flux affects mode switching.\nFlux threshold determines low vs high energy boundary.\nFlux drop ratio controls how much flux must drop to trigger creep fallback.")
+        flux_info = QLabel(
+            "Controls flux- and activity-based guards.\n"
+            "Beat/downbeat stroke admission now uses low-band activity (sub-bass + low-mid).\n"
+            "Overall activity guard blocks beat strokes when full-spectrum flux+energy are both low."
+        )
         flux_info.setStyleSheet("color: #aaa; font-size: 11px;")
         flux_layout.addWidget(flux_info)
 
@@ -3701,12 +3705,116 @@ class BREadbeatsWindow(QMainWindow):
         )
         flux_layout.addWidget(flux_thresh_slider)
 
-        # Flux drop ratio slider
-        flux_drop_slider = SliderWithLabel("Flux drop ratio (creep fallback)", 0.05, 0.50, self.config.stroke.flux_drop_ratio, 2)
+        # Low-band drop ratio slider
+        flux_drop_slider = SliderWithLabel("Low-band drop ratio (creep fallback)", 0.05, 0.50, self.config.stroke.flux_drop_ratio, 2)
         flux_drop_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'flux_drop_ratio', v)
         )
         flux_layout.addWidget(flux_drop_slider)
+
+        low_drop_guard_cb = QCheckBox("Enable low-band drop guard (fallback to creep)")
+        low_drop_guard_cb.setChecked(bool(getattr(self.config.stroke, 'low_band_drop_guard_enabled', True)))
+        low_drop_guard_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'low_band_drop_guard_enabled', state == 2)
+        )
+        flux_layout.addWidget(low_drop_guard_cb)
+
+        low_band_info = QLabel("Beat gate = low-band mean high AND (delta high OR variance high).")
+        low_band_info.setStyleSheet("color: #999; font-size: 10px;")
+        flux_layout.addWidget(low_band_info)
+
+        low_band_window_row = QHBoxLayout()
+        low_band_window_label = QLabel("Low-band gate window (frames):")
+        low_band_window_label.setStyleSheet("color: #ccc;")
+        low_band_window_row.addWidget(low_band_window_label)
+        low_band_window_spin = QSpinBox()
+        low_band_window_spin.setMinimum(8)
+        low_band_window_spin.setMaximum(60)
+        low_band_window_spin.setValue(int(getattr(self.config.stroke, 'low_band_window_frames', 18) or 18))
+        low_band_window_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'low_band_window_frames', int(v))
+        )
+        low_band_window_row.addWidget(low_band_window_spin)
+        flux_layout.addLayout(low_band_window_row)
+
+        low_band_mean_slider = SliderWithLabel(
+            "Low-band mean threshold",
+            0.01,
+            2.00,
+            float(getattr(self.config.stroke, 'low_band_activity_threshold', 0.20) or 0.20),
+            2,
+        )
+        low_band_mean_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'low_band_activity_threshold', float(v))
+        )
+        flux_layout.addWidget(low_band_mean_slider)
+
+        low_band_delta_slider = SliderWithLabel(
+            "Low-band Δ threshold",
+            0.005,
+            1.00,
+            float(getattr(self.config.stroke, 'low_band_delta_threshold', 0.06) or 0.06),
+            3,
+        )
+        low_band_delta_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'low_band_delta_threshold', float(v))
+        )
+        flux_layout.addWidget(low_band_delta_slider)
+
+        low_band_var_slider = SliderWithLabel(
+            "Low-band variance threshold",
+            0.0001,
+            0.2000,
+            float(getattr(self.config.stroke, 'low_band_variance_threshold', 0.0015) or 0.0015),
+            4,
+        )
+        low_band_var_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'low_band_variance_threshold', float(v))
+        )
+        flux_layout.addWidget(low_band_var_slider)
+
+        downbeat_relax_slider = SliderWithLabel(
+            "Downbeat gate relax",
+            0.50,
+            1.00,
+            float(getattr(self.config.stroke, 'downbeat_low_band_relax', 0.85) or 0.85),
+            2,
+        )
+        downbeat_relax_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'downbeat_low_band_relax', float(v))
+        )
+        flux_layout.addWidget(downbeat_relax_slider)
+
+        overall_guard_cb = QCheckBox("Block beat/downbeat strokes when overall activity is low")
+        overall_guard_cb.setChecked(bool(getattr(self.config.stroke, 'overall_activity_guard_enabled', True)))
+        overall_guard_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'overall_activity_guard_enabled', state == 2)
+        )
+        flux_layout.addWidget(overall_guard_cb)
+
+        overall_flux_slider = SliderWithLabel(
+            "Overall low flux threshold",
+            0.005,
+            0.50,
+            float(getattr(self.config.stroke, 'overall_low_flux_threshold', 0.06) or 0.06),
+            3,
+        )
+        overall_flux_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'overall_low_flux_threshold', float(v))
+        )
+        flux_layout.addWidget(overall_flux_slider)
+
+        overall_energy_slider = SliderWithLabel(
+            "Overall low energy threshold",
+            0.01,
+            1.00,
+            float(getattr(self.config.stroke, 'overall_low_energy_threshold', 0.14) or 0.14),
+            3,
+        )
+        overall_energy_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'overall_low_energy_threshold', float(v))
+        )
+        flux_layout.addWidget(overall_energy_slider)
 
         center_guard_cb = QCheckBox("Block center+jitter reset while flux activity is high")
         center_guard_cb.setChecked(bool(getattr(self.config.beat, 'center_jitter_flux_guard_enabled', False)))
