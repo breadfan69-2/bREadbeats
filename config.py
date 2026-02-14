@@ -169,6 +169,26 @@ class StrokeConfig:
     downbeat_low_band_relax: float = 0.85
     low_band_drop_guard_enabled: bool = True
 
+    # High-band presence gate for beat/downbeat stroke generation.
+    # Requires upper range (mid+high) to be both filled and active.
+    # Presence pass:
+    #   mean >= threshold AND occupancy >= threshold
+    #   AND (delta >= threshold OR variance >= threshold)
+    # Pattern pass:
+    #   enough recent beats with upper-band context (mid/high fired/primary).
+    # Final upper gate:
+    #   presence OR pattern
+    high_band_gate_enabled: bool = True
+    high_band_window_frames: int = 18
+    high_band_mean_threshold: float = 0.12
+    high_band_floor_threshold: float = 0.06
+    high_band_occupancy_threshold: float = 0.55
+    high_band_delta_threshold: float = 0.05
+    high_band_variance_threshold: float = 0.0010
+    high_band_pattern_window_beats: int = 5
+    high_band_pattern_min_hits: int = 3
+    downbeat_high_band_relax: float = 0.90
+
     # Overall full-spectrum quiet guard for beat/downbeat stroke generation.
     # Blocks beat-based strokes only when BOTH spectral flux and peak energy
     # are below these thresholds.

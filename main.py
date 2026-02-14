@@ -658,9 +658,95 @@ class MountainRangeCanvas(pg.PlotWidget):
         self._smooth_spectrum = np.full(self.num_bins, -120.0)
         self._smoothing = 0.3  # 0 = no smoothing, 1 = max smoothing
 
+        # Temporary horizontal reference overlays (slider-guides)
+        self._reference_overlays: dict[str, dict] = {}
+        self._reference_fade_timer = QTimer(self)
+        self._reference_fade_timer.setInterval(80)
+        self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
+
     def _db_to_display(self, db_value: float) -> float:
         """Map dB value into the canvas display range."""
         return float(np.clip(db_value - self._display_floor_db, 0.0, self._display_span))
+
+    def _threshold_to_display(self, value: float) -> float:
+        """Map positive threshold-like values into display Y using dB mapping."""
+        threshold_db = float(np.clip(20.0 * np.log10(max(float(value), 1e-6)), -120.0, 0.0))
+        return self._db_to_display(threshold_db)
+
+    def show_reference_line(self, key: str, value: float, label: str, color: str = '#FF66AA', duration_s: float = 10.0, dashed: bool = False) -> None:
+        """Show or refresh a temporary horizontal guide line that fades out."""
+        y = self._threshold_to_display(value)
+        now = time.monotonic()
+
+        overlay = self._reference_overlays.get(key)
+        if overlay is None:
+            qcolor = QColor(color)
+            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
+            line = pg.InfiniteLine(pos=y, angle=0, movable=False, pen=pen)
+            line.setZValue(20)
+            self.addItem(line)
+
+            text = pg.TextItem("", color=qcolor, anchor=(1.0, 0.0))
+            text.setZValue(21)
+            self.addItem(text)
+
+            overlay = {
+                'line': line,
+                'text': text,
+                'color': qcolor,
+                'dashed': bool(dashed),
+                'started_at': now,
+                'duration_s': float(max(0.5, duration_s)),
+            }
+            self._reference_overlays[key] = overlay
+
+        overlay['started_at'] = now
+        overlay['duration_s'] = float(max(0.5, duration_s))
+
+        line = overlay['line']
+        text = overlay['text']
+        line.setPos(y)
+        text.setPos(self.num_bins - 2, min(self._display_span - 0.5, y + 0.35))
+        text.setText(f"{label}: {float(value):.4f}")
+
+        full_color = QColor(overlay['color'])
+        full_color.setAlpha(210)
+        line.setPen(pg.mkPen(full_color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
+        text.setColor(full_color)
+
+        if not self._reference_fade_timer.isActive():
+            self._reference_fade_timer.start()
+
+    def _tick_reference_overlays(self) -> None:
+        """Fade and remove expired reference overlays."""
+        if not self._reference_overlays:
+            self._reference_fade_timer.stop()
+            return
+
+        now = time.monotonic()
+        expired: list[str] = []
+
+        for key, overlay in self._reference_overlays.items():
+            age = now - float(overlay['started_at'])
+            duration_s = float(overlay['duration_s'])
+            if age >= duration_s:
+                self.removeItem(overlay['line'])
+                self.removeItem(overlay['text'])
+                expired.append(key)
+                continue
+
+            fade = max(0.0, 1.0 - (age / duration_s))
+            alpha = int(210 * fade)
+            qcolor = QColor(overlay['color'])
+            qcolor.setAlpha(alpha)
+            overlay['line'].setPen(pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
+            overlay['text'].setColor(qcolor)
+
+        for key in expired:
+            self._reference_overlays.pop(key, None)
+
+        if not self._reference_overlays:
+            self._reference_fade_timer.stop()
         
     def _hz_to_bin(self, hz: float) -> float:
         """Convert Hz to log-spaced bin index"""
@@ -3723,6 +3809,21 @@ class BREadbeatsWindow(QMainWindow):
         low_band_info.setStyleSheet("color: #999; font-size: 10px;")
         flux_layout.addWidget(low_band_info)
 
+        def _set_stroke_attr_with_ref(attr_name: str, ref_key: str, ref_label: str, ref_color: str, dashed: bool = False):
+            def _handler(v: float):
+                value = float(v)
+                setattr(self.config.stroke, attr_name, value)
+                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None:
+                    self.mountain_canvas.show_reference_line(
+                        ref_key,
+                        value,
+                        ref_label,
+                        color=ref_color,
+                        duration_s=10.0,
+                        dashed=dashed,
+                    )
+            return _handler
+
         low_band_window_row = QHBoxLayout()
         low_band_window_label = QLabel("Low-band gate window (frames):")
         low_band_window_label.setStyleSheet("color: #ccc;")
@@ -3739,38 +3840,32 @@ class BREadbeatsWindow(QMainWindow):
 
         low_band_mean_slider = SliderWithLabel(
             "Low-band mean threshold",
-            0.01,
+            0.001,
             2.00,
             float(getattr(self.config.stroke, 'low_band_activity_threshold', 0.20) or 0.20),
             2,
         )
-        low_band_mean_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'low_band_activity_threshold', float(v))
-        )
+        low_band_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_activity_threshold', 'low_band_mean', 'Low mean', '#32FF32'))
         flux_layout.addWidget(low_band_mean_slider)
 
         low_band_delta_slider = SliderWithLabel(
             "Low-band Δ threshold",
-            0.005,
+            0.0005,
             1.00,
             float(getattr(self.config.stroke, 'low_band_delta_threshold', 0.06) or 0.06),
             3,
         )
-        low_band_delta_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'low_band_delta_threshold', float(v))
-        )
+        low_band_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_delta_threshold', 'low_band_delta', 'Low Δ', '#55FF88'))
         flux_layout.addWidget(low_band_delta_slider)
 
         low_band_var_slider = SliderWithLabel(
             "Low-band variance threshold",
-            0.0001,
+            0.00001,
             0.2000,
             float(getattr(self.config.stroke, 'low_band_variance_threshold', 0.0015) or 0.0015),
             4,
         )
-        low_band_var_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'low_band_variance_threshold', float(v))
-        )
+        low_band_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_variance_threshold', 'low_band_var', 'Low var', '#77FFAA'))
         flux_layout.addWidget(low_band_var_slider)
 
         downbeat_relax_slider = SliderWithLabel(
@@ -3785,6 +3880,121 @@ class BREadbeatsWindow(QMainWindow):
         )
         flux_layout.addWidget(downbeat_relax_slider)
 
+        high_gate_cb = QCheckBox("Require upper-band presence/pattern for beat strokes")
+        high_gate_cb.setChecked(bool(getattr(self.config.stroke, 'high_band_gate_enabled', True)))
+        high_gate_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'high_band_gate_enabled', state == 2)
+        )
+        flux_layout.addWidget(high_gate_cb)
+
+        high_info = QLabel("Upper gate pass = presence (mean+occupancy+variation) OR recent upper-band beat pattern.")
+        high_info.setStyleSheet("color: #999; font-size: 10px;")
+        flux_layout.addWidget(high_info)
+
+        high_band_window_row = QHBoxLayout()
+        high_band_window_label = QLabel("High-band gate window (frames):")
+        high_band_window_label.setStyleSheet("color: #ccc;")
+        high_band_window_row.addWidget(high_band_window_label)
+        high_band_window_spin = QSpinBox()
+        high_band_window_spin.setMinimum(8)
+        high_band_window_spin.setMaximum(60)
+        high_band_window_spin.setValue(int(getattr(self.config.stroke, 'high_band_window_frames', 18) or 18))
+        high_band_window_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'high_band_window_frames', int(v))
+        )
+        high_band_window_row.addWidget(high_band_window_spin)
+        flux_layout.addLayout(high_band_window_row)
+
+        high_mean_slider = SliderWithLabel(
+            "High-band mean threshold",
+            0.001,
+            2.00,
+            float(getattr(self.config.stroke, 'high_band_mean_threshold', 0.12) or 0.12),
+            2,
+        )
+        high_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_mean_threshold', 'high_band_mean', 'High mean', '#FF66CC'))
+        flux_layout.addWidget(high_mean_slider)
+
+        high_floor_slider = SliderWithLabel(
+            "High-band fill floor",
+            0.0005,
+            1.00,
+            float(getattr(self.config.stroke, 'high_band_floor_threshold', 0.06) or 0.06),
+            3,
+        )
+        high_floor_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_floor_threshold', 'high_band_floor', 'High floor', '#FF88DD'))
+        flux_layout.addWidget(high_floor_slider)
+
+        high_occ_slider = SliderWithLabel(
+            "High-band occupancy threshold",
+            0.01,
+            1.00,
+            float(getattr(self.config.stroke, 'high_band_occupancy_threshold', 0.55) or 0.55),
+            2,
+        )
+        high_occ_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_occupancy_threshold', 'high_band_occ', 'High occ', '#FFAAEE', dashed=True))
+        flux_layout.addWidget(high_occ_slider)
+
+        high_delta_slider = SliderWithLabel(
+            "High-band Δ threshold",
+            0.0005,
+            1.00,
+            float(getattr(self.config.stroke, 'high_band_delta_threshold', 0.05) or 0.05),
+            3,
+        )
+        high_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_delta_threshold', 'high_band_delta', 'High Δ', '#FF99DD'))
+        flux_layout.addWidget(high_delta_slider)
+
+        high_var_slider = SliderWithLabel(
+            "High-band variance threshold",
+            0.00001,
+            0.2000,
+            float(getattr(self.config.stroke, 'high_band_variance_threshold', 0.0010) or 0.0010),
+            4,
+        )
+        high_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_variance_threshold', 'high_band_var', 'High var', '#FFBBEE'))
+        flux_layout.addWidget(high_var_slider)
+
+        high_pattern_window_row = QHBoxLayout()
+        high_pattern_window_label = QLabel("Upper pattern window (beats):")
+        high_pattern_window_label.setStyleSheet("color: #ccc;")
+        high_pattern_window_row.addWidget(high_pattern_window_label)
+        high_pattern_window_spin = QSpinBox()
+        high_pattern_window_spin.setMinimum(1)
+        high_pattern_window_spin.setMaximum(16)
+        high_pattern_window_spin.setValue(int(getattr(self.config.stroke, 'high_band_pattern_window_beats', 5) or 5))
+        high_pattern_window_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'high_band_pattern_window_beats', int(v))
+        )
+        high_pattern_window_row.addWidget(high_pattern_window_spin)
+        flux_layout.addLayout(high_pattern_window_row)
+
+        high_pattern_hits_row = QHBoxLayout()
+        high_pattern_hits_label = QLabel("Upper pattern min hits:")
+        high_pattern_hits_label.setStyleSheet("color: #ccc;")
+        high_pattern_hits_row.addWidget(high_pattern_hits_label)
+        high_pattern_hits_spin = QSpinBox()
+        high_pattern_hits_spin.setMinimum(1)
+        high_pattern_hits_spin.setMaximum(16)
+        high_pattern_hits_spin.setValue(int(getattr(self.config.stroke, 'high_band_pattern_min_hits', 3) or 3))
+        high_pattern_hits_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'high_band_pattern_min_hits', int(v))
+        )
+        high_pattern_hits_row.addWidget(high_pattern_hits_spin)
+        flux_layout.addLayout(high_pattern_hits_row)
+
+        high_downbeat_relax_slider = SliderWithLabel(
+            "Downbeat high-band relax",
+            0.50,
+            1.00,
+            float(getattr(self.config.stroke, 'downbeat_high_band_relax', 0.90) or 0.90),
+            2,
+        )
+        high_downbeat_relax_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'downbeat_high_band_relax', float(v))
+        )
+        flux_layout.addWidget(high_downbeat_relax_slider)
+
         overall_guard_cb = QCheckBox("Block beat/downbeat strokes when overall activity is low")
         overall_guard_cb.setChecked(bool(getattr(self.config.stroke, 'overall_activity_guard_enabled', True)))
         overall_guard_cb.stateChanged.connect(
@@ -3794,26 +4004,22 @@ class BREadbeatsWindow(QMainWindow):
 
         overall_flux_slider = SliderWithLabel(
             "Overall low flux threshold",
-            0.005,
+            0.001,
             0.50,
             float(getattr(self.config.stroke, 'overall_low_flux_threshold', 0.06) or 0.06),
             3,
         )
-        overall_flux_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'overall_low_flux_threshold', float(v))
-        )
+        overall_flux_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_flux_threshold', 'overall_low_flux', 'Overall flux', '#FFD166'))
         flux_layout.addWidget(overall_flux_slider)
 
         overall_energy_slider = SliderWithLabel(
             "Overall low energy threshold",
-            0.01,
+            0.001,
             1.00,
             float(getattr(self.config.stroke, 'overall_low_energy_threshold', 0.14) or 0.14),
             3,
         )
-        overall_energy_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'overall_low_energy_threshold', float(v))
-        )
+        overall_energy_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_energy_threshold', 'overall_low_energy', 'Overall energy', '#FFC06A'))
         flux_layout.addWidget(overall_energy_slider)
 
         center_guard_cb = QCheckBox("Block center+jitter reset while flux activity is high")
