@@ -720,7 +720,9 @@ class StrokeMapper:
 
     def _get_high_band_activity(self, event: BeatEvent) -> float:
         """Return current upper-range activity estimate (mid + high)."""
-        activity = float(max(0.0, self._mid_energy + self._high_energy))
+        cfg = self.config.stroke
+        include_mid = bool(getattr(cfg, 'high_band_include_mid', True))
+        activity = float(max(0.0, (self._mid_energy + self._high_energy) if include_mid else self._high_energy))
         if activity > 1e-6:
             return activity
 
@@ -728,9 +730,9 @@ class StrokeMapper:
         freq = float(getattr(event, 'frequency', 0.0) or 0.0)
         peak = float(getattr(event, 'peak_energy', 0.0) or 0.0)
 
-        if beat_band in ('mid', 'high'):
+        if beat_band in (('mid', 'high') if include_mid else ('high',)):
             return peak * 0.5
-        if freq >= 500.0:
+        if freq >= (500.0 if include_mid else 2000.0):
             return peak * 0.35
         return 0.0
 
@@ -1166,10 +1168,12 @@ class StrokeMapper:
                 beat_gate_pass, beat_mean, beat_delta, beat_var = self._get_low_band_gate_status(event, is_downbeat=False)
                 fired_bands = set(getattr(event, 'fired_bands', None) or [])
                 beat_band = getattr(event, 'beat_band', '')
+                include_mid_high_gate = bool(getattr(cfg, 'high_band_include_mid', True))
                 high_beat_hit = (
-                    ('mid' in fired_bands)
-                    or ('high' in fired_bands)
-                    or (beat_band in ('mid', 'high'))
+                    ('high' in fired_bands)
+                    or (include_mid_high_gate and ('mid' in fired_bands))
+                    or (beat_band == 'high')
+                    or (include_mid_high_gate and beat_band == 'mid')
                 )
                 self._recent_high_band_beat_hits.append(bool(high_beat_hit))
 
