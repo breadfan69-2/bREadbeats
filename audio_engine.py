@@ -205,6 +205,8 @@ class AudioEngine:
         # Spectrum data for visualization
         self.spectrum_data: Optional[np.ndarray] = None
         self.spectrum_lock = threading.Lock()
+        self.waveform_data: Optional[np.ndarray] = None
+        self.waveform_lock = threading.Lock()
         
         # FFT settings (from config with fallback)
         self.fft_size = getattr(config.audio, 'fft_size', 1024)
@@ -873,6 +875,8 @@ class AudioEngine:
         if update_spectrum_viz:
             with self.spectrum_lock:
                 self.spectrum_data = spectrum_viz.copy()
+            with self.waveform_lock:
+                self.waveform_data = mono.astype(np.float32, copy=True)
         
         # For beat detection: use Butterworth filtered signal if available, else FFT band filter
         if self._butter_sos is not None:
@@ -2065,6 +2069,11 @@ class AudioEngine:
         """Get current spectrum data for visualization"""
         with self.spectrum_lock:
             return self.spectrum_data.copy() if self.spectrum_data is not None else None
+
+    def get_waveform(self) -> Optional[np.ndarray]:
+        """Get latest mono waveform frame for visualization."""
+        with self.waveform_lock:
+            return self.waveform_data.copy() if self.waveform_data is not None else None
     
     # ===== REAL-TIME METRIC FEEDBACK SYSTEM =====
     

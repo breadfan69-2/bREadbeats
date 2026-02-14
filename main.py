@@ -8,6 +8,7 @@ import sys
 from contextlib import contextmanager
 import time
 from datetime import datetime
+from types import SimpleNamespace
 import webbrowser
 import zipfile
 from urllib.parse import quote
@@ -2191,8 +2192,577 @@ class NoWheelScrollArea(QScrollArea):
         event.ignore()
 
 
+class WaveformCalibrationCanvas(pg.PlotWidget):
+    """Waveform-first calibration canvas with period picking and gate overlays."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setBackground('#0d0d0d')
+        self.setMenuEnabled(False)
+        self.showGrid(x=True, y=True, alpha=0.30)
+        self.showAxis('left')
+        self.showAxis('bottom')
+        self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
+        self.getAxis('left').setTickPen(pg.mkPen('#9a9a9a'))
+        self.getAxis('bottom').setTextPen(pg.mkPen('#cfcfcf'))
+        self.getAxis('bottom').setTickPen(pg.mkPen('#9a9a9a'))
+        self.setLabel('left', 'Amplitude', units='A.U.')
+        self.setLabel('bottom', 'Time', units='ms')
+        self.enableAutoRange(x=False, y=False)
+        self.setYRange(-1.05, 1.05)
+        self.setXRange(0.0, 25.0)
+
+        self.waveform_curve = self.plot(pen=pg.mkPen('#ffd24d', width=3))
+        self.zero_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#8a8a8a', width=2))
+        self.rms_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#44ff88', width=2, style=Qt.PenStyle.DashLine))
+        self.peak_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#ff8855', width=2, style=Qt.PenStyle.DotLine))
+        self.addItem(self.zero_line)
+        self.addItem(self.rms_line)
+        self.addItem(self.peak_line)
+
+        self.period_region = pg.LinearRegionItem(
+            values=(3.0, 8.0),
+            orientation='vertical',
+            brush=pg.mkBrush(80, 180, 255, 70),
+            pen=pg.mkPen('#55aaff', width=2),
+            movable=True,
+        )
+        self.period_region.setZValue(12)
+        self.period_region.sigRegionChanged.connect(self._update_period_text)
+        self.addItem(self.period_region)
+
+        self.info_text = pg.TextItem("", color='#f2f2f2', anchor=(0.0, 0.0))
+        self.info_text.setZValue(20)
+        self.addItem(self.info_text)
+
+        self._x_max_ms = 25.0
+        self._sample_rate = 44100
+        self._period_region_initialized = False
+        self._latest_rms = 0.0
+        self._latest_peak = 0.0
+        self._latest_auto_freq_hz = 0.0
+        self._low_band_history: deque[float] = deque(maxlen=240)
+        self._high_band_history: deque[float] = deque(maxlen=240)
+        self._gate_snapshot: dict[str, object] = {}
+
+    @staticmethod
+    def _as_float(value, default: float = 0.0) -> float:
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except Exception:
+                return float(default)
+        try:
+            parsed = np.asarray(value, dtype=np.float64).reshape(-1)
+            if parsed.size > 0:
+                return float(parsed[0])
+        except Exception:
+            pass
+        return float(default)
+
+    def _estimate_waveform_frequency(self, waveform: np.ndarray, sample_rate: int) -> float:
+        arr = np.asarray(waveform, dtype=np.float32)
+        if arr.size < 64 or sample_rate <= 0:
+            return 0.0
+        centered = arr - float(np.mean(arr))
+        if float(np.max(np.abs(centered))) < 1e-5:
+            return 0.0
+
+        acf = np.correlate(centered, centered, mode='full')[arr.size - 1:]
+        if acf.size < 3:
+            return 0.0
+
+        min_lag = max(1, int(sample_rate / 700.0))
+        max_lag = min(acf.size - 1, int(sample_rate / 40.0))
+        if min_lag >= max_lag:
+            return 0.0
+
+        search = acf[min_lag:max_lag + 1]
+        peak_idx = int(np.argmax(search))
+        lag = min_lag + peak_idx
+        if lag <= 0:
+            return 0.0
+        return float(sample_rate / lag)
+
+    def _band_activity(self, spectrum: np.ndarray, sample_rate: int, low_hz: float, high_hz: float) -> float:
+        if spectrum is None or len(spectrum) == 0 or sample_rate <= 0:
+            return 0.0
+        nyquist = sample_rate / 2.0
+        n_bins = len(spectrum)
+        freq_per_bin = nyquist / max(1, n_bins)
+        low_bin = max(0, int(low_hz / max(1e-9, freq_per_bin)))
+        high_bin = min(n_bins - 1, int(high_hz / max(1e-9, freq_per_bin)))
+        if high_bin < low_bin:
+            return 0.0
+        band = np.asarray(spectrum[low_bin:high_bin + 1], dtype=np.float32)
+        if band.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.square(band))))
+
+    def _update_gate_snapshot(self, spectrum: np.ndarray, sample_rate: int, stroke_cfg) -> None:
+        include_mid = bool(getattr(stroke_cfg, 'high_band_include_mid', True))
+        low_activity = self._band_activity(spectrum, sample_rate, 30.0, 500.0)
+        high_low_hz = 500.0 if include_mid else 2000.0
+        high_activity = self._band_activity(spectrum, sample_rate, high_low_hz, sample_rate / 2.0)
+
+        self._low_band_history.append(low_activity)
+        self._high_band_history.append(high_activity)
+
+        def _window_stats(values: deque[float], window_size: int) -> tuple[np.ndarray, float, float, float]:
+            vals = list(values)
+            if not vals:
+                return np.array([], dtype=np.float32), 0.0, 0.0, 0.0
+            window = int(np.clip(window_size, 1, len(vals)))
+            seg = np.asarray(vals[-window:], dtype=np.float32)
+            if seg.size == 0:
+                return seg, 0.0, 0.0, 0.0
+            return seg, float(np.mean(seg)), float(np.max(seg) - np.min(seg)), float(np.var(seg))
+
+        low_window = int(getattr(stroke_cfg, 'low_band_window_frames', 18) or 18)
+        low_seg, low_mean, low_delta, low_var = _window_stats(self._low_band_history, max(8, low_window))
+        low_mean_th = float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20)
+        low_delta_th = float(getattr(stroke_cfg, 'low_band_delta_threshold', 0.06) or 0.06)
+        low_var_th = float(getattr(stroke_cfg, 'low_band_variance_threshold', 0.0015) or 0.0015)
+        low_pass = (low_mean >= low_mean_th) and ((low_delta >= low_delta_th) or (low_var >= low_var_th))
+
+        high_window = int(getattr(stroke_cfg, 'high_band_window_frames', 18) or 18)
+        high_seg, high_mean, high_delta, high_var = _window_stats(self._high_band_history, max(8, high_window))
+        high_mean_th = float(getattr(stroke_cfg, 'high_band_mean_threshold', 0.12) or 0.12)
+        high_floor_th = float(getattr(stroke_cfg, 'high_band_floor_threshold', 0.06) or 0.06)
+        high_occ_th = float(getattr(stroke_cfg, 'high_band_occupancy_threshold', 0.55) or 0.55)
+        high_delta_th = float(getattr(stroke_cfg, 'high_band_delta_threshold', 0.05) or 0.05)
+        high_var_th = float(getattr(stroke_cfg, 'high_band_variance_threshold', 0.0010) or 0.0010)
+        if high_seg.size > 0:
+            high_occ = float(np.sum(high_seg >= high_floor_th) / max(1, high_seg.size))
+        else:
+            high_occ = 0.0
+        high_pass = (high_mean >= high_mean_th) and (high_occ >= high_occ_th) and ((high_delta >= high_delta_th) or (high_var >= high_var_th))
+
+        self._gate_snapshot = {
+            'include_mid': include_mid,
+            'low_mean': low_mean,
+            'low_delta': low_delta,
+            'low_var': low_var,
+            'low_mean_th': low_mean_th,
+            'low_delta_th': low_delta_th,
+            'low_var_th': low_var_th,
+            'low_pass': bool(low_pass),
+            'high_mean': high_mean,
+            'high_occ': high_occ,
+            'high_delta': high_delta,
+            'high_var': high_var,
+            'high_mean_th': high_mean_th,
+            'high_floor_th': high_floor_th,
+            'high_occ_th': high_occ_th,
+            'high_delta_th': high_delta_th,
+            'high_var_th': high_var_th,
+            'high_pass': bool(high_pass),
+        }
+
+    def _update_period_text(self) -> None:
+        region_raw = self.period_region.getRegion()
+        if isinstance(region_raw, (list, tuple)) and len(region_raw) >= 2:
+            raw_a, raw_b = region_raw[0], region_raw[1]
+        else:
+            raw_a, raw_b = 0.0, 1.0
+        start_ms = min(self._as_float(raw_a), self._as_float(raw_b))
+        end_ms = max(self._as_float(raw_a), self._as_float(raw_b))
+        period_ms = max(0.001, end_ms - start_ms)
+        picked_freq_hz = 1000.0 / period_ms
+
+        gate = self._gate_snapshot
+        low_ok = bool(gate.get('low_pass', False))
+        high_ok = bool(gate.get('high_pass', False))
+        low_mark = 'PASS' if low_ok else 'BLOCK'
+        high_mark = 'PASS' if high_ok else 'BLOCK'
+        g = lambda key: self._as_float(gate.get(key, 0.0), 0.0)
+
+        low_color = '#66ff99' if low_ok else '#ff8080'
+        high_color = '#ffb3ff' if high_ok else '#ff8080'
+        html = (
+            "<div style='background-color: rgba(0,0,0,170); padding: 6px; border: 2px solid #55aaff; border-radius: 5px;'>"
+            f"<div style='font-size: 12pt; font-weight: 700; color: #ffffff;'>Period pick: {period_ms:.2f} ms  =&gt;  {picked_freq_hz:.1f} Hz</div>"
+            f"<div style='font-size: 10pt; font-weight: 600; color: #e8e8e8;'>Auto f0: {self._latest_auto_freq_hz:.1f} Hz&nbsp;&nbsp;RMS: {self._latest_rms:.3f}&nbsp;&nbsp;Peak: {self._latest_peak:.3f}</div>"
+            f"<div style='font-size: 10pt; font-weight: 700; color: {low_color};'>Low gate [{low_mark}] mean {g('low_mean'):.4f}/{g('low_mean_th'):.4f} &nbsp; Δ {g('low_delta'):.4f}/{g('low_delta_th'):.4f} &nbsp; var {g('low_var'):.5f}/{g('low_var_th'):.5f}</div>"
+            f"<div style='font-size: 10pt; font-weight: 700; color: {high_color};'>High gate [{high_mark}] mean {g('high_mean'):.4f}/{g('high_mean_th'):.4f} &nbsp; occ {g('high_occ'):.2f}/{g('high_occ_th'):.2f} &nbsp; Δ {g('high_delta'):.4f}/{g('high_delta_th'):.4f} &nbsp; var {g('high_var'):.5f}/{g('high_var_th'):.5f}</div>"
+            f"<div style='font-size: 9pt; font-weight: 600; color: #d9d9d9;'>High-band source: {'mid+high' if bool(gate.get('include_mid', True)) else 'high-only'}</div>"
+            "</div>"
+        )
+        self.info_text.setHtml(html)
+        self.info_text.setPos(0.5, 0.94)
+
+    def update_from_audio(self, waveform: np.ndarray, sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
+        if waveform is None:
+            return
+
+        arr = np.asarray(waveform, dtype=np.float32)
+        if arr.size == 0:
+            return
+
+        self._sample_rate = int(max(1, sample_rate))
+        peak_abs = float(np.max(np.abs(arr)))
+        if peak_abs > 1.0:
+            arr = arr / peak_abs
+
+        x_ms = (np.arange(arr.size, dtype=np.float32) / float(self._sample_rate)) * 1000.0
+        x_end = float(x_ms[-1]) if x_ms.size > 0 else 25.0
+        self._x_max_ms = max(2.0, x_end)
+        self.waveform_curve.setData(x=x_ms, y=arr)
+        self.setXRange(0.0, self._x_max_ms)
+
+        self._latest_rms = float(np.sqrt(np.mean(np.square(arr)))) if arr.size > 0 else 0.0
+        self._latest_peak = float(np.max(np.abs(arr))) if arr.size > 0 else 0.0
+        self._latest_auto_freq_hz = self._estimate_waveform_frequency(arr, self._sample_rate)
+
+        self.rms_line.setPos(self._latest_rms)
+        self.peak_line.setPos(self._latest_peak)
+
+        region_raw = self.period_region.getRegion()
+        if isinstance(region_raw, (list, tuple)) and len(region_raw) >= 2:
+            region_high = max(self._as_float(region_raw[0]), self._as_float(region_raw[1]))
+        else:
+            region_high = 0.0
+        if (not self._period_region_initialized) or region_high > self._x_max_ms:
+            if self._latest_auto_freq_hz > 1e-3:
+                period_ms = 1000.0 / self._latest_auto_freq_hz
+            else:
+                period_ms = min(8.0, self._x_max_ms * 0.25)
+            period_ms = float(np.clip(period_ms, 0.5, max(1.0, self._x_max_ms * 0.8)))
+            center_ms = self._x_max_ms * 0.55
+            start_ms = float(np.clip(center_ms - period_ms * 0.5, 0.0, self._x_max_ms - 0.2))
+            end_ms = float(np.clip(start_ms + period_ms, start_ms + 0.2, self._x_max_ms))
+            self.period_region.setRegion((start_ms, end_ms))
+            self._period_region_initialized = True
+
+        if spectrum is not None:
+            self._update_gate_snapshot(np.asarray(spectrum, dtype=np.float32), self._sample_rate, stroke_cfg)
+        self._update_period_text()
+
+
+class WaveformLiveCanvas(pg.PlotWidget):
+    """Simple in-window waveform visualizer (no calibration overlays)."""
+
+    def __init__(self, parent=None, width=8, height=3):
+        super().__init__(parent)
+        self.setBackground('#0d0d0d')
+        self.setMenuEnabled(False)
+        self.showGrid(x=True, y=True, alpha=0.25)
+        self.showAxis('left')
+        self.showAxis('bottom')
+        self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
+        self.getAxis('left').setTickPen(pg.mkPen('#9a9a9a'))
+        self.getAxis('bottom').setTextPen(pg.mkPen('#cfcfcf'))
+        self.getAxis('bottom').setTickPen(pg.mkPen('#9a9a9a'))
+        self.setLabel('left', 'Amplitude', units='A.U.')
+        self.setLabel('bottom', 'Time', units='ms')
+        self.enableAutoRange(x=False, y=False)
+        self.setYRange(-1.05, 1.05)
+        self.setXRange(0.0, 25.0)
+
+        self.waveform_curve = self.plot(pen=pg.mkPen('#ffd24d', width=2))
+        self.zero_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#7f7f7f', width=1))
+        self.addItem(self.zero_line)
+
+        self._sample_rate = 44100
+
+    def update_from_audio(self, waveform: Optional[np.ndarray], sample_rate: int) -> None:
+        if waveform is None:
+            return
+        arr = np.asarray(waveform, dtype=np.float32)
+        if arr.size == 0:
+            return
+
+        self._sample_rate = int(max(1, sample_rate))
+        peak_abs = float(np.max(np.abs(arr)))
+        if peak_abs > 1.0:
+            arr = arr / peak_abs
+
+        x_ms = (np.arange(arr.size, dtype=np.float32) / float(self._sample_rate)) * 1000.0
+        x_end = float(x_ms[-1]) if x_ms.size > 0 else 25.0
+        x_max = max(2.0, x_end)
+
+        self.waveform_curve.setData(x=x_ms, y=arr)
+        self.setXRange(0.0, x_max)
+
+    def set_peak_indicators_visible(self, visible: bool):
+        return
+
+    def set_range_indicators_visible(self, visible: bool):
+        return
+
+
+class FrequencyDbCalibrationCanvas(pg.PlotWidget):
+    """Frequency-vs-dB calibration canvas with gate metrics overlays."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setBackground('#0d0d0d')
+        self.setMenuEnabled(False)
+        self.showGrid(x=True, y=True, alpha=0.30)
+        self.showAxis('left')
+        self.showAxis('bottom')
+        self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
+        self.getAxis('left').setTickPen(pg.mkPen('#9a9a9a'))
+        self.getAxis('bottom').setTextPen(pg.mkPen('#cfcfcf'))
+        self.getAxis('bottom').setTickPen(pg.mkPen('#9a9a9a'))
+        self.setLabel('left', 'Level', units='dB')
+        self.setLabel('bottom', 'Frequency', units='kHz')
+        self.enableAutoRange(x=False, y=False)
+        self.setLogMode(x=True, y=False)
+        self.setXRange(np.log10(0.04), np.log10(19.9))
+        self.setYRange(-120.0, 6.0)
+
+        self.db_curve = self.plot(pen=pg.mkPen('#ffd24d', width=2))
+        self.zero_db_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#aaaaaa', width=1, style=Qt.PenStyle.DashLine))
+        self.addItem(self.zero_db_line)
+
+        self.minus6_db_line = pg.InfiniteLine(pos=-6.0, angle=0, movable=False, pen=pg.mkPen('#dddd66', width=1, style=Qt.PenStyle.DashLine))
+        self.minus60_db_line = pg.InfiniteLine(pos=-60.0, angle=0, movable=False, pen=pg.mkPen('#777777', width=1, style=Qt.PenStyle.DotLine))
+        self.addItem(self.minus6_db_line)
+        self.addItem(self.minus60_db_line)
+
+        self.low_mean_threshold_line = pg.InfiniteLine(pos=-80.0, angle=0, movable=False, pen=pg.mkPen('#66ff99', width=2, style=Qt.PenStyle.DashLine))
+        self.high_mean_threshold_line = pg.InfiniteLine(pos=-80.0, angle=0, movable=False, pen=pg.mkPen('#ffb3ff', width=2, style=Qt.PenStyle.DashLine))
+        self.high_floor_threshold_line = pg.InfiniteLine(pos=-80.0, angle=0, movable=False, pen=pg.mkPen('#ff88aa', width=2, style=Qt.PenStyle.DotLine))
+        self.addItem(self.low_mean_threshold_line)
+        self.addItem(self.high_mean_threshold_line)
+        self.addItem(self.high_floor_threshold_line)
+
+        self.low_band_region = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(80, 255, 120, 26), pen=pg.mkPen('#66ff99', width=1), movable=False)
+        self.high_band_region = pg.LinearRegionItem(values=(np.log10(0.50), np.log10(4.0)), orientation='vertical', brush=pg.mkBrush(255, 140, 220, 22), pen=pg.mkPen('#ff9add', width=1), movable=False)
+        self.low_band_region.setZValue(-3)
+        self.high_band_region.setZValue(-3)
+        self.addItem(self.low_band_region)
+        self.addItem(self.high_band_region)
+
+        self.dominant_freq_line = pg.InfiniteLine(pos=np.log10(0.10), angle=90, movable=False, pen=pg.mkPen('#ffd24d', width=2))
+        self.addItem(self.dominant_freq_line)
+
+        self.info_text = pg.TextItem("", color='#f2f2f2', anchor=(0.0, 0.0))
+        self.info_text.setZValue(20)
+        self.addItem(self.info_text)
+
+        self._sample_rate = 44100
+        self._low_band_history: deque[float] = deque(maxlen=240)
+        self._high_band_history: deque[float] = deque(maxlen=240)
+        self._gate_snapshot: dict[str, object] = {}
+        self._dominant_freq_hz: float = 0.0
+        self._peak_db: float = -120.0
+
+    @staticmethod
+    def _to_db(value: float, floor_db: float = -120.0) -> float:
+        v = max(float(value), 1e-12)
+        return float(np.clip(20.0 * np.log10(v), floor_db, 12.0))
+
+    @staticmethod
+    def _as_float(value, default: float = 0.0) -> float:
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return float(value)
+        try:
+            parsed = np.asarray(value, dtype=np.float64).reshape(-1)
+            if parsed.size > 0:
+                return float(parsed[0])
+        except Exception:
+            pass
+        return float(default)
+
+    def _band_activity(self, spectrum: np.ndarray, sample_rate: int, low_hz: float, high_hz: float) -> float:
+        if spectrum is None or len(spectrum) == 0 or sample_rate <= 0:
+            return 0.0
+        nyquist = sample_rate / 2.0
+        n_bins = len(spectrum)
+        freq_per_bin = nyquist / max(1, n_bins)
+        low_bin = max(0, int(low_hz / max(1e-9, freq_per_bin)))
+        high_bin = min(n_bins - 1, int(high_hz / max(1e-9, freq_per_bin)))
+        if high_bin < low_bin:
+            return 0.0
+        band = np.asarray(spectrum[low_bin:high_bin + 1], dtype=np.float32)
+        if band.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.square(band))))
+
+    def _update_gate_snapshot(self, spectrum: np.ndarray, sample_rate: int, stroke_cfg) -> None:
+        include_mid = bool(getattr(stroke_cfg, 'high_band_include_mid', True))
+        low_activity = self._band_activity(spectrum, sample_rate, 30.0, 500.0)
+        high_low_hz = 500.0 if include_mid else 2000.0
+        high_activity = self._band_activity(spectrum, sample_rate, high_low_hz, sample_rate / 2.0)
+
+        self._low_band_history.append(low_activity)
+        self._high_band_history.append(high_activity)
+
+        def _window_stats(values: deque[float], window_size: int) -> tuple[np.ndarray, float, float, float]:
+            vals = list(values)
+            if not vals:
+                return np.array([], dtype=np.float32), 0.0, 0.0, 0.0
+            window = int(np.clip(window_size, 1, len(vals)))
+            seg = np.asarray(vals[-window:], dtype=np.float32)
+            if seg.size == 0:
+                return seg, 0.0, 0.0, 0.0
+            return seg, float(np.mean(seg)), float(np.max(seg) - np.min(seg)), float(np.var(seg))
+
+        low_window = int(getattr(stroke_cfg, 'low_band_window_frames', 18) or 18)
+        low_seg, low_mean, low_delta, low_var = _window_stats(self._low_band_history, max(8, low_window))
+        low_mean_th = float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20)
+        low_delta_th = float(getattr(stroke_cfg, 'low_band_delta_threshold', 0.06) or 0.06)
+        low_var_th = float(getattr(stroke_cfg, 'low_band_variance_threshold', 0.0015) or 0.0015)
+        low_pass = (low_mean >= low_mean_th) and ((low_delta >= low_delta_th) or (low_var >= low_var_th))
+
+        high_window = int(getattr(stroke_cfg, 'high_band_window_frames', 18) or 18)
+        high_seg, high_mean, high_delta, high_var = _window_stats(self._high_band_history, max(8, high_window))
+        high_mean_th = float(getattr(stroke_cfg, 'high_band_mean_threshold', 0.12) or 0.12)
+        high_floor_th = float(getattr(stroke_cfg, 'high_band_floor_threshold', 0.06) or 0.06)
+        high_occ_th = float(getattr(stroke_cfg, 'high_band_occupancy_threshold', 0.55) or 0.55)
+        high_delta_th = float(getattr(stroke_cfg, 'high_band_delta_threshold', 0.05) or 0.05)
+        high_var_th = float(getattr(stroke_cfg, 'high_band_variance_threshold', 0.0010) or 0.0010)
+        if high_seg.size > 0:
+            high_occ = float(np.sum(high_seg >= high_floor_th) / max(1, high_seg.size))
+        else:
+            high_occ = 0.0
+        high_pass = (high_mean >= high_mean_th) and (high_occ >= high_occ_th) and ((high_delta >= high_delta_th) or (high_var >= high_var_th))
+
+        self._gate_snapshot = {
+            'include_mid': include_mid,
+            'low_mean': low_mean,
+            'low_delta': low_delta,
+            'low_var': low_var,
+            'low_mean_th': low_mean_th,
+            'low_delta_th': low_delta_th,
+            'low_var_th': low_var_th,
+            'low_pass': bool(low_pass),
+            'high_mean': high_mean,
+            'high_occ': high_occ,
+            'high_delta': high_delta,
+            'high_var': high_var,
+            'high_mean_th': high_mean_th,
+            'high_occ_th': high_occ_th,
+            'high_delta_th': high_delta_th,
+            'high_var_th': high_var_th,
+            'high_pass': bool(high_pass),
+        }
+
+    def _update_info_text(self) -> None:
+        gate = self._gate_snapshot
+        low_ok = bool(gate.get('low_pass', False))
+        high_ok = bool(gate.get('high_pass', False))
+        low_mark = 'PASS' if low_ok else 'BLOCK'
+        high_mark = 'PASS' if high_ok else 'BLOCK'
+        g = lambda key: self._as_float(gate.get(key, 0.0), 0.0)
+
+        low_color = '#66ff99' if low_ok else '#ff8080'
+        high_color = '#ffb3ff' if high_ok else '#ff8080'
+        html = (
+            "<div style='background-color: rgba(0,0,0,170); padding: 6px; border: 2px solid #66c2ff; border-radius: 5px;'>"
+            f"<div style='font-size: 12pt; font-weight: 700; color: #ffffff;'>Dominant: {self._dominant_freq_hz:.1f} Hz &nbsp;&nbsp; Peak: {self._peak_db:+.1f} dB</div>"
+            f"<div style='font-size: 10pt; font-weight: 700; color: {low_color};'>Low gate [{low_mark}] mean {g('low_mean'):.4f}/{g('low_mean_th'):.4f} &nbsp; Δ {g('low_delta'):.4f}/{g('low_delta_th'):.4f} &nbsp; var {g('low_var'):.5f}/{g('low_var_th'):.5f}</div>"
+            f"<div style='font-size: 10pt; font-weight: 700; color: {high_color};'>High gate [{high_mark}] mean {g('high_mean'):.4f}/{g('high_mean_th'):.4f} &nbsp; occ {g('high_occ'):.2f}/{g('high_occ_th'):.2f} &nbsp; Δ {g('high_delta'):.4f}/{g('high_delta_th'):.4f} &nbsp; var {g('high_var'):.5f}/{g('high_var_th'):.5f}</div>"
+            f"<div style='font-size: 9pt; font-weight: 600; color: #d9d9d9;'>High-band source: {'mid+high' if bool(gate.get('include_mid', True)) else 'high-only'}</div>"
+            "</div>"
+        )
+        self.info_text.setHtml(html)
+        self.info_text.setPos(np.log10(0.045), 3.0)
+
+    def update_from_spectrum(self, spectrum: Optional[np.ndarray], sample_rate: int, stroke_cfg) -> None:
+        if spectrum is None:
+            return
+        arr = np.asarray(spectrum, dtype=np.float32)
+        if arr.size == 0:
+            return
+
+        self._sample_rate = int(max(1, sample_rate))
+        nyquist = self._sample_rate / 2.0
+        freqs_hz = np.linspace(0.0, nyquist, arr.size, dtype=np.float32)
+        freqs_khz = freqs_hz / 1000.0
+
+        db = 20.0 * np.log10(np.maximum(arr, 1e-12))
+        db = np.clip(db, -120.0, 12.0)
+
+        if arr.size > 1:
+            peak_idx = int(np.argmax(arr))
+            self._dominant_freq_hz = float(freqs_hz[peak_idx])
+            self._peak_db = float(db[peak_idx])
+        else:
+            self._dominant_freq_hz = 0.0
+            self._peak_db = -120.0
+
+        start_idx = 1 if freqs_khz.size > 1 else 0
+        valid = (freqs_khz[start_idx:] >= 0.04) & (freqs_khz[start_idx:] <= 19.9)
+        self.db_curve.setData(x=freqs_khz[start_idx:][valid], y=db[start_idx:][valid])
+        self.setXRange(np.log10(0.04), np.log10(min(19.9, max(0.04, nyquist / 1000.0))))
+
+        high_band_low_hz = 500.0 if bool(getattr(stroke_cfg, 'high_band_include_mid', True)) else 2000.0
+        low_start_khz = 0.04
+        low_end_khz = 0.50
+        high_start_khz = high_band_low_hz / 1000.0
+        high_end_khz = min(19.9, max(high_start_khz + 0.001, nyquist / 1000.0))
+        self.low_band_region.setRegion((np.log10(low_start_khz), np.log10(low_end_khz)))
+        self.high_band_region.setRegion((np.log10(high_start_khz), np.log10(high_end_khz)))
+
+        self.dominant_freq_line.setPos(np.log10(min(19.9, max(0.04, self._dominant_freq_hz / 1000.0))))
+
+        low_mean_th_db = self._to_db(float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20))
+        high_mean_th_db = self._to_db(float(getattr(stroke_cfg, 'high_band_mean_threshold', 0.12) or 0.12))
+        high_floor_th_db = self._to_db(float(getattr(stroke_cfg, 'high_band_floor_threshold', 0.06) or 0.06))
+        self.low_mean_threshold_line.setPos(low_mean_th_db)
+        self.high_mean_threshold_line.setPos(high_mean_th_db)
+        self.high_floor_threshold_line.setPos(high_floor_th_db)
+
+        self._update_gate_snapshot(arr, self._sample_rate, stroke_cfg)
+        self._update_info_text()
+
+
+class FrequencyDbLiveCanvas(pg.PlotWidget):
+    """Simple in-window frequency/dB visualizer."""
+
+    def __init__(self, parent=None, width=8, height=3):
+        super().__init__(parent)
+        self.setBackground('#0d0d0d')
+        self.setMenuEnabled(False)
+        self.showGrid(x=True, y=True, alpha=0.25)
+        self.showAxis('left')
+        self.showAxis('bottom')
+        self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
+        self.getAxis('left').setTickPen(pg.mkPen('#9a9a9a'))
+        self.getAxis('bottom').setTextPen(pg.mkPen('#cfcfcf'))
+        self.getAxis('bottom').setTickPen(pg.mkPen('#9a9a9a'))
+        self.setLabel('left', 'Level', units='dB')
+        self.setLabel('bottom', 'Frequency', units='kHz')
+        self.enableAutoRange(x=False, y=False)
+        self.setLogMode(x=True, y=False)
+        self.setXRange(np.log10(0.04), np.log10(19.9))
+        self.setYRange(-120.0, 6.0)
+
+        self.db_curve = self.plot(pen=pg.mkPen('#ffd24d', width=2))
+        self.zero_db_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#aaaaaa', width=1, style=Qt.PenStyle.DashLine))
+        self.addItem(self.zero_db_line)
+
+    def update_from_spectrum(self, spectrum: Optional[np.ndarray], sample_rate: int) -> None:
+        if spectrum is None:
+            return
+        arr = np.asarray(spectrum, dtype=np.float32)
+        if arr.size == 0:
+            return
+
+        sr = int(max(1, sample_rate))
+        nyquist = sr / 2.0
+        freqs_khz = np.linspace(0.0, nyquist, arr.size, dtype=np.float32) / 1000.0
+        db = 20.0 * np.log10(np.maximum(arr, 1e-12))
+        db = np.clip(db, -120.0, 12.0)
+        start_idx = 1 if freqs_khz.size > 1 else 0
+        valid = (freqs_khz[start_idx:] >= 0.04) & (freqs_khz[start_idx:] <= 19.9)
+        self.db_curve.setData(x=freqs_khz[start_idx:][valid], y=db[start_idx:][valid])
+        self.setXRange(np.log10(0.04), np.log10(min(19.9, max(0.04, nyquist / 1000.0))))
+
+    def set_peak_indicators_visible(self, visible: bool):
+        return
+
+    def set_range_indicators_visible(self, visible: bool):
+        return
+
+
 class CalibrationPopoutWindow(QMainWindow):
-    """Pop-out calibration visualizer fed by the existing live spectrum stream."""
+    """Pop-out calibration visualizer with short-term pause/rewind/slow playback."""
 
     def __init__(self, parent=None, on_closed=None):
         super().__init__(parent)
@@ -2200,33 +2770,219 @@ class CalibrationPopoutWindow(QMainWindow):
         self.setWindowTitle("Calibration Visualizer")
         self.resize(980, 520)
 
-        self.canvas = MountainRangeCanvas(parent, width=10, height=5)
-        self.setCentralWidget(self.canvas)
-        self.canvas.set_range_indicators_visible(True)
-        self.canvas.set_peak_indicators_visible(True)
+        self._history_span_s = 5.0
+        self._frame_history: deque[dict] = deque()
+        self._playback_paused = False
+        self._playback_rate = 1.0
+        self._playback_cursor_time: Optional[float] = None
+        self._last_playback_tick = time.monotonic()
 
-    def update_from_spectrum(self, spectrum: np.ndarray, peak: float, flux: float, stroke_cfg) -> None:
-        self.canvas.update_spectrum(spectrum, peak, flux)
+        container = QWidget(self)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
 
-        low_mean = float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20)
-        high_mean = float(getattr(stroke_cfg, 'high_band_mean_threshold', 0.12) or 0.12)
+        controls_row = QHBoxLayout()
+        controls_row.setSpacing(8)
 
-        self.canvas.show_reference_line(
-            'cal_low_mean',
-            low_mean,
-            'Low mean',
-            color='#32FF32',
-            duration_s=1.2,
-        )
-        self.canvas.show_reference_line(
-            'cal_high_mean',
-            high_mean,
-            'High mean',
-            color='#FF66CC',
-            duration_s=1.2,
-        )
+        self.pause_btn = QPushButton("Pause")
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.clicked.connect(self._on_pause_toggled)
+        controls_row.addWidget(self.pause_btn)
+
+        self.rewind_btn = QPushButton("Rewind 20ms")
+        self.rewind_btn.clicked.connect(self._on_rewind_step)
+        controls_row.addWidget(self.rewind_btn)
+
+        speed_label = QLabel("Speed:")
+        speed_label.setStyleSheet("color: #ddd;")
+        controls_row.addWidget(speed_label)
+
+        mode_label = QLabel("View:")
+        mode_label.setStyleSheet("color: #ddd;")
+        controls_row.addWidget(mode_label)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Waveform (Time/Amp)", "Spectrum (Freq/dB)"])
+        self.mode_combo.setCurrentIndex(0)
+        controls_row.addWidget(self.mode_combo)
+
+        self.speed_combo = QComboBox()
+        self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
+        self.speed_combo.setCurrentIndex(0)
+        self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
+        controls_row.addWidget(self.speed_combo)
+
+        self.buffer_label = QLabel("Buffer: 0.0s")
+        self.buffer_label.setStyleSheet("color: #aaa;")
+        controls_row.addWidget(self.buffer_label)
+        controls_row.addStretch(1)
+
+        layout.addLayout(controls_row)
+
+        self.waveform_canvas = WaveformCalibrationCanvas(parent)
+        self.freqdb_canvas = FrequencyDbCalibrationCanvas(parent)
+        self.freqdb_canvas.setVisible(False)
+        layout.addWidget(self.waveform_canvas)
+        layout.addWidget(self.freqdb_canvas)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        self.setCentralWidget(container)
+
+        self._playback_timer = QTimer(self)
+        self._playback_timer.setInterval(33)
+        self._playback_timer.timeout.connect(self._on_playback_tick)
+        self._playback_timer.start()
+
+        self._rewind_step_s = 0.020
+
+    def _snapshot_stroke_cfg(self, stroke_cfg) -> dict:
+        keys = [
+            'high_band_include_mid',
+            'low_band_window_frames',
+            'low_band_activity_threshold',
+            'low_band_delta_threshold',
+            'low_band_variance_threshold',
+            'high_band_window_frames',
+            'high_band_mean_threshold',
+            'high_band_floor_threshold',
+            'high_band_occupancy_threshold',
+            'high_band_delta_threshold',
+            'high_band_variance_threshold',
+        ]
+        snap: dict[str, object] = {}
+        for key in keys:
+            snap[key] = getattr(stroke_cfg, key, None)
+        return snap
+
+    def _append_frame(self, waveform: np.ndarray, sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
+        now = time.monotonic()
+        frame = {
+            't': now,
+            'waveform': np.asarray(waveform, dtype=np.float32).copy(),
+            'sample_rate': int(max(1, sample_rate)),
+            'spectrum': (np.asarray(spectrum, dtype=np.float32).copy() if spectrum is not None else None),
+            'stroke_cfg': self._snapshot_stroke_cfg(stroke_cfg),
+        }
+        self._frame_history.append(frame)
+
+        cutoff = now - self._history_span_s
+        while self._frame_history and float(self._frame_history[0]['t']) < cutoff:
+            self._frame_history.popleft()
+
+        if self._frame_history:
+            span = float(self._frame_history[-1]['t']) - float(self._frame_history[0]['t'])
+            self.buffer_label.setText(f"Buffer: {span:.1f}s")
+        else:
+            self.buffer_label.setText("Buffer: 0.0s")
+
+    def _render_frame(self, frame: dict) -> None:
+        waveform = np.asarray(frame.get('waveform', []), dtype=np.float32)
+        spectrum = frame.get('spectrum')
+        if waveform.size == 0 and spectrum is None:
+            return
+        sample_rate = int(frame.get('sample_rate', 44100))
+        cfg_obj = SimpleNamespace(**dict(frame.get('stroke_cfg', {})))
+        if waveform.size > 0:
+            self.waveform_canvas.update_from_audio(waveform, sample_rate, spectrum, cfg_obj)
+        self.freqdb_canvas.update_from_spectrum(spectrum, sample_rate, cfg_obj)
+
+    def _on_mode_changed(self, index: int) -> None:
+        show_waveform = int(index) == 0
+        self.waveform_canvas.setVisible(show_waveform)
+        self.freqdb_canvas.setVisible(not show_waveform)
+
+    def _find_frame_for_time(self, target_time: float) -> Optional[dict]:
+        if not self._frame_history:
+            return None
+        for frame in reversed(self._frame_history):
+            if float(frame['t']) <= target_time:
+                return frame
+        return self._frame_history[0]
+
+    def _on_pause_toggled(self, checked: bool) -> None:
+        self._playback_paused = bool(checked)
+        self.pause_btn.setText("Resume" if self._playback_paused else "Pause")
+        if self._playback_paused:
+            if self._playback_cursor_time is None and self._frame_history:
+                self._playback_cursor_time = float(self._frame_history[-1]['t'])
+        else:
+            self._last_playback_tick = time.monotonic()
+
+    def _on_rewind_step(self) -> None:
+        if not self._frame_history:
+            return
+        if not self._playback_paused:
+            self.pause_btn.setChecked(True)
+            self._on_pause_toggled(True)
+
+        newest_t = float(self._frame_history[-1]['t'])
+        oldest_t = float(self._frame_history[0]['t'])
+        base_t = float(self._playback_cursor_time) if self._playback_cursor_time is not None else newest_t
+        self._playback_cursor_time = max(oldest_t, base_t - self._rewind_step_s)
+        frame = self._find_frame_for_time(self._playback_cursor_time)
+        if frame is not None:
+            self._render_frame(frame)
+
+    def _on_speed_changed(self, _index: int) -> None:
+        text = self.speed_combo.currentText().strip().lower().replace('x', '')
+        try:
+            self._playback_rate = float(text)
+        except Exception:
+            self._playback_rate = 1.0
+        self._playback_rate = float(np.clip(self._playback_rate, 0.05, 1.0))
+        self._last_playback_tick = time.monotonic()
+
+    def _on_playback_tick(self) -> None:
+        if not self._frame_history:
+            return
+
+        if self._playback_paused:
+            return
+
+        now = time.monotonic()
+        dt = max(0.0, now - self._last_playback_tick)
+        self._last_playback_tick = now
+
+        if self._playback_rate >= 0.999:
+            latest = self._frame_history[-1]
+            self._playback_cursor_time = float(latest['t'])
+            self._render_frame(latest)
+            return
+
+        oldest_t = float(self._frame_history[0]['t'])
+        newest_t = float(self._frame_history[-1]['t'])
+
+        if self._playback_cursor_time is None:
+            self._playback_cursor_time = oldest_t
+
+        self._playback_cursor_time += dt * self._playback_rate
+        if self._playback_cursor_time > newest_t:
+            self._playback_cursor_time = newest_t
+        if self._playback_cursor_time < oldest_t:
+            self._playback_cursor_time = oldest_t
+
+        frame = self._find_frame_for_time(self._playback_cursor_time)
+        if frame is not None:
+            self._render_frame(frame)
+
+    def update_from_audio(self, waveform: Optional[np.ndarray], sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
+        if waveform is None:
+            return
+        self._append_frame(waveform, sample_rate, spectrum, stroke_cfg)
+
+        if self._playback_paused:
+            return
+
+        if self._playback_rate >= 0.999 and self._frame_history:
+            self._playback_cursor_time = float(self._frame_history[-1]['t'])
+            if self.mode_combo.currentIndex() == 0:
+                self.waveform_canvas.update_from_audio(waveform, sample_rate, spectrum, stroke_cfg)
+            else:
+                self.freqdb_canvas.update_from_spectrum(spectrum, sample_rate, stroke_cfg)
 
     def closeEvent(self, event):
+        self._playback_timer.stop()
+        self._frame_history.clear()
         if callable(self._on_closed):
             try:
                 self._on_closed()
@@ -2889,14 +3645,14 @@ class BREadbeatsWindow(QMainWindow):
         viz_menu = options_menu.addMenu("Spectrum Type")
         assert viz_menu is not None
         self.visualizer_type_combo = QComboBox()  # Hidden combo for state tracking
-        self.visualizer_type_combo.addItems(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor"])
-        self.visualizer_type_combo.setCurrentIndex(1)  # Default: Mountain Range
+        self.visualizer_type_combo.addItems(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor", "Waveform", "Freq dB"])
+        self.visualizer_type_combo.setCurrentIndex(4)  # Default: Waveform
         self._viz_type_actions = []
-        for i, name in enumerate(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor"]):
+        for i, name in enumerate(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor", "Waveform", "Freq dB"]):
             action = viz_menu.addAction(name)
             assert action is not None
             action.setCheckable(True)
-            action.setChecked(i == 1)  # Mountain Range default
+            action.setChecked(i == 4)  # Waveform default
             action.triggered.connect(lambda checked, idx=i: self._on_viz_menu_change(idx))
             self._viz_type_actions.append(action)
 
@@ -5108,14 +5864,21 @@ bREadfan_69@hotmail.com"""
         self.mountain_canvas = MountainRangeCanvas(self, width=8, height=3)
         self.bar_canvas = BarGraphCanvas(self, width=8, height=3)
         self.phosphor_canvas = PhosphorCanvas(self, width=8, height=3)
-        self.spectrum_canvas.setVisible(False)  # Start with mountain range
+        self.waveform_canvas = WaveformLiveCanvas(self, width=8, height=3)
+        self.freqdb_canvas = FrequencyDbLiveCanvas(self, width=8, height=3)
+        self.spectrum_canvas.setVisible(False)
+        self.mountain_canvas.setVisible(False)
         self.bar_canvas.setVisible(False)
         self.phosphor_canvas.setVisible(False)
+        self.waveform_canvas.setVisible(True)  # Start with waveform
+        self.freqdb_canvas.setVisible(False)
         
         layout.addWidget(self.spectrum_canvas)
         layout.addWidget(self.mountain_canvas)
         layout.addWidget(self.bar_canvas)
         layout.addWidget(self.phosphor_canvas)
+        layout.addWidget(self.waveform_canvas)
+        layout.addWidget(self.freqdb_canvas)
         
         return widget
     
@@ -5131,11 +5894,16 @@ bREadfan_69@hotmail.com"""
             )
     
     def _on_visualizer_type_change(self, index: int):
-        """Switch between visualizer types: 0=Waterfall, 1=Mountain, 2=Bar, 3=Phosphor"""
+        """Switch between visualizer types: 0=Waterfall, 1=Mountain, 2=Bar, 3=Phosphor, 4=Waveform, 5=Freq dB"""
         self.spectrum_canvas.setVisible(index == 0)
         self.mountain_canvas.setVisible(index == 1)
         self.bar_canvas.setVisible(index == 2)
         self.phosphor_canvas.setVisible(index == 3)
+        self.waveform_canvas.setVisible(index == 4)
+        self.freqdb_canvas.setVisible(index == 5)
+
+        if self.calibration_popout is not None and self.calibration_popout.isVisible():
+            self._set_main_visualizers_hidden_for_popout(True)
         
         # Sync the frequency bands to the newly visible visualizer
         if hasattr(self, 'freq_range_slider'):
@@ -5144,16 +5912,35 @@ bREadfan_69@hotmail.com"""
             self._on_depth_band_change()
         if hasattr(self, 'pulse_freq_range_slider'):
             self._on_p0_band_change()
+
+    def _set_main_visualizers_hidden_for_popout(self, hidden: bool) -> None:
+        """Hide/show embedded visualizers while calibration popout is active."""
+        if hidden:
+            self.spectrum_canvas.setVisible(False)
+            self.mountain_canvas.setVisible(False)
+            self.bar_canvas.setVisible(False)
+            self.phosphor_canvas.setVisible(False)
+            self.waveform_canvas.setVisible(False)
+            self.freqdb_canvas.setVisible(False)
+            return
+
+        index = int(self.visualizer_type_combo.currentIndex()) if hasattr(self, 'visualizer_type_combo') else 0
+        self.spectrum_canvas.setVisible(index == 0)
+        self.mountain_canvas.setVisible(index == 1)
+        self.bar_canvas.setVisible(index == 2)
+        self.phosphor_canvas.setVisible(index == 3)
+        self.waveform_canvas.setVisible(index == 4)
+        self.freqdb_canvas.setVisible(index == 5)
     
     def _on_show_peak_indicators_toggle(self, checked: bool):
         """Toggle visibility of peak indicator bars on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'set_peak_indicators_visible'):
                 canvas.set_peak_indicators_visible(checked)
 
     def _on_show_range_indicators_toggle(self, checked: bool):
         """Toggle visibility of range indicator bands on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'set_range_indicators_visible'):
                 canvas.set_range_indicators_visible(checked)
 
@@ -5162,22 +5949,25 @@ bREadfan_69@hotmail.com"""
         if self.calibration_popout is not None and self.calibration_popout.isVisible():
             self.calibration_popout.raise_()
             self.calibration_popout.activateWindow()
+            if self._advanced_controls_dialog is not None:
+                self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                self._advanced_controls_dialog.show()
+                self._advanced_controls_dialog.raise_()
+                self._advanced_controls_dialog.activateWindow()
             return
 
         self.calibration_popout = CalibrationPopoutWindow(self, on_closed=self._on_calibration_popout_closed)
-        self.calibration_popout.canvas.set_sample_rate(int(getattr(self.config.audio, 'sample_rate', 44100)))
-        self.calibration_popout.canvas.set_frequency_band(
-            float(getattr(self.config.beat, 'freq_low', 30.0)) / max(1.0, float(getattr(self.config.audio, 'sample_rate', 44100)) / 2.0),
-            float(getattr(self.config.beat, 'freq_high', 150.0)) / max(1.0, float(getattr(self.config.audio, 'sample_rate', 44100)) / 2.0),
-        )
-        self.calibration_popout.canvas.set_depth_band(
-            float(getattr(self.config.stroke, 'depth_freq_low', 30.0)),
-            float(getattr(self.config.stroke, 'depth_freq_high', 200.0)),
-        )
         self.calibration_popout.show()
+        self._set_main_visualizers_hidden_for_popout(True)
+        if self._advanced_controls_dialog is not None:
+            self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self._advanced_controls_dialog.show()
+            self._advanced_controls_dialog.raise_()
+            self._advanced_controls_dialog.activateWindow()
 
     def _on_calibration_popout_closed(self):
         self.calibration_popout = None
+        self._set_main_visualizers_hidden_for_popout(False)
 
     def _on_show_peak_indicators_menu_toggle(self, checked: bool):
         """Handle Show Peak Indicators toggle from Options menu"""
@@ -5185,7 +5975,7 @@ bREadfan_69@hotmail.com"""
 
     def _on_toggle_beat_band(self, checked: bool):
         """Toggle visibility of beat detection band (red) on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'beat_band'):
                 canvas.beat_band.setVisible(checked)
             if hasattr(canvas, 'beat_label'):
@@ -5193,7 +5983,7 @@ bREadfan_69@hotmail.com"""
 
     def _on_toggle_depth_band(self, checked: bool):
         """Toggle visibility of stroke depth band (green) on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'depth_band'):
                 canvas.depth_band.setVisible(checked)
             if hasattr(canvas, 'depth_label'):
@@ -5201,7 +5991,7 @@ bREadfan_69@hotmail.com"""
 
     def _on_toggle_p0_band(self, checked: bool):
         """Toggle visibility of pulse frequency band (blue) on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'p0_band'):
                 canvas.p0_band.setVisible(checked)
             if hasattr(canvas, 'pulse_label'):
@@ -5209,7 +5999,7 @@ bREadfan_69@hotmail.com"""
 
     def _on_toggle_f0_band(self, checked: bool):
         """Toggle visibility of carrier frequency band (cyan) on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
+        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'f0_band'):
                 canvas.f0_band.setVisible(checked)
             if hasattr(canvas, 'carrier_label'):
@@ -7961,32 +8751,48 @@ bREadfan_69@hotmail.com"""
             if isinstance(self._pending_spectrum, dict):
                 spectrum = self._pending_spectrum['spectrum']
                 peak, flux = self._compute_visual_metrics(spectrum)
-                # Only update the currently visible visualizer for performance
-                if self.spectrum_canvas.isVisible():
-                    self.spectrum_canvas.update_spectrum(spectrum, peak, flux)
-                elif hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
-                    self.mountain_canvas.update_spectrum(spectrum, peak, flux)
-                elif hasattr(self, 'bar_canvas') and self.bar_canvas is not None and self.bar_canvas.isVisible():
-                    self.bar_canvas.update_spectrum(spectrum, peak, flux)
-                elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
-                    self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
-
-                if self.calibration_popout is not None and self.calibration_popout.isVisible():
-                    self.calibration_popout.update_from_spectrum(spectrum, peak, flux, self.config.stroke)
+                waveform = self._pending_spectrum.get('waveform')
+                sample_rate = int(self._pending_spectrum.get('sample_rate', getattr(self.config.audio, 'sample_rate', 44100)))
+                popout = self.calibration_popout
+                popout_visible = popout is not None and popout.isVisible()
+                if popout_visible:
+                    if popout is not None:
+                        popout.update_from_audio(waveform, sample_rate, spectrum, self.config.stroke)
+                else:
+                    # Only update the currently visible in-window visualizer for performance
+                    if self.spectrum_canvas.isVisible():
+                        self.spectrum_canvas.update_spectrum(spectrum, peak, flux)
+                    elif hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
+                        self.mountain_canvas.update_spectrum(spectrum, peak, flux)
+                    elif hasattr(self, 'bar_canvas') and self.bar_canvas is not None and self.bar_canvas.isVisible():
+                        self.bar_canvas.update_spectrum(spectrum, peak, flux)
+                    elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
+                        self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
+                    elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible():
+                        self.waveform_canvas.update_from_audio(waveform, sample_rate)
+                    elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas is not None and self.freqdb_canvas.isVisible():
+                        self.freqdb_canvas.update_from_spectrum(spectrum, sample_rate)
             else:
                 # Legacy format - only update visible visualizer
                 peak, flux = self._compute_visual_metrics(self._pending_spectrum)
-                if self.spectrum_canvas.isVisible():
-                    self.spectrum_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-                elif hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
-                    self.mountain_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-                elif hasattr(self, 'bar_canvas') and self.bar_canvas is not None and self.bar_canvas.isVisible():
-                    self.bar_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-                elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
-                    self.phosphor_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-
-                if self.calibration_popout is not None and self.calibration_popout.isVisible():
-                    self.calibration_popout.update_from_spectrum(self._pending_spectrum, peak, flux, self.config.stroke)
+                popout = self.calibration_popout
+                popout_visible = popout is not None and popout.isVisible()
+                if popout_visible:
+                    if popout is not None:
+                        popout.update_from_audio(None, int(getattr(self.config.audio, 'sample_rate', 44100)), self._pending_spectrum, self.config.stroke)
+                else:
+                    if self.spectrum_canvas.isVisible():
+                        self.spectrum_canvas.update_spectrum(self._pending_spectrum, peak, flux)
+                    elif hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
+                        self.mountain_canvas.update_spectrum(self._pending_spectrum, peak, flux)
+                    elif hasattr(self, 'bar_canvas') and self.bar_canvas is not None and self.bar_canvas.isVisible():
+                        self.bar_canvas.update_spectrum(self._pending_spectrum, peak, flux)
+                    elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
+                        self.phosphor_canvas.update_spectrum(self._pending_spectrum, peak, flux)
+                    elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible() and self.audio_engine is not None:
+                        self.waveform_canvas.update_from_audio(self.audio_engine.get_waveform(), int(getattr(self.config.audio, 'sample_rate', 44100)))
+                    elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas is not None and self.freqdb_canvas.isVisible():
+                        self.freqdb_canvas.update_from_spectrum(self._pending_spectrum, int(getattr(self.config.audio, 'sample_rate', 44100)))
             self._pending_spectrum = None
     
     def _on_status_change(self, message: str, connected: bool):
