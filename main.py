@@ -2282,6 +2282,11 @@ class BREadbeatsWindow(QMainWindow):
         self._transport_pending_start = False
         self._transport_pending_stop = False
         self._transport_pending_play: bool | None = None
+        self._play_warmup_active: bool = False
+        self._play_warmup_started_at: float = 0.0
+        self._play_warmup_seen_beat: bool = False
+        self._play_warmup_min_seconds: float = 1.0
+        self._play_warmup_max_seconds: float = 3.0
         
         # Auto-connect TCP on startup
         self._auto_connect_tcp()
@@ -2614,8 +2619,8 @@ class BREadbeatsWindow(QMainWindow):
 
         # Fixed row: Main controls (LOCKED, never squishes)
         main_controls_widget = QWidget()
-        main_controls_widget.setMinimumHeight(48)
-        main_controls_widget.setMaximumHeight(64)
+        main_controls_widget.setMinimumHeight(96)
+        main_controls_widget.setMaximumHeight(140)
         main_controls_layout = QHBoxLayout(main_controls_widget)
         main_controls_layout.setContentsMargins(0, 0, 0, 0)
         main_controls_layout.addWidget(self._create_main_controls_panel())
@@ -4148,6 +4153,12 @@ bREadfan_69@hotmail.com"""
                 self.tempo_timeout_slider,
                 self.phase_snap_slider,
                 self.mode_combo,
+                self.flux_depth_mode_toggle,
+                self.combo_power_spin,
+                self.combo_depth_spin,
+                self.combo_speed_spin,
+                self.combo_texture_spin,
+                self.combo_reaction_spin,
                 self.stroke_range_slider,
                 self.min_interval_slider,
                 self.fullness_slider,
@@ -4203,6 +4214,13 @@ bREadfan_69@hotmail.com"""
                 self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
                 self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
                 self.flux_depth_slider.setValue(self.config.stroke.flux_depth_factor)
+                self.flux_depth_mode_toggle.setChecked(bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)))
+                self._on_flux_depth_mode_toggle(self.flux_depth_mode_toggle.isChecked())
+                self.combo_power_spin.setValue(float(getattr(self.config.stroke, 'combo_power', 1.0)))
+                self.combo_depth_spin.setValue(float(getattr(self.config.stroke, 'combo_depth', 1.0)))
+                self.combo_speed_spin.setValue(float(getattr(self.config.stroke, 'combo_speed', 1.0)))
+                self.combo_texture_spin.setValue(float(getattr(self.config.stroke, 'combo_texture', 1.0)))
+                self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
                 self.depth_freq_range_slider.setLow(int(self.config.stroke.depth_freq_low))
                 self.depth_freq_range_slider.setHigh(int(self.config.stroke.depth_freq_high))
                 self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
@@ -4334,14 +4352,28 @@ bREadfan_69@hotmail.com"""
         self.start_btn = QPushButton("▶ Start")
         self.start_btn.clicked.connect(lambda _checked=False: self._on_start_stop())
         self.start_btn.setFixedSize(100, 40)
-        btn_layout.addWidget(self.start_btn, 0, 0)
+        start_stack = QVBoxLayout()
+        start_stack.setSpacing(2)
+        start_stack.addWidget(self.start_btn)
+
+        self.start_mode_label = QLabel("audio processing")
+        self.start_mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        start_stack.addWidget(self.start_mode_label)
+        btn_layout.addLayout(start_stack, 0, 0)
         
         # Play/Pause sending
         self.play_btn = QPushButton("▶ Play")
         self.play_btn.clicked.connect(lambda _checked=False: self._on_play_pause())
         self.play_btn.setEnabled(False)
         self.play_btn.setFixedSize(100, 40)
-        btn_layout.addWidget(self.play_btn, 0, 1)
+        play_stack = QVBoxLayout()
+        play_stack.setSpacing(2)
+        play_stack.addWidget(self.play_btn)
+
+        self.play_mode_label = QLabel("motion generation")
+        self.play_mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        play_stack.addWidget(self.play_mode_label)
+        btn_layout.addLayout(play_stack, 0, 1)
         
         # Volume slider (0 - 100) - uses compact label for control panel
         self.volume_slider = SliderWithLabel("Vol", 0, 100, 100, decimals=0)
@@ -4787,18 +4819,104 @@ bREadfan_69@hotmail.com"""
     def _create_main_controls_panel(self) -> QGroupBox:
         """Main stroke controls panel - always displayed below tabs"""
         group = QGroupBox("Main Controls")
-        layout = QHBoxLayout(group)
+        layout = QVBoxLayout(group)
         layout.setContentsMargins(5, 5, 5, 5)
 
-        layout.addWidget(QLabel("Stroke Mode:"))
+        top_row = QHBoxLayout()
+        top_row.addWidget(QLabel("Stroke Mode:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["1: Circle", "2: Spiral", "3: Teardrop", "4: User (Flux/Peak)"])
         self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
-        self.mode_combo.setMinimumWidth(260)
-        layout.addWidget(self.mode_combo)
-        layout.addStretch()
+        self.mode_combo.setMinimumWidth(220)
+        top_row.addWidget(self.mode_combo)
+
+        top_row.addSpacing(8)
+        top_row.addWidget(QLabel("Flux-Depth:"))
+        self.flux_depth_mode_toggle = QPushButton("off")
+        self.flux_depth_mode_toggle.setCheckable(True)
+        self.flux_depth_mode_toggle.setChecked(bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)))
+        self.flux_depth_mode_toggle.toggled.connect(self._on_flux_depth_mode_toggle)
+        top_row.addWidget(self.flux_depth_mode_toggle)
+        top_row.addStretch()
+        layout.addLayout(top_row)
+
+        combos_row = QHBoxLayout()
+        combos_row.setSpacing(8)
+
+        def _make_combo_spinbox(title: str, value: float, min_val: float, max_val: float, step: float, handler):
+            col = QVBoxLayout()
+            col.setSpacing(1)
+            col.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(title)
+            label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+            spin = QDoubleSpinBox()
+            spin.setRange(min_val, max_val)
+            spin.setSingleStep(step)
+            spin.setDecimals(2)
+            spin.setValue(float(value))
+            spin.setFixedWidth(68)
+            spin.valueChanged.connect(handler)
+            col.addWidget(label)
+            col.addWidget(spin, alignment=Qt.AlignmentFlag.AlignHCenter)
+            return col, spin
+
+        power_col, self.combo_power_spin = _make_combo_spinbox(
+            "power",
+            getattr(self.config.stroke, 'combo_power', 1.0),
+            0.50,
+            2.00,
+            0.05,
+            lambda v: setattr(self.config.stroke, 'combo_power', float(v)),
+        )
+        depth_col, self.combo_depth_spin = _make_combo_spinbox(
+            "depth",
+            getattr(self.config.stroke, 'combo_depth', 1.0),
+            0.70,
+            1.60,
+            0.02,
+            lambda v: setattr(self.config.stroke, 'combo_depth', float(v)),
+        )
+        speed_col, self.combo_speed_spin = _make_combo_spinbox(
+            "speed",
+            getattr(self.config.stroke, 'combo_speed', 1.0),
+            0.80,
+            1.30,
+            0.02,
+            lambda v: setattr(self.config.stroke, 'combo_speed', float(v)),
+        )
+        texture_col, self.combo_texture_spin = _make_combo_spinbox(
+            "texture",
+            getattr(self.config.stroke, 'combo_texture', 1.0),
+            0.70,
+            1.60,
+            0.02,
+            lambda v: setattr(self.config.stroke, 'combo_texture', float(v)),
+        )
+        reaction_col, self.combo_reaction_spin = _make_combo_spinbox(
+            "reaction",
+            getattr(self.config.stroke, 'combo_reaction', 1.0),
+            0.75,
+            1.45,
+            0.02,
+            lambda v: setattr(self.config.stroke, 'combo_reaction', float(v)),
+        )
+
+        combos_row.addLayout(power_col)
+        combos_row.addLayout(depth_col)
+        combos_row.addLayout(speed_col)
+        combos_row.addLayout(texture_col)
+        combos_row.addLayout(reaction_col)
+        combos_row.addStretch()
+        layout.addLayout(combos_row)
+
+        self._on_flux_depth_mode_toggle(self.flux_depth_mode_toggle.isChecked())
 
         return group
+
+    def _on_flux_depth_mode_toggle(self, enabled: bool):
+        """Toggle flux-depth behavior between compressed (off) and boost."""
+        self.config.stroke.flux_depth_boost_enabled = bool(enabled)
+        self.flux_depth_mode_toggle.setText("boost" if enabled else "off")
     
     def _capture_current_settings(self) -> dict:
         """Capture all current UI settings for revert functionality"""
@@ -4851,6 +4969,13 @@ bREadfan_69@hotmail.com"""
             'minimum_depth': self.min_depth_slider.value(),
             'freq_depth_factor': self.freq_depth_slider.value(),
             'flux_depth_factor': self.flux_depth_slider.value(),
+            'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
+            'combo_size': float(getattr(self.config.stroke, 'combo_size', 1.0)),
+            'combo_power': float(getattr(self.config.stroke, 'combo_power', 1.0)),
+            'combo_depth': float(getattr(self.config.stroke, 'combo_depth', 1.0)),
+            'combo_speed': float(getattr(self.config.stroke, 'combo_speed', 1.0)),
+            'combo_texture': float(getattr(self.config.stroke, 'combo_texture', 1.0)),
+            'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
             'depth_freq_low': self.depth_freq_range_slider.low(),
             'depth_freq_high': self.depth_freq_range_slider.high(),
             'flux_threshold': self.flux_threshold_slider.value(),
@@ -5918,6 +6043,13 @@ bREadfan_69@hotmail.com"""
             'minimum_depth': self.min_depth_slider.value(),
             'freq_depth_factor': self.freq_depth_slider.value(),
             'flux_depth_factor': self.flux_depth_slider.value(),
+            'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
+            'combo_size': float(getattr(self.config.stroke, 'combo_size', 1.0)),
+            'combo_power': float(getattr(self.config.stroke, 'combo_power', 1.0)),
+            'combo_depth': float(getattr(self.config.stroke, 'combo_depth', 1.0)),
+            'combo_speed': float(getattr(self.config.stroke, 'combo_speed', 1.0)),
+            'combo_texture': float(getattr(self.config.stroke, 'combo_texture', 1.0)),
+            'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
             'depth_freq_low': self.depth_freq_range_slider.low(),
             'depth_freq_high': self.depth_freq_range_slider.high(),
             'flux_threshold': self.flux_threshold_slider.value(),
@@ -6061,6 +6193,21 @@ bREadfan_69@hotmail.com"""
             self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
             if 'flux_depth_factor' in preset_data:
                 self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
+            if 'flux_depth_boost_enabled' in preset_data:
+                self.flux_depth_mode_toggle.setChecked(bool(preset_data['flux_depth_boost_enabled']))
+                self._on_flux_depth_mode_toggle(bool(preset_data['flux_depth_boost_enabled']))
+            if 'combo_power' in preset_data:
+                self.combo_power_spin.setValue(float(preset_data['combo_power']))
+            if 'combo_depth' in preset_data:
+                self.combo_depth_spin.setValue(float(preset_data['combo_depth']))
+            elif 'combo_size' in preset_data:
+                self.combo_depth_spin.setValue(float(preset_data['combo_size']))
+            if 'combo_speed' in preset_data:
+                self.combo_speed_spin.setValue(float(preset_data['combo_speed']))
+            if 'combo_texture' in preset_data:
+                self.combo_texture_spin.setValue(float(preset_data['combo_texture']))
+            if 'combo_reaction' in preset_data:
+                self.combo_reaction_spin.setValue(float(preset_data['combo_reaction']))
             if 'depth_freq_low' in preset_data:
                 self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
             if 'depth_freq_high' in preset_data:
@@ -6516,6 +6663,8 @@ bREadfan_69@hotmail.com"""
             else:
                 # Stop should immediately clear play/sending state before shutdown work.
                 self._volume_ramp_active = False
+                self._play_warmup_active = False
+                self._play_warmup_seen_beat = False
                 self.is_sending = False
                 self._transport_pending_play = None
 
@@ -6572,6 +6721,11 @@ bREadfan_69@hotmail.com"""
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
             self.stroke_mapper._micro_effects_enabled = True
+            # Warmup gate: allow audio analysis to settle and beat pickup before motion
+            self._play_warmup_active = True
+            self._play_warmup_started_at = time.time()
+            self._play_warmup_seen_beat = False
+            send_zero_volume_immediate(self.network_engine, duration_ms=250)
             # Start volume ramp from 0 to set value over 1.3s
             ramp_state = begin_volume_ramp(time.time())
             self._volume_ramp_active = ramp_state.active
@@ -6581,6 +6735,8 @@ bREadfan_69@hotmail.com"""
             # sending_enabled already True from Start — no need to set again
         else:
             # Send V0=0 immediately with fade, but keep TCode pipeline active
+            self._play_warmup_active = False
+            self._play_warmup_seen_beat = False
             self._volume_ramp_active = False
             send_zero_volume_immediate(self.network_engine, duration_ms=500)
             # DON'T disable sending_enabled — connection stays active until Stop
@@ -6730,6 +6886,20 @@ bREadfan_69@hotmail.com"""
 
         # Process through stroke mapper
         if self.stroke_mapper and self.is_sending:
+            if self._play_warmup_active:
+                if event.is_beat:
+                    self._play_warmup_seen_beat = True
+
+                now = event.timestamp if event and event.timestamp > 0 else time.time()
+                elapsed = max(0.0, now - self._play_warmup_started_at)
+                warmup_ready = elapsed >= self._play_warmup_min_seconds and self._play_warmup_seen_beat
+                warmup_timeout = elapsed >= self._play_warmup_max_seconds
+
+                if not warmup_ready and not warmup_timeout:
+                    return
+
+                self._play_warmup_active = False
+
             cmd = self.stroke_mapper.process_beat(event)
             if cmd and self.network_engine:
                 # Compute P0/F0 and attach to command (thread-safe, no widget access)

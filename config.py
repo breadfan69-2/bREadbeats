@@ -104,8 +104,19 @@ class StrokeConfig:
     # Volume reduction limit: max % volume can be reduced by effects (subtractive clamp)
     vol_reduction_limit: float = 10.0  # 0-20, default 10 means max 10% reduction (floor = 0.90)
 
-    # Flux-rise depth factor: modulates stroke depth by spectral flux rise over 250ms
+    # Flux-rise depth factor over 250ms. Behavior is selected by flux_depth_boost_enabled.
+    # boost=False: compress depth toward minimum_depth on flux rise (legacy/default)
+    # boost=True:  boost depth toward 1.0 on flux rise
     flux_depth_factor: float = 0.0     # 0-5, 0=disabled
+    flux_depth_boost_enabled: bool = False  # False=compressed (legacy), True=boost
+
+    # Main Controls master combinations (1.0 = neutral)
+    combo_size: float = 1.0      # stroke size/fullness/flux-scaling/intensity-curve influence
+    combo_power: float = 1.0     # downbeat lock boost/jitter blend/scheduled lead
+    combo_depth: float = 1.0     # minimum depth/freq depth/flux-depth behavior
+    combo_speed: float = 1.0     # cadence density + min-interval behavior
+    combo_texture: float = 1.0   # noise burst + syncopation texture behavior
+    combo_reaction: float = 1.0  # gate/strictness/readiness aggressiveness
 
     # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
     phase_advance: float = 0.25
