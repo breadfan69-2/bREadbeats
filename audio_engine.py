@@ -124,6 +124,7 @@ class BeatEvent:
     metronome_bpm: float = 0.0    # Current internal metronome BPM (for stroke timing)
     acf_confidence: float = 0.0   # ACF peak confidence (0-1, for UI sync indicator)
     is_syncopated: bool = False   # True if an off-beat "and" onset was detected near this beat
+    monotonic_timestamp: float = 0.0  # Monotonic timestamp for drift-safe timing
 
 
 class AudioEngine:
@@ -223,6 +224,7 @@ class AudioEngine:
         self.last_beat_time: float = 0.0       # For calculating intervals
         self.beat_times: list[float] = []      # Last 16 beat times for stability
         self.predicted_next_beat: float = 0.0  # Predicted next beat time
+        self.predicted_next_beat_mono: float = 0.0  # Predicted next beat (monotonic clock)
         self.beat_position_in_measure: int = 0 # For downbeat tracking (1, 2, 3, 4...)
         
         # These are now read from config (with fallback defaults)
@@ -385,7 +387,7 @@ class AudioEngine:
         self._metronome_beat_fired: bool = False         # Did metronome fire a beat THIS frame?
         self._metronome_downbeat_fired: bool = False     # Did metronome fire a downbeat THIS frame?
         self._metronome_last_beat_time: float = 0.0      # When the metronome last ticked a beat
-        self._metronome_conf_hold_s: float = 1.2          # Keep metronome running through short ACF confidence dips
+        self._metronome_conf_hold_s: float = 0.25         # Keep metronome running only through very brief ACF confidence dips
         self._metronome_conf_lost_at: float = 0.0         # Timestamp when ACF confidence dropped below threshold
         self._metronome_bpm_alpha_slow: float = float(getattr(config.beat, 'metronome_bpm_alpha_slow', 0.03))
         self._metronome_bpm_alpha_fast: float = float(getattr(config.beat, 'metronome_bpm_alpha_fast', 0.22))
@@ -930,16 +932,18 @@ class AudioEngine:
         else:
             self.peak_envelope *= decay
 
+        wall_time = time.time()
+        current_time = time.perf_counter()
+
         self._update_session_stats(
             raw_rms=raw_rms,
             band_energy=band_energy,
             spectral_flux=spectral_flux,
             peak_level=self.peak_envelope,
-            sample_time=time.time(),
+            sample_time=wall_time,
         )
             
         # Check for tempo timeout (no beats for 2000ms)
-        current_time = time.time()
         time_since_last_beat = (current_time - self.last_beat_time) * 1000 if self.last_beat_time > 0 else 0
         
         tempo_reset_flag = False
@@ -994,7 +998,7 @@ class AudioEngine:
         
         # Advance internal metronome (pass band_energy for energy-based downbeat detection)
         self._advance_metronome(current_time, band_energy)
-        self._predict_next_beat(current_time)
+        self._predict_next_beat(current_time, wall_time)
         
         # Phase-lock: nudge metronome when a strong onset is detected near a beat
         if accepted_raw_is_beat and self._metronome_bpm > 0:
@@ -1077,7 +1081,7 @@ class AudioEngine:
         freq = self._estimate_frequency(spectrum, depth_low, depth_high)
         
         event = BeatEvent(
-            timestamp=time.time(),
+            timestamp=wall_time,
             intensity=min(1.0, band_energy / max(0.0001, self.peak_envelope)),
             frequency=freq,
             is_beat=is_beat,
@@ -1093,6 +1097,7 @@ class AudioEngine:
             metronome_bpm=self._metronome_bpm,
             acf_confidence=self._acf_confidence,
             is_syncopated=self._syncopation_detected,
+            monotonic_timestamp=current_time,
         )
         
         # Notify callback
@@ -1638,14 +1643,25 @@ class AudioEngine:
         if len(self.energy_history) < 5:
             return False
         
-        # Refractory period — suppress re-triggers within min_interval_ms
-        # This prevents burst clusters (4-6 detections within 250ms) from a single musical beat.
-        # Uses the same min_interval_ms that guards strokes, so BPS metrics count only real beats.
+        # Refractory period — suppress re-triggers inside a short guard window.
+        # Uses beat.beat_refractory_ms (tempo detector domain), not stroke.min_interval_ms
+        # (stroke scheduler domain), so high-BPM metronome operation is not choked by
+        # legacy stroke timing limits.
         if not hasattr(self, '_last_beat_time'):
             self._last_beat_time = 0
         
-        current_time = time.time()
-        refractory_s = self.config.stroke.min_interval_ms / 1000.0  # e.g. 300ms → 0.3s
+        current_time = time.perf_counter()
+        beat_refractory_ms = float(getattr(self.config.beat, 'beat_refractory_ms', 170.0) or 170.0)
+        beat_refractory_ms = float(np.clip(beat_refractory_ms, 80.0, 600.0))
+
+        if self._metronome_bpm > 0:
+            beat_period_ms = 60000.0 / max(1.0, float(self._metronome_bpm))
+        else:
+            beat_period_ms = 60000.0 / max(1.0, float(getattr(self, 'current_bpm', 120.0) or 120.0))
+
+        # Never let refractory exceed ~70% of a beat period; this keeps fast tempos responsive.
+        refractory_ms = min(beat_refractory_ms, beat_period_ms * 0.7)
+        refractory_s = refractory_ms / 1000.0
         if current_time - self._last_beat_time < refractory_s:
             return False
             
@@ -1892,18 +1908,21 @@ class AudioEngine:
         
         self.last_beat_time = current_time
     
-    def _predict_next_beat(self, current_time: float):
+    def _predict_next_beat(self, current_time: float, current_wall_time: float = 0.0):
         """Predict the time of the next beat using metronome when active."""
+        wall_time = current_wall_time if current_wall_time > 0 else time.time()
         if self._acf_metronome_enabled and self._metronome_bpm > 0:
             phase_frac = self._metronome_phase % 1.0
             beats_to_next = 1.0 - phase_frac if phase_frac > 1e-9 else 1.0
             predicted_interval = beats_to_next * (60.0 / self._metronome_bpm)
-            self.predicted_next_beat = current_time + predicted_interval
+            self.predicted_next_beat_mono = current_time + predicted_interval
+            self.predicted_next_beat = wall_time + predicted_interval
             return
 
         if self.smoothed_tempo > 0:
             predicted_interval = 60.0 / self.smoothed_tempo
-            self.predicted_next_beat = current_time + predicted_interval
+            self.predicted_next_beat_mono = current_time + predicted_interval
+            self.predicted_next_beat = wall_time + predicted_interval
     
     def _validate_downbeat_against_pattern(self, current_time: float, use_bpm: float = 0.0) -> bool:
         """
@@ -2003,6 +2022,7 @@ class AudioEngine:
             'beat_position': beat_pos,
             'is_downbeat': self.is_downbeat,
             'predicted_next_beat': self.predicted_next_beat,
+            'predicted_next_beat_mono': self.predicted_next_beat_mono,
             'interval_count': len(self.beat_intervals),
             'confidence': min(1.0, len(self.beat_intervals) / 4.0),
             'stability': self.beat_stability,
