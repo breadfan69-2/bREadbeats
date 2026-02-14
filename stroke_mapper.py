@@ -134,6 +134,8 @@ class StrokeMapper:
         self._micro_jerk_decay_ms: float = 120.0   # jerk decays over this many ms
 
         # ---------- Band energy trackers (updated from BeatEvent) ----------
+        self._sub_bass_energy: float = 0.0
+        self._low_mid_energy: float = 0.0
         self._mid_energy: float = 0.0
         self._high_energy: float = 0.0
         self._bass_jitter_speed_mult: float = 1.0
@@ -243,8 +245,9 @@ class StrokeMapper:
         self._post_silence_ramp_start: float = 0.0     # time.time() when ramp started
         self._was_silent: bool = False                  # track if we were faded out
 
-        # ---------- Flux-drop fallback ----------
-        self._recent_flux_values: deque = deque(maxlen=60)  # ~1s of flux history for drop detection
+        # ---------- Flux history / center-reset guard ----------
+        self._recent_flux_values: deque = deque(maxlen=60)  # ~1s of flux history for center-reset flux guard
+        self._recent_low_band_values: deque = deque(maxlen=60)  # ~1s of low-band activity for beat gating/fallback
 
         # ---------- Motion-block diagnostics (throttled) ----------
         self._motion_block_active: bool = False
@@ -254,10 +257,11 @@ class StrokeMapper:
         self._block_summary_interval_s: float = 10.0
         self._block_summary_window_start: float = time.time()
         self._block_reason_order: List[str] = [
+            'overall_activity_gate',
             'bass_gate',
             'stroke_ready',
             'beat_divisor',
-            'flux_gate',
+            'low_band_gate',
             'mode_creep_micro',
         ]
         self._block_reason_counts = {reason: 0 for reason in self._block_reason_order}
@@ -655,13 +659,61 @@ class StrokeMapper:
     # ------------------------------------------------------------------
 
     def _update_band_energies(self, event: BeatEvent) -> None:
-        """Extract mid/high energy from audio_engine for micro-effect scaling."""
+        """Extract band energies from audio_engine for motion and micro-effect scaling."""
         if self.audio_engine and hasattr(self.audio_engine, '_band_energies'):
             energies = self.audio_engine._band_energies
             # Smooth tracking
             alpha = 0.2
+            self._sub_bass_energy += (energies.get('sub_bass', 0.0) - self._sub_bass_energy) * alpha
+            self._low_mid_energy += (energies.get('low_mid', 0.0) - self._low_mid_energy) * alpha
             self._mid_energy += (energies.get('mid', 0.0) - self._mid_energy) * alpha
             self._high_energy += (energies.get('high', 0.0) - self._high_energy) * alpha
+
+    def _get_low_band_activity(self, event: BeatEvent) -> float:
+        """Return current low-frequency activity estimate for stroke gating.
+
+        Primary source: smoothed sub_bass + low_mid energies.
+        Fallback: infer minimal low-band activity from beat context when band
+        energies are temporarily unavailable.
+        """
+        activity = float(max(0.0, self._sub_bass_energy + self._low_mid_energy))
+        if activity > 1e-6:
+            return activity
+
+        beat_band = getattr(event, 'beat_band', '')
+        freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+        peak = float(getattr(event, 'peak_energy', 0.0) or 0.0)
+
+        if beat_band in ('sub_bass', 'low_mid'):
+            return peak * 0.5
+        if 30.0 <= freq <= 500.0:
+            return peak * 0.35
+        return 0.0
+
+    def _get_low_band_gate_status(self, event: BeatEvent, is_downbeat: bool = False) -> tuple[bool, float, float, float]:
+        """Evaluate low-band mean + delta/variance gate for beat strokes."""
+        cfg = self.config.stroke
+        values = list(self._recent_low_band_values)
+        if len(values) < 8:
+            return False, 0.0, 0.0, 0.0
+
+        window = int(getattr(cfg, 'low_band_window_frames', 18) or 18)
+        window = int(np.clip(window, 8, len(values)))
+        segment = values[-window:]
+
+        mean_val = float(np.mean(segment))
+        delta_val = float(max(segment) - min(segment))
+        var_val = float(np.var(segment))
+
+        relax = float(getattr(cfg, 'downbeat_low_band_relax', 0.85) or 0.85) if is_downbeat else 1.0
+        relax = float(np.clip(relax, 0.5, 1.0))
+
+        mean_thresh = float(getattr(cfg, 'low_band_activity_threshold', 0.20) or 0.20) * relax
+        delta_thresh = float(getattr(cfg, 'low_band_delta_threshold', 0.06) or 0.06) * relax
+        var_thresh = float(getattr(cfg, 'low_band_variance_threshold', 0.0015) or 0.0015) * relax
+
+        gate_pass = (mean_val >= mean_thresh) and ((delta_val >= delta_thresh) or (var_val >= var_thresh))
+        return bool(gate_pass), mean_val, delta_val, var_val
 
     def _update_bass_jitter_drive(self, event: BeatEvent) -> None:
         """Update jitter speed multiplier from bass z-score context + pitch.
@@ -791,24 +843,27 @@ class StrokeMapper:
         self._update_band_energies(event)
         self._update_bass_jitter_drive(event)
 
-        # ===== FLUX-DROP FALLBACK =====
-        # Track recent flux for drop detection — if upper spectrum flux
-        # drops significantly, force back to creep mode
+        # ===== LOW-BAND DROP FALLBACK =====
+        # Track recent low-band activity; if it drops sharply from a
+        # high-activity state, force back to creep mode.
         self._recent_flux_values.append(event.spectral_flux)
+        low_band_activity = self._get_low_band_activity(event)
+        self._recent_low_band_values.append(low_band_activity)
         if len(self._recent_flux_values) >= 30:
-            recent_avg = sum(list(self._recent_flux_values)[-15:]) / 15.0
-            older_avg = sum(list(self._recent_flux_values)[:15]) / 15.0
-            flux_drop_ratio = cfg.flux_drop_ratio if hasattr(cfg, 'flux_drop_ratio') else 0.25
-            if older_avg > 0.01 and recent_avg < older_avg * flux_drop_ratio:
-                # Flux dropped to <25% of recent levels — force creep
-                if self._motion_mode == MotionMode.FULL_STROKE:
-                    self._motion_mode = MotionMode.CREEP_MICRO
-                    self._mode_switch_time = now
-                    self._trajectory = None
-                    self._pending_arc_event = None
-                    self._sync_creep_angle_to_position()
-                    log_event("INFO", "StrokeMapper", "Flux drop → creep fallback",
-                              recent=f"{recent_avg:.4f}", older=f"{older_avg:.4f}")
+            if bool(getattr(cfg, 'low_band_drop_guard_enabled', True)):
+                recent_avg = sum(list(self._recent_low_band_values)[-15:]) / 15.0
+                older_avg = sum(list(self._recent_low_band_values)[:15]) / 15.0
+                flux_drop_ratio = cfg.flux_drop_ratio if hasattr(cfg, 'flux_drop_ratio') else 0.25
+                min_high_band = float(getattr(cfg, 'low_band_activity_threshold', 0.20) or 0.20)
+                if older_avg >= min_high_band and recent_avg < older_avg * flux_drop_ratio:
+                    if self._motion_mode == MotionMode.FULL_STROKE:
+                        self._motion_mode = MotionMode.CREEP_MICRO
+                        self._mode_switch_time = now
+                        self._trajectory = None
+                        self._pending_arc_event = None
+                        self._sync_creep_angle_to_position()
+                        log_event("INFO", "StrokeMapper", "Low-band drop → creep fallback",
+                                  recent=f"{recent_avg:.4f}", older=f"{older_avg:.4f}")
 
         # ===== NO-BEAT TIMEOUT =====
         # Track beat liveness from any detected beat (ungated), and
@@ -972,6 +1027,21 @@ class StrokeMapper:
                 self._burst_scheduled_active = False
                 log_event("INFO", "StrokeMapper",
                           "Burst-schedule deactivated (real beat detected)")
+
+            if bool(getattr(cfg, 'overall_activity_guard_enabled', True)):
+                low_flux = float(getattr(cfg, 'overall_low_flux_threshold', 0.06) or 0.06)
+                low_energy = float(getattr(cfg, 'overall_low_energy_threshold', 0.14) or 0.14)
+                if (event.spectral_flux < low_flux) and (event.peak_energy < low_energy):
+                    self._note_motion_block(
+                        "overall_activity_gate",
+                        flux=f"{event.spectral_flux:.4f}",
+                        flux_threshold=f"{low_flux:.4f}",
+                        energy=f"{event.peak_energy:.4f}",
+                        energy_threshold=f"{low_energy:.4f}",
+                    )
+                    cmd = self._generate_idle_motion(event)
+                    return self._apply_fade(cmd)
+
             if not bass_motion_allowed:
                 self._note_motion_block(
                     "bass_gate",
@@ -1021,21 +1091,24 @@ class StrokeMapper:
                     )
                     return None
 
-                is_high_flux = event.spectral_flux >= cfg.flux_threshold
-                if is_high_flux:
+                beat_gate_pass, beat_mean, beat_delta, beat_var = self._get_low_band_gate_status(event, is_downbeat=False)
+                if beat_gate_pass:
                     cmd = self._generate_beat_stroke(event)
                     self._note_motion_resumed("beat")
                     return self._apply_fade(cmd)
 
                 if is_downbeat:
-                    cmd = self._generate_downbeat_stroke(event)
-                    self._note_motion_resumed("downbeat_fallback")
-                    return self._apply_fade(cmd)
+                    downbeat_gate_pass, down_mean, down_delta, down_var = self._get_low_band_gate_status(event, is_downbeat=True)
+                    if downbeat_gate_pass:
+                        cmd = self._generate_downbeat_stroke(event)
+                        self._note_motion_resumed("downbeat_fallback")
+                        return self._apply_fade(cmd)
 
                 self._note_motion_block(
-                    "flux_gate",
-                    flux=f"{event.spectral_flux:.4f}",
-                    threshold=f"{cfg.flux_threshold:.4f}",
+                    "low_band_gate",
+                    low_mean=f"{beat_mean:.4f}",
+                    low_delta=f"{beat_delta:.4f}",
+                    low_var=f"{beat_var:.4f}",
                 )
                 return None
 

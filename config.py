@@ -157,6 +157,25 @@ class StrokeConfig:
     # Flux-drop detection: if recent flux drops below this fraction of older flux, force creep
     flux_drop_ratio: float = 0.25           # 0.0-1.0, lower = less sensitive (needs bigger drop)
 
+    # Low-band activity gate for beat-based stroke generation
+    # Uses sub_bass + low_mid activity window in StrokeMapper.
+    # Beat strokes require:
+    #   mean >= threshold AND (delta >= threshold OR variance >= threshold)
+    # Downbeats use the same concept with a slightly relaxed threshold multiplier.
+    low_band_window_frames: int = 18
+    low_band_activity_threshold: float = 0.20
+    low_band_delta_threshold: float = 0.06
+    low_band_variance_threshold: float = 0.0015
+    downbeat_low_band_relax: float = 0.85
+    low_band_drop_guard_enabled: bool = True
+
+    # Overall full-spectrum quiet guard for beat/downbeat stroke generation.
+    # Blocks beat-based strokes only when BOTH spectral flux and peak energy
+    # are below these thresholds.
+    overall_activity_guard_enabled: bool = True
+    overall_low_flux_threshold: float = 0.06
+    overall_low_energy_threshold: float = 0.14
+
     # Post-silence volume ramp: reduce volume after silence/track-change, ramp back up
     post_silence_vol_reduction: float = 0.15  # Fraction to reduce volume by (0.0-0.50, 0.15 = 15%)
     post_silence_ramp_seconds: float = 3.0    # Seconds to ramp volume back to full (1.0-8.0)
