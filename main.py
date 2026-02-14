@@ -2191,6 +2191,50 @@ class NoWheelScrollArea(QScrollArea):
         event.ignore()
 
 
+class CalibrationPopoutWindow(QMainWindow):
+    """Pop-out calibration visualizer fed by the existing live spectrum stream."""
+
+    def __init__(self, parent=None, on_closed=None):
+        super().__init__(parent)
+        self._on_closed = on_closed
+        self.setWindowTitle("Calibration Visualizer")
+        self.resize(980, 520)
+
+        self.canvas = MountainRangeCanvas(parent, width=10, height=5)
+        self.setCentralWidget(self.canvas)
+        self.canvas.set_range_indicators_visible(True)
+        self.canvas.set_peak_indicators_visible(True)
+
+    def update_from_spectrum(self, spectrum: np.ndarray, peak: float, flux: float, stroke_cfg) -> None:
+        self.canvas.update_spectrum(spectrum, peak, flux)
+
+        low_mean = float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20)
+        high_mean = float(getattr(stroke_cfg, 'high_band_mean_threshold', 0.12) or 0.12)
+
+        self.canvas.show_reference_line(
+            'cal_low_mean',
+            low_mean,
+            'Low mean',
+            color='#32FF32',
+            duration_s=1.2,
+        )
+        self.canvas.show_reference_line(
+            'cal_high_mean',
+            high_mean,
+            'High mean',
+            color='#FF66CC',
+            duration_s=1.2,
+        )
+
+    def closeEvent(self, event):
+        if callable(self._on_closed):
+            try:
+                self._on_closed()
+            except Exception:
+                pass
+        super().closeEvent(event)
+
+
 class BREadbeatsWindow(QMainWindow):
     """Main application window"""
     
@@ -2201,6 +2245,7 @@ class BREadbeatsWindow(QMainWindow):
         self.setMinimumSize(400, 300)
         self.resize(1100, 950)
         self.setStyleSheet(self._get_stylesheet())
+        self.calibration_popout = None
         
         # Set window icon (appears in taskbar and title bar)
         try:
@@ -2861,6 +2906,10 @@ class BREadbeatsWindow(QMainWindow):
         self.show_peak_indicators_action.setCheckable(True)
         self.show_peak_indicators_action.setChecked(True)  # Peak visible by default
         self.show_peak_indicators_action.triggered.connect(self._on_show_peak_indicators_menu_toggle)
+
+        popout_calibration_action = options_menu.addAction("Pop-out Calibration Visualizer")
+        assert popout_calibration_action is not None
+        popout_calibration_action.triggered.connect(self._on_popout_calibration_visualizer)
 
         options_menu.addSeparator()
 
@@ -5107,6 +5156,28 @@ bREadfan_69@hotmail.com"""
         for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas]:
             if hasattr(canvas, 'set_range_indicators_visible'):
                 canvas.set_range_indicators_visible(checked)
+
+    def _on_popout_calibration_visualizer(self):
+        """Open or focus a pop-out calibration visualizer window."""
+        if self.calibration_popout is not None and self.calibration_popout.isVisible():
+            self.calibration_popout.raise_()
+            self.calibration_popout.activateWindow()
+            return
+
+        self.calibration_popout = CalibrationPopoutWindow(self, on_closed=self._on_calibration_popout_closed)
+        self.calibration_popout.canvas.set_sample_rate(int(getattr(self.config.audio, 'sample_rate', 44100)))
+        self.calibration_popout.canvas.set_frequency_band(
+            float(getattr(self.config.beat, 'freq_low', 30.0)) / max(1.0, float(getattr(self.config.audio, 'sample_rate', 44100)) / 2.0),
+            float(getattr(self.config.beat, 'freq_high', 150.0)) / max(1.0, float(getattr(self.config.audio, 'sample_rate', 44100)) / 2.0),
+        )
+        self.calibration_popout.canvas.set_depth_band(
+            float(getattr(self.config.stroke, 'depth_freq_low', 30.0)),
+            float(getattr(self.config.stroke, 'depth_freq_high', 200.0)),
+        )
+        self.calibration_popout.show()
+
+    def _on_calibration_popout_closed(self):
+        self.calibration_popout = None
 
     def _on_show_peak_indicators_menu_toggle(self, checked: bool):
         """Handle Show Peak Indicators toggle from Options menu"""
@@ -7899,6 +7970,9 @@ bREadfan_69@hotmail.com"""
                     self.bar_canvas.update_spectrum(spectrum, peak, flux)
                 elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
                     self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
+
+                if self.calibration_popout is not None and self.calibration_popout.isVisible():
+                    self.calibration_popout.update_from_spectrum(spectrum, peak, flux, self.config.stroke)
             else:
                 # Legacy format - only update visible visualizer
                 peak, flux = self._compute_visual_metrics(self._pending_spectrum)
@@ -7910,6 +7984,9 @@ bREadfan_69@hotmail.com"""
                     self.bar_canvas.update_spectrum(self._pending_spectrum, peak, flux)
                 elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
                     self.phosphor_canvas.update_spectrum(self._pending_spectrum, peak, flux)
+
+                if self.calibration_popout is not None and self.calibration_popout.isVisible():
+                    self.calibration_popout.update_from_spectrum(self._pending_spectrum, peak, flux, self.config.stroke)
             self._pending_spectrum = None
     
     def _on_status_change(self, message: str, connected: bool):
