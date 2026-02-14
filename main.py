@@ -2612,6 +2612,15 @@ class BREadbeatsWindow(QMainWindow):
         splitter.setStretchFactor(1, 2)
         main_layout.addWidget(splitter, stretch=1)
 
+        # Fixed row: Main controls (LOCKED, never squishes)
+        main_controls_widget = QWidget()
+        main_controls_widget.setMinimumHeight(48)
+        main_controls_widget.setMaximumHeight(64)
+        main_controls_layout = QHBoxLayout(main_controls_widget)
+        main_controls_layout.setContentsMargins(0, 0, 0, 0)
+        main_controls_layout.addWidget(self._create_main_controls_panel())
+        main_layout.addWidget(main_controls_widget)
+
         # Bottom row: Presets + projectM launcher (LOCKED, never squishes)
         bottom_widget = QWidget()
         bottom_widget.setMinimumHeight(48)
@@ -4774,6 +4783,22 @@ bREadfan_69@hotmail.com"""
         layout.addWidget(self.revert_btn)
         
         return group
+
+    def _create_main_controls_panel(self) -> QGroupBox:
+        """Main stroke controls panel - always displayed below tabs"""
+        group = QGroupBox("Main Controls")
+        layout = QHBoxLayout(group)
+        layout.setContentsMargins(5, 5, 5, 5)
+
+        layout.addWidget(QLabel("Stroke Mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["1: Circle", "2: Spiral", "3: Teardrop", "4: User (Flux/Peak)"])
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
+        self.mode_combo.setMinimumWidth(260)
+        layout.addWidget(self.mode_combo)
+        layout.addStretch()
+
+        return group
     
     def _capture_current_settings(self) -> dict:
         """Capture all current UI settings for revert functionality"""
@@ -4788,7 +4813,6 @@ bREadfan_69@hotmail.com"""
             'flux_multiplier': self.flux_mult_slider.value(),
             'audio_gain': self.audio_gain_slider.value(),
             'zscore_threshold': self.zscore_threshold_slider.value(),
-            'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
             'amp_gate_high': self.config.stroke.amplitude_gate_high,
             'amp_gate_low': self.config.stroke.amplitude_gate_low,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
@@ -4877,8 +4901,6 @@ bREadfan_69@hotmail.com"""
         if 'zscore_threshold' in preset_data:
             self.zscore_threshold_slider.setValue(preset_data['zscore_threshold'])
             self._on_zscore_threshold_change(preset_data['zscore_threshold'])
-        if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
-            self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
         if 'amp_gate_high' in preset_data:
             self.config.stroke.amplitude_gate_high = preset_data['amp_gate_high']
         if 'amp_gate_low' in preset_data:
@@ -5665,33 +5687,6 @@ bREadfan_69@hotmail.com"""
         self.config.stroke.stroke_min = low
         self.config.stroke.stroke_max = high
 
-    def _on_motion_intensity_change(self, value: float):
-        """Update motion intensity on the stroke mapper at runtime."""
-        if hasattr(self, 'stroke_mapper') and self.stroke_mapper is not None:
-            self.stroke_mapper.motion_intensity = value
-        print(f"[Config] Motion intensity set to {value:.2f}")
-
-    def _set_motion_preset(self, preset: str):
-        """Apply a quick motion preset: gentle / normal / intense.
-        
-        Adjusts motion intensity (stroke size), z-score threshold,
-        PATH 1 sensitivity, and rise sensitivity together to create
-        coherent feel profiles — from smooth to jerky micro-motions.
-        """
-        presets = {
-            'gentle':  {'motion': 0.50, 'zscore': 3.5, 'sensitivity': 0.30, 'rise_sens': 0.70},
-            'normal':  {'motion': 1.00, 'zscore': 2.5, 'sensitivity': 0.50, 'rise_sens': 0.40},
-            'intense': {'motion': 1.50, 'zscore': 1.8, 'sensitivity': 0.80, 'rise_sens': 0.10},
-        }
-        p = presets.get(preset, presets['normal'])
-        # Motion intensity slider is independent — user controls stroke size separately
-        self.zscore_threshold_slider.setValue(p['zscore'])
-        self.sensitivity_slider.setValue(p['sensitivity'])
-        self.rise_sens_slider.setValue(p['rise_sens'])
-        print(f"[Config] Motion preset '{preset}': "
-              f"z-score={p['zscore']}, sensitivity={p['sensitivity']}, "
-              f"rise_sens={p['rise_sens']}")
-
     def _on_tempo_tracking_toggle(self, state):
         """Enable/disable tempo tracking"""
         enabled = state == 2  # Qt.CheckState.Checked
@@ -5887,7 +5882,6 @@ bREadfan_69@hotmail.com"""
             'flux_multiplier': self.flux_mult_slider.value(),
             'audio_gain': self.audio_gain_slider.value(),
             'zscore_threshold': self.zscore_threshold_slider.value(),
-            'motion_intensity': self.motion_intensity_slider.value() if hasattr(self, 'motion_intensity_slider') else 1.0,
             'amp_gate_high': self.config.stroke.amplitude_gate_high,
             'amp_gate_low': self.config.stroke.amplitude_gate_low,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
@@ -5999,8 +5993,6 @@ bREadfan_69@hotmail.com"""
             if 'zscore_threshold' in preset_data:
                 self.zscore_threshold_slider.setValue(preset_data['zscore_threshold'])
                 self._on_zscore_threshold_change(preset_data['zscore_threshold'])
-            if 'motion_intensity' in preset_data and hasattr(self, 'motion_intensity_slider'):
-                self.motion_intensity_slider.setValue(preset_data['motion_intensity'])
             if 'amp_gate_high' in preset_data:
                 self.config.stroke.amplitude_gate_high = preset_data['amp_gate_high']
             if 'amp_gate_low' in preset_data:
@@ -6186,49 +6178,10 @@ bREadfan_69@hotmail.com"""
 
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
-        # Mode selection
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(QLabel("Stroke Mode:"))
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["1: Circle", "2: Spiral", "3: Teardrop", "4: User (Flux/Peak)"])
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
-        mode_layout.addWidget(self.mode_combo)
-        mode_layout.addStretch()
-        layout.addLayout(mode_layout)
-        
-        # ===== MOTION INTENSITY =====
-        motion_group = QGroupBox("Motion Intensity")
-        motion_layout = QVBoxLayout(motion_group)
-        
-        # Motion intensity slider (0.25 - 2.0, default 1.0) — scales all stroke output
-        self.motion_intensity_slider = SliderWithLabel("Intensity", 0.25, 2.0, 1.0)
-        self.motion_intensity_slider.valueChanged.connect(self._on_motion_intensity_change)
-        motion_layout.addWidget(self.motion_intensity_slider)
-        
-        # Quick preset buttons: Gentle / Normal / Intense
-        motion_btn_layout = QHBoxLayout()
-        self.motion_gentle_btn = QPushButton("Gentle")
-        self.motion_gentle_btn.setToolTip("Low motion: intensity 0.50, z-score threshold 3.5")
-        self.motion_gentle_btn.clicked.connect(lambda: self._set_motion_preset('gentle'))
-        self.motion_gentle_btn.setStyleSheet("QPushButton { background: #335; color: #8af; }")
-        motion_btn_layout.addWidget(self.motion_gentle_btn)
-        
-        self.motion_normal_btn = QPushButton("Normal")
-        self.motion_normal_btn.setToolTip("Default motion: intensity 1.0, z-score threshold 2.5")
-        self.motion_normal_btn.clicked.connect(lambda: self._set_motion_preset('normal'))
-        self.motion_normal_btn.setStyleSheet("QPushButton { background: #353; color: #8f8; }")
-        motion_btn_layout.addWidget(self.motion_normal_btn)
-        
-        self.motion_intense_btn = QPushButton("Intense")
-        self.motion_intense_btn.setToolTip("High motion: intensity 1.50, z-score threshold 1.8")
-        self.motion_intense_btn.clicked.connect(lambda: self._set_motion_preset('intense'))
-        self.motion_intense_btn.setStyleSheet("QPushButton { background: #533; color: #f88; }")
-        motion_btn_layout.addWidget(self.motion_intense_btn)
-        
-        motion_layout.addLayout(motion_btn_layout)
-        
-        layout.addWidget(motion_group)
+
+        # ===== LEGACY / EXPERT CONTROLS (window shade) =====
+        legacy_group = CollapsibleGroupBox("Legacy / Expert Controls", collapsed=True)
+        legacy_layout = QVBoxLayout(legacy_group)
         
         # ===== STROKE PARAMETERS =====
         params_group = CollapsibleGroupBox("Stroke Parameters", collapsed=True)
@@ -6258,7 +6211,7 @@ bREadfan_69@hotmail.com"""
         self.flux_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_depth_factor', v))
         params_layout.addWidget(self.flux_depth_slider)
         
-        layout.addWidget(params_group)
+        legacy_layout.addWidget(params_group)
         
         # Frequency range for stroke depth - shown as green overlay on spectrum
         depth_freq_group = CollapsibleGroupBox("Depth Frequency Range (Hz) - green overlay", collapsed=True)
@@ -6276,7 +6229,9 @@ bREadfan_69@hotmail.com"""
         depth_slider_row.addWidget(self.depth_band_toggle)
         depth_freq_layout.addLayout(depth_slider_row)
         
-        layout.addWidget(depth_freq_group)
+        legacy_layout.addWidget(depth_freq_group)
+
+        layout.addWidget(legacy_group)
 
         layout.addStretch()
         scroll_area.setWidget(widget)
@@ -6618,7 +6573,6 @@ bREadfan_69@hotmail.com"""
         if checked:
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
-            self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
             self.stroke_mapper._micro_effects_enabled = True
             # Start volume ramp from 0 to set value over 1.3s
             ramp_state = begin_volume_ramp(time.time())
@@ -6686,7 +6640,6 @@ bREadfan_69@hotmail.com"""
         self._sync_metric_checkboxes_to_engine()
 
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
-        self.stroke_mapper.motion_intensity = self.motion_intensity_slider.value()
         self.stroke_mapper._micro_effects_enabled = True
 
         # Network engine is already started on program launch via _auto_connect_tcp
