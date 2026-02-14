@@ -3848,7 +3848,7 @@ class BREadbeatsWindow(QMainWindow):
             2.00,
             float(getattr(self.config.stroke, 'low_band_activity_threshold', 0.20) or 0.20),
             3,
-            step=0.005,
+            step=0.001,
         )
         low_band_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_activity_threshold', 'low_band_mean', 'Low mean', '#32FF32'))
         flux_layout.addWidget(low_band_mean_slider)
@@ -3859,7 +3859,7 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'low_band_delta_threshold', 0.06) or 0.06),
             3,
-            step=0.005,
+            step=0.001,
         )
         low_band_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_delta_threshold', 'low_band_delta', 'Low Δ', '#55FF88'))
         flux_layout.addWidget(low_band_delta_slider)
@@ -3870,7 +3870,7 @@ class BREadbeatsWindow(QMainWindow):
             0.2000,
             float(getattr(self.config.stroke, 'low_band_variance_threshold', 0.0015) or 0.0015),
             4,
-            step=0.005,
+            step=0.001,
         )
         low_band_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_variance_threshold', 'low_band_var', 'Low var', '#77FFAA'))
         flux_layout.addWidget(low_band_var_slider)
@@ -3881,7 +3881,7 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'downbeat_low_band_relax', 0.85) or 0.85),
             3,
-            step=0.005,
+            step=0.001,
         )
         downbeat_relax_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'downbeat_low_band_relax', float(v))
@@ -3894,6 +3894,13 @@ class BREadbeatsWindow(QMainWindow):
             lambda state: setattr(self.config.stroke, 'high_band_gate_enabled', state == 2)
         )
         flux_layout.addWidget(high_gate_cb)
+
+        high_include_mid_cb = QCheckBox("Include mid band in upper gate")
+        high_include_mid_cb.setChecked(bool(getattr(self.config.stroke, 'high_band_include_mid', True)))
+        high_include_mid_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'high_band_include_mid', state == 2)
+        )
+        flux_layout.addWidget(high_include_mid_cb)
 
         high_info = QLabel("Upper gate pass = presence (mean+occupancy+variation) OR recent upper-band beat pattern.")
         high_info.setStyleSheet("color: #999; font-size: 10px;")
@@ -3919,7 +3926,7 @@ class BREadbeatsWindow(QMainWindow):
             2.00,
             float(getattr(self.config.stroke, 'high_band_mean_threshold', 0.12) or 0.12),
             3,
-            step=0.005,
+            step=0.001,
         )
         high_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_mean_threshold', 'high_band_mean', 'High mean', '#FF66CC'))
         flux_layout.addWidget(high_mean_slider)
@@ -3930,7 +3937,7 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'high_band_floor_threshold', 0.06) or 0.06),
             3,
-            step=0.005,
+            step=0.001,
         )
         high_floor_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_floor_threshold', 'high_band_floor', 'High floor', '#FF88DD'))
         flux_layout.addWidget(high_floor_slider)
@@ -3941,7 +3948,7 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'high_band_occupancy_threshold', 0.55) or 0.55),
             3,
-            step=0.005,
+            step=0.001,
         )
         high_occ_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_occupancy_threshold', 'high_band_occ', 'High occ', '#FFAAEE', dashed=True))
         flux_layout.addWidget(high_occ_slider)
@@ -3952,7 +3959,7 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'high_band_delta_threshold', 0.05) or 0.05),
             3,
-            step=0.005,
+            step=0.001,
         )
         high_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_delta_threshold', 'high_band_delta', 'High Δ', '#FF99DD'))
         flux_layout.addWidget(high_delta_slider)
@@ -3963,7 +3970,7 @@ class BREadbeatsWindow(QMainWindow):
             0.2000,
             float(getattr(self.config.stroke, 'high_band_variance_threshold', 0.0010) or 0.0010),
             4,
-            step=0.005,
+            step=0.001,
         )
         high_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_variance_threshold', 'high_band_var', 'High var', '#FFBBEE'))
         flux_layout.addWidget(high_var_slider)
@@ -4002,7 +4009,7 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'downbeat_high_band_relax', 0.90) or 0.90),
             3,
-            step=0.005,
+            step=0.001,
         )
         high_downbeat_relax_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'downbeat_high_band_relax', float(v))

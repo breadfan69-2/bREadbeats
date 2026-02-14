@@ -187,6 +187,7 @@ class StrokeConfig:
     high_band_variance_threshold: float = 0.0010
     high_band_pattern_window_beats: int = 5
     high_band_pattern_min_hits: int = 3
+    high_band_include_mid: bool = True
     downbeat_high_band_relax: float = 0.90
 
     # Overall full-spectrum quiet guard for beat/downbeat stroke generation.
