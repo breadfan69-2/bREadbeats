@@ -3438,65 +3438,6 @@ class BREadbeatsWindow(QMainWindow):
         motion_cutoff_row.addStretch()
         gate_layout.addLayout(motion_cutoff_row)
 
-        strict_zscore_info = QLabel("Optional extra filter: require repeated z-score band fires before allowing stroke motion.")
-        strict_zscore_info.setStyleSheet("color: #aaa; font-size: 11px;")
-        gate_layout.addWidget(strict_zscore_info)
-
-        strict_zscore_cb = QCheckBox("Enable strict z-score stroke gate")
-        strict_zscore_cb.setChecked(bool(getattr(self.config.beat, 'strict_zscore_gate_enabled', False)))
-        strict_zscore_cb.stateChanged.connect(
-            lambda state: setattr(self.config.beat, 'strict_zscore_gate_enabled', state == 2)
-        )
-        gate_layout.addWidget(strict_zscore_cb)
-
-        strict_window_row = QHBoxLayout()
-        strict_window_label = QLabel("Z-score window (frames):")
-        strict_window_label.setStyleSheet("color: #ccc;")
-        strict_window_label.setToolTip("Sliding frame window used to count z-score activations")
-        strict_window_row.addWidget(strict_window_label)
-        strict_window_spin = QSpinBox()
-        strict_window_spin.setRange(1, 120)
-        strict_window_spin.setSingleStep(1)
-        strict_window_spin.setValue(int(getattr(self.config.beat, 'strict_zscore_window_frames', 12) or 12))
-        strict_window_spin.valueChanged.connect(
-            lambda v: setattr(self.config.beat, 'strict_zscore_window_frames', int(v))
-        )
-        strict_window_row.addWidget(strict_window_spin)
-        strict_window_row.addStretch()
-        gate_layout.addLayout(strict_window_row)
-
-        strict_fires_row = QHBoxLayout()
-        strict_fires_label = QLabel("Min z-score fires in window:")
-        strict_fires_label.setStyleSheet("color: #ccc;")
-        strict_fires_label.setToolTip("Required z-score activations inside window before stroke motion is allowed")
-        strict_fires_row.addWidget(strict_fires_label)
-        strict_fires_spin = QSpinBox()
-        strict_fires_spin.setRange(1, 120)
-        strict_fires_spin.setSingleStep(1)
-        strict_fires_spin.setValue(int(getattr(self.config.beat, 'strict_zscore_min_fires', 3) or 3))
-        strict_fires_spin.valueChanged.connect(
-            lambda v: setattr(self.config.beat, 'strict_zscore_min_fires', int(v))
-        )
-        strict_fires_row.addWidget(strict_fires_spin)
-        strict_fires_row.addStretch()
-        gate_layout.addLayout(strict_fires_row)
-
-        strict_hold_row = QHBoxLayout()
-        strict_hold_label = QLabel("Gate hold (frames):")
-        strict_hold_label.setStyleSheet("color: #ccc;")
-        strict_hold_label.setToolTip("Keeps strict gate open briefly after threshold is reached")
-        strict_hold_row.addWidget(strict_hold_label)
-        strict_hold_spin = QSpinBox()
-        strict_hold_spin.setRange(0, 120)
-        strict_hold_spin.setSingleStep(1)
-        strict_hold_spin.setValue(int(getattr(self.config.beat, 'strict_zscore_hold_frames', 8) or 8))
-        strict_hold_spin.valueChanged.connect(
-            lambda v: setattr(self.config.beat, 'strict_zscore_hold_frames', int(v))
-        )
-        strict_hold_row.addWidget(strict_hold_spin)
-        strict_hold_row.addStretch()
-        gate_layout.addLayout(strict_hold_row)
-
         scroll_layout.addWidget(gate_group)
 
         # ===== Noise Burst Controls (Hybrid System) =====
@@ -3766,6 +3707,37 @@ class BREadbeatsWindow(QMainWindow):
             lambda v: setattr(self.config.stroke, 'flux_drop_ratio', v)
         )
         flux_layout.addWidget(flux_drop_slider)
+
+        center_guard_cb = QCheckBox("Block center+jitter reset while flux activity is high")
+        center_guard_cb.setChecked(bool(getattr(self.config.beat, 'center_jitter_flux_guard_enabled', False)))
+        center_guard_cb.stateChanged.connect(
+            lambda state: setattr(self.config.beat, 'center_jitter_flux_guard_enabled', state == 2)
+        )
+        flux_layout.addWidget(center_guard_cb)
+
+        center_guard_delta_slider = SliderWithLabel(
+            "Center reset guard Δflux",
+            0.01,
+            3.00,
+            float(getattr(self.config.beat, 'center_jitter_flux_delta_threshold', 0.20) or 0.20),
+            2,
+        )
+        center_guard_delta_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'center_jitter_flux_delta_threshold', float(v))
+        )
+        flux_layout.addWidget(center_guard_delta_slider)
+
+        center_guard_avg_slider = SliderWithLabel(
+            "Center reset guard avg",
+            0.01,
+            3.00,
+            float(getattr(self.config.beat, 'center_jitter_flux_avg_threshold', 0.25) or 0.25),
+            2,
+        )
+        center_guard_avg_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'center_jitter_flux_avg_threshold', float(v))
+        )
+        flux_layout.addWidget(center_guard_avg_slider)
 
         scroll_layout.addWidget(flux_group)
 
@@ -4867,7 +4839,6 @@ bREadfan_69@hotmail.com"""
 
         self.flux_latest_label = QLabel("Flux Now: 0.0000")
         self.flux_ratio_label = QLabel("Flux/Thresh: 0.00x")
-        self.flux_zscore_gate_label = QLabel("ZScoreGate: OFF")
         self.flux_min_label = QLabel("Flux Min (20s): 0.0000")
         self.flux_max_label = QLabel("Flux Max (20s): 0.0000")
         self.flux_avg_label = QLabel("Flux Avg (20s): 0.0000")
@@ -4879,7 +4850,6 @@ bREadfan_69@hotmail.com"""
         for label in (
             self.flux_latest_label,
             self.flux_ratio_label,
-            self.flux_zscore_gate_label,
             self.flux_min_label,
             self.flux_max_label,
             self.flux_avg_label,
@@ -7633,20 +7603,6 @@ bREadfan_69@hotmail.com"""
             ratio_state = "HIGH" if flux_snapshot['latest'] >= flux_threshold else "LOW"
             self.flux_latest_label.setText(f"Flux Now: {self._flux_display_snapshot['latest']:.4f}")
             self.flux_ratio_label.setText(f"Flux/Thresh: {flux_ratio:.2f}x ({ratio_state})")
-            zscore_text = "ZScoreGate: OFF"
-            if self.stroke_mapper and hasattr(self.stroke_mapper, 'get_strict_zscore_gate_status'):
-                try:
-                    z_gate = self.stroke_mapper.get_strict_zscore_gate_status()
-                    if z_gate.get('enabled', False):
-                        gate_state = "OPEN" if z_gate.get('gate_open', False) else "CLOSED"
-                        hold_remaining = int(z_gate.get('hold_remaining', 0))
-                        zscore_text = (
-                            f"ZScoreGate: {gate_state} "
-                            f"({int(z_gate.get('recent_fires', 0))}/{int(z_gate.get('required_fires', 0))}, hold {hold_remaining})"
-                        )
-                except Exception:
-                    zscore_text = "ZScoreGate: --"
-            self.flux_zscore_gate_label.setText(zscore_text)
             self.flux_min_label.setText(f"Flux Min (20s): {flux_snapshot['min_20s']:.4f}")
             self.flux_max_label.setText(f"Flux Max (20s): {flux_snapshot['max_20s']:.4f}")
             self.flux_avg_label.setText(f"Flux Avg (20s): {flux_snapshot['avg_20s']:.4f}")
