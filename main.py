@@ -75,6 +75,7 @@ from transport_wiring import (
     trigger_network_test,
 )
 from stroke_mapper import StrokeMapper
+from teaching_capture import TeachingCapture
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
 
@@ -3029,6 +3030,11 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
+        self._teaching_capture = TeachingCapture(get_config_dir())
+        self._teaching_capture_enabled: bool = False
+        self._teaching_last_metric_log_time: float = 0.0
+        self._teaching_metric_interval_s: float = 1.0 / 25.0
+        self._teaching_last_visual: dict[str, float] = {}
         self._slider_tracker = SliderTuningTracker(get_config_dir())
         _set_active_slider_tracker(self._slider_tracker)
         # Apply persisted log level early so downstream modules inherit
@@ -3667,6 +3673,12 @@ class BREadbeatsWindow(QMainWindow):
         assert popout_calibration_action is not None
         popout_calibration_action.triggered.connect(self._on_popout_calibration_visualizer)
 
+        self.teaching_capture_action = options_menu.addAction("Teaching Capture")
+        assert self.teaching_capture_action is not None
+        self.teaching_capture_action.setCheckable(True)
+        self.teaching_capture_action.setChecked(False)
+        self.teaching_capture_action.triggered.connect(self._on_teaching_capture_toggle)
+
         options_menu.addSeparator()
 
         # Log level submenu
@@ -4024,6 +4036,8 @@ class BREadbeatsWindow(QMainWindow):
         
         # Prevent multiple instances — reuse existing dialog if open
         if hasattr(self, '_advanced_controls_dialog') and self._advanced_controls_dialog is not None:
+            self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            self._advanced_controls_dialog.show()
             self._advanced_controls_dialog.raise_()
             self._advanced_controls_dialog.activateWindow()
             return
@@ -4033,6 +4047,7 @@ class BREadbeatsWindow(QMainWindow):
         dialog.setMinimumWidth(450)
         dialog.setMinimumHeight(400)
         dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         dialog.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, False)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         # Clear reference when dialog is closed
@@ -5129,18 +5144,29 @@ class BREadbeatsWindow(QMainWindow):
     
     def _on_about(self):
         """Show About dialog"""
-        about_text = """bREadbeats v1.0
-Live Audio to Restim
-
-Inspired by:
-    digitalparkinglot's creations
-    edger477 (ideas from funscriptgenerator)
-    diglet48 (wouldn't be here without restim!)
-    shadlock0133 (music-vibes)
-
-Bug reports/share your presets:
-bREadfan_69@hotmail.com"""
-        QMessageBox.information(self, "About bREadbeats", about_text)
+        about_html = """
+<b>bREadbeats v1.0</b><br>
+Live Audio to Restim<br><br>
+Inspired by:<br>
+&nbsp;&nbsp;&nbsp;&nbsp;digitalparkinglot's creations<br>
+&nbsp;&nbsp;&nbsp;&nbsp;edger477 (ideas from funscriptgenerator)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;diglet48 (wouldn't be here without restim!)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;shadlock0133 (music-vibes)<br><br>
+Bug reports/share your presets:<br>
+bREadfan_69@hotmail.com<br><br>
+Like the app?<br>
+<a href="https://ko-fi.com/breadbeats">https://ko-fi.com/breadbeats</a>
+"""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("About bREadbeats")
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(about_html)
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        for label in msg.findChildren(QLabel):
+            label.setOpenExternalLinks(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        msg.exec()
 
     def _on_open_reports_folder(self):
         report_dir = get_config_dir()
@@ -5968,6 +5994,118 @@ bREadfan_69@hotmail.com"""
     def _on_calibration_popout_closed(self):
         self.calibration_popout = None
         self._set_main_visualizers_hidden_for_popout(False)
+
+    def _on_teaching_capture_toggle(self, checked: bool) -> None:
+        self._teaching_capture_enabled = bool(checked)
+        if self._teaching_capture_enabled:
+            session_dir = self._teaching_capture.start()
+            self._teaching_last_metric_log_time = 0.0
+            print(f"[Teaching] Capture enabled: {session_dir}")
+        else:
+            self._teaching_capture.stop(flush=True)
+            print("[Teaching] Capture disabled and flushed")
+
+    def _collect_gate_metrics_snapshot(self) -> dict[str, float]:
+        mapper = self.stroke_mapper
+        if mapper is None:
+            return {}
+
+        out: dict[str, float] = {}
+        try:
+            low_vals = list(getattr(mapper, '_recent_low_band_values', []))
+            high_vals = list(getattr(mapper, '_recent_high_band_values', []))
+            low_window = int(getattr(self.config.stroke, 'low_band_window_frames', 18) or 18)
+            high_window = int(getattr(self.config.stroke, 'high_band_window_frames', 18) or 18)
+
+            if len(low_vals) >= 1:
+                seg = np.asarray(low_vals[-max(1, min(low_window, len(low_vals))):], dtype=np.float32)
+                out['low_mean'] = float(np.mean(seg))
+                out['low_delta'] = float(np.max(seg) - np.min(seg))
+                out['low_var'] = float(np.var(seg))
+
+            if len(high_vals) >= 1:
+                seg = np.asarray(high_vals[-max(1, min(high_window, len(high_vals))):], dtype=np.float32)
+                floor_th = float(getattr(self.config.stroke, 'high_band_floor_threshold', 0.06) or 0.06)
+                out['high_mean'] = float(np.mean(seg))
+                out['high_delta'] = float(np.max(seg) - np.min(seg))
+                out['high_var'] = float(np.var(seg))
+                out['high_occ'] = float(np.sum(seg >= floor_th) / max(1, seg.size))
+        except Exception:
+            return out
+
+        return out
+
+    def _log_teaching_metric_row(self, spectrum: np.ndarray, sample_rate: int) -> None:
+        if not self._teaching_capture_enabled:
+            return
+
+        now = time.time()
+        if self._teaching_last_metric_log_time > 0 and (now - self._teaching_last_metric_log_time) < self._teaching_metric_interval_s:
+            return
+        self._teaching_last_metric_log_time = now
+
+        arr = np.asarray(spectrum, dtype=np.float32)
+        if arr.size == 0:
+            return
+
+        nyquist = float(sample_rate) / 2.0
+        freqs = np.linspace(0.0, nyquist, arr.size, dtype=np.float32)
+        peak_idx = int(np.argmax(arr)) if arr.size > 0 else 0
+        dominant_hz = float(freqs[peak_idx]) if arr.size > 0 else 0.0
+        peak_db = float(20.0 * np.log10(max(float(np.max(arr)), 1e-12)))
+
+        row = {
+            'timestamp_s': now,
+            'sample_rate_hz': int(sample_rate),
+            'dominant_hz': dominant_hz,
+            'peak_db': peak_db,
+            'beat_detected': 1 if bool(self._teaching_last_visual.get('last_event_is_beat', 0.0)) else 0,
+            'downbeat_detected': 1 if bool(self._teaching_last_visual.get('last_event_is_downbeat', 0.0)) else 0,
+        }
+        row.update(self._collect_gate_metrics_snapshot())
+        self._teaching_capture.add_metric(row)
+
+        self._teaching_last_visual['dominant_hz'] = dominant_hz
+        self._teaching_last_visual['peak_db'] = peak_db
+
+    def _capture_teaching_beat_snapshot(self, event: BeatEvent) -> None:
+        if not self._teaching_capture_enabled or not event.is_beat:
+            return
+
+        widget = None
+        if self.calibration_popout is not None and self.calibration_popout.isVisible():
+            if hasattr(self.calibration_popout, 'mode_combo') and self.calibration_popout.mode_combo.currentIndex() == 1:
+                widget = self.calibration_popout.freqdb_canvas
+            elif hasattr(self.calibration_popout, 'waveform_canvas'):
+                widget = self.calibration_popout.waveform_canvas
+        elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas.isVisible():
+            widget = self.freqdb_canvas
+        elif hasattr(self, 'waveform_canvas') and self.waveform_canvas.isVisible():
+            widget = self.waveform_canvas
+
+        snapshot_rel = ''
+        if widget is not None:
+            path = self._teaching_capture.next_snapshot_path('beat')
+            if path is not None:
+                pixmap = widget.grab()
+                if pixmap is not None and not pixmap.isNull() and pixmap.save(str(path), 'PNG'):
+                    snapshot_rel = str(path.name)
+
+        row = {
+            'timestamp_s': float(getattr(event, 'timestamp', time.time()) or time.time()),
+            'is_beat': 1,
+            'is_downbeat': 1 if bool(getattr(event, 'is_downbeat', False)) else 0,
+            'bpm': float(getattr(event, 'bpm', 0.0) or 0.0),
+            'metronome_bpm': float(getattr(event, 'metronome_bpm', 0.0) or 0.0),
+            'acf_confidence': float(getattr(event, 'acf_confidence', 0.0) or 0.0),
+            'peak_energy': float(getattr(event, 'peak_energy', 0.0) or 0.0),
+            'spectral_flux': float(getattr(event, 'spectral_flux', 0.0) or 0.0),
+            'dominant_hz_latest': float(self._teaching_last_visual.get('dominant_hz', 0.0)),
+            'peak_db_latest': float(self._teaching_last_visual.get('peak_db', -120.0)),
+            'snapshot_png': snapshot_rel,
+        }
+        row.update(self._collect_gate_metrics_snapshot())
+        self._teaching_capture.add_event(row)
 
     def _on_show_peak_indicators_menu_toggle(self, checked: bool):
         """Handle Show Peak Indicators toggle from Options menu"""
@@ -7910,23 +8048,7 @@ bREadfan_69@hotmail.com"""
     
     def _on_test(self):
         """Send test pattern"""
-        _, should_restore = trigger_network_test(self.network_engine)
-        # Restore after a delay (test takes ~2.5 seconds)
-        if should_restore:
-            QTimer.singleShot(3000, lambda: set_transport_sending(self.network_engine, False))
-
-    def _sync_transport_buttons(self) -> None:
-        """Force transport button visual state to match runtime state."""
-        self.start_btn.blockSignals(True)
-        self.play_btn.blockSignals(True)
-        try:
-            self.start_btn.setText("■ Stop" if self.is_running else "▶ Start")
-
-            self.play_btn.setEnabled(bool(self.is_running))
-            self.play_btn.setText(play_button_text(bool(self.is_sending and self.is_running)))
-        finally:
-            self.start_btn.blockSignals(False)
-            self.play_btn.blockSignals(False)
+        trigger_network_test(self.network_engine)
 
     def _apply_pending_start(self) -> None:
         """Apply a queued start request captured during stop transition."""
@@ -7954,6 +8076,32 @@ bREadfan_69@hotmail.com"""
             return
         desired = bool(self._transport_pending_play)
         self._on_play_pause(desired)
+
+    def _sync_transport_buttons(self) -> None:
+        """Synchronize Start/Play button state, text, and enabled flags."""
+        if not hasattr(self, 'start_btn') or not hasattr(self, 'play_btn'):
+            return
+
+        running = bool(self.is_running)
+        sending = bool(self.is_sending and self.is_running)
+        ready = bool(self._transport_ready)
+        transitioning = bool(self._transport_transition)
+
+        ui_state = start_stop_ui_state(running)
+        start_enabled = ready and (not transitioning)
+        play_enabled = ready and running and (not transitioning)
+
+        with self._signals_blocked(self.start_btn, self.play_btn):
+            self.start_btn.setChecked(running)
+            self.start_btn.setEnabled(start_enabled)
+            self.start_btn.setText(ui_state.start_text)
+
+            self.play_btn.setChecked(sending)
+            self.play_btn.setEnabled(play_enabled)
+            self.play_btn.setText(play_button_text(sending))
+
+        if transitioning:
+            self.start_btn.setText("Working...")
     
     def _on_start_stop(self, checked: bool | None = None):
         """Start/stop audio capture and TCode pipeline.
@@ -8015,6 +8163,8 @@ bREadfan_69@hotmail.com"""
                 send_zero_volume_immediate(self.network_engine, duration_ms=100)
                 set_transport_sending(self.network_engine, False)
                 self._stop_engines()
+                if self._teaching_capture_enabled:
+                    self._teaching_capture.flush()
                 # Note: Auto-range state is preserved across stop/start - no reset here
         finally:
             self._transport_transition = False
@@ -8219,10 +8369,14 @@ bREadfan_69@hotmail.com"""
         if self.audio_engine:
             spectrum = self.audio_engine.get_spectrum()
             if spectrum is not None:
+                waveform = self.audio_engine.get_waveform()
+                sample_rate = int(getattr(self.config.audio, 'sample_rate', 44100))
                 spectrum_with_stats = {
                     'spectrum': spectrum,
                     'peak_energy': event.peak_energy,
-                    'spectral_flux': event.spectral_flux
+                    'spectral_flux': event.spectral_flux,
+                    'waveform': waveform,
+                    'sample_rate': sample_rate,
                 }
                 self.signals.spectrum_ready.emit(spectrum_with_stats)
 
@@ -8620,6 +8774,10 @@ bREadfan_69@hotmail.com"""
     
     def _on_beat(self, event: BeatEvent):
         """Handle beat event in GUI thread"""
+        self._teaching_last_visual['last_event_is_beat'] = 1.0 if bool(getattr(event, 'is_beat', False)) else 0.0
+        self._teaching_last_visual['last_event_is_downbeat'] = 1.0 if bool(getattr(event, 'is_downbeat', False)) else 0.0
+        if event.is_beat:
+            self._capture_teaching_beat_snapshot(event)
         # ===== METRONOME SYNC INDICATOR (updates every frame, not just on beat) =====
         acf_conf = getattr(event, 'acf_confidence', 0.0)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
@@ -8753,6 +8911,7 @@ bREadfan_69@hotmail.com"""
                 peak, flux = self._compute_visual_metrics(spectrum)
                 waveform = self._pending_spectrum.get('waveform')
                 sample_rate = int(self._pending_spectrum.get('sample_rate', getattr(self.config.audio, 'sample_rate', 44100)))
+                self._log_teaching_metric_row(spectrum, sample_rate)
                 popout = self.calibration_popout
                 popout_visible = popout is not None and popout.isVisible()
                 if popout_visible:
@@ -8995,6 +9154,8 @@ bREadfan_69@hotmail.com"""
 
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
+        if self._teaching_capture_enabled:
+            self._teaching_capture.stop(flush=True)
         shutdown_runtime(self._stop_engines, self.network_engine)
 
         persist_runtime_ui_to_config(self, self.config)

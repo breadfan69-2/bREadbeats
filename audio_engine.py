@@ -2071,7 +2071,7 @@ class AudioEngine:
             return self.spectrum_data.copy() if self.spectrum_data is not None else None
 
     def get_waveform(self) -> Optional[np.ndarray]:
-        """Get latest mono waveform frame for visualization."""
+        """Get current waveform frame for visualization."""
         with self.waveform_lock:
             return self.waveform_data.copy() if self.waveform_data is not None else None
     
