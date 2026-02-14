@@ -20,6 +20,7 @@ import queue
 import threading
 import os
 import random
+from collections import deque
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -2231,29 +2232,51 @@ class BREadbeatsWindow(QMainWindow):
         self._cached_p3_tcode_max: int = 8000
         self._prev_p3_enabled: bool = False
         
-        # P0/F0 sliding window averaging (250ms window for smoother, more readable signal)
-        from collections import deque
+        # P0/F0 sliding window averaging (short window for low-latency response)
         import random
         self._p0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
         self._f0_freq_window: deque = deque()  # (timestamp, norm_weighted) tuples
         self._p1_window: deque = deque()       # (timestamp, norm_weighted) tuples for Pulse Width
         self._p3_window: deque = deque()       # (timestamp, norm_weighted) tuples for Rise Time
-        self._freq_window_ms: float = 250.0  # Window size in milliseconds
+        self._freq_window_ms: float = 80.0  # Window size in milliseconds
         self._p0_last_send_time: float = 0.0  # For throttling P0 sends
         self._f0_last_send_time: float = 0.0  # For throttling F0 sends
         self._f0_last_sent_tcode: Optional[int] = None  # Last F0 tcode value sent (for smoothing)
-        self._f0_duration_base_ms: float = 900.0  # Base F0 duration (ms)
-        # C0 Band mode rate limiter: +-500 tcode per 2 seconds, finish travel before new target
+        self._f0_duration_base_ms: float = 220.0  # Base F0 duration (ms)
+        # C0 Band mode rate limiter: fast travel for low-latency response
         self._c0_band_target: Optional[int] = None   # Current target tcode for band mode
         self._c0_band_current: Optional[int] = None   # Current sent tcode value (traveling)
         self._c0_band_last_target_time: float = 0.0   # When last target was set
-        self._c0_band_travel_rate: float = 250.0       # Max tcode change per second (500/2s)
-        self._f0_duration_variance_ms: float = 200.0  # ±variance for random duration
-        self._f0_max_change_per_send: int = 300  # Max ±300 tcode change per send
+        self._c0_band_travel_rate: float = 1200.0      # Max tcode change per second
+        self._c0_band_max_target_delta: int = 1800     # Max target jump accepted per retarget
+        self._f0_duration_variance_ms: float = 40.0   # ±variance for random duration
+        self._f0_max_change_per_send: int = 1500  # Max tcode change per send
         self._last_freq_display_time: float = 0.0  # Throttle freq display updates to 100ms
         self._last_dot_alpha: float = 0.0
         self._last_dot_beta: float = 0.0
         self._last_dot_time: float = 0.0
+
+        # Flux gauges (rolling 20s + absolute session extremes)
+        self._flux_gauge_lock = threading.Lock()
+        self._flux_window_seconds: float = 20.0
+        self._flux_samples_20s: deque[tuple[float, float]] = deque()
+        self._flux_sum_20s: float = 0.0
+        self._flux_abs_min: Optional[float] = None
+        self._flux_abs_max: Optional[float] = None
+        self._flux_latest: float = 0.0
+        self._flux_snapshot: dict[str, float] = {
+            'latest': 0.0,
+            'min_20s': 0.0,
+            'max_20s': 0.0,
+            'avg_20s': 0.0,
+            'delta_20s': 0.0,
+            'abs_peak': 0.0,
+            'abs_trough': 0.0,
+            'abs_depth': 0.0,
+        }
+        self._flux_text_update_interval_s: float = 0.40
+        self._last_flux_text_update_time: float = 0.0
+        self._flux_display_snapshot: dict[str, float] = dict(self._flux_snapshot)
         
         # Volume ramping state for play/stop
         self._volume_ramp_active: bool = False
@@ -3414,6 +3437,65 @@ class BREadbeatsWindow(QMainWindow):
         motion_cutoff_row.addWidget(self.motion_freq_cutoff_spin)
         motion_cutoff_row.addStretch()
         gate_layout.addLayout(motion_cutoff_row)
+
+        strict_zscore_info = QLabel("Optional extra filter: require repeated z-score band fires before allowing stroke motion.")
+        strict_zscore_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        gate_layout.addWidget(strict_zscore_info)
+
+        strict_zscore_cb = QCheckBox("Enable strict z-score stroke gate")
+        strict_zscore_cb.setChecked(bool(getattr(self.config.beat, 'strict_zscore_gate_enabled', False)))
+        strict_zscore_cb.stateChanged.connect(
+            lambda state: setattr(self.config.beat, 'strict_zscore_gate_enabled', state == 2)
+        )
+        gate_layout.addWidget(strict_zscore_cb)
+
+        strict_window_row = QHBoxLayout()
+        strict_window_label = QLabel("Z-score window (frames):")
+        strict_window_label.setStyleSheet("color: #ccc;")
+        strict_window_label.setToolTip("Sliding frame window used to count z-score activations")
+        strict_window_row.addWidget(strict_window_label)
+        strict_window_spin = QSpinBox()
+        strict_window_spin.setRange(1, 120)
+        strict_window_spin.setSingleStep(1)
+        strict_window_spin.setValue(int(getattr(self.config.beat, 'strict_zscore_window_frames', 12) or 12))
+        strict_window_spin.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'strict_zscore_window_frames', int(v))
+        )
+        strict_window_row.addWidget(strict_window_spin)
+        strict_window_row.addStretch()
+        gate_layout.addLayout(strict_window_row)
+
+        strict_fires_row = QHBoxLayout()
+        strict_fires_label = QLabel("Min z-score fires in window:")
+        strict_fires_label.setStyleSheet("color: #ccc;")
+        strict_fires_label.setToolTip("Required z-score activations inside window before stroke motion is allowed")
+        strict_fires_row.addWidget(strict_fires_label)
+        strict_fires_spin = QSpinBox()
+        strict_fires_spin.setRange(1, 120)
+        strict_fires_spin.setSingleStep(1)
+        strict_fires_spin.setValue(int(getattr(self.config.beat, 'strict_zscore_min_fires', 3) or 3))
+        strict_fires_spin.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'strict_zscore_min_fires', int(v))
+        )
+        strict_fires_row.addWidget(strict_fires_spin)
+        strict_fires_row.addStretch()
+        gate_layout.addLayout(strict_fires_row)
+
+        strict_hold_row = QHBoxLayout()
+        strict_hold_label = QLabel("Gate hold (frames):")
+        strict_hold_label.setStyleSheet("color: #ccc;")
+        strict_hold_label.setToolTip("Keeps strict gate open briefly after threshold is reached")
+        strict_hold_row.addWidget(strict_hold_label)
+        strict_hold_spin = QSpinBox()
+        strict_hold_spin.setRange(0, 120)
+        strict_hold_spin.setSingleStep(1)
+        strict_hold_spin.setValue(int(getattr(self.config.beat, 'strict_zscore_hold_frames', 8) or 8))
+        strict_hold_spin.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'strict_zscore_hold_frames', int(v))
+        )
+        strict_hold_row.addWidget(strict_hold_spin)
+        strict_hold_row.addStretch()
+        gate_layout.addLayout(strict_hold_row)
 
         scroll_layout.addWidget(gate_group)
 
@@ -4778,7 +4860,96 @@ bREadfan_69@hotmail.com"""
         self.beta_label = QLabel("β: 0.00")
         self.beta_label.setVisible(False)
 
+        flux_group = QGroupBox("Flux Gauges")
+        flux_layout = QVBoxLayout(flux_group)
+        flux_layout.setContentsMargins(8, 8, 8, 8)
+        flux_layout.setSpacing(3)
+
+        self.flux_latest_label = QLabel("Flux Now: 0.0000")
+        self.flux_ratio_label = QLabel("Flux/Thresh: 0.00x")
+        self.flux_zscore_gate_label = QLabel("ZScoreGate: OFF")
+        self.flux_min_label = QLabel("Flux Min (20s): 0.0000")
+        self.flux_max_label = QLabel("Flux Max (20s): 0.0000")
+        self.flux_avg_label = QLabel("Flux Avg (20s): 0.0000")
+        self.flux_delta_label = QLabel("Flux Δ (20s): 0.0000")
+        self.flux_abs_peak_label = QLabel("Abs Peak: 0.0000")
+        self.flux_abs_trough_label = QLabel("Abs Trough: 0.0000")
+        self.flux_abs_depth_label = QLabel("Abs Depth: 0.0000")
+
+        for label in (
+            self.flux_latest_label,
+            self.flux_ratio_label,
+            self.flux_zscore_gate_label,
+            self.flux_min_label,
+            self.flux_max_label,
+            self.flux_avg_label,
+            self.flux_delta_label,
+            self.flux_abs_peak_label,
+            self.flux_abs_trough_label,
+            self.flux_abs_depth_label,
+        ):
+            label.setStyleSheet("color: #CFCFCF; font-size: 11px;")
+            flux_layout.addWidget(label)
+
+        layout.addWidget(flux_group)
+
         return widget
+
+    def _update_flux_gauges(self, spectral_flux: float, sample_time: Optional[float] = None) -> None:
+        """Update rolling 20s flux gauges and absolute peak/trough trackers."""
+        try:
+            flux = float(spectral_flux)
+        except (TypeError, ValueError):
+            return
+
+        if not np.isfinite(flux):
+            return
+
+        now = float(sample_time) if sample_time is not None else time.perf_counter()
+
+        with self._flux_gauge_lock:
+            self._flux_latest = flux
+            self._flux_samples_20s.append((now, flux))
+            self._flux_sum_20s += flux
+
+            cutoff = now - self._flux_window_seconds
+            while self._flux_samples_20s and self._flux_samples_20s[0][0] < cutoff:
+                _, expired_flux = self._flux_samples_20s.popleft()
+                self._flux_sum_20s -= expired_flux
+
+            if self._flux_abs_min is None or flux < self._flux_abs_min:
+                self._flux_abs_min = flux
+            if self._flux_abs_max is None or flux > self._flux_abs_max:
+                self._flux_abs_max = flux
+
+            if self._flux_samples_20s:
+                sample_count = len(self._flux_samples_20s)
+                min_20s = min(v for _, v in self._flux_samples_20s)
+                max_20s = max(v for _, v in self._flux_samples_20s)
+                avg_20s = self._flux_sum_20s / max(1, sample_count)
+                delta_20s = self._flux_samples_20s[-1][1] - self._flux_samples_20s[0][1]
+            else:
+                min_20s = 0.0
+                max_20s = 0.0
+                avg_20s = 0.0
+                delta_20s = 0.0
+
+            abs_peak = self._flux_abs_max if self._flux_abs_max is not None else 0.0
+            abs_trough = self._flux_abs_min if self._flux_abs_min is not None else 0.0
+            self._flux_snapshot = {
+                'latest': self._flux_latest,
+                'min_20s': float(min_20s),
+                'max_20s': float(max_20s),
+                'avg_20s': float(avg_20s),
+                'delta_20s': float(delta_20s),
+                'abs_peak': float(abs_peak),
+                'abs_trough': float(abs_trough),
+                'abs_depth': float(abs_peak - abs_trough),
+            }
+
+    def _get_flux_gauge_snapshot(self) -> dict[str, float]:
+        with self._flux_gauge_lock:
+            return dict(self._flux_snapshot)
     
     def _create_settings_tabs(self) -> QTabWidget:
         """Settings tabs with all the sliders"""
@@ -6869,6 +7040,9 @@ bREadfan_69@hotmail.com"""
     
     def _audio_callback(self, event: BeatEvent):
         """Called from audio thread on each frame - NO direct Qt widget access for thread safety"""
+        sample_time = event.monotonic_timestamp if getattr(event, 'monotonic_timestamp', 0.0) > 0 else time.perf_counter()
+        self._update_flux_gauges(event.spectral_flux, sample_time)
+
         # Emit signal for thread-safe GUI update
         self.signals.beat_detected.emit(event)
 
@@ -6947,7 +7121,7 @@ bREadfan_69@hotmail.com"""
         self._last_dot_beta = cmd.beta
         self._last_dot_time = now
         
-        # --- P0 (Pulse Frequency) with 250ms sliding window averaging ---
+        # --- P0 (Pulse Frequency) with short sliding window averaging ---
         p0_enabled = self._cached_p0_enabled
         if p0_enabled:
             pulse_mode = self._cached_pulse_mode
@@ -6997,9 +7171,9 @@ bREadfan_69@hotmail.com"""
             p0_val = int(tcode_min_val + avg_norm * (tcode_max_val - tcode_min_val))
             p0_val = max(0, min(9999, p0_val))
             
-            # Send P0 with 250ms duration for smooth transitions
+            # Send P0 using current low-latency window duration
             cmd.pulse_freq = p0_val
-            cmd.pulse_freq_duration = int(self._freq_window_ms)  # 250ms duration
+            cmd.pulse_freq_duration = int(self._freq_window_ms)
             self._cached_p0_val = p0_val
             # Display raw TCode; append Hz if device limits configured
             dl = self.config.device_limits
@@ -7014,7 +7188,7 @@ bREadfan_69@hotmail.com"""
             self._cached_pulse_display = "Pulse Freq: off"
             self._p0_freq_window.clear()  # Clear window when disabled
         
-        # --- F0 (Carrier Frequency) with 250ms sliding window averaging ---
+        # --- F0 (Carrier Frequency) with short sliding window averaging ---
         f0_enabled = self._cached_f0_enabled
         if f0_enabled:
             f0_mode = self._cached_f0_mode
@@ -7080,9 +7254,9 @@ bREadfan_69@hotmail.com"""
                     # Accept new target only if different enough (>50 tcode)
                     current_target = self._c0_band_target
                     if current_target is not None and abs(f0_val_raw - current_target) > 50:
-                        # Clamp new target: max ±500 from current position
+                        # Clamp new target to bounded jump from current position
                         delta_from_current = f0_val_raw - self._c0_band_current
-                        delta_from_current = max(-500, min(500, delta_from_current))
+                        delta_from_current = max(-self._c0_band_max_target_delta, min(self._c0_band_max_target_delta, delta_from_current))
                         self._c0_band_target = self._c0_band_current + delta_from_current
                         self._c0_band_target = max(0, min(9999, self._c0_band_target))
                         self._c0_band_last_target_time = now
@@ -7110,7 +7284,7 @@ bREadfan_69@hotmail.com"""
             f0_val = max(0, min(9999, f0_val))
             self._f0_last_sent_tcode = f0_val
             
-            # Generate random duration: 900ms ±200ms
+            # Generate short random duration for live response
             f0_duration = int(self._f0_duration_base_ms + random.uniform(-self._f0_duration_variance_ms, self._f0_duration_variance_ms))
             f0_duration = max(100, f0_duration)  # Minimum 100ms
             
@@ -7132,7 +7306,7 @@ bREadfan_69@hotmail.com"""
             self._f0_freq_window.clear()  # Clear window when disabled
             self._f0_last_sent_tcode = None  # Reset smoothing state when disabled
         
-        # --- P1 (Pulse Width) with 250ms sliding window averaging ---
+        # --- P1 (Pulse Width) with short sliding window averaging ---
         p1_enabled = self._cached_p1_enabled
         if p1_enabled:
             p1_mode = self._cached_p1_mode
@@ -7193,7 +7367,7 @@ bREadfan_69@hotmail.com"""
             self._cached_p1_display = "Pulse Width: off"
             self._p1_window.clear()
         
-        # --- P3 (Rise Time) with 250ms sliding window averaging ---
+        # --- P3 (Rise Time) with short sliding window averaging ---
         p3_enabled = self._cached_p3_enabled
         if p3_enabled:
             p3_mode = self._cached_p3_mode
@@ -7446,6 +7620,41 @@ bREadfan_69@hotmail.com"""
             self.alpha_label.setText(f"α: {alpha:.2f}")
             self.beta_label.setText(f"β: {beta:.2f}")
 
+        flux_snapshot = self._get_flux_gauge_snapshot()
+        now_mono = time.perf_counter()
+        if now_mono - self._last_flux_text_update_time >= self._flux_text_update_interval_s:
+            self._last_flux_text_update_time = now_mono
+            self._flux_display_snapshot['latest'] = flux_snapshot['latest']
+            self._flux_display_snapshot['delta_20s'] = flux_snapshot['delta_20s']
+
+        if hasattr(self, 'flux_latest_label'):
+            flux_threshold = max(0.001, float(getattr(self.config.stroke, 'flux_threshold', 0.001)))
+            flux_ratio = flux_snapshot['latest'] / flux_threshold
+            ratio_state = "HIGH" if flux_snapshot['latest'] >= flux_threshold else "LOW"
+            self.flux_latest_label.setText(f"Flux Now: {self._flux_display_snapshot['latest']:.4f}")
+            self.flux_ratio_label.setText(f"Flux/Thresh: {flux_ratio:.2f}x ({ratio_state})")
+            zscore_text = "ZScoreGate: OFF"
+            if self.stroke_mapper and hasattr(self.stroke_mapper, 'get_strict_zscore_gate_status'):
+                try:
+                    z_gate = self.stroke_mapper.get_strict_zscore_gate_status()
+                    if z_gate.get('enabled', False):
+                        gate_state = "OPEN" if z_gate.get('gate_open', False) else "CLOSED"
+                        hold_remaining = int(z_gate.get('hold_remaining', 0))
+                        zscore_text = (
+                            f"ZScoreGate: {gate_state} "
+                            f"({int(z_gate.get('recent_fires', 0))}/{int(z_gate.get('required_fires', 0))}, hold {hold_remaining})"
+                        )
+                except Exception:
+                    zscore_text = "ZScoreGate: --"
+            self.flux_zscore_gate_label.setText(zscore_text)
+            self.flux_min_label.setText(f"Flux Min (20s): {flux_snapshot['min_20s']:.4f}")
+            self.flux_max_label.setText(f"Flux Max (20s): {flux_snapshot['max_20s']:.4f}")
+            self.flux_avg_label.setText(f"Flux Avg (20s): {flux_snapshot['avg_20s']:.4f}")
+            self.flux_delta_label.setText(f"Flux Δ (20s): {self._flux_display_snapshot['delta_20s']:.4f}")
+            self.flux_abs_peak_label.setText(f"Abs Peak: {flux_snapshot['abs_peak']:.4f}")
+            self.flux_abs_trough_label.setText(f"Abs Trough: {flux_snapshot['abs_trough']:.4f}")
+            self.flux_abs_depth_label.setText(f"Abs Depth: {flux_snapshot['abs_depth']:.4f}")
+
         # Sync widget states to cached values for thread-safe reading by audio thread
         # P0/F0/P1/P3 enable state MUST be synced IMMEDIATELY (every frame) for instant response
         new_p0_enabled = self.pulse_enabled_checkbox.isChecked()
@@ -7540,7 +7749,7 @@ bREadfan_69@hotmail.com"""
         # These fire from the display timer (not from _on_beat) so they can
         # detect the ABSENCE of beats and escalate accordingly.
         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-            now = time.time()
+            now = time.perf_counter()
             self.audio_engine.compute_audio_amp_feedback(now, callback=self._on_metric_feedback)
             self.audio_engine.compute_flux_balance_feedback(now, callback=self._on_metric_feedback)
             
