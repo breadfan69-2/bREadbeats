@@ -56,7 +56,7 @@ class PlannedTrajectory:
     band_volume: float = 1.0
     start_time: float = 0.0
     is_micro: bool = False  # True for noise burst micro-patterns (skip return-to-bottom)
-    beat_target_time: float = 0.0  # Wall-clock time when the dot should "land" on the beat
+    beat_target_time: float = 0.0  # Monotonic time when the dot should "land" on the beat
     original_bpm: float = 0.0  # BPM at arc creation, for mid-arc speed adjustment
 
     @property
@@ -120,7 +120,7 @@ class StrokeMapper:
         # ---------- Tempo-synced rotation ----------
         # phase accumulator: 0.0-1.0, one full cycle = one beat
         self._beat_phase: float = 0.0
-        self._phase_time: float = time.time()
+        self._phase_time: float = time.perf_counter()
         self._current_bpm: float = 0.0
 
         # ---------- Full-stroke planned trajectory ----------
@@ -215,10 +215,10 @@ class StrokeMapper:
         #   Option C: traffic YELLOW (was recently GREEN) + metronome YELLOW or GREEN
         #   Option D: metronome GREEN stable >2s + any traffic state
         # Otherwise: creep/jitter only
-        # Grace period: 1300ms after conditions drop before returning to jitter
+        # Grace period: short hold after conditions drop before returning to jitter
         self._stroke_ready: bool = False
         self._stroke_ready_lost_time: float = 0.0   # when conditions last dropped
-        self._stroke_grace_ms: float = 1300.0        # grace period before disabling strokes
+        self._stroke_grace_ms: float = 250.0         # grace period before disabling strokes
         self._traffic_was_green: bool = False         # track if traffic was recently green
         self._traffic_left_green_time: float = 0.0    # when traffic left green
         self._metro_green_since: float = 0.0          # when metronome first became green
@@ -226,11 +226,15 @@ class StrokeMapper:
 
         # ---------- Last confirmed beat time (for no-beat timeout) ----------
         self._last_confirmed_beat_time: float = 0.0   # wall-clock of last beat with stroke_ready
+        self._last_any_beat_time: float = 0.0         # wall-clock of last detected beat (ungated)
 
         # ---------- Snap timing feedback (self-checking) ----------
         # When snap-to-target fires, record the timing error so the next arc
         # can compensate by shortening/lengthening its duration.
         self._last_snap_correction_ms: float = 0.0
+        self._lead_trim_ms: float = 0.0
+        self._lead_trim_limit_ms: float = 40.0
+        self._lead_target_error_ms: float = -6.0  # slight intentional early landing
         self._no_beat_timeout_s: float = 2.0           # seconds before returning to center+jitter
 
         # ---------- Post-silence volume ramp ----------
@@ -253,12 +257,17 @@ class StrokeMapper:
             'bass_gate',
             'stroke_ready',
             'beat_divisor',
+            'zscore_gate',
             'flux_gate',
             'mode_creep_micro',
         ]
         self._block_reason_counts = {reason: 0 for reason in self._block_reason_order}
         self._motion_resumed_count: int = 0
         self._blocked_beat_events: int = 0
+
+        # ---------- Strict z-score gate smoothing ----------
+        self._zscore_gate_hits: deque = deque(maxlen=12)
+        self._zscore_gate_hold_remaining: int = 0
 
     # ------------------------------------------------------------------
     # Helpers
@@ -595,7 +604,7 @@ class StrokeMapper:
 
     def _advance_phase(self, event: BeatEvent) -> None:
         """Advance the continuous beat phase based on current BPM."""
-        now = time.time()
+        now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
         dt = now - self._phase_time
         self._phase_time = now
 
@@ -666,10 +675,90 @@ class StrokeMapper:
         lead_ms = float(np.clip(lead_ms, 0.0, 200.0))
         return lead_ms / 1000.0
 
+    def _get_effective_lead_seconds(self) -> float:
+        """Return bounded lead offset with adaptive trim to prevent drift buildup."""
+        base_ms = float(getattr(self.config.beat, 'scheduled_lead_ms', 0.0) or 0.0)
+        base_ms = float(np.clip(base_ms, 0.0, 200.0))
+        min_trim = -min(30.0, base_ms)
+        max_trim = self._lead_trim_limit_ms
+        self._lead_trim_ms = float(np.clip(self._lead_trim_ms, min_trim, max_trim))
+        effective_ms = float(np.clip(base_ms + self._lead_trim_ms, 0.0, 220.0))
+        self._lead_trim_ms *= 0.985
+        return effective_ms / 1000.0
+
+    def _update_lead_trim_from_landing(self, landing_error_ms: float) -> None:
+        """Adaptive trim so predictive lead stays near a small, bounded early bias."""
+        if not np.isfinite(landing_error_ms):
+            return
+        if abs(landing_error_ms) > 220.0:
+            return
+
+        control_error = landing_error_ms - self._lead_target_error_ms
+        delta = float(np.clip(control_error * 0.18, -6.0, 6.0))
+        self._lead_trim_ms += delta
+
+        base_ms = float(getattr(self.config.beat, 'scheduled_lead_ms', 0.0) or 0.0)
+        base_ms = float(np.clip(base_ms, 0.0, 200.0))
+        min_trim = -min(30.0, base_ms)
+        max_trim = self._lead_trim_limit_ms
+        self._lead_trim_ms = float(np.clip(self._lead_trim_ms, min_trim, max_trim))
+
     def _adjust_predicted_target(self, predicted: float, now: float) -> float:
         """Shift predicted beat target earlier by configured lead time."""
-        target = predicted - self._get_scheduled_lead_seconds()
+        target = predicted - self._get_effective_lead_seconds()
         return target if target > now else 0.0
+
+    def _zscore_frame_pass(self, event: BeatEvent, cutoff_hz: float, strict_bass_enabled: bool) -> bool:
+        """True when this frame has acceptable z-score band activity for strict gating."""
+        fired_bands = set(getattr(event, 'fired_bands', None) or [])
+        if not fired_bands:
+            return False
+
+        if (not strict_bass_enabled) or cutoff_hz <= 0:
+            return True
+
+        band_lower_hz = {'sub_bass': 30, 'low_mid': 100, 'mid': 500, 'high': 2000}
+        return any(band_lower_hz.get(band, 99999) < cutoff_hz for band in fired_bands)
+
+    def _update_strict_zscore_gate(self, event: BeatEvent, cutoff_hz: float, strict_bass_enabled: bool) -> tuple[bool, int, int]:
+        """Update strict z-score gate history and return (gate_open, recent_fires, required_fires)."""
+        beat_cfg = self.config.beat
+
+        window_frames = int(np.clip(getattr(beat_cfg, 'strict_zscore_window_frames', 12) or 12, 1, 120))
+        required_fires = int(np.clip(getattr(beat_cfg, 'strict_zscore_min_fires', 3) or 3, 1, window_frames))
+        hold_frames = int(np.clip(getattr(beat_cfg, 'strict_zscore_hold_frames', 8) or 8, 0, 120))
+
+        if self._zscore_gate_hits.maxlen != window_frames:
+            self._zscore_gate_hits = deque(self._zscore_gate_hits, maxlen=window_frames)
+
+        frame_pass = self._zscore_frame_pass(event, cutoff_hz, strict_bass_enabled)
+        self._zscore_gate_hits.append(1 if frame_pass else 0)
+
+        recent_fires = int(sum(self._zscore_gate_hits))
+        if recent_fires >= required_fires:
+            self._zscore_gate_hold_remaining = hold_frames
+        elif self._zscore_gate_hold_remaining > 0:
+            self._zscore_gate_hold_remaining -= 1
+
+        gate_open = (recent_fires >= required_fires) or (self._zscore_gate_hold_remaining > 0)
+        return gate_open, recent_fires, required_fires
+
+    def get_strict_zscore_gate_status(self) -> dict[str, int | bool]:
+        """Return strict z-score gate state for UI diagnostics."""
+        beat_cfg = self.config.beat
+        enabled = bool(getattr(beat_cfg, 'strict_zscore_gate_enabled', False))
+        window_frames = int(np.clip(getattr(beat_cfg, 'strict_zscore_window_frames', 12) or 12, 1, 120))
+        required_fires = int(np.clip(getattr(beat_cfg, 'strict_zscore_min_fires', 3) or 3, 1, window_frames))
+        recent_fires = int(sum(self._zscore_gate_hits)) if self._zscore_gate_hits else 0
+        gate_open = (recent_fires >= required_fires) or (self._zscore_gate_hold_remaining > 0)
+        return {
+            'enabled': enabled,
+            'gate_open': bool(gate_open),
+            'recent_fires': recent_fires,
+            'required_fires': required_fires,
+            'window_frames': window_frames,
+            'hold_remaining': int(self._zscore_gate_hold_remaining),
+        }
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -686,7 +775,7 @@ class StrokeMapper:
         Returns:
             TCodeCommand if a stroke should be sent, None otherwise.
         """
-        now = time.time()
+        now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
         cfg = self.config.stroke
         beat_cfg = self.config.beat
 
@@ -720,6 +809,21 @@ class StrokeMapper:
         self._update_band_energies(event)
         self._update_bass_jitter_drive(event)
 
+        strict_zscore_enabled = bool(getattr(beat_cfg, 'strict_zscore_gate_enabled', False))
+        zscore_gate_open = True
+        zscore_recent_fires = 0
+        zscore_required_fires = 0
+        if strict_zscore_enabled:
+            zscore_gate_open, zscore_recent_fires, zscore_required_fires = self._update_strict_zscore_gate(
+                event,
+                cutoff,
+                strict_gate_enabled,
+            )
+        else:
+            if self._zscore_gate_hits:
+                self._zscore_gate_hits.clear()
+            self._zscore_gate_hold_remaining = 0
+
         # ===== FLUX-DROP FALLBACK =====
         # Track recent flux for drop detection — if upper spectrum flux
         # drops significantly, force back to creep mode
@@ -740,12 +844,17 @@ class StrokeMapper:
                               recent=f"{recent_avg:.4f}", older=f"{older_avg:.4f}")
 
         # ===== NO-BEAT TIMEOUT =====
-        # Track last confirmed beat (stroke_ready + is_beat)
+        # Track beat liveness from any detected beat (ungated), and
+        # separately track last confirmed beat used for stroke-quality diagnostics.
+        if event.is_beat:
+            self._last_any_beat_time = now
+
+        # Track last confirmed beat (stroke_ready + bass gate + is_beat)
         if event.is_beat and self._stroke_ready and bass_motion_allowed:
             self._last_confirmed_beat_time = now
         # If no confirmed beat for 2s, cancel trajectory and return to center+jitter
-        if (self._last_confirmed_beat_time > 0
-                and (now - self._last_confirmed_beat_time) > self._no_beat_timeout_s
+        if (self._last_any_beat_time > 0
+                and (now - self._last_any_beat_time) > self._no_beat_timeout_s
                 and self._trajectory is not None):
             self._trajectory = None
             self._locked_anchor = None
@@ -814,6 +923,8 @@ class StrokeMapper:
         is_syncopated = getattr(event, 'is_syncopated', False)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         if is_syncopated and bass_motion_allowed and self._motion_mode == MotionMode.FULL_STROKE:
+            if strict_zscore_enabled and not zscore_gate_open:
+                return None
             # BPM limit from config
             bpm_limit = beat_cfg.syncopation_bpm_limit if hasattr(beat_cfg, 'syncopation_bpm_limit') else 160.0
             if metro_bpm > bpm_limit:
@@ -833,6 +944,8 @@ class StrokeMapper:
                 and cfg.noise_burst_enabled
                 and self._motion_mode == MotionMode.FULL_STROKE
                 and (self._trajectory is None or self._trajectory.finished)):
+            if strict_zscore_enabled and not zscore_gate_open:
+                return None
             noise_thresh = cfg.flux_threshold * cfg.noise_burst_flux_multiplier
             if event.spectral_flux >= noise_thresh:
                 time_since_stroke = (now - self.state.last_stroke_time) * 1000
@@ -900,6 +1013,16 @@ class StrokeMapper:
                 cmd = self._generate_idle_motion(event)
                 return self._apply_fade(cmd)
 
+            if strict_zscore_enabled and not zscore_gate_open:
+                self._note_motion_block(
+                    "zscore_gate",
+                    fires=zscore_recent_fires,
+                    required=zscore_required_fires,
+                    window=int(self._zscore_gate_hits.maxlen or 0),
+                )
+                cmd = self._generate_idle_motion(event)
+                return self._apply_fade(cmd)
+
             is_downbeat = getattr(event, 'is_downbeat', False)
             if is_downbeat:
                 self.state.beat_counter = 1
@@ -917,30 +1040,36 @@ class StrokeMapper:
                 self._pending_arc_event = None
 
                 is_downbeat = getattr(event, 'is_downbeat', False)
-                if is_downbeat:
-                    cmd = self._generate_downbeat_stroke(event)
-                    self._note_motion_resumed("downbeat")
-                    return self._apply_fade(cmd)
-                else:
-                    if effective_divisor > 1 and (self.state.beat_counter % effective_divisor) != 1:
-                        self._note_motion_block(
-                            "beat_divisor",
-                            divisor=effective_divisor,
-                            mode=str(cfg.mode.name if hasattr(cfg.mode, 'name') else cfg.mode),
-                            beat_counter=self.state.beat_counter,
-                        )
-                        return None
-                    is_high_flux = event.spectral_flux >= cfg.flux_threshold
-                    if not is_high_flux:
-                        self._note_motion_block(
-                            "flux_gate",
-                            flux=f"{event.spectral_flux:.4f}",
-                            threshold=f"{cfg.flux_threshold:.4f}",
-                        )
-                        return None
+                if effective_divisor > 1 and (self.state.beat_counter % effective_divisor) != 1:
+                    if is_downbeat:
+                        cmd = self._generate_downbeat_stroke(event)
+                        self._note_motion_resumed("downbeat_fallback")
+                        return self._apply_fade(cmd)
+                    self._note_motion_block(
+                        "beat_divisor",
+                        divisor=effective_divisor,
+                        mode=str(cfg.mode.name if hasattr(cfg.mode, 'name') else cfg.mode),
+                        beat_counter=self.state.beat_counter,
+                    )
+                    return None
+
+                is_high_flux = event.spectral_flux >= cfg.flux_threshold
+                if is_high_flux:
                     cmd = self._generate_beat_stroke(event)
                     self._note_motion_resumed("beat")
                     return self._apply_fade(cmd)
+
+                if is_downbeat:
+                    cmd = self._generate_downbeat_stroke(event)
+                    self._note_motion_resumed("downbeat_fallback")
+                    return self._apply_fade(cmd)
+
+                self._note_motion_block(
+                    "flux_gate",
+                    flux=f"{event.spectral_flux:.4f}",
+                    threshold=f"{cfg.flux_threshold:.4f}",
+                )
+                return None
 
             else:  # CREEP_MICRO
                 # Low amplitude -> micro-effects on beats, plus produce creep motion
@@ -1156,7 +1285,7 @@ class StrokeMapper:
         """Full measure-length arc on downbeat.  When tempo LOCKED -> 25% boost.
         Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
         cfg = self.config.stroke
-        now = time.time()
+        now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
 
         # Beat duration — prefer metronome BPM if available
         # Downbeat arc spans the full measure for emphasis (beats_per_measure)
@@ -1182,7 +1311,7 @@ class StrokeMapper:
         beat_target_time = 0.0
         if self.audio_engine and hasattr(self.audio_engine, 'get_tempo_info'):
             tempo_info = self.audio_engine.get_tempo_info()
-            predicted = tempo_info.get('predicted_next_beat', 0.0)
+            predicted = tempo_info.get('predicted_next_beat_mono', 0.0) or tempo_info.get('predicted_next_beat', 0.0)
             if predicted > now:
                 target_time = self._adjust_predicted_target(predicted, now)
                 if target_time <= 0:
@@ -1192,7 +1321,8 @@ class StrokeMapper:
                     measure_duration_ms = int(time_to_beat_ms)
                     beat_target_time = target_time
         # Also account for event age (processing latency)
-        event_age_ms = (now - event.timestamp) * 1000
+        event_time = getattr(event, 'monotonic_timestamp', 0.0) or event.timestamp
+        event_age_ms = (now - event_time) * 1000
         if beat_target_time == 0.0 and 0 < event_age_ms < measure_duration_ms * 0.3:
             measure_duration_ms = max(cfg.min_interval_ms, int(measure_duration_ms - event_age_ms))
 
@@ -1268,7 +1398,7 @@ class StrokeMapper:
         """Full arc stroke for a regular detected beat.
         Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
         cfg = self.config.stroke
-        now = time.time()
+        now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
 
         # Prefer metronome BPM for beat timing
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
@@ -1287,7 +1417,7 @@ class StrokeMapper:
         beat_target_time = 0.0
         if self.audio_engine and hasattr(self.audio_engine, 'get_tempo_info'):
             tempo_info = self.audio_engine.get_tempo_info()
-            predicted = tempo_info.get('predicted_next_beat', 0.0)
+            predicted = tempo_info.get('predicted_next_beat_mono', 0.0) or tempo_info.get('predicted_next_beat', 0.0)
             if predicted > now:
                 target_time = self._adjust_predicted_target(predicted, now)
                 if target_time <= 0:
@@ -1297,7 +1427,8 @@ class StrokeMapper:
                     beat_interval_ms = int(time_to_beat_ms)
                     beat_target_time = target_time
         # Fallback: account for event processing latency
-        event_age_ms = (now - event.timestamp) * 1000
+        event_time = getattr(event, 'monotonic_timestamp', 0.0) or event.timestamp
+        event_age_ms = (now - event_time) * 1000
         if beat_target_time == 0.0 and 0 < event_age_ms < beat_interval_ms * 0.3:
             beat_interval_ms = max(cfg.min_interval_ms, int(beat_interval_ms - event_age_ms))
 
@@ -1414,7 +1545,7 @@ class StrokeMapper:
         and syncopation_speed settings in Advanced Controls."""
         cfg = self.config.stroke
         beat_cfg = self.config.beat
-        now = time.time()
+        now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
 
         # Duration is configurable fraction of beat interval
         speed_frac = getattr(beat_cfg, 'syncopation_speed', 0.5)
@@ -1433,7 +1564,7 @@ class StrokeMapper:
         beat_target_time = 0.0
         if self.audio_engine and hasattr(self.audio_engine, 'get_tempo_info'):
             tempo_info = self.audio_engine.get_tempo_info()
-            predicted = tempo_info.get('predicted_next_beat', 0.0)
+            predicted = tempo_info.get('predicted_next_beat_mono', 0.0) or tempo_info.get('predicted_next_beat', 0.0)
             if predicted > now:
                 target_time = self._adjust_predicted_target(predicted, now)
                 if target_time <= 0:
@@ -1503,7 +1634,7 @@ class StrokeMapper:
         """Small random jitter/swirl patterns on sudden loud transients.
         Only fires in CREEP_MICRO mode when creep is active.
         Produces random tiny patterns: jerks, micro-swirls, star shapes, zigzags."""
-        now = time.time()
+        now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
 
         # Pick a random micro-pattern type
         pattern = random.choice(['jerk', 'swirl', 'star', 'zigzag'])
@@ -1602,7 +1733,7 @@ class StrokeMapper:
         if traj is None or traj.finished:
             return None
 
-        now = time.time()
+        now = time.perf_counter()
 
         # ===== MID-ARC SPEED ADJUSTMENT =====
         # If BPM changed since arc was created, rescale remaining durations
@@ -1658,33 +1789,34 @@ class StrokeMapper:
                 self.state.creep_angle += 2 * np.pi
         traj.current_index = target_idx + 1
 
-        # ===== SNAP TO TARGET (only when about to miss the beat) =====
-        # Only snap if we have a beat_target_time and the beat is imminent
-        # (within 50ms). This prevents snapping during normal smooth arcs
-        # and only activates when the dot would visibly miss the landing.
+        # ===== SNAP TO TARGET (post-target catch-up) =====
+        # Timing trick: do not rush *before* the beat. If we're going to miss,
+        # allow a brief catch-up snap only *after* the target time.
         if (traj.beat_target_time > 0
                 and traj.current_index < traj.n_points
-                and 0 < (traj.beat_target_time - now) < 0.050):
+                and 0 < (now - traj.beat_target_time) < 0.060):
             final_a = float(traj.alpha_points[-1])
             final_b = float(traj.beta_points[-1])
             dist = np.sqrt((alpha - final_a)**2 + (beta - final_b)**2)
-            if dist < 0.12:
-                # Beat is <50ms away and we're close — snap to landing
+            if dist < 0.14:
+                # Beat is slightly in the past and we're close — catch up now
                 alpha = final_a
                 beta = final_b
                 self.state.alpha = alpha
                 self.state.beta = beta
                 traj.current_index = traj.n_points  # mark finished
                 # === SELF-CHECK: Record timing discrepancy for next arc ===
-                # If we had to snap, the arc was slightly too slow/fast.
-                # Store the remaining time so next arc can compensate.
+                # If we had to catch up late, record lateness for next arc correction.
                 snap_error_ms = (traj.beat_target_time - now) * 1000.0
                 self._last_snap_correction_ms = snap_error_ms
-                log_event("INFO", "StrokeMapper", "Snap-to-target fired",
+                log_event("INFO", "StrokeMapper", "Post-target catch-up snap",
                           error_ms=f"{snap_error_ms:.1f}", dist=f"{dist:.3f}")
 
         # Check if trajectory just completed
         if traj.finished:
+            if traj.beat_target_time > 0:
+                landing_error_ms = (now - traj.beat_target_time) * 1000.0
+                self._update_lead_trim_from_landing(landing_error_ms)
             log_event("INFO", "StrokeMapper", "Arc complete", points=traj.n_points)
             self._sync_creep_angle_to_position()
 
@@ -1720,7 +1852,7 @@ class StrokeMapper:
         its duration is set so it completes at beat arrival time.
         Real beat events will override this trajectory when they fire."""
         cfg = self.config.stroke
-        now = time.time()
+        now = time.perf_counter()
         bpm = self._last_known_bpm
         if bpm <= 0:
             self._trajectory = None
@@ -1735,7 +1867,7 @@ class StrokeMapper:
         beat_target_time = 0.0
         if self.audio_engine and hasattr(self.audio_engine, 'get_tempo_info'):
             tempo_info = self.audio_engine.get_tempo_info()
-            predicted = tempo_info.get('predicted_next_beat', 0.0)
+            predicted = tempo_info.get('predicted_next_beat_mono', 0.0) or tempo_info.get('predicted_next_beat', 0.0)
             if predicted > now:
                 target_time = self._adjust_predicted_target(predicted, now)
                 if target_time <= 0:

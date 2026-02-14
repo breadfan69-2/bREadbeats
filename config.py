@@ -60,6 +60,7 @@ class BeatDetectionConfig:
     beat_dedup_fraction: float = 0.22            # Ignore second onset inside this fraction of a beat period
     phase_accept_window_ms: float = 85.0         # Base raw-onset acceptance window around expected beat (ms)
     phase_accept_low_conf_mult: float = 2.0      # Multiply phase window when metronome confidence is low
+    beat_refractory_ms: float = 170.0            # Min spacing between accepted beats (ms), independent of stroke min interval
     aggressive_tempo_snap_enabled: bool = False  # Hard-snap metronome BPM when lock confidence is high
     aggressive_snap_confidence: float = 0.55     # Min ACF confidence required for aggressive snap
     aggressive_snap_phase_error_ms: float = 35.0 # Max phase error allowed for aggressive snap
@@ -75,6 +76,10 @@ class BeatDetectionConfig:
     syncopation_speed: float = 0.5                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
     scheduled_lead_ms: int = 0                     # Land scheduled arcs this many ms before predicted beat (0-200)
     strict_bass_motion_gate_enabled: bool = False  # Require sub_bass/low_mid z-score fired bands for beat/sync stroke motion
+    strict_zscore_gate_enabled: bool = False       # Require sustained z-score activations before beat stroke motion
+    strict_zscore_window_frames: int = 12          # Sliding frame window to count z-score activations
+    strict_zscore_min_fires: int = 3               # Required z-score activations inside window to allow strokes
+    strict_zscore_hold_frames: int = 8             # Keep strict z-score gate open for this many frames after passing
 
 @dataclass
 class StrokeConfig:
@@ -82,7 +87,7 @@ class StrokeConfig:
     mode: StrokeMode = StrokeMode.SIMPLE_CIRCLE
     stroke_min: float = 0.2           # Minimum stroke length (0.0-1.0)
     stroke_max: float = 1.0           # Maximum stroke length (0.0-1.0)
-    min_interval_ms: int = 300        # Minimum time between strokes (ms) - slider 200->1000
+    min_interval_ms: int = 260        # Minimum time between strokes (ms) - slider 200->1000
     stroke_fullness: float = 0.7      # How much params affect stroke length
     minimum_depth: float = 0.0        # Lower limit of stroke (absolute bottom)
     freq_depth_factor: float = 0.3    # How much frequency affects depth
@@ -132,7 +137,7 @@ class StrokeConfig:
     # - beats_between_strokes acts as fallback when BPM is unavailable (2/4/8)
     single_stroke_bpm_cutoff: float = 90.0   # Allow 1 beat/stroke only below this BPM
     bpm_cutoff_2_to_4: float = 60.0          # BPM at/above this moves 2 -> 4 beats/stroke
-    bpm_cutoff_4_to_8: float = 155.0         # BPM at/above this moves 4 -> 8 beats/stroke
+    bpm_cutoff_4_to_8: float = 180.0         # BPM at/above this moves 4 -> 8 beats/stroke
     beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
     cadence_cutoff_bias_bpm: float = 0.0     # +/- BPM shift applied to cadence cutoffs (0 = disabled)
 
