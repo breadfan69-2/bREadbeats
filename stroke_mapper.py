@@ -248,6 +248,8 @@ class StrokeMapper:
         # ---------- Flux history / center-reset guard ----------
         self._recent_flux_values: deque = deque(maxlen=60)  # ~1s of flux history for center-reset flux guard
         self._recent_low_band_values: deque = deque(maxlen=60)  # ~1s of low-band activity for beat gating/fallback
+        self._recent_high_band_values: deque = deque(maxlen=60)  # ~1s of high-band activity for beat gating
+        self._recent_high_band_beat_hits: deque = deque(maxlen=16)  # recent beat-wise upper-band context hits
 
         # ---------- Motion-block diagnostics (throttled) ----------
         self._motion_block_active: bool = False
@@ -262,6 +264,7 @@ class StrokeMapper:
             'stroke_ready',
             'beat_divisor',
             'low_band_gate',
+            'high_band_gate',
             'mode_creep_micro',
         ]
         self._block_reason_counts = {reason: 0 for reason in self._block_reason_order}
@@ -715,6 +718,73 @@ class StrokeMapper:
         gate_pass = (mean_val >= mean_thresh) and ((delta_val >= delta_thresh) or (var_val >= var_thresh))
         return bool(gate_pass), mean_val, delta_val, var_val
 
+    def _get_high_band_activity(self, event: BeatEvent) -> float:
+        """Return current upper-range activity estimate (mid + high)."""
+        activity = float(max(0.0, self._mid_energy + self._high_energy))
+        if activity > 1e-6:
+            return activity
+
+        beat_band = getattr(event, 'beat_band', '')
+        freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+        peak = float(getattr(event, 'peak_energy', 0.0) or 0.0)
+
+        if beat_band in ('mid', 'high'):
+            return peak * 0.5
+        if freq >= 500.0:
+            return peak * 0.35
+        return 0.0
+
+    def _get_high_band_presence_status(self, is_downbeat: bool = False) -> tuple[bool, float, float, float, float]:
+        """Evaluate upper-range filled+active presence gate."""
+        cfg = self.config.stroke
+        values = list(self._recent_high_band_values)
+        if len(values) < 8:
+            return False, 0.0, 0.0, 0.0, 0.0
+
+        window = int(getattr(cfg, 'high_band_window_frames', 18) or 18)
+        window = int(np.clip(window, 8, len(values)))
+        segment = values[-window:]
+
+        mean_val = float(np.mean(segment))
+        delta_val = float(max(segment) - min(segment))
+        var_val = float(np.var(segment))
+
+        relax = float(getattr(cfg, 'downbeat_high_band_relax', 0.90) or 0.90) if is_downbeat else 1.0
+        relax = float(np.clip(relax, 0.5, 1.0))
+
+        mean_thresh = float(getattr(cfg, 'high_band_mean_threshold', 0.12) or 0.12) * relax
+        floor_thresh = float(getattr(cfg, 'high_band_floor_threshold', 0.06) or 0.06) * relax
+        occ_thresh = float(getattr(cfg, 'high_band_occupancy_threshold', 0.55) or 0.55) * relax
+        delta_thresh = float(getattr(cfg, 'high_band_delta_threshold', 0.05) or 0.05) * relax
+        var_thresh = float(getattr(cfg, 'high_band_variance_threshold', 0.0010) or 0.0010) * relax
+
+        occupancy = float(sum(1 for value in segment if value >= floor_thresh) / max(1, len(segment)))
+        gate_pass = (
+            (mean_val >= mean_thresh)
+            and (occupancy >= occ_thresh)
+            and ((delta_val >= delta_thresh) or (var_val >= var_thresh))
+        )
+        return bool(gate_pass), mean_val, occupancy, delta_val, var_val
+
+    def _get_high_band_pattern_status(self, is_downbeat: bool = False) -> tuple[bool, int, int]:
+        """Evaluate recent beat-wise upper-band hit pattern gate."""
+        cfg = self.config.stroke
+        hits = list(self._recent_high_band_beat_hits)
+        if not hits:
+            return False, 0, 0
+
+        relax = float(getattr(cfg, 'downbeat_high_band_relax', 0.90) or 0.90) if is_downbeat else 1.0
+        relax = float(np.clip(relax, 0.5, 1.0))
+
+        window = int(getattr(cfg, 'high_band_pattern_window_beats', 5) or 5)
+        window = int(np.clip(window, 1, len(hits)))
+        segment = hits[-window:]
+        hit_count = int(sum(1 for value in segment if value))
+
+        min_hits = int(getattr(cfg, 'high_band_pattern_min_hits', 3) or 3)
+        min_hits = int(np.clip(round(min_hits * relax), 1, window))
+        return bool(hit_count >= min_hits), hit_count, window
+
     def _update_bass_jitter_drive(self, event: BeatEvent) -> None:
         """Update jitter speed multiplier from bass z-score context + pitch.
 
@@ -848,7 +918,9 @@ class StrokeMapper:
         # high-activity state, force back to creep mode.
         self._recent_flux_values.append(event.spectral_flux)
         low_band_activity = self._get_low_band_activity(event)
+        high_band_activity = self._get_high_band_activity(event)
         self._recent_low_band_values.append(low_band_activity)
+        self._recent_high_band_values.append(high_band_activity)
         if len(self._recent_flux_values) >= 30:
             if bool(getattr(cfg, 'low_band_drop_guard_enabled', True)):
                 recent_avg = sum(list(self._recent_low_band_values)[-15:]) / 15.0
@@ -1092,17 +1164,57 @@ class StrokeMapper:
                     return None
 
                 beat_gate_pass, beat_mean, beat_delta, beat_var = self._get_low_band_gate_status(event, is_downbeat=False)
-                if beat_gate_pass:
+                fired_bands = set(getattr(event, 'fired_bands', None) or [])
+                beat_band = getattr(event, 'beat_band', '')
+                high_beat_hit = (
+                    ('mid' in fired_bands)
+                    or ('high' in fired_bands)
+                    or (beat_band in ('mid', 'high'))
+                )
+                self._recent_high_band_beat_hits.append(bool(high_beat_hit))
+
+                high_gate_enabled = bool(getattr(cfg, 'high_band_gate_enabled', True))
+                high_presence_pass, high_mean, high_occ, high_delta, high_var = self._get_high_band_presence_status(is_downbeat=False)
+                high_pattern_pass, high_hits, high_window = self._get_high_band_pattern_status(is_downbeat=False)
+                high_gate_pass = (not high_gate_enabled) or (high_presence_pass or high_pattern_pass)
+
+                if beat_gate_pass and high_gate_pass:
                     cmd = self._generate_beat_stroke(event)
                     self._note_motion_resumed("beat")
                     return self._apply_fade(cmd)
 
                 if is_downbeat:
                     downbeat_gate_pass, down_mean, down_delta, down_var = self._get_low_band_gate_status(event, is_downbeat=True)
-                    if downbeat_gate_pass:
+                    down_high_presence_pass, down_high_mean, down_high_occ, down_high_delta, down_high_var = self._get_high_band_presence_status(is_downbeat=True)
+                    down_high_pattern_pass, down_high_hits, down_high_window = self._get_high_band_pattern_status(is_downbeat=True)
+                    down_high_gate_pass = (not high_gate_enabled) or (down_high_presence_pass or down_high_pattern_pass)
+                    if downbeat_gate_pass and down_high_gate_pass:
                         cmd = self._generate_downbeat_stroke(event)
                         self._note_motion_resumed("downbeat_fallback")
                         return self._apply_fade(cmd)
+
+                    if downbeat_gate_pass and not down_high_gate_pass:
+                        self._note_motion_block(
+                            "high_band_gate",
+                            high_mean=f"{down_high_mean:.4f}",
+                            high_occ=f"{down_high_occ:.3f}",
+                            high_delta=f"{down_high_delta:.4f}",
+                            high_var=f"{down_high_var:.4f}",
+                            high_hits=f"{down_high_hits}/{down_high_window}",
+                            phase="downbeat",
+                        )
+                        return None
+
+                if beat_gate_pass and not high_gate_pass:
+                    self._note_motion_block(
+                        "high_band_gate",
+                        high_mean=f"{high_mean:.4f}",
+                        high_occ=f"{high_occ:.3f}",
+                        high_delta=f"{high_delta:.4f}",
+                        high_var=f"{high_var:.4f}",
+                        high_hits=f"{high_hits}/{high_window}",
+                    )
+                    return None
 
                 self._note_motion_block(
                     "low_band_gate",
