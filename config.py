@@ -291,6 +291,11 @@ class Config:
     beta_weight: float = 1.0          # Per-axis mix for beta
     volume: float = 1.0               # Output volume (0.0-1.0)
     log_level: str = "INFO"           # Logging level (DEBUG/INFO/WARNING/ERROR)
+    report_generation_enabled: bool = True    # Master toggle for writing local reports
+    privacy_notice_seen: bool = False         # First-run privacy/beta notice has been acknowledged
+    app_run_count: int = 0                    # Number of app launches
+    report_email_reminder_shown: bool = False # Prevent repeat reminder popup once shown
+    report_email_reminder_run: int = 10       # Show reminder when run count reaches this value
 
 
 def apply_dict_to_dataclass(target, data) -> None:
@@ -347,6 +352,17 @@ def migrate_config(config: Config, loaded_version) -> None:
             config.device_limits.prompted = False
         if getattr(config.device_limits, 'dry_run', False) is None:
             config.device_limits.dry_run = False
+
+    if getattr(config, 'report_generation_enabled', True) is None:
+        config.report_generation_enabled = True
+    if getattr(config, 'privacy_notice_seen', False) is None:
+        config.privacy_notice_seen = False
+    if getattr(config, 'app_run_count', 0) is None:
+        config.app_run_count = 0
+    if getattr(config, 'report_email_reminder_shown', False) is None:
+        config.report_email_reminder_shown = False
+    if getattr(config, 'report_email_reminder_run', 10) is None:
+        config.report_email_reminder_run = 10
 
     # Always clamp safety range for downbeat jitter blend
     try:
