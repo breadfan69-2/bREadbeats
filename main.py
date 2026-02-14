@@ -1995,8 +1995,8 @@ class SliderWithLabel(QWidget):
     
     valueChanged = pyqtSignal(float)
     
-    def __init__(self, name: str, min_val: float, max_val: float, 
-                 default: float, decimals: int = 2, parent=None):
+    def __init__(self, name: str, min_val: float, max_val: float,
+                 default: float, decimals: int = 2, step: Optional[float] = None, parent=None):
         super().__init__(parent)
         
         self.min_val = min_val
@@ -2015,6 +2015,10 @@ class SliderWithLabel(QWidget):
         self.slider.setMinimum(int(min_val * self.multiplier))
         self.slider.setMaximum(int(max_val * self.multiplier))
         self.slider.setValue(int(default * self.multiplier))
+        if step is not None:
+            step_units = max(1, int(round(step * self.multiplier)))
+            self.slider.setSingleStep(step_units)
+            self.slider.setPageStep(step_units)
         self.slider.valueChanged.connect(self._on_change)
         
         self.value_label = QLabel(f"{default:.{decimals}f}")
@@ -3843,7 +3847,8 @@ class BREadbeatsWindow(QMainWindow):
             0.001,
             2.00,
             float(getattr(self.config.stroke, 'low_band_activity_threshold', 0.20) or 0.20),
-            2,
+            3,
+            step=0.005,
         )
         low_band_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_activity_threshold', 'low_band_mean', 'Low mean', '#32FF32'))
         flux_layout.addWidget(low_band_mean_slider)
@@ -3854,6 +3859,7 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'low_band_delta_threshold', 0.06) or 0.06),
             3,
+            step=0.005,
         )
         low_band_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_delta_threshold', 'low_band_delta', 'Low Δ', '#55FF88'))
         flux_layout.addWidget(low_band_delta_slider)
@@ -3864,6 +3870,7 @@ class BREadbeatsWindow(QMainWindow):
             0.2000,
             float(getattr(self.config.stroke, 'low_band_variance_threshold', 0.0015) or 0.0015),
             4,
+            step=0.005,
         )
         low_band_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_variance_threshold', 'low_band_var', 'Low var', '#77FFAA'))
         flux_layout.addWidget(low_band_var_slider)
@@ -3873,7 +3880,8 @@ class BREadbeatsWindow(QMainWindow):
             0.50,
             1.00,
             float(getattr(self.config.stroke, 'downbeat_low_band_relax', 0.85) or 0.85),
-            2,
+            3,
+            step=0.005,
         )
         downbeat_relax_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'downbeat_low_band_relax', float(v))
@@ -3910,7 +3918,8 @@ class BREadbeatsWindow(QMainWindow):
             0.001,
             2.00,
             float(getattr(self.config.stroke, 'high_band_mean_threshold', 0.12) or 0.12),
-            2,
+            3,
+            step=0.005,
         )
         high_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_mean_threshold', 'high_band_mean', 'High mean', '#FF66CC'))
         flux_layout.addWidget(high_mean_slider)
@@ -3921,16 +3930,18 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'high_band_floor_threshold', 0.06) or 0.06),
             3,
+            step=0.005,
         )
         high_floor_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_floor_threshold', 'high_band_floor', 'High floor', '#FF88DD'))
         flux_layout.addWidget(high_floor_slider)
 
         high_occ_slider = SliderWithLabel(
             "High-band occupancy threshold",
-            0.01,
+            0.00,
             1.00,
             float(getattr(self.config.stroke, 'high_band_occupancy_threshold', 0.55) or 0.55),
-            2,
+            3,
+            step=0.005,
         )
         high_occ_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_occupancy_threshold', 'high_band_occ', 'High occ', '#FFAAEE', dashed=True))
         flux_layout.addWidget(high_occ_slider)
@@ -3941,6 +3952,7 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'high_band_delta_threshold', 0.05) or 0.05),
             3,
+            step=0.005,
         )
         high_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_delta_threshold', 'high_band_delta', 'High Δ', '#FF99DD'))
         flux_layout.addWidget(high_delta_slider)
@@ -3951,6 +3963,7 @@ class BREadbeatsWindow(QMainWindow):
             0.2000,
             float(getattr(self.config.stroke, 'high_band_variance_threshold', 0.0010) or 0.0010),
             4,
+            step=0.005,
         )
         high_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_variance_threshold', 'high_band_var', 'High var', '#FFBBEE'))
         flux_layout.addWidget(high_var_slider)
@@ -3988,7 +4001,8 @@ class BREadbeatsWindow(QMainWindow):
             0.50,
             1.00,
             float(getattr(self.config.stroke, 'downbeat_high_band_relax', 0.90) or 0.90),
-            2,
+            3,
+            step=0.005,
         )
         high_downbeat_relax_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'downbeat_high_band_relax', float(v))
@@ -4008,6 +4022,7 @@ class BREadbeatsWindow(QMainWindow):
             0.50,
             float(getattr(self.config.stroke, 'overall_low_flux_threshold', 0.06) or 0.06),
             3,
+            step=0.005,
         )
         overall_flux_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_flux_threshold', 'overall_low_flux', 'Overall flux', '#FFD166'))
         flux_layout.addWidget(overall_flux_slider)
@@ -4018,6 +4033,7 @@ class BREadbeatsWindow(QMainWindow):
             1.00,
             float(getattr(self.config.stroke, 'overall_low_energy_threshold', 0.14) or 0.14),
             3,
+            step=0.005,
         )
         overall_energy_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_energy_threshold', 'overall_low_energy', 'Overall energy', '#FFC06A'))
         flux_layout.addWidget(overall_energy_slider)
