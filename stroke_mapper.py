@@ -1821,7 +1821,8 @@ class StrokeMapper:
         magnitude_scale = getattr(self.config.stroke, 'noise_burst_magnitude', 1.0)
         energy_scale = 1.0 + (self._mid_energy + self._high_energy) * 2.0
         energy_scale = min(energy_scale, 2.0)
-        jerk_mag = random.uniform(0.15, 0.40) * self.motion_intensity * magnitude_scale * energy_scale
+        jerk_mag = random.uniform(0.03, 0.07) * self.motion_intensity * magnitude_scale * energy_scale
+        jerk_mag = float(np.clip(jerk_mag, 0.03, 0.07))
         base_angle = self.state.creep_angle
         n_points = random.randint(4, 8)
         duration_ms = random.randint(60, 120)
@@ -2121,16 +2122,14 @@ class StrokeMapper:
         Downbeats get a slightly larger jerk.
         """
         now = time.time()
-        # Base jerk magnitude: small displacement (0.02-0.10)
-        base_mag = 0.10
-        if is_downbeat:
-            base_mag = 0.20  # stronger on downbeat
+        base_mag = 0.05 if not is_downbeat else 0.07
 
         # Scale by mid+high energy for musical responsiveness
         band_scale = 1.0 + (self._mid_energy + self._high_energy) * 5.0
         band_scale = min(band_scale, 3.0)
 
         mag = base_mag * band_scale * self.motion_intensity
+        mag = float(np.clip(mag, 0.03, 0.07))
 
         # Direction: radially outward from current creep angle
         jerk_angle = self.state.creep_angle + random.uniform(-0.3, 0.3)
