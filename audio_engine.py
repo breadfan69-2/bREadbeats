@@ -8,9 +8,11 @@ import numpy as np
 import pyaudiowpatch as pyaudio
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 import time
 
+from audio_session_reporter import AudioSessionReporter
 from logging_utils import log_event
 
 # Scipy for Butterworth bandpass filter
@@ -174,9 +176,19 @@ class AudioEngine:
     Captures system audio and detects beats in real-time.
     """
     
-    def __init__(self, config: Config, beat_callback: Callable[[BeatEvent], None]):
+    def __init__(
+        self,
+        config: Config,
+        beat_callback: Callable[[BeatEvent], None],
+        report_dir: Optional[Path] = None,
+    ):
         self.config = config
         self.beat_callback = beat_callback
+        if report_dir is None:
+            from config_persistence import get_config_dir
+
+            report_dir = get_config_dir()
+        self._audio_reporter = AudioSessionReporter(report_dir)
         
         # Audio stream (PyAudio)
         self.pyaudio = None
@@ -414,6 +426,10 @@ class AudioEngine:
         self._session_raw_rms_sum: float = 0.0
         self._session_band_energy_sum: float = 0.0
         self._session_flux_sum: float = 0.0
+        self._session_sample_times: list[float] = []
+        self._session_flux_samples: list[float] = []
+        self._session_peak_samples: list[float] = []
+        self._session_trough_samples: list[float] = []
 
     def _reset_session_stats(self) -> None:
         self._session_started_at = time.time()
@@ -427,6 +443,10 @@ class AudioEngine:
         self._session_raw_rms_sum = 0.0
         self._session_band_energy_sum = 0.0
         self._session_flux_sum = 0.0
+        self._session_sample_times = []
+        self._session_flux_samples = []
+        self._session_peak_samples = []
+        self._session_trough_samples = []
 
     def _reference_bpm_for_onset_filters(self) -> float:
         if self._metronome_bpm > 0:
@@ -473,11 +493,22 @@ class AudioEngine:
         self._last_accepted_raw_onset_time = now
         return True
 
-    def _update_session_stats(self, raw_rms: float, band_energy: float, spectral_flux: float) -> None:
+    def _update_session_stats(
+        self,
+        raw_rms: float,
+        band_energy: float,
+        spectral_flux: float,
+        peak_level: float,
+        sample_time: float,
+    ) -> None:
         self._session_frame_count += 1
         self._session_raw_rms_sum += raw_rms
         self._session_band_energy_sum += band_energy
         self._session_flux_sum += spectral_flux
+        self._session_sample_times.append(sample_time)
+        self._session_flux_samples.append(spectral_flux)
+        self._session_peak_samples.append(peak_level)
+        self._session_trough_samples.append(band_energy)
         if self._session_raw_rms_min is None or raw_rms < self._session_raw_rms_min:
             self._session_raw_rms_min = raw_rms
         if self._session_raw_rms_max is None or raw_rms > self._session_raw_rms_max:
@@ -491,21 +522,128 @@ class AudioEngine:
         if self._session_flux_max is None or spectral_flux > self._session_flux_max:
             self._session_flux_max = spectral_flux
 
-    def _log_shutdown_summary(self) -> None:
-        if self._session_frame_count <= 0:
-            return
+    def _compute_persistence_stats(
+        self,
+        values: list[float],
+        sample_times: list[float],
+        threshold: float,
+        is_high: bool,
+    ) -> dict[str, float]:
+        if len(values) < 2 or len(sample_times) < 2:
+            return {
+                "total_s": 0.0,
+                "episode_count": 0.0,
+                "episode_mean_s": 0.0,
+                "episode_max_s": 0.0,
+            }
 
-        elapsed_s = max(0.0, time.time() - self._session_started_at)
+        durations: list[float] = []
+        current_run_s = 0.0
+
+        for idx in range(1, min(len(values), len(sample_times))):
+            dt = max(0.0, sample_times[idx] - sample_times[idx - 1])
+            value = values[idx]
+            in_state = value >= threshold if is_high else value <= threshold
+            if in_state:
+                current_run_s += dt
+            elif current_run_s > 0.0:
+                durations.append(current_run_s)
+                current_run_s = 0.0
+
+        if current_run_s > 0.0:
+            durations.append(current_run_s)
+
+        if not durations:
+            return {
+                "total_s": 0.0,
+                "episode_count": 0.0,
+                "episode_mean_s": 0.0,
+                "episode_max_s": 0.0,
+            }
+
+        total_s = float(np.sum(durations))
+        episode_count = float(len(durations))
+        return {
+            "total_s": total_s,
+            "episode_count": episode_count,
+            "episode_mean_s": total_s / episode_count,
+            "episode_max_s": float(np.max(durations)),
+        }
+
+    def _session_summary_payload(self, elapsed_s: float) -> dict:
         raw_min = float(self._session_raw_rms_min or 0.0)
         raw_max = float(self._session_raw_rms_max or 0.0)
         band_min = float(self._session_band_energy_min or 0.0)
         band_max = float(self._session_band_energy_max or 0.0)
         flux_min = float(self._session_flux_min or 0.0)
         flux_max = float(self._session_flux_max or 0.0)
+
         frame_count = float(self._session_frame_count)
         raw_mean = self._session_raw_rms_sum / frame_count
         band_mean = self._session_band_energy_sum / frame_count
         flux_mean = self._session_flux_sum / frame_count
+
+        flux_high_threshold = float(np.percentile(self._session_flux_samples, 90)) if self._session_flux_samples else 0.0
+        peak_high_threshold = float(np.percentile(self._session_peak_samples, 90)) if self._session_peak_samples else 0.0
+        trough_low_threshold = float(np.percentile(self._session_trough_samples, 10)) if self._session_trough_samples else 0.0
+
+        flux_high = self._compute_persistence_stats(
+            self._session_flux_samples,
+            self._session_sample_times,
+            flux_high_threshold,
+            is_high=True,
+        )
+        peak_high = self._compute_persistence_stats(
+            self._session_peak_samples,
+            self._session_sample_times,
+            peak_high_threshold,
+            is_high=True,
+        )
+        trough_low = self._compute_persistence_stats(
+            self._session_trough_samples,
+            self._session_sample_times,
+            trough_low_threshold,
+            is_high=False,
+        )
+
+        ended_at = time.time()
+        return {
+            "session_started_at": self._session_started_at,
+            "session_ended_at": ended_at,
+            "seconds": elapsed_s,
+            "frames": self._session_frame_count,
+            "raw_rms_low": raw_min,
+            "raw_rms_high": raw_max,
+            "raw_rms_mean": raw_mean,
+            "band_energy_low": band_min,
+            "band_energy_high": band_max,
+            "band_energy_mean": band_mean,
+            "flux_low": flux_min,
+            "flux_high": flux_max,
+            "flux_mean": flux_mean,
+            "flux_high_threshold": flux_high_threshold,
+            "peak_high_threshold": peak_high_threshold,
+            "trough_low_threshold": trough_low_threshold,
+            "flux_high_total_s": flux_high["total_s"],
+            "flux_high_episode_count": flux_high["episode_count"],
+            "flux_high_episode_mean_s": flux_high["episode_mean_s"],
+            "flux_high_episode_max_s": flux_high["episode_max_s"],
+            "peak_high_total_s": peak_high["total_s"],
+            "peak_high_episode_count": peak_high["episode_count"],
+            "peak_high_episode_mean_s": peak_high["episode_mean_s"],
+            "peak_high_episode_max_s": peak_high["episode_max_s"],
+            "trough_low_total_s": trough_low["total_s"],
+            "trough_low_episode_count": trough_low["episode_count"],
+            "trough_low_episode_mean_s": trough_low["episode_mean_s"],
+            "trough_low_episode_max_s": trough_low["episode_max_s"],
+        }
+
+    def _log_shutdown_summary(self) -> None:
+        if self._session_frame_count <= 0:
+            return
+
+        elapsed_s = max(0.0, time.time() - self._session_started_at)
+        payload = self._session_summary_payload(elapsed_s)
 
         log_event(
             "INFO",
@@ -513,19 +651,28 @@ class AudioEngine:
             "Shutdown levels summary",
             frames=self._session_frame_count,
             seconds=f"{elapsed_s:.1f}",
-            raw_rms_min=f"{raw_min:.6f}",
-            raw_rms_max=f"{raw_max:.6f}",
-            raw_rms_mean=f"{raw_mean:.6f}",
-            raw_rms_span=f"{(raw_max - raw_min):.6f}",
-            band_energy_min=f"{band_min:.6f}",
-            band_energy_max=f"{band_max:.6f}",
-            band_energy_mean=f"{band_mean:.6f}",
-            band_energy_span=f"{(band_max - band_min):.6f}",
-            flux_min=f"{flux_min:.4f}",
-            flux_max=f"{flux_max:.4f}",
-            flux_mean=f"{flux_mean:.4f}",
-            flux_span=f"{(flux_max - flux_min):.4f}",
+            raw_rms_min=f"{payload['raw_rms_low']:.6f}",
+            raw_rms_max=f"{payload['raw_rms_high']:.6f}",
+            raw_rms_mean=f"{payload['raw_rms_mean']:.6f}",
+            raw_rms_span=f"{(payload['raw_rms_high'] - payload['raw_rms_low']):.6f}",
+            band_energy_min=f"{payload['band_energy_low']:.6f}",
+            band_energy_max=f"{payload['band_energy_high']:.6f}",
+            band_energy_mean=f"{payload['band_energy_mean']:.6f}",
+            band_energy_span=f"{(payload['band_energy_high'] - payload['band_energy_low']):.6f}",
+            flux_min=f"{payload['flux_low']:.4f}",
+            flux_max=f"{payload['flux_high']:.4f}",
+            flux_mean=f"{payload['flux_mean']:.4f}",
+            flux_span=f"{(payload['flux_high'] - payload['flux_low']):.4f}",
+            flux_high_total_s=f"{payload['flux_high_total_s']:.3f}",
+            peak_high_total_s=f"{payload['peak_high_total_s']:.3f}",
+            trough_low_total_s=f"{payload['trough_low_total_s']:.3f}",
         )
+
+        if bool(getattr(self.config, 'report_generation_enabled', True)):
+            try:
+                self._audio_reporter.save_session(payload)
+            except Exception as e:
+                log_event("WARN", "Audio", "Failed to save session report", error=e)
 
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""
@@ -742,7 +889,6 @@ class AudioEngine:
             spectral_flux = self._compute_spectral_flux(band_spectrum)
 
         raw_rms = np.sqrt(np.mean(mono ** 2))
-        self._update_session_stats(raw_rms, band_energy, spectral_flux)
         
         # Note: Audio gain already applied to band_spectrum above, no need to apply again
         
@@ -783,6 +929,14 @@ class AudioEngine:
             self.peak_envelope = band_energy
         else:
             self.peak_envelope *= decay
+
+        self._update_session_stats(
+            raw_rms=raw_rms,
+            band_energy=band_energy,
+            spectral_flux=spectral_flux,
+            peak_level=self.peak_envelope,
+            sample_time=time.time(),
+        )
             
         # Check for tempo timeout (no beats for 2000ms)
         current_time = time.time()

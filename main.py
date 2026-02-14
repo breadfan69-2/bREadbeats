@@ -7,6 +7,10 @@ Qt GUI with beat detection, stroke mapping, and spectrum visualization.
 import sys
 from contextlib import contextmanager
 import time
+from datetime import datetime
+import webbrowser
+import zipfile
+from urllib.parse import quote
 
 _import_t0 = time.perf_counter()
 print("\n[Startup] main.py loading heavy modules...", flush=True)
@@ -2163,13 +2167,9 @@ class BREadbeatsWindow(QMainWindow):
         
         # Load presets from disk
         self._load_presets_from_disk()
-        
-        # First-run device limits prompt (delayed so window is visible first)
-        # Skip if user already entered values, opted out, or was already prompted
-        dl = self.config.device_limits
-        has_values = (dl.p0_freq_max > 0 or dl.c0_freq_max > 0)
-        if not dl.prompted and not dl.dont_show_on_startup and not has_values:
-            QTimer.singleShot(500, lambda: self._on_device_limits(first_run=True))
+
+        self._register_app_run_startup()
+        self._schedule_startup_notices()
         
         # Connect signals
         self.signals.beat_detected.connect(self._on_beat)
@@ -2755,6 +2755,26 @@ class BREadbeatsWindow(QMainWindow):
         advanced_action = options_menu.addAction("Advanced Controls...")
         assert advanced_action is not None
         advanced_action.triggered.connect(self._on_advanced_controls)
+
+        # Reports menu (top-level for easy findability)
+        reports_menu = menubar.addMenu("Reports")
+        assert reports_menu is not None
+
+        email_reports_action = reports_menu.addAction("Email Reports...")
+        assert email_reports_action is not None
+        email_reports_action.triggered.connect(self._on_email_reports)
+
+        self.report_generation_action = reports_menu.addAction("Enable Report Generation")
+        assert self.report_generation_action is not None
+        self.report_generation_action.setCheckable(True)
+        self.report_generation_action.setChecked(bool(getattr(self.config, 'report_generation_enabled', True)))
+        self.report_generation_action.triggered.connect(self._on_report_generation_toggle)
+
+        reports_menu.addSeparator()
+
+        open_reports_action = reports_menu.addAction("Open Reports Folder")
+        assert open_reports_action is not None
+        open_reports_action.triggered.connect(self._on_open_reports_folder)
         
         # Help menu (separate top-level menu)
         help_menu = menubar.addMenu("Help")
@@ -3894,6 +3914,192 @@ Inspired by:
 Bug reports/share your presets:
 bREadfan_69@hotmail.com"""
         QMessageBox.information(self, "About bREadbeats", about_text)
+
+    def _on_open_reports_folder(self):
+        report_dir = get_config_dir()
+        try:
+            os.startfile(str(report_dir))
+        except Exception as e:
+            QMessageBox.warning(self, "Open Reports Folder", f"Could not open reports folder:\n{e}\n\nFolder: {report_dir}")
+
+    def _on_report_generation_toggle(self, checked: bool):
+        self.config.report_generation_enabled = bool(checked)
+        save_config(self.config)
+        state = "enabled" if checked else "disabled"
+        QMessageBox.information(self, "Reports", f"Report generation is now {state}.")
+
+    def _register_app_run_startup(self):
+        try:
+            count = int(getattr(self.config, 'app_run_count', 0))
+        except Exception:
+            count = 0
+        self.config.app_run_count = max(0, count) + 1
+        save_config(self.config)
+
+    def _schedule_startup_notices(self):
+        show_first_run = not bool(getattr(self.config, 'privacy_notice_seen', False))
+        reports_enabled = bool(getattr(self.config, 'report_generation_enabled', True))
+        reminder_shown = bool(getattr(self.config, 'report_email_reminder_shown', False))
+        run_count = int(getattr(self.config, 'app_run_count', 0) or 0)
+        reminder_run = int(getattr(self.config, 'report_email_reminder_run', 10) or 10)
+
+        # First-run device limits prompt eligibility
+        dl = self.config.device_limits
+        has_values = (dl.p0_freq_max > 0 or dl.c0_freq_max > 0)
+        show_device_limits = (not dl.prompted and not dl.dont_show_on_startup and not has_values)
+
+        if show_first_run:
+            QTimer.singleShot(350, self._show_first_run_privacy_dialog)
+            if show_device_limits:
+                QTimer.singleShot(1300, lambda: self._on_device_limits(first_run=True))
+            return
+
+        if reports_enabled and not reminder_shown and run_count >= max(1, reminder_run):
+            QTimer.singleShot(450, self._show_report_email_reminder_dialog)
+
+        if show_device_limits:
+            QTimer.singleShot(500, lambda: self._on_device_limits(first_run=True))
+
+    def _show_first_run_privacy_dialog(self):
+        from PyQt6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QLabel, QVBoxLayout
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Welcome / Privacy Notice")
+        dialog.setModal(True)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setMinimumWidth(580)
+
+        layout = QVBoxLayout(dialog)
+        label = QLabel(
+            "bREadbeats is currently in beta.\n\n"
+            "Privacy:\n"
+            "- Reports are saved locally on your machine (no auto-upload).\n"
+            "- Reports help tune defaults and hardcode better behavior for future builds.\n"
+            "- Email sharing only happens when you explicitly choose Reports → Email Reports.\n\n"
+            "You can disable report generation now or later from the Reports menu."
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        disable_cb = QCheckBox("Disable local report generation")
+        disable_cb.setChecked(not bool(getattr(self.config, 'report_generation_enabled', True)))
+        layout.addWidget(disable_cb)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        dialog.exec()
+
+        self.config.privacy_notice_seen = True
+        self.config.report_generation_enabled = not disable_cb.isChecked()
+        save_config(self.config)
+
+        action = getattr(self, 'report_generation_action', None)
+        if action is not None:
+            action.blockSignals(True)
+            action.setChecked(self.config.report_generation_enabled)
+            action.blockSignals(False)
+
+    def _show_report_email_reminder_dialog(self):
+        QMessageBox.information(
+            self,
+            "Report Reminder",
+            "If bREadbeats is feeling good, please consider sending your report bundle via Reports → Email Reports.\n\n"
+            "This helps improve defaults and future hardcoding decisions.",
+        )
+        self.config.report_email_reminder_shown = True
+        save_config(self.config)
+
+    def _build_reports_zip(self) -> tuple[Path, int]:
+        save_config(self.config)
+        report_dir = get_config_dir()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_path = report_dir / f"breadbeats_reports_{timestamp}.zip"
+
+        candidates = [
+            report_dir / "audio_session_report.json",
+            report_dir / "audio_session_report.csv",
+            report_dir / "slider_tuning_report.json",
+            report_dir / "slider_tuning_report.csv",
+            report_dir / "config.json",
+            report_dir / "presets.json",
+        ]
+        existing = [path for path in candidates if path.exists()]
+        if not existing:
+            raise RuntimeError("No report files found yet. Run a session first, then try again.")
+
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path in existing:
+                zf.write(path, arcname=path.name)
+
+        return zip_path, len(existing)
+
+    def _on_email_reports(self):
+        prompt = QMessageBox(self)
+        prompt.setWindowTitle("Send Report")
+        prompt.setIcon(QMessageBox.Icon.Information)
+        prompt.setModal(True)
+        prompt.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        prompt.setText("Create a report ZIP and open your email draft?")
+        prompt.setInformativeText(
+            "After creating the ZIP, bREadbeats opens your reports folder so you can attach it quickly."
+        )
+        send_btn = prompt.addButton("Send Report", QMessageBox.ButtonRole.AcceptRole)
+        open_folder_btn = prompt.addButton("Open Reports Folder", QMessageBox.ButtonRole.ActionRole)
+        cancel_btn = prompt.addButton(QMessageBox.StandardButton.Cancel)
+        prompt.setDefaultButton(send_btn)
+        prompt.exec()
+
+        clicked = prompt.clickedButton()
+        if clicked is cancel_btn:
+            return
+        if clicked is open_folder_btn:
+            self._on_open_reports_folder()
+            return
+
+        try:
+            zip_path, file_count = self._build_reports_zip()
+        except Exception as e:
+            QMessageBox.warning(self, "Email Reports", str(e))
+            return
+
+        subject = f"bREadbeats Reports {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        body = (
+            "Hi,\n\n"
+            f"Attached is {zip_path.name} from my bREadbeats reports folder.\n\n"
+            "Thanks!"
+        )
+        mailto_url = f"mailto:bREadfan_69@hotmail.com?subject={quote(subject)}&body={quote(body)}"
+
+        try:
+            webbrowser.open(mailto_url)
+        except Exception:
+            pass
+
+        try:
+            os.startfile(str(zip_path.parent))
+        except Exception:
+            pass
+
+        done = QMessageBox(self)
+        done.setWindowTitle("Email Reports")
+        done.setIcon(QMessageBox.Icon.Information)
+        done.setModal(True)
+        done.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        done.setText(f"Created {zip_path.name} with {file_count} file(s).")
+        done.setInformativeText(
+            "Attach this ZIP from the opened reports folder, then send your email.\n\n"
+            f"Folder: {zip_path.parent}\n"
+            f"File: {zip_path.name}\n\n"
+            "Recipient: bREadfan_69@hotmail.com"
+        )
+        done_open_btn = done.addButton("Open Reports Folder", QMessageBox.ButtonRole.ActionRole)
+        done.addButton(QMessageBox.StandardButton.Ok)
+        done.exec()
+
+        if done.clickedButton() is done_open_btn:
+            self._on_open_reports_folder()
     
     def _apply_config_to_ui(self):
         """Apply loaded config values to UI sliders"""
@@ -7274,10 +7480,11 @@ bREadfan_69@hotmail.com"""
         save_config(self.config)
 
         # Save slider tuning report
-        try:
-            self._slider_tracker.save_reports()
-        except Exception as e:
-            print(f"[Tracker] Failed to save slider tuning report: {e}")
+        if bool(getattr(self.config, 'report_generation_enabled', True)):
+            try:
+                self._slider_tracker.save_reports()
+            except Exception as e:
+                print(f"[Tracker] Failed to save slider tuning report: {e}")
 
         # Save presets to disk
         self._save_presets_to_disk()
