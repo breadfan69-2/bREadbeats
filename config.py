@@ -133,6 +133,7 @@ class StrokeConfig:
     noise_burst_enabled: bool = True        # Allow transient-reactive arcs between beats
     noise_burst_flux_multiplier: float = 2.0  # Fire burst when flux > flux_threshold * this
     noise_burst_magnitude: float = 1.0      # Magnitude scaling for noise burst patterns (0.5-5.0)
+    noise_burst_scale: float = 0.35         # Final burst downscale applied after magnitude/energy (0.0-0.5)
     downbeat_jitter_vector_percent: float = 50.0  # % of current jitter vector added to downbeat arc points
     bass_jitter_speed_influence_percent: float = 100.0  # % depth of bass-frequency influence on jitter speed
     bass_jitter_size_influence_percent: float = 0.0     # % depth of bass-frequency influence on jitter size
@@ -336,6 +337,8 @@ def migrate_config(config: Config, loaded_version) -> None:
     if version < 1:
         if getattr(config.stroke, 'noise_burst_magnitude', 1.0) in (None, 0):
             config.stroke.noise_burst_magnitude = 1.0
+        if getattr(config.stroke, 'noise_burst_scale', None) is None:
+            config.stroke.noise_burst_scale = 0.35
 
         if getattr(config.stroke, 'downbeat_jitter_vector_percent', None) is None:
             config.stroke.downbeat_jitter_vector_percent = 50.0
@@ -382,6 +385,12 @@ def migrate_config(config: Config, loaded_version) -> None:
     except Exception:
         size_inf = 0.0
     config.stroke.bass_jitter_size_influence_percent = max(0.0, min(200.0, size_inf))
+
+    try:
+        burst_scale = float(getattr(config.stroke, 'noise_burst_scale', 0.35))
+    except Exception:
+        burst_scale = 0.35
+    config.stroke.noise_burst_scale = max(0.0, min(0.5, burst_scale))
 
     config.version = CURRENT_CONFIG_VERSION
 

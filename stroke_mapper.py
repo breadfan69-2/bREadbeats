@@ -1381,19 +1381,25 @@ class StrokeMapper:
         arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 1.0), arc_radius))
 
         if cfg.mode == StrokeMode.SPIRAL:
-            # Downbeat Spiral: sweep toward bottom edge, hold briefly (thump),
-            # then return to center so next cycle starts clean.
+            # Downbeat Spiral: lock to one of three evenly spaced travel axes
+            # (0° / 120° / 240°) and sweep outward without forced recenter.
             spiral_cap = self._radius_cap_from_depth(depth, 1.0)
             radial_drive = max(0.0, min(1.0, stroke_len * depth * curved_intensity))
             out_radius = max(0.15, spiral_cap * radial_drive)
 
+            axis_step = (2.0 * np.pi) / 3.0
+            if abs(self.state.alpha) > 1e-6 or abs(self.state.beta) > 1e-6:
+                current_theta = float(np.arctan2(self.state.alpha, self.state.beta))
+            else:
+                current_theta = float(getattr(self.state, 'creep_angle', 0.0))
+            axis_index = int(np.round(current_theta / axis_step))
+            axis_theta = axis_index * axis_step
+
             hold_ms = min(120, max(80, int(measure_duration_ms * 0.08)))
             moving_ms = max(120, measure_duration_ms - hold_ms)
-            out_ms = int(moving_ms * 0.72)
-            return_ms = moving_ms - out_ms
+            out_ms = moving_ms
 
-            n_out = max(14, int(n_points * 0.68))
-            n_return = max(6, n_points - n_out)
+            n_out = max(16, n_points)
 
             alpha_out = np.zeros(n_out)
             beta_out = np.zeros(n_out)
@@ -1401,10 +1407,10 @@ class StrokeMapper:
             beta_weight = self.config.beta_weight
             for i in range(n_out):
                 progress = i / max(1, n_out - 1)
-                theta = -np.pi / 2 + progress * (2 * np.pi)
+                theta = axis_theta + progress * (2 * np.pi)
                 r = out_radius * progress
-                a = r * np.cos(theta) * alpha_weight
-                b = r * np.sin(theta) * beta_weight
+                a = r * np.sin(theta) * alpha_weight
+                b = r * np.cos(theta) * beta_weight
                 norm = float(np.hypot(a, b))
                 if norm > spiral_cap and norm > 0:
                     scale = spiral_cap / norm
@@ -1413,20 +1419,12 @@ class StrokeMapper:
                 alpha_out[i] = np.clip(a, -1.0, 1.0)
                 beta_out[i] = np.clip(b, -1.0, 1.0)
 
-            bottom_a = float(alpha_out[-1])
-            bottom_b = float(beta_out[-1])
-
-            alpha_return = np.linspace(bottom_a, 0.0, n_return)
-            beta_return = np.linspace(bottom_b, 0.0, n_return)
-
-            alpha_arc = np.concatenate([alpha_out, alpha_return])
-            beta_arc = np.concatenate([beta_out, beta_return])
-
-            out_steps = [max(5, int(out_ms / max(1, n_out))) for _ in range(n_out)]
-            hold_steps = [hold_ms]
-            return_steps = [max(5, int(return_ms / max(1, n_return))) for _ in range(n_return)]
-            step_durations = out_steps[:-1] + hold_steps + return_steps
-            n_points = len(alpha_arc)
+            alpha_arc = alpha_out
+            beta_arc = beta_out
+            step_durations = [max(5, int(out_ms / max(1, n_out))) for _ in range(n_out)]
+            if step_durations:
+                step_durations[-1] += hold_ms
+            n_points = n_out
 
             self._trajectory = PlannedTrajectory(
                 alpha_points=alpha_arc,
@@ -1568,14 +1566,21 @@ class StrokeMapper:
             N = self.spiral_revolutions
             prev_index = getattr(self, 'spiral_beat_index', 0)
             next_index = prev_index + 1
-            theta_prev = (prev_index / N) * (2 * np.pi * N)
-            theta_next = (next_index / N) * (2 * np.pi * N)
+            spiral_divisor = max(1, int(self._get_spiral_beat_divisor()))
+            turn_span = (2 * np.pi) / spiral_divisor
+            theta_prev = prev_index * turn_span
+            theta_next = next_index * turn_span
             n_points = max(8, int(beat_interval_ms / 10))
             thetas = np.linspace(theta_prev, theta_next, n_points)
             alpha_arc = np.zeros(n_points)
             beta_arc = np.zeros(n_points)
             alpha_weight = self.config.alpha_weight
             beta_weight = self.config.beta_weight
+            axis_step = (2.0 * np.pi) / 3.0
+            flux_ratio = float(np.clip(event.spectral_flux / max(cfg.flux_threshold, 1e-4), 0.0, 2.0))
+            spike_drive = float(np.clip((0.65 * curved_intensity) + (0.35 * (flux_ratio / 2.0)), 0.0, 1.0))
+            spike_mag = 0.05 + (0.05 * spike_drive)
+            spike_window = 0.16
             for i, theta in enumerate(thetas):
                 margin = 0.1
                 b_coeff = (1.0 - margin) / (2 * np.pi * N)
@@ -1585,13 +1590,26 @@ class StrokeMapper:
                 b_ = r * np.sin(theta) * beta_weight
                 spiral_cap = self._radius_cap_from_depth(depth, 1.0)
                 norm = float(np.hypot(a, b_))
+                if norm > 1e-6:
+                    point_theta = float(np.arctan2(a, b_))
+                    nearest_axis = round(point_theta / axis_step) * axis_step
+                    delta = float(np.arctan2(np.sin(point_theta - nearest_axis), np.cos(point_theta - nearest_axis)))
+                    abs_delta = abs(delta)
+                    if abs_delta < spike_window:
+                        lane_weight = 1.0 - (abs_delta / spike_window)
+                        target_norm = min(spiral_cap, norm + spike_mag * lane_weight)
+                        if target_norm > norm:
+                            spike_scale = target_norm / norm
+                            a *= spike_scale
+                            b_ *= spike_scale
+                            norm = float(np.hypot(a, b_))
                 if norm > spiral_cap and norm > 0:
                     scale = spiral_cap / norm
                     a *= scale
                     b_ *= scale
                 alpha_arc[i] = np.clip(a, -1.0, 1.0)
                 beta_arc[i] = np.clip(b_, -1.0, 1.0)
-            self.spiral_beat_index = next_index % N
+            self.spiral_beat_index = next_index
         else:
             n_points = max(8, int(beat_interval_ms / 10))
             # Arc starts from current creep angle, sweeps exactly 360°.
@@ -1618,35 +1636,8 @@ class StrokeMapper:
             # Landing emphasis: slow at start/end (tap feel), fast through middle
             step_durations = self._make_landing_durations(beat_interval_ms, n_points)
 
-        if cfg.mode == StrokeMode.SPIRAL and len(alpha_arc) > 0:
-            # Regular beat accent: quick outward spike then brief hold.
-            spike_hold_ms = 100
-            end_a = float(alpha_arc[-1])
-            end_b = float(beta_arc[-1])
-            vec_norm = float(np.hypot(end_a, end_b))
-            if vec_norm > 1e-6:
-                dir_a, dir_b = end_a / vec_norm, end_b / vec_norm
-            else:
-                dir_a, dir_b = 0.0, -1.0
-            spiral_cap = self._radius_cap_from_depth(depth, 1.0)
-            spike_a = np.clip(dir_a * spiral_cap, -1.0, 1.0)
-            spike_b = np.clip(dir_b * spiral_cap, -1.0, 1.0)
-
-            alpha_spike = np.array([
-                end_a + (spike_a - end_a) * 0.65,
-                spike_a,
-                spike_a,
-            ])
-            beta_spike = np.array([
-                end_b + (spike_b - end_b) * 0.65,
-                spike_b,
-                spike_b,
-            ])
-
-            alpha_arc = np.concatenate([alpha_arc, alpha_spike])
-            beta_arc = np.concatenate([beta_arc, beta_spike])
-            step_durations.extend([20, 20, spike_hold_ms])
-            n_points = len(alpha_arc)
+        # Mode-2 SPIRAL beat spikes: subtle tri-axis accents are baked into
+        # SPIRAL point generation above.
 
         # Store trajectory for frame-by-frame playback (no thread)
         self._trajectory = PlannedTrajectory(
@@ -1777,7 +1768,7 @@ class StrokeMapper:
         magnitude_scale = getattr(self.config.stroke, 'noise_burst_magnitude', 1.0)
         energy_scale = 1.0 + (self._mid_energy + self._high_energy) * 2.0
         energy_scale = min(energy_scale, 2.0)
-        jerk_mag = random.uniform(0.15, 0.40) * self.motion_intensity * magnitude_scale * energy_scale
+        raw_mag = random.uniform(0.15, 0.40) * self.motion_intensity * magnitude_scale * energy_scale
         base_angle = self.state.creep_angle
         n_points = random.randint(4, 8)
         duration_ms = random.randint(60, 120)
@@ -1794,6 +1785,15 @@ class StrokeMapper:
             center_b = float(self.state.beta)
             if abs(center_a) > 1e-6 or abs(center_b) > 1e-6:
                 base_angle = np.arctan2(center_a, center_b)
+
+        # Major rescale for burst safety: first apply configurable reduction, then
+        # cap by remaining radius headroom from current center.
+        burst_scale = float(np.clip(getattr(self.config.stroke, 'noise_burst_scale', 0.35), 0.0, 0.5))
+        center_norm = float(np.hypot(center_a, center_b))
+        safe_radius = 0.92
+        headroom = max(0.05, safe_radius - center_norm)
+        headroom_cap = min(0.22, headroom * 0.45)
+        jerk_mag = min(raw_mag * burst_scale, headroom_cap)
 
         alpha_pts = np.zeros(n_points)
         beta_pts = np.zeros(n_points)
@@ -1829,8 +1829,8 @@ class StrokeMapper:
                 alpha_pts[i] = center_a + np.sin(perp) * offset
                 beta_pts[i] = center_b + np.cos(perp) * offset
 
-        alpha_pts = np.clip(alpha_pts, -1.0, 1.0)
-        beta_pts = np.clip(beta_pts, -1.0, 1.0)
+        alpha_pts = np.clip(alpha_pts, -safe_radius, safe_radius)
+        beta_pts = np.clip(beta_pts, -safe_radius, safe_radius)
 
         step = max(5, duration_ms // n_points)
         step_durations = [step] * n_points
@@ -1852,7 +1852,10 @@ class StrokeMapper:
         self.state.last_stroke_time = now
         log_event("INFO", "StrokeMapper", f"Noise jitter ({pattern})",
                   points=n_points, duration_ms=duration_ms,
-                  flux=f"{event.spectral_flux:.3f}")
+                  flux=f"{event.spectral_flux:.3f}",
+                  raw_mag=f"{raw_mag:.3f}",
+                  burst_mag=f"{jerk_mag:.3f}",
+                  headroom=f"{headroom:.3f}")
         return None
 
     # ------------------------------------------------------------------

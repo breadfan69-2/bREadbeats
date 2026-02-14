@@ -3433,6 +3433,23 @@ class BREadbeatsWindow(QMainWindow):
         )
         burst_layout.addWidget(burst_mag_slider)
 
+        burst_scale_row = QHBoxLayout()
+        burst_scale_label = QLabel("Burst final scale:")
+        burst_scale_label.setStyleSheet("color: #ccc;")
+        burst_scale_label.setToolTip("Final downscale applied to burst displacement after magnitude/energy")
+        burst_scale_row.addWidget(burst_scale_label)
+        burst_scale_spin = QDoubleSpinBox()
+        burst_scale_spin.setRange(0.0, 0.5)
+        burst_scale_spin.setSingleStep(0.01)
+        burst_scale_spin.setDecimals(2)
+        burst_scale_spin.setValue(float(getattr(self.config.stroke, 'noise_burst_scale', 0.35) or 0.35))
+        burst_scale_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'noise_burst_scale', float(v))
+        )
+        burst_scale_row.addWidget(burst_scale_spin)
+        burst_scale_row.addStretch()
+        burst_layout.addLayout(burst_scale_row)
+
         downbeat_jitter_row = QHBoxLayout()
         downbeat_jitter_label = QLabel("Downbeat jitter blend (%):")
         downbeat_jitter_label.setStyleSheet("color: #ccc;")
