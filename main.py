@@ -2968,10 +2968,10 @@ class CalibrationPopoutWindow(QMainWindow):
     def update_from_audio(self, waveform: Optional[np.ndarray], sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
         if waveform is None:
             return
-        self._append_frame(waveform, sample_rate, spectrum, stroke_cfg)
-
         if self._playback_paused:
             return
+
+        self._append_frame(waveform, sample_rate, spectrum, stroke_cfg)
 
         if self._playback_rate >= 0.999 and self._frame_history:
             self._playback_cursor_time = float(self._frame_history[-1]['t'])
@@ -8219,10 +8219,13 @@ bREadfan_69@hotmail.com"""
         if self.audio_engine:
             spectrum = self.audio_engine.get_spectrum()
             if spectrum is not None:
+                waveform = self.audio_engine.get_waveform()
                 spectrum_with_stats = {
                     'spectrum': spectrum,
                     'peak_energy': event.peak_energy,
-                    'spectral_flux': event.spectral_flux
+                    'spectral_flux': event.spectral_flux,
+                    'waveform': waveform,
+                    'sample_rate': int(getattr(self.config.audio, 'sample_rate', 44100)),
                 }
                 self.signals.spectrum_ready.emit(spectrum_with_stats)
 
