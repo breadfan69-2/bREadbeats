@@ -5393,10 +5393,13 @@ bREadfan_69@hotmail.com"""
         detect_layout = QVBoxLayout(detect_group)
         detect_layout.addLayout(type_layout)
         layout.addWidget(detect_group)
-        
+
+        # Everything below detection type lives inside one windowshade section
+        auto_levels_group = CollapsibleGroupBox("Auto-Levels", collapsed=True)
+        auto_levels_layout = QVBoxLayout(auto_levels_group)
+
         # ===== AUTO-ADJUST (METRIC-BASED AUTO-RANGING) =====
-        metric_group = CollapsibleGroupBox("Auto-Adjust", collapsed=True)
-        metric_layout = QVBoxLayout(metric_group)
+        metric_layout = auto_levels_layout
         
         # Global enable/disable checkbox for all metrics
         self.metrics_global_cb = QCheckBox("Enable Auto-Adjust")
@@ -5508,8 +5511,6 @@ bREadfan_69@hotmail.com"""
         status_row.addStretch()
         metric_layout.addLayout(status_row)
         
-        layout.addWidget(metric_group)
-        
         # Enable metrics based on config (first load = True, then saved)
         global_on = self.config.auto_adjust.metrics_global_enabled
         self.metric_peak_floor_cb.setChecked(global_on)
@@ -5518,10 +5519,9 @@ bREadfan_69@hotmail.com"""
         self.metric_target_bps_cb.setChecked(global_on)
         if global_on:
             print("[Config] Auto-enabled 4 core metrics from config")
-        
-        # ===== LEVELS GROUP: Audio Amplification, Sensitivity, Flux Multiplier =====
-        levels_group = CollapsibleGroupBox("Levels", collapsed=True)
-        levels_layout = QVBoxLayout(levels_group)
+
+        # ===== LEVELS: Audio Amplification, Sensitivity, Flux Multiplier =====
+        levels_layout = auto_levels_layout
         
         # Frequency band selection with visibility toggle (red beat detection band)
         beat_slider_row = QHBoxLayout()
@@ -5558,11 +5558,9 @@ bREadfan_69@hotmail.com"""
         self.flux_mult_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'flux_multiplier', v))
         levels_layout.addWidget(self.flux_mult_slider)
         
-        layout.addWidget(levels_group)
-        
-        # ===== DEPTH/PEAKS GROUP: Depth, Peak Decay, Rise Sensitivity =====
-        peaks_group = CollapsibleGroupBox("Depth & Peaks", collapsed=True)
-        peaks_layout = QVBoxLayout(peaks_group)
+
+        # ===== DEPTH/PEAKS: Depth, Peak Decay, Rise Sensitivity =====
+        peaks_layout = auto_levels_layout
         
         # Peak floor: minimum energy to consider (0 = disabled)
         # Range 0.01-0.15: typical band_energy is 0.08-0.15 with default gain
@@ -5583,7 +5581,7 @@ bREadfan_69@hotmail.com"""
         self.rise_sens_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'rise_sensitivity', v))
         peaks_layout.addWidget(self.rise_sens_slider)
         
-        layout.addWidget(peaks_group)
+        layout.addWidget(auto_levels_group)
         
         layout.addStretch()
         scroll_area.setWidget(widget)
