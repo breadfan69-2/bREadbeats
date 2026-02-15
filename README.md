@@ -24,6 +24,27 @@ python run.py
 1. Start restim with TCP enabled (port 12347)
 2. Connect → Start → Play
 
+## Building EXE (PyInstaller)
+
+```bash
+.venv/Scripts/pyinstaller.exe bREadbeats.spec
+```
+
+Some PyInstaller warnings are expected due to optional or platform-specific imports in third-party packages.
+If the build completes and `dist/bREadbeats.exe` launches, warnings like missing `pycparser.lextab` or excluded `numpy.f2py` are typically non-blocking.
+
+To fail only on truly critical missing imports (useful in CI):
+
+```bash
+.venv/Scripts/python.exe tools/check_pyinstaller_warnings.py
+```
+
+Optional stricter mode:
+
+```bash
+.venv/Scripts/python.exe tools/check_pyinstaller_warnings.py --strict-unknown
+```
+
 ## System Requirements
 
 - Windows 10+ (WASAPI loopback audio)
