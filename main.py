@@ -2027,12 +2027,15 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
     ) -> None:
         now = time.monotonic()
         numeric_value = float(value)
-        y_db = float(self._to_db(numeric_value)) if mode != 'occupancy' else self._as_float(self.high_floor_threshold_line.value(), -80.0)
+        mode_kind = str(mode or 'threshold')
+        y_db = float(self._to_db(numeric_value)) if mode_kind not in ('occupancy', 'hz_line') else self._as_float(self.high_floor_threshold_line.value(), -80.0)
 
         overlay = self._flux_ghost_overlays.get(key)
         if overlay is None:
             qcolor = QColor(color)
-            line = pg.InfiniteLine(pos=y_db, angle=0, movable=False, pen=pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)))
+            line_angle = 90 if mode_kind == 'hz_line' else 0
+            line_pos = self._hz_to_log_khz(numeric_value) if mode_kind == 'hz_line' else y_db
+            line = pg.InfiniteLine(pos=line_pos, angle=line_angle, movable=False, pen=pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)))
             line.setZValue(18)
             self.addItem(line)
 
@@ -2064,7 +2067,7 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
         overlay['dashed'] = bool(dashed)
 
         x_left, x_right = self._band_x_range(band)
-        if mode == 'occupancy':
+        if mode_kind == 'occupancy':
             occ = float(np.clip(numeric_value, 0.0, 1.0))
             span = max(0.001, x_right - x_left)
             x_right = x_left + (span * occ)
@@ -2075,6 +2078,23 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
             overlay['box'].show()
             overlay['text'].setText(f"{label}: {occ:.3f}")
             overlay['text'].setPos(x_left, min(5.5, y_high - 0.2))
+        elif mode_kind == 'hz_line':
+            x_hz = self._hz_to_log_khz(numeric_value)
+            overlay['line'].show()
+            overlay['line'].setPos(x_hz)
+            overlay['text'].setText(f"{label}: {numeric_value:.0f} Hz")
+            overlay['text'].setPos(x_hz, 5.2)
+            if range_box:
+                overlay['base_rect'] = QRectF(
+                    x_hz - 0.002,
+                    -120.0,
+                    0.004,
+                    126.0,
+                )
+                overlay['box'].show()
+            else:
+                overlay['base_rect'] = None
+                overlay['box'].hide()
         else:
             overlay['line'].show()
             overlay['line'].setPos(y_db)
@@ -4066,12 +4086,48 @@ class BREadbeatsWindow(QMainWindow):
             if canvas is not None and hasattr(canvas, 'show_reference_line'):
                 canvas.show_reference_line(key, float(value), label, color=color, duration_s=15.0, dashed=dashed)
 
+        def _show_freqdb_ghost_ref(
+            key: str,
+            value: float,
+            label: str,
+            color: str = '#FF66AA',
+            dashed: bool = False,
+            band: str = 'full',
+            range_box: bool = False,
+            mode: str = 'threshold',
+        ) -> None:
+            ghost_targets = []
+            if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
+                ghost_targets.append(self.freqdb_canvas)
+            popout = getattr(self, 'calibration_popout', None)
+            popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
+            if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in ghost_targets:
+                ghost_targets.append(popout_freqdb)
+
+            for canvas in ghost_targets:
+                canvas.show_flux_ghost(
+                    key,
+                    float(value),
+                    label,
+                    color=color,
+                    duration_s=15.0,
+                    dashed=dashed,
+                    band=band,
+                    range_box=range_box,
+                    mode=mode,
+                )
+
         def _update_overall_amp_fill_refs():
             target = float(getattr(self.config.stroke, 'overall_amp_fill_target', 0.5) or 0.5)
             tol = float(abs(getattr(self.config.stroke, 'overall_amp_fill_tolerance', 0.5) or 0.5))
             min_amp = max(0.0, target - tol)
             _show_waveform_amp_ref('overall_amp_target', target, 'Amp target', '#66CCFF', dashed=False)
             _show_waveform_amp_ref('overall_amp_min', min_amp, 'Amp min', '#FFAA66', dashed=True)
+            _show_freqdb_ghost_ref('overall_amp_target', target, 'Amp target', '#66CCFF', dashed=False, band='full')
+            _show_freqdb_ghost_ref('overall_amp_min', min_amp, 'Amp min', '#FFAA66', dashed=True, band='full')
+
+        def _update_fill_requirement_refs() -> None:
+            self._preview_fill_requirement_ghosts()
 
         gate_high_slider.valueChanged.connect(
             lambda v: (setattr(self.config.stroke, 'amplitude_gate_high', v), _show_waveform_amp_ref('full_stroke_enter', float(v), 'Full enter', '#44FF88'))
@@ -4122,7 +4178,12 @@ class BREadbeatsWindow(QMainWindow):
         self.motion_freq_cutoff_spin.setSuffix(" Hz")
         self.motion_freq_cutoff_spin.setFixedWidth(90)
         self.motion_freq_cutoff_spin.setToolTip("0 disables cutoff filtering (while Bass Gating is enabled)")
-        self.motion_freq_cutoff_spin.valueChanged.connect(self._on_motion_freq_cutoff_change)
+        self.motion_freq_cutoff_spin.valueChanged.connect(
+            lambda v: (
+                self._on_motion_freq_cutoff_change(v),
+                _show_freqdb_ghost_ref('motion_freq_cutoff_hz', float(v), 'Motion cutoff', '#FFD166', dashed=True, mode='hz_line', range_box=True)
+            )
+        )
         motion_cutoff_row.addWidget(self.motion_freq_cutoff_spin)
         motion_cutoff_row.addStretch()
         gate_layout.addLayout(motion_cutoff_row)
@@ -4175,7 +4236,7 @@ class BREadbeatsWindow(QMainWindow):
             2,
         )
         downbeat_fill_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'downbeat_overall_amp_fill_required', float(v))
+            lambda v: (setattr(self.config.stroke, 'downbeat_overall_amp_fill_required', float(v)), _update_fill_requirement_refs())
         )
         gate_layout.addWidget(downbeat_fill_slider)
 
@@ -4187,7 +4248,7 @@ class BREadbeatsWindow(QMainWindow):
             2,
         )
         beat_fill_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'beat_overall_amp_fill_required', float(v))
+            lambda v: (setattr(self.config.stroke, 'beat_overall_amp_fill_required', float(v)), _update_fill_requirement_refs())
         )
         gate_layout.addWidget(beat_fill_slider)
 
@@ -4199,7 +4260,7 @@ class BREadbeatsWindow(QMainWindow):
             2,
         )
         sync_fill_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'syncopation_overall_amp_fill_required', float(v))
+            lambda v: (setattr(self.config.stroke, 'syncopation_overall_amp_fill_required', float(v)), _update_fill_requirement_refs())
         )
         gate_layout.addWidget(sync_fill_slider)
 
@@ -4218,7 +4279,10 @@ class BREadbeatsWindow(QMainWindow):
             1,
         )
         dual_sub_bass_db_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'dual_band_sub_bass_db_min', float(v))
+            lambda v: (
+                setattr(self.config.stroke, 'dual_band_sub_bass_db_min', float(v)),
+                _show_freqdb_ghost_ref('dual_sub_bass_db_min', float(v), 'Dual sub-bass dB', '#5CFF9A', band='low')
+            )
         )
         gate_layout.addWidget(dual_sub_bass_db_slider)
 
@@ -4230,7 +4294,10 @@ class BREadbeatsWindow(QMainWindow):
             1,
         )
         dual_high_db_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'dual_band_high_db_min', float(v))
+            lambda v: (
+                setattr(self.config.stroke, 'dual_band_high_db_min', float(v)),
+                _show_freqdb_ghost_ref('dual_high_db_min', float(v), 'Dual high dB', '#FF9AD9', band='high')
+            )
         )
         gate_layout.addWidget(dual_high_db_slider)
 
@@ -4267,6 +4334,8 @@ class BREadbeatsWindow(QMainWindow):
                 mid_block_high_spin.setValue(high)
             self.config.stroke.block_mid_trigger_low_hz = float(low)
             self.config.stroke.block_mid_trigger_high_hz = float(high)
+            _show_freqdb_ghost_ref('mid_block_low_hz', float(low), 'Mid block low', '#FF9A66', dashed=True, mode='hz_line', range_box=True)
+            _show_freqdb_ghost_ref('mid_block_high_hz', float(high), 'Mid block high', '#FFB366', dashed=True, mode='hz_line', range_box=True)
 
         def _on_mid_block_high_change(v: int) -> None:
             high = int(v)
@@ -4276,6 +4345,8 @@ class BREadbeatsWindow(QMainWindow):
                 mid_block_low_spin.setValue(low)
             self.config.stroke.block_mid_trigger_low_hz = float(low)
             self.config.stroke.block_mid_trigger_high_hz = float(high)
+            _show_freqdb_ghost_ref('mid_block_low_hz', float(low), 'Mid block low', '#FF9A66', dashed=True, mode='hz_line', range_box=True)
+            _show_freqdb_ghost_ref('mid_block_high_hz', float(high), 'Mid block high', '#FFB366', dashed=True, mode='hz_line', range_box=True)
 
         mid_block_low_spin.valueChanged.connect(_on_mid_block_low_change)
         mid_block_high_spin.valueChanged.connect(_on_mid_block_high_change)
@@ -6520,7 +6591,7 @@ Like the app?<br>
         self.fill_gate_scale_spin.setFixedWidth(68)
         self.fill_gate_scale_spin.setToolTip("Scales downbeat/beat/sync fill requirements together")
         self.fill_gate_scale_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'overall_amp_fill_required_scale', float(v))
+            lambda v: (setattr(self.config.stroke, 'overall_amp_fill_required_scale', float(v)), self._preview_fill_requirement_ghosts())
         )
         layout.addWidget(self.fill_gate_scale_spin)
         layout.addStretch()
@@ -7350,6 +7421,26 @@ Like the app?<br>
         """Handle motion frequency cutoff spinbox change"""
         self.config.beat.motion_freq_cutoff = float(value)
         print(f"[Config] Allow motion only below: {value} Hz (bands with lower edge >= {value} are filtered)")
+
+    def _preview_fill_requirement_ghosts(self) -> None:
+        """Show combined downbeat/beat/sync fill requirements on Hz/dB visualizers."""
+        scale = float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0)
+        down_val = float(np.clip((getattr(self.config.stroke, 'downbeat_overall_amp_fill_required', 0.08) or 0.08) * scale, 0.0, 1.0))
+        beat_val = float(np.clip((getattr(self.config.stroke, 'beat_overall_amp_fill_required', 0.10) or 0.10) * scale, 0.0, 1.0))
+        sync_val = float(np.clip((getattr(self.config.stroke, 'syncopation_overall_amp_fill_required', 0.12) or 0.12) * scale, 0.0, 1.0))
+
+        ghost_targets = []
+        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
+            ghost_targets.append(self.freqdb_canvas)
+        popout = getattr(self, 'calibration_popout', None)
+        popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
+        if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in ghost_targets:
+            ghost_targets.append(popout_freqdb)
+
+        for canvas in ghost_targets:
+            canvas.show_flux_ghost('fill_req_downbeat', down_val, 'Fill req downbeat', color='#66E0FF', duration_s=15.0, dashed=True, band='full', mode='occupancy')
+            canvas.show_flux_ghost('fill_req_beat', beat_val, 'Fill req beat', color='#55CCFF', duration_s=15.0, dashed=True, band='full', mode='occupancy')
+            canvas.show_flux_ghost('fill_req_sync', sync_val, 'Fill req sync', color='#44B8FF', duration_s=15.0, dashed=True, band='full', mode='occupancy')
     
     def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""

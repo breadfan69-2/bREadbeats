@@ -203,6 +203,7 @@ class StrokeConfig:
     downbeat_overall_amp_fill_required: float = 0.75
     beat_overall_amp_fill_required: float = 0.90
     syncopation_overall_amp_fill_required: float = 1.00
+    overall_amp_fill_required_scale: float = 1.0
     downbeat_low_band_relax: float = 0.85
     low_band_drop_guard_enabled: bool = True
 
