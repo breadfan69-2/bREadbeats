@@ -2703,6 +2703,10 @@ class BREadbeatsWindow(QMainWindow):
         self.network_engine = None
         self.stroke_mapper = None
         self._dry_run_enabled = bool(getattr(self.config.device_limits, 'dry_run', False))
+        self._advanced_controls_dialog = None
+        self._advanced_flux_threshold_slider = None
+        self._advanced_controls_scroll = None
+        self._advanced_flux_group = None
         
         # Setup UI
         self._setup_ui()
@@ -5387,8 +5391,9 @@ Like the app?<br>
                 self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
                 self.depth_freq_range_slider.setLow(int(self.config.stroke.depth_freq_low))
                 self.depth_freq_range_slider.setHigh(int(self.config.stroke.depth_freq_high))
-                if self._advanced_flux_threshold_slider is not None:
-                    self._advanced_flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
+                advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
+                if advanced_flux_slider is not None:
+                    advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
                 self.flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
                 self.phase_advance_slider.setValue(self.config.stroke.phase_advance)
 
@@ -6623,8 +6628,9 @@ Like the app?<br>
         self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
         self.depth_freq_range_slider.setHigh(preset_data['depth_freq_high'])
         self.config.stroke.flux_threshold = float(preset_data['flux_threshold'])
-        if self._advanced_flux_threshold_slider is not None:
-            self._advanced_flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
+        advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
+        if advanced_flux_slider is not None:
+            advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
         self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
         self.phase_advance_slider.setValue(preset_data['phase_advance'])
         
@@ -7792,8 +7798,9 @@ Like the app?<br>
             if 'depth_freq_high' in preset_data:
                 self.depth_freq_range_slider.setHigh(preset_data['depth_freq_high'])
             self.config.stroke.flux_threshold = float(preset_data['flux_threshold'])
-            if self._advanced_flux_threshold_slider is not None:
-                self._advanced_flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
+            advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
+            if advanced_flux_slider is not None:
+                advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
             if 'flux_scaling_weight' in preset_data:
                 self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
             if 'phase_advance' in preset_data:

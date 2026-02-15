@@ -1615,7 +1615,8 @@ class StrokeMapper:
                             fill=f"{sync_fill:.3f}",
                             fill_required=f"{sync_fill_req:.3f}",
                         )
-                        return None
+                        cmd = self._generate_idle_motion(event)
+                        return self._apply_fade(cmd)
                     cmd = self._generate_syncopated_stroke(event)
                     self._note_motion_resumed("syncopation")
                     return self._apply_fade(cmd)
@@ -1806,7 +1807,8 @@ class StrokeMapper:
                             fill=f"{fill_val:.3f}",
                             fill_required=f"{fill_req:.3f}",
                         )
-                        return None
+                        cmd = self._generate_idle_motion(event)
+                        return self._apply_fade(cmd)
                     cmd = self._generate_beat_stroke(event)
                     self._note_motion_resumed("beat")
                     return self._apply_fade(cmd)
@@ -1827,7 +1829,8 @@ class StrokeMapper:
                                 fill=f"{down_fill:.3f}",
                                 fill_required=f"{down_fill_req:.3f}",
                             )
-                            return None
+                            cmd = self._generate_idle_motion(event)
+                            return self._apply_fade(cmd)
                         cmd = self._generate_downbeat_stroke(event)
                         self._note_motion_resumed("downbeat_fallback")
                         return self._apply_fade(cmd)
@@ -1842,7 +1845,8 @@ class StrokeMapper:
                             high_hits=f"{down_high_hits}/{down_high_window}",
                             phase="downbeat",
                         )
-                        return None
+                        cmd = self._generate_idle_motion(event)
+                        return self._apply_fade(cmd)
 
                 if beat_gate_pass and not high_gate_pass:
                     self._note_motion_block(
@@ -1853,7 +1857,8 @@ class StrokeMapper:
                         high_var=f"{high_var:.4f}",
                         high_hits=f"{high_hits}/{high_window}",
                     )
-                    return None
+                    cmd = self._generate_idle_motion(event)
+                    return self._apply_fade(cmd)
 
                 self._note_motion_block(
                     "low_band_gate",
@@ -1861,7 +1866,8 @@ class StrokeMapper:
                     low_delta=f"{beat_delta:.4f}",
                     low_var=f"{beat_var:.4f}",
                 )
-                return None
+                cmd = self._generate_idle_motion(event)
+                return self._apply_fade(cmd)
 
             else:  # CREEP_MICRO
                 # Low amplitude -> micro-effects on beats, plus produce creep motion
