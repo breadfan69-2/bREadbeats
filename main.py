@@ -1543,6 +1543,7 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         self._high_band_history: deque[float] = deque(maxlen=240)
         self._gate_snapshot: dict[str, object] = {}
         self._reference_overlays: dict[str, dict] = {}
+        self._time_window_overlays: dict[str, dict] = {}
         self._reference_fade_timer = QTimer(self)
         self._reference_fade_timer.setInterval(80)
         self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
@@ -1747,9 +1748,68 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         if not self._reference_fade_timer.isActive():
             self._reference_fade_timer.start()
 
+    def show_time_window_ghost(self, key: str, duration_ms: float, label: str, color: str = '#66ccff', duration_s: float = 12.0, dashed: bool = True) -> None:
+        """Show or refresh a temporary time-window ghost on waveform view."""
+        span_ms = float(np.clip(duration_ms, 0.0, max(1.0, self._x_max_ms)))
+        now = time.monotonic()
+
+        overlay = self._time_window_overlays.get(key)
+        if overlay is None:
+            qcolor = QColor(color)
+            line = pg.InfiniteLine(
+                pos=span_ms,
+                angle=90,
+                movable=False,
+                pen=pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)),
+            )
+            line.setZValue(14)
+            self.addItem(line)
+
+            box = pg.QtWidgets.QGraphicsRectItem()
+            box.setZValue(13)
+            self.addItem(box)
+
+            text = pg.TextItem('', color=qcolor, anchor=(0.0, 0.0))
+            text.setZValue(15)
+            self.addItem(text)
+
+            overlay = {
+                'line': line,
+                'box': box,
+                'text': text,
+                'color': qcolor,
+                'dashed': bool(dashed),
+                'started_at': now,
+                'duration_s': float(max(0.5, duration_s)),
+            }
+            self._time_window_overlays[key] = overlay
+
+        overlay['started_at'] = now
+        overlay['duration_s'] = float(max(0.5, duration_s))
+
+        line = overlay['line']
+        box = overlay['box']
+        text = overlay['text']
+        line.setPos(span_ms)
+        box.setRect(QRectF(0.0, -1.0, max(0.2, span_ms), 2.0))
+        text.setText(f"{label}: {span_ms:.0f} ms")
+        text.setPos(min(self._x_max_ms - 0.5, span_ms + 0.25), -0.98)
+
+        qcolor = QColor(overlay['color'])
+        qcolor.setAlpha(185)
+        line.setPen(pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
+        fill = QColor(overlay['color'])
+        fill.setAlpha(36)
+        box.setPen(pg.mkPen(Qt.PenStyle.NoPen))
+        box.setBrush(pg.mkBrush(fill))
+        text.setColor(qcolor)
+
+        if not self._reference_fade_timer.isActive():
+            self._reference_fade_timer.start()
+
     def _tick_reference_overlays(self) -> None:
         """Fade and remove expired amplitude reference overlays."""
-        if not self._reference_overlays:
+        if not self._reference_overlays and not self._time_window_overlays:
             self._reference_fade_timer.stop()
             return
 
@@ -1777,7 +1837,38 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         for key in expired:
             self._reference_overlays.pop(key, None)
 
-        if not self._reference_overlays:
+        expired_time: list[str] = []
+        for key, overlay in self._time_window_overlays.items():
+            age = now - float(overlay['started_at'])
+            duration_s = float(overlay['duration_s'])
+            if age >= duration_s:
+                self.removeItem(overlay['line'])
+                self.removeItem(overlay['box'])
+                self.removeItem(overlay['text'])
+                expired_time.append(key)
+                continue
+
+            fade = max(0.0, 1.0 - (age / duration_s))
+            alpha = int(185 * fade)
+            line_color = QColor(overlay['color'])
+            line_color.setAlpha(alpha)
+            overlay['line'].setPen(
+                pg.mkPen(
+                    line_color,
+                    width=1,
+                    style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine),
+                )
+            )
+
+            fill_color = QColor(overlay['color'])
+            fill_color.setAlpha(max(0, int(36 * fade)))
+            overlay['box'].setBrush(pg.mkBrush(fill_color))
+            overlay['text'].setColor(line_color)
+
+        for key in expired_time:
+            self._time_window_overlays.pop(key, None)
+
+        if not self._reference_overlays and not self._time_window_overlays:
             self._reference_fade_timer.stop()
 
     def update_from_audio(self, waveform: np.ndarray, sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
@@ -4199,6 +4290,14 @@ class BREadbeatsWindow(QMainWindow):
             widget.slider.setToolTip(text)
             widget.value_label.setToolTip(text)
 
+        def _show_waveform_time_ref(key: str, value_ms: float, label: str, color: str = '#66CCFF', dashed: bool = True):
+            canvas = None
+            if self.calibration_popout is not None and self.calibration_popout.isVisible():
+                if hasattr(self.calibration_popout, 'mode_combo') and self.calibration_popout.mode_combo.currentIndex() == 0:
+                    canvas = getattr(self.calibration_popout, 'waveform_canvas', None)
+            if canvas is not None and hasattr(canvas, 'show_time_window_ghost'):
+                canvas.show_time_window_ghost(key, float(value_ms), label, color=color, duration_s=15.0, dashed=dashed)
+
         acf_row = QHBoxLayout()
         acf_label = QLabel("ACF interval (ms):")
         acf_label.setStyleSheet("color: #ccc;")
@@ -4255,7 +4354,12 @@ class BREadbeatsWindow(QMainWindow):
         tempo_resp_layout.addWidget(dedup_slider)
 
         phase_accept_slider = SliderWithLabel("Phase accept win ms", 20.0, 220.0, getattr(self.config.beat, 'phase_accept_window_ms', 85.0), 0)
-        phase_accept_slider.valueChanged.connect(self._on_phase_accept_window_ms_change)
+        phase_accept_slider.valueChanged.connect(
+            lambda v: (
+                self._on_phase_accept_window_ms_change(v),
+                _show_waveform_time_ref('phase_accept_window_ms', float(v), 'Phase accept window', '#72B8FF', dashed=True),
+            )
+        )
         _set_slider_row_tooltip(phase_accept_slider, "Accept raw onsets only when they are this close (ms) to expected beat phase.")
         tempo_resp_layout.addWidget(phase_accept_slider)
 
@@ -4324,7 +4428,12 @@ class BREadbeatsWindow(QMainWindow):
         tempo_resp_layout.addWidget(snap_conf_slider)
 
         snap_phase_slider = SliderWithLabel("Snap max phase err ms", 10.0, 120.0, getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0), 0)
-        snap_phase_slider.valueChanged.connect(self._on_aggressive_snap_phase_error_ms_change)
+        snap_phase_slider.valueChanged.connect(
+            lambda v: (
+                self._on_aggressive_snap_phase_error_ms_change(v),
+                _show_waveform_time_ref('aggressive_snap_phase_err_ms', float(v), 'Snap phase max err', '#9BC4FF', dashed=True),
+            )
+        )
         _set_slider_row_tooltip(snap_phase_slider, "Only snap if beat phase error is below this many milliseconds.")
         tempo_resp_layout.addWidget(snap_phase_slider)
 
@@ -5055,6 +5164,15 @@ class BREadbeatsWindow(QMainWindow):
                     )
             return _handler
 
+        def _show_waveform_gate_window_ref(key: str, frames: int, label: str, color: str) -> None:
+            popout = getattr(self, 'calibration_popout', None)
+            wave_canvas = getattr(popout, 'waveform_canvas', None) if popout is not None else None
+            if wave_canvas is None or not hasattr(wave_canvas, 'show_time_window_ghost'):
+                return
+            frame_ms = float(getattr(wave_canvas, '_x_max_ms', 25.0) or 25.0)
+            approx_ms = float(max(0.0, int(frames)) * max(1.0, frame_ms))
+            wave_canvas.show_time_window_ghost(key, approx_ms, f"{label} ({int(frames)}f)", color=color, duration_s=15.0, dashed=True)
+
         low_band_window_row = QHBoxLayout()
         low_band_window_label = QLabel("Low-band gate window (frames):")
         low_band_window_label.setStyleSheet("color: #ccc;")
@@ -5063,8 +5181,13 @@ class BREadbeatsWindow(QMainWindow):
         low_band_window_spin.setMinimum(8)
         low_band_window_spin.setMaximum(60)
         low_band_window_spin.setValue(int(getattr(self.config.stroke, 'low_band_window_frames', 18) or 18))
+        low_band_window_spin.setToolTip("Waveform preview: approximate low-band gate history window in ms")
+        low_band_window_label.setToolTip("Waveform preview: approximate low-band gate history window in ms")
         low_band_window_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'low_band_window_frames', int(v))
+            lambda v: (
+                setattr(self.config.stroke, 'low_band_window_frames', int(v)),
+                _show_waveform_gate_window_ref('low_gate_window_frames', int(v), 'Low gate window', '#66FF99'),
+            )
         )
         low_band_window_row.addWidget(low_band_window_spin)
         flux_layout.addLayout(low_band_window_row)
@@ -5152,8 +5275,13 @@ class BREadbeatsWindow(QMainWindow):
         high_band_window_spin.setMinimum(8)
         high_band_window_spin.setMaximum(60)
         high_band_window_spin.setValue(int(getattr(self.config.stroke, 'high_band_window_frames', 18) or 18))
+        high_band_window_spin.setToolTip("Waveform preview: approximate high-band gate history window in ms")
+        high_band_window_label.setToolTip("Waveform preview: approximate high-band gate history window in ms")
         high_band_window_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'high_band_window_frames', int(v))
+            lambda v: (
+                setattr(self.config.stroke, 'high_band_window_frames', int(v)),
+                _show_waveform_gate_window_ref('high_gate_window_frames', int(v), 'High gate window', '#FFB3FF'),
+            )
         )
         high_band_window_row.addWidget(high_band_window_spin)
         flux_layout.addLayout(high_band_window_row)
@@ -6550,11 +6678,13 @@ Like the app?<br>
                     pass
 
         raw_rule_fit = model_cfg.get("rule_fit") or learning_cfg.get("teaching_rule_fit_path") or payload.get("rule_fit")
+        selected_rule_fit_path = ""
         if isinstance(raw_rule_fit, str) and raw_rule_fit.strip():
             candidate = Path(raw_rule_fit.strip())
             if not candidate.is_absolute():
                 candidate = profile_path.parent / candidate
             self.config.beat.teaching_rule_fit_path = str(candidate)
+            selected_rule_fit_path = str(candidate)
 
         self.config.beat.teaching_profile_path = str(profile_path)
         self._apply_learning_config_to_mapper()
@@ -6566,6 +6696,17 @@ Like the app?<br>
         msg = f"Loaded profile: {profile_path.name}"
         if model_path:
             msg += f"\nModel: {'loaded' if loaded else 'not loaded'}\n{model_path}"
+
+        profile_id_raw = payload.get("profile_id", "")
+        profile_id = str(profile_id_raw).strip().lower() if isinstance(profile_id_raw, str) else ""
+        if profile_id and selected_rule_fit_path:
+            rule_fit_name = Path(selected_rule_fit_path).name.lower()
+            if profile_id not in rule_fit_name:
+                msg += (
+                    "\n\nWarning: profile_id does not appear in rule_fit filename."
+                    "\nThis may still work, but matched profile/model pairs usually feel better."
+                )
+
         QMessageBox.information(self, "Learning Profile", msg)
 
     def _on_learning_controls(self) -> None:
