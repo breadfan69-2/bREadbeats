@@ -114,7 +114,7 @@ class MountainRangeCanvas(pg.PlotWidget):
         super().__init__(parent)
         
         # Dark theme
-        self.setBackground('#0a0a12')  # Very dark blue-black
+        self.setBackground('#0a0a12')
         self.setMouseEnabled(x=False, y=False)
         self.setMenuEnabled(False)
         self.showGrid(x=False, y=False, alpha=0)
@@ -1053,8 +1053,8 @@ class PresetButton(QPushButton):
     def _update_style(self):
         """Update button appearance based on state"""
         if self.is_active:
-            # Currently loaded preset - bright green border
-            self.setStyleSheet("background-color: #4a6b4a; border: 2px solid #00ff00; font-weight: bold;")
+            # Currently loaded preset - dark turquoise border
+            self.setStyleSheet("background-color: #2f5f5f; border: 2px solid #008b8b; font-weight: bold;")
         elif self.has_preset:
             # Has saved preset - subtle blue
             self.setStyleSheet("background-color: #4a5a6a; font-weight: bold;")
@@ -1140,10 +1140,10 @@ class RangeSlider(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(0, track_y, w, track_h, 4, 4)
         
-        # Draw selected range - purple-gray to match button/slider color
+        # Draw selected range - dark turquoise accent
         low_pos = self._val_to_pos(self._low)
         high_pos = self._val_to_pos(self._high)
-        painter.setBrush(QBrush(QColor(0x56, 0x5d, 0x7f)))  # #565d7f
+        painter.setBrush(QBrush(QColor(0x00, 0x8b, 0x8b)))  # #008b8b
         painter.drawRoundedRect(low_pos, track_y, high_pos - low_pos, track_h, 4, 4)
         
         # Draw handles - matches QSlider handle
@@ -1152,7 +1152,7 @@ class RangeSlider(QWidget):
         handle_y = h // 2 - handle_h // 2
         
         # Low handle
-        painter.setBrush(QBrush(QColor(0x56, 0x5d, 0x7f)))  # #565d7f
+        painter.setBrush(QBrush(QColor(0x00, 0x8b, 0x8b)))  # #008b8b
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(low_pos - handle_w//2, handle_y, handle_w, handle_h)
         
@@ -2815,7 +2815,7 @@ class BREadbeatsWindow(QMainWindow):
             }
 
             QMenu::item:selected {
-                background-color: #565d7f;
+                background-color: #008b8b;
                 color: #ffffff;
             }
 
@@ -2830,6 +2830,19 @@ class BREadbeatsWindow(QMainWindow):
 
             QPushButton:hover {
                 background-color: #6d6d8f;
+            }
+
+            QPushButton:checked {
+                background-color: #008b8b;
+                color: #ffffff;
+            }
+
+            QPushButton:checked:hover {
+                background-color: #109b9b;
+            }
+
+            QPushButton:checked:pressed {
+                background-color: #006f6f;
             }
 
             QPushButton:pressed {
@@ -2937,8 +2950,8 @@ class BREadbeatsWindow(QMainWindow):
             }
 
             QCheckBox::indicator:checked, QRadioButton::indicator:checked {
-                background-color: #565d7f;
-                border: 1px solid #565d7f;
+                background-color: #008b8b;
+                border: 1px solid #008b8b;
                 border-radius: 3px;
             }
 
@@ -2971,7 +2984,7 @@ class BREadbeatsWindow(QMainWindow):
             }
 
             QTabBar::tab:selected {
-                background-color: #565d7f;
+                background-color: #008b8b;
                 color: #ffffff;
             }
 
@@ -3043,7 +3056,7 @@ class BREadbeatsWindow(QMainWindow):
             }
 
             QListView::item:selected, QTableView::item:selected, QTreeView::item:selected {
-                background-color: #565d7f;
+                background-color: #008b8b;
             }
 
             /* Dialogs */
@@ -3118,6 +3131,10 @@ class BREadbeatsWindow(QMainWindow):
         tabs_layout = QVBoxLayout(tabs_widget)
         tabs_layout.setContentsMargins(0, 0, 0, 0)
         tabs_layout.setSpacing(0)
+        legacy_hint_label = QLabel("drag up/resize window for V1 controls")
+        legacy_hint_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        legacy_hint_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        tabs_layout.addWidget(legacy_hint_label)
         tabs_layout.addWidget(self._create_settings_tabs())
         splitter.addWidget(tabs_widget)
 
@@ -5052,9 +5069,7 @@ class BREadbeatsWindow(QMainWindow):
                 self.combo_texture_spin,
                 self.combo_reaction_spin,
                 self.stroke_range_slider,
-                self.min_interval_slider,
                 self.fullness_slider,
-                self.min_depth_slider,
                 self.freq_depth_slider,
                 self.depth_freq_range_slider,
                 self.flux_threshold_slider,
@@ -5101,9 +5116,9 @@ class BREadbeatsWindow(QMainWindow):
                 self.mode_combo.setCurrentIndex(self.config.stroke.mode - 1)
                 self.stroke_range_slider.setLow(self.config.stroke.stroke_min)
                 self.stroke_range_slider.setHigh(self.config.stroke.stroke_max)
-                self.min_interval_slider.setValue(self.config.stroke.min_interval_ms)
+                self.config.stroke.min_interval_ms = 150
                 self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
-                self.min_depth_slider.setValue(self.config.stroke.minimum_depth)
+                self.config.stroke.minimum_depth = 0.0
                 self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
                 self.flux_depth_slider.setValue(self.config.stroke.flux_depth_factor)
                 self.flux_depth_mode_toggle.setChecked(bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)))
@@ -5121,6 +5136,8 @@ class BREadbeatsWindow(QMainWindow):
 
                 # Jitter/Creep tab
                 self.jitter_enabled.setChecked(self.config.jitter.enabled)
+                self.config.jitter.amplitude = max(0.01, min(0.075, float(self.config.jitter.amplitude)))
+                self.config.jitter.intensity = max(8.0, min(10.0, float(self.config.jitter.intensity)))
                 self.jitter_amplitude_slider.setValue(self.config.jitter.amplitude)
                 self.jitter_intensity_slider.setValue(self.config.jitter.intensity)
                 self.creep_enabled.setChecked(self.config.creep.enabled)
@@ -5542,9 +5559,9 @@ class BREadbeatsWindow(QMainWindow):
                 # Must be input device
                 is_mic = dev['max_input_channels'] > 0
         
-        # Update button colors: green = active, white = inactive
-        self.preset_mic_btn.setStyleSheet("color: #0a0; font-weight: bold;" if is_mic else "color: #fff;")
-        self.preset_loopback_btn.setStyleSheet("color: #0a0; font-weight: bold;" if is_loopback else "color: #fff;")
+        # Update button colors: dark turquoise = active, white = inactive
+        self.preset_mic_btn.setStyleSheet("color: #008b8b; font-weight: bold;" if is_mic else "color: #fff;")
+        self.preset_loopback_btn.setStyleSheet("color: #008b8b; font-weight: bold;" if is_loopback else "color: #fff;")
     
     def _create_spectrum_panel(self) -> QWidget:
         """Spectrum visualizer panel"""
@@ -5968,9 +5985,9 @@ class BREadbeatsWindow(QMainWindow):
             'stroke_mode': self.mode_combo.currentIndex(),
             'stroke_min': self.stroke_range_slider.low(),
             'stroke_max': self.stroke_range_slider.high(),
-            'min_interval_ms': int(self.min_interval_slider.value()),
+            'min_interval_ms': 150,
             'stroke_fullness': self.fullness_slider.value(),
-            'minimum_depth': self.min_depth_slider.value(),
+            'minimum_depth': 0.0,
             'freq_depth_factor': self.freq_depth_slider.value(),
             'flux_depth_factor': self.flux_depth_slider.value(),
             'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
@@ -6088,9 +6105,9 @@ class BREadbeatsWindow(QMainWindow):
         self._on_mode_change(preset_data['stroke_mode'])
         self.stroke_range_slider.setLow(preset_data['stroke_min'])
         self.stroke_range_slider.setHigh(preset_data['stroke_max'])
-        self.min_interval_slider.setValue(preset_data['min_interval_ms'])
+        self.config.stroke.min_interval_ms = 150
         self.fullness_slider.setValue(preset_data['stroke_fullness'])
-        self.min_depth_slider.setValue(preset_data['minimum_depth'])
+        self.config.stroke.minimum_depth = 0.0
         self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
         if 'flux_depth_factor' in preset_data:
             self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
@@ -6829,12 +6846,20 @@ class BREadbeatsWindow(QMainWindow):
                 self.audio_engine.stable_tempo = 0.0
                 self.audio_engine.beat_intervals.clear()
                 self.audio_engine.beat_times.clear()
-        # Enable/disable related controls
-        self.time_sig_combo.setEnabled(enabled)
-        self.stability_threshold_slider.setEnabled(enabled)
-        self.tempo_timeout_slider.setEnabled(enabled)
-        self.phase_snap_slider.setEnabled(enabled)
+        self._apply_tempo_settings_enabled_state(enabled)
         print(f"[Config] Tempo tracking {'enabled' if enabled else 'disabled'}")
+
+    def _on_tempo_settings_lock_toggle(self, state: int):
+        """Lock/unlock tempo tuning controls in Tempo Settings."""
+        self._apply_tempo_settings_enabled_state(self.tempo_tracking_checkbox.isChecked())
+
+    def _apply_tempo_settings_enabled_state(self, tempo_enabled: bool):
+        """Apply enabled state to tempo settings controls, honoring lock toggle."""
+        lock_cb = getattr(self, 'tempo_settings_lock_cb', None)
+        locked = bool(lock_cb is not None and lock_cb.isChecked())
+        allow_edit = bool(tempo_enabled and not locked)
+        for widget in getattr(self, '_tempo_settings_lock_targets', []):
+            widget.setEnabled(allow_edit)
     
     def _on_time_sig_change(self, index: int):
         """Update time signature (beats per measure)"""
@@ -7045,9 +7070,9 @@ class BREadbeatsWindow(QMainWindow):
             'stroke_mode': self.mode_combo.currentIndex(),
             'stroke_min': self.stroke_range_slider.low(),
             'stroke_max': self.stroke_range_slider.high(),
-            'min_interval_ms': int(self.min_interval_slider.value()),
+            'min_interval_ms': 150,
             'stroke_fullness': self.fullness_slider.value(),
-            'minimum_depth': self.min_depth_slider.value(),
+            'minimum_depth': 0.0,
             'freq_depth_factor': self.freq_depth_slider.value(),
             'flux_depth_factor': self.flux_depth_slider.value(),
             'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
@@ -7194,9 +7219,9 @@ class BREadbeatsWindow(QMainWindow):
             self._on_mode_change(preset_data['stroke_mode'])  # Apply axis weight limits for this mode
             self.stroke_range_slider.setLow(preset_data['stroke_min'])
             self.stroke_range_slider.setHigh(preset_data['stroke_max'])
-            self.min_interval_slider.setValue(preset_data['min_interval_ms'])
+            self.config.stroke.min_interval_ms = 150
             self.fullness_slider.setValue(preset_data['stroke_fullness'])
-            self.min_depth_slider.setValue(preset_data['minimum_depth'])
+            self.config.stroke.minimum_depth = 0.0
             self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
             if 'flux_depth_factor' in preset_data:
                 self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
@@ -7331,43 +7356,27 @@ class BREadbeatsWindow(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # ===== LEGACY / EXPERT CONTROLS (window shade) =====
-        legacy_group = CollapsibleGroupBox("Legacy / Expert Controls", collapsed=True)
-        legacy_layout = QVBoxLayout(legacy_group)
-        
-        # ===== STROKE PARAMETERS =====
-        params_group = CollapsibleGroupBox("Stroke Parameters", collapsed=True)
-        params_layout = QVBoxLayout(params_group)
+        stroke_group = CollapsibleGroupBox("stroke paramaters", collapsed=True)
+        stroke_layout = QVBoxLayout(stroke_group)
+
+        self.config.stroke.min_interval_ms = 150
+        self.config.stroke.minimum_depth = 0.0
         
         self.stroke_range_slider = RangeSliderWithLabel("Stroke Min/Max", 0.0, 1.0, 0.2, 1.0, 2)
         self.stroke_range_slider.rangeChanged.connect(self._on_stroke_range_change)
-        params_layout.addWidget(self.stroke_range_slider)
-        
-        self.min_interval_slider = SliderWithLabel("Min Interval (ms)", 50, 5000, 100, 0)
-        self.min_interval_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'min_interval_ms', int(v)))
-        params_layout.addWidget(self.min_interval_slider)
+        stroke_layout.addWidget(self.stroke_range_slider)
         
         self.fullness_slider = SliderWithLabel("Stroke Fullness", 0.0, 1.0, 0.7)
         self.fullness_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'stroke_fullness', v))
-        params_layout.addWidget(self.fullness_slider)
-        
-        self.min_depth_slider = SliderWithLabel("Minimum Depth", 0.0, 1.0, 0.0)
-        self.min_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'minimum_depth', v))
-        params_layout.addWidget(self.min_depth_slider)
+        stroke_layout.addWidget(self.fullness_slider)
         
         self.freq_depth_slider = SliderWithLabel("Freq Depth Factor", 0.0, 2.0, 0.3)
         self.freq_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'freq_depth_factor', v))
-        params_layout.addWidget(self.freq_depth_slider)
+        stroke_layout.addWidget(self.freq_depth_slider)
         
         self.flux_depth_slider = SliderWithLabel("Flux Rise Depth Factor", 0.0, 5.0, 0.0)
         self.flux_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_depth_factor', v))
-        params_layout.addWidget(self.flux_depth_slider)
-        
-        legacy_layout.addWidget(params_group)
-        
-        # Frequency range for stroke depth - shown as green overlay on spectrum
-        depth_freq_group = CollapsibleGroupBox("Depth Frequency Range (Hz) - green overlay", collapsed=True)
-        depth_freq_layout = QVBoxLayout(depth_freq_group)
+        stroke_layout.addWidget(self.flux_depth_slider)
         
         # Depth Freq slider with visibility toggle (green stroke depth band)
         depth_slider_row = QHBoxLayout()
@@ -7379,11 +7388,9 @@ class BREadbeatsWindow(QMainWindow):
         self.depth_band_toggle.setChecked(False)
         self.depth_band_toggle.stateChanged.connect(lambda state: self._on_toggle_depth_band(state == 2))
         depth_slider_row.addWidget(self.depth_band_toggle)
-        depth_freq_layout.addLayout(depth_slider_row)
-        
-        legacy_layout.addWidget(depth_freq_group)
+        stroke_layout.addLayout(depth_slider_row)
 
-        layout.addWidget(legacy_group)
+        layout.addWidget(stroke_group)
 
         layout.addStretch()
         scroll_area.setWidget(widget)
@@ -7409,11 +7416,15 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_enabled.stateChanged.connect(lambda s: setattr(self.config.jitter, 'enabled', s == 2))
         effects_layout.addWidget(self.jitter_enabled)
 
-        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.01, 0.1, 0.1, 3)
+        jitter_size_default = max(0.01, min(0.075, float(getattr(self.config.jitter, 'amplitude', 0.075))))
+        self.config.jitter.amplitude = jitter_size_default
+        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.01, 0.075, jitter_size_default, 3)
         self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
         effects_layout.addWidget(self.jitter_amplitude_slider)
 
-        self.jitter_intensity_slider = SliderWithLabel("Circle Speed", 0.0, 10.0, 0.5)
+        jitter_speed_default = max(8.0, min(10.0, float(getattr(self.config.jitter, 'intensity', 8.0))))
+        self.config.jitter.intensity = jitter_speed_default
+        self.jitter_intensity_slider = SliderWithLabel("Circle Speed", 8.0, 10.0, jitter_speed_default)
         self.jitter_intensity_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'intensity', v))
         effects_layout.addWidget(self.jitter_intensity_slider)
 
@@ -7448,7 +7459,7 @@ class BREadbeatsWindow(QMainWindow):
         # Volume Reduction Limit
         vol_limit_group = QGroupBox("Volume Reduction Limit")
         vol_limit_layout = QVBoxLayout(vol_limit_group)
-        vol_limit_layout.addWidget(QLabel("Max % volume can be reduced by band/fade/creep effects"))
+        vol_limit_layout.addWidget(QLabel("Max % volume can be reduced by band/fade/creep effects (excludes post-silence ramp)"))
 
         self.vol_reduction_limit_slider = SliderWithLabel("Max Reduction %", 0, 20, 10, 0)
         self.vol_reduction_limit_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'vol_reduction_limit', v))
@@ -7486,7 +7497,7 @@ class BREadbeatsWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         
         # ===== TEMPO SETTINGS =====
-        tempo_group = QGroupBox("Tempo Settings")
+        tempo_group = CollapsibleGroupBox("Tempo Settings", collapsed=False)
         tempo_layout = QVBoxLayout(tempo_group)
         
         # Enable/disable checkbox
@@ -7494,6 +7505,12 @@ class BREadbeatsWindow(QMainWindow):
         self.tempo_tracking_checkbox.setChecked(True)
         self.tempo_tracking_checkbox.stateChanged.connect(self._on_tempo_tracking_toggle)
         tempo_layout.addWidget(self.tempo_tracking_checkbox)
+
+        self.tempo_settings_lock_cb = QCheckBox("Lock tempo settings")
+        self.tempo_settings_lock_cb.setChecked(False)
+        self.tempo_settings_lock_cb.setToolTip("Lock/unlock tempo tuning controls in this group")
+        self.tempo_settings_lock_cb.stateChanged.connect(self._on_tempo_settings_lock_toggle)
+        tempo_layout.addWidget(self.tempo_settings_lock_cb)
         
         # Time signature dropdown
         sig_layout = QHBoxLayout()
@@ -7524,6 +7541,16 @@ class BREadbeatsWindow(QMainWindow):
         self.silence_reset_slider = SliderWithLabel("Silence Reset (ms)", 100, 3000, 400, 0)
         self.silence_reset_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'silence_reset_ms', int(v)))
         tempo_layout.addWidget(self.silence_reset_slider)
+
+        self._tempo_settings_lock_targets = [
+            self.time_sig_combo,
+            self.stability_threshold_slider,
+            self.tempo_timeout_slider,
+            self.phase_snap_slider,
+            self.silence_reset_slider,
+        ]
+
+        self._apply_tempo_settings_enabled_state(self.tempo_tracking_checkbox.isChecked())
         
         layout.addWidget(tempo_group)
         
@@ -7531,10 +7558,6 @@ class BREadbeatsWindow(QMainWindow):
         flux_group = CollapsibleGroupBox("Spectral Flux Control", collapsed=True)
         flux_layout = QVBoxLayout(flux_group)
         flux_layout.addWidget(QLabel("Low flux→downbeats only, High flux→every beat"))
-        
-        self.flux_threshold_slider = SliderWithLabel("Flux Threshold", 0.001, 0.2, 0.03, 4)
-        self.flux_threshold_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_threshold', v))
-        flux_layout.addWidget(self.flux_threshold_slider)
         
         self.flux_scaling_slider = SliderWithLabel("Flux Scaling (size)", 0.0, 2.0, 1.0, 2)
         self.flux_scaling_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_scaling_weight', v))
