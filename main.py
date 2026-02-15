@@ -3349,6 +3349,10 @@ class BREadbeatsWindow(QMainWindow):
         assert popout_calibration_action is not None
         popout_calibration_action.triggered.connect(self._on_popout_calibration_visualizer)
 
+        learning_controls_action = options_menu.addAction("Learning Controls...")
+        assert learning_controls_action is not None
+        learning_controls_action.triggered.connect(self._on_learning_controls)
+
         self.teaching_capture_action = options_menu.addAction("Teaching Capture")
         assert self.teaching_capture_action is not None
         self.teaching_capture_action.setCheckable(True)
@@ -5932,6 +5936,117 @@ Like the app?<br>
         else:
             self._teaching_capture.stop(flush=True)
             print("[Teaching] Capture disabled and flushed")
+
+    def _on_learning_controls(self) -> None:
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QHBoxLayout, QPushButton, QLineEdit
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Learning Controls")
+        dialog.setMinimumWidth(560)
+        layout = QVBoxLayout(dialog)
+
+        info = QLabel(
+            "Runtime learning adapter controls.\n"
+            "These update teaching_* config and the live StrokeMapper immediately when applied."
+        )
+        info.setStyleSheet("color: #ccc;")
+        layout.addWidget(info)
+
+        enabled_cb = QCheckBox("Enable runtime learning adapter")
+        enabled_cb.setChecked(bool(getattr(self.config.beat, 'teaching_learning_enabled', True)))
+        layout.addWidget(enabled_cb)
+
+        use_fitted_cb = QCheckBox("Use fitted rule model (rule_fit.json)")
+        use_fitted_cb.setChecked(bool(getattr(self.config.beat, 'teaching_use_fitted_rules', True)))
+        layout.addWidget(use_fitted_cb)
+
+        apply_circle_cb = QCheckBox("Apply learning in Circle mode")
+        apply_circle_cb.setChecked(bool(getattr(self.config.beat, 'teaching_apply_in_circle_mode', False)))
+        layout.addWidget(apply_circle_cb)
+
+        isolation_cb = QCheckBox("Learning isolation mode")
+        isolation_cb.setChecked(bool(getattr(self.config.beat, 'teaching_isolation_mode', True)))
+        layout.addWidget(isolation_cb)
+
+        strength_slider = SliderWithLabel(
+            "Learning strength", 0.0, 1.0,
+            float(getattr(self.config.beat, 'teaching_learning_strength', 0.55) or 0.55), 2
+        )
+        layout.addWidget(strength_slider)
+
+        min_conf_slider = SliderWithLabel(
+            "Min confidence", 0.0, 1.0,
+            float(getattr(self.config.beat, 'teaching_min_confidence', 0.12) or 0.12), 2
+        )
+        layout.addWidget(min_conf_slider)
+
+        no_motion_bias_slider = SliderWithLabel(
+            "No-motion bias", 0.25, 3.0,
+            float(getattr(self.config.beat, 'teaching_no_motion_bias', 1.0) or 1.0), 2
+        )
+        layout.addWidget(no_motion_bias_slider)
+
+        path_label = QLabel("Rule-fit path (optional):")
+        path_label.setStyleSheet("color: #ccc;")
+        layout.addWidget(path_label)
+        path_edit = QLineEdit(str(getattr(self.config.beat, 'teaching_rule_fit_path', '') or ''))
+        layout.addWidget(path_edit)
+
+        mapper = self.stroke_mapper
+        model_status = "Model status: unavailable"
+        if mapper is not None:
+            loaded = bool(getattr(mapper, '_learning_model_loaded', False))
+            model_path = str(getattr(mapper, '_learning_model_path', '') or '')
+            model_status = f"Model status: {'loaded' if loaded else 'not loaded'}"
+            if model_path:
+                model_status += f" ({model_path})"
+        status_label = QLabel(model_status)
+        status_label.setStyleSheet("color: #9cc;")
+        layout.addWidget(status_label)
+
+        button_row = QHBoxLayout()
+        apply_btn = QPushButton("Apply")
+        close_btn = QPushButton("Close")
+        button_row.addStretch()
+        button_row.addWidget(apply_btn)
+        button_row.addWidget(close_btn)
+        layout.addLayout(button_row)
+
+        def _apply_learning_settings() -> None:
+            self.config.beat.teaching_learning_enabled = bool(enabled_cb.isChecked())
+            self.config.beat.teaching_use_fitted_rules = bool(use_fitted_cb.isChecked())
+            self.config.beat.teaching_apply_in_circle_mode = bool(apply_circle_cb.isChecked())
+            self.config.beat.teaching_isolation_mode = bool(isolation_cb.isChecked())
+            self.config.beat.teaching_learning_strength = float(strength_slider.value())
+            self.config.beat.teaching_min_confidence = float(min_conf_slider.value())
+            self.config.beat.teaching_no_motion_bias = float(no_motion_bias_slider.value())
+            self.config.beat.teaching_rule_fit_path = str(path_edit.text() or '').strip()
+
+            mapper_live = self.stroke_mapper
+            if mapper_live is not None:
+                mapper_live._learning_enabled = bool(self.config.beat.teaching_learning_enabled)
+                mapper_live._learning_use_fitted_rules = bool(self.config.beat.teaching_use_fitted_rules)
+                mapper_live._learning_apply_in_circle_mode = bool(self.config.beat.teaching_apply_in_circle_mode)
+                mapper_live._learning_isolation_mode = bool(self.config.beat.teaching_isolation_mode)
+                mapper_live._learning_strength = float(self.config.beat.teaching_learning_strength)
+                mapper_live._learning_min_confidence = float(self.config.beat.teaching_min_confidence)
+                mapper_live._learning_no_motion_bias = float(self.config.beat.teaching_no_motion_bias)
+                mapper_live._learning_rule_fit_path = str(self.config.beat.teaching_rule_fit_path)
+                if mapper_live._learning_enabled and mapper_live._learning_use_fitted_rules:
+                    mapper_live._try_load_learning_model()
+
+                loaded = bool(getattr(mapper_live, '_learning_model_loaded', False))
+                model_path = str(getattr(mapper_live, '_learning_model_path', '') or '')
+                text = f"Model status: {'loaded' if loaded else 'not loaded'}"
+                if model_path:
+                    text += f" ({model_path})"
+                status_label.setText(text)
+
+            self.config.save()
+
+        apply_btn.clicked.connect(_apply_learning_settings)
+        close_btn.clicked.connect(dialog.close)
+        dialog.exec()
 
     def _collect_gate_metrics_snapshot(self) -> dict[str, float]:
         mapper = self.stroke_mapper
