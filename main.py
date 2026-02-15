@@ -107,391 +107,6 @@ class SignalBridge(QObject):
     status_changed = pyqtSignal(str, bool)
 
 
-class SpectrumCanvas(pg.PlotWidget):
-    """Waterfall spectrogram visualizer using PyQtGraph ImageItem - scrolling history"""
-    
-    def __init__(self, parent=None, width=8, height=3):
-        super().__init__(parent)
-        
-        # Dark theme matching restim-coyote3
-        self.setBackground('#232323')
-        self.setMouseEnabled(x=False, y=False)
-        self.setMenuEnabled(False)
-        # No gridlines
-        self.showGrid(x=False, y=False, alpha=0)
-        self.hideAxis('left')
-        self.hideAxis('bottom')
-        
-        # Waterfall dimensions
-        # For waterfall: X = frequency (horizontal), Y = time (vertical, scrolls up)
-        self.num_bins = 256  # Frequency bins (horizontal)
-        self.history_len = 100  # Time history (vertical)
-        
-        # Waterfall data buffer (time x freq) - new data goes at bottom, scrolls up
-        self.waterfall_data = np.zeros((self.history_len, self.num_bins), dtype=np.float32)
-        
-        # Create ImageItem for waterfall display
-        self.img_item = pg.ImageItem()
-        self.addItem(self.img_item)
-        
-        # Colormap: black -> blue -> cyan -> green -> yellow -> orange -> dark purple (no white)
-        colors = [
-            (0, 0, 0),        # Black (silence)
-            (0, 0, 80),       # Dark blue
-            (0, 50, 150),     # Blue
-            (0, 150, 150),    # Cyan
-            (0, 200, 50),     # Green
-            (200, 200, 0),    # Yellow
-            (255, 100, 0),    # Orange
-            (40, 0, 40),      # Dark purple (highest amplitude)
-        ]
-        positions = [0.0, 0.1, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0]
-        self.colormap = pg.ColorMap(positions, colors)
-        lut = self.colormap.getLookupTable(0.0, 1.0, 256)
-        self.img_item.setLookupTable(lut)  # type: ignore
-        
-        # Set view range: X = freq bins, Y = time samples
-        # Left margin includes peak indicator bars at negative X
-        self.setXRange(-14, self.num_bins)
-        self.setYRange(0, self.history_len)
-        
-        # 4 Frequency band indicators (vertical regions with different heights)
-        # Heights staggered for visibility - labels placed at top of each band to stack
-        # Band heights: beat=100%, stroke=92%, pulse=84%, carrier=76%
-        
-        # Band 1: Beat Detection (red) - full height (tallest)
-        self.beat_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                              brush=pg.mkBrush(255, 50, 50, 60),
-                                              pen=pg.mkPen('#888888', width=2),
-                                              movable=True, span=(0, 1.0))
-        self.beat_band.setBounds([0, self.num_bins])
-        self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
-        self.addItem(self.beat_band)
-        
-        # Band 2: Stroke Depth (green) - 92% height
-        self.depth_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                               brush=pg.mkBrush(50, 255, 50, 50),
-                                               pen=pg.mkPen('#888888', width=2),
-                                               movable=True, span=(0, 0.92))
-        self.depth_band.setBounds([0, self.num_bins])
-        self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
-        self.addItem(self.depth_band)
-        
-        # Band 3: Pulse/P0 TCode (blue) - 84% height
-        self.p0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                            brush=pg.mkBrush(50, 100, 255, 50),
-                                            pen=pg.mkPen('#888888', width=2),
-                                            movable=True, span=(0, 0.84))
-        self.p0_band.setBounds([0, self.num_bins])
-        self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
-        self.addItem(self.p0_band)
-        
-        # Band 4: Carrier/F0 TCode (cyan) - 76% height (shortest)
-        self.f0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                            brush=pg.mkBrush(0, 200, 255, 50),
-                                            pen=pg.mkPen('#888888', width=2),
-                                            movable=True, span=(0, 0.76))
-        self.f0_band.setBounds([0, self.num_bins])
-        self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
-        self.addItem(self.f0_band)
-        
-        # Labels placed at top of each respective band
-        # Each label sits just inside the upper limit of its own box
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, self.history_len * 0.73)
-        self.addItem(self.carrier_label)
-        
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, self.history_len * 0.81)
-        self.addItem(self.pulse_label)
-        
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, self.history_len * 0.89)
-        self.addItem(self.depth_label)
-        
-        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
-        self.beat_label.setPos(5, self.history_len * 0.97)
-        self.addItem(self.beat_label)
-        
-        # Reference to parent window for slider updates
-        self.parent_window = parent
-        self.sample_rate = 44100  # Will be updated
-        self._fft_bins = 513  # Default for 1024 FFT; updated on first spectrum
-        self._updating = False  # Prevent recursion when setting bands
-        
-        # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        # Positioned at negative X to be off to the left of main display
-        bar_width = 4.6  # Width of each bar (about 8% thinner)
-        bar_spacing = 0.8  # Gap between bars
-        bar_x_start = -18.0  # Start position (leftmost bar)
-        
-        # Bar 1: Actual Peak (green)
-        self.peak_actual_bar = pg.BarGraphItem(
-            x=[bar_x_start],
-            height=[0],
-            width=bar_width,
-            brush='#00FF00'
-        )
-        self.addItem(self.peak_actual_bar)
-        
-        # Bar 2: Peak Floor (yellow)
-        self.peak_floor_bar = pg.BarGraphItem(
-            x=[bar_x_start + bar_width + bar_spacing],
-            height=[0],
-            width=bar_width,
-            brush='#FFD700'
-        )
-        self.addItem(self.peak_floor_bar)
-        
-        # Bar 3: Peak Decay (orange)
-        self.peak_decay_bar = pg.BarGraphItem(
-            x=[bar_x_start + 2 * (bar_width + bar_spacing)],
-            height=[0],
-            width=bar_width,
-            brush='#FF8C00'
-        )
-        self.addItem(self.peak_decay_bar)
-        
-        # Store bar positions
-        self._bar_width = bar_width
-        self._bar_scale = self.history_len * 0.82  # Visual calibration to reduce top saturation
-        
-    def _hz_to_bin(self, hz: float) -> float:
-        """Convert Hz to log-spaced bin index (0 to num_bins)"""
-        nyquist = self.sample_rate / 2
-        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
-        # Hz -> linear FFT index
-        linear_idx = max(1.0, (hz / nyquist) * (n - 1))
-        # Linear index -> log-spaced bin: inverse of logspace(0, log10(n-1), num_bins)
-        log_max = np.log10(n - 1)
-        return (np.log10(linear_idx) / log_max) * self.num_bins if log_max > 0 else 0.0
-    
-    def _bin_to_hz(self, bin_idx: float) -> float:
-        """Convert log-spaced bin index to Hz"""
-        nyquist = self.sample_rate / 2
-        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
-        # Log-spaced bin -> linear FFT index: apply logspace mapping
-        log_max = np.log10(n - 1)
-        linear_idx = 10 ** ((bin_idx / self.num_bins) * log_max) if log_max > 0 else bin_idx
-        # Linear index -> Hz
-        return (linear_idx / (n - 1)) * nyquist
-        
-    def _on_beat_band_changed(self):
-        """Handle beat detection band dragging"""
-        if self._updating:
-            return
-        region = self.beat_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'freq_range_slider'):
-            self._updating = True
-            self.parent_window.freq_range_slider.setLow(int(low_hz))
-            self.parent_window.freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        # Update label position to center of band (stacked)
-        center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, self.history_len * 0.97)
-    
-    def _on_depth_band_changed(self):
-        """Handle stroke depth band dragging"""
-        if self._updating:
-            return
-        region = self.depth_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'depth_freq_range_slider'):
-            self._updating = True
-            self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        # Update label position to center of band
-        center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, self.history_len * 0.89)
-    
-    def _on_p0_band_changed(self):
-        """Handle P0 TCode band dragging"""
-        if self._updating:
-            return
-        region = self.p0_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_range_slider'):
-            self._updating = True
-            self.parent_window.pulse_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        # Update label position to center of band (above the band)
-        center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, self.history_len * 0.81)
-    
-    def _on_f0_band_changed(self):
-        """Handle F0 (carrier) band dragging"""
-        if self._updating:
-            return
-        region = self.f0_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'f0_freq_range_slider'):
-            self._updating = True
-            self.parent_window.f0_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, self.history_len * 0.73)
-    
-    def set_sample_rate(self, sr: int):
-        """Update sample rate for frequency calculations"""
-        self.sample_rate = sr
-    
-    def set_frequency_band(self, low_norm: float, high_norm: float):
-        """Update beat detection band (normalized 0-1)"""
-        self._updating = True
-        nyquist = self.sample_rate / 2
-        low_bin = self._hz_to_bin(low_norm * nyquist)
-        high_bin = self._hz_to_bin(high_norm * nyquist)
-        self.beat_band.setRegion((low_bin, high_bin))
-        # Update label position to center of band
-        center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, self.history_len * 0.97)
-        self._updating = False
-    
-    def set_depth_band(self, low_hz: float, high_hz: float):
-        """Update stroke depth band (in Hz)"""
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.depth_band.setRegion((low_bin, high_bin))
-        # Update label position to center of band
-        center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, self.history_len * 0.89)
-        self._updating = False
-    
-    def set_p0_band(self, low_hz: float, high_hz: float):
-        """Update P0 TCode band (in Hz)"""
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.p0_band.setRegion((low_bin, high_bin))
-        # Update label position to center of band
-        center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, self.history_len * 0.81)
-        self._updating = False
-    
-    def set_f0_band(self, low_hz: float, high_hz: float):
-        """Update F0 (carrier) TCode band (in Hz)"""
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.f0_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, self.history_len * 0.73)
-        self._updating = False
-    
-    def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Update peak indicator bars - actual peak and peak decay"""
-        if hasattr(self, 'peak_actual_bar'):
-            # Scale to waterfall Y range (0 to history_len)
-            scale = getattr(self, '_bar_scale', self.history_len)
-            self.peak_actual_bar.setOpts(height=[min(1.0, peak_value) * scale])
-        if hasattr(self, 'peak_decay_bar'):
-            scale = getattr(self, '_bar_scale', self.history_len)
-            self.peak_decay_bar.setOpts(height=[min(1.0, flux_value) * scale])
-    
-    def set_peak_floor(self, peak_floor: float):
-        """Update peak floor bar height"""
-        if hasattr(self, 'peak_floor_bar'):
-            scale = getattr(self, '_bar_scale', self.history_len)
-            self.peak_floor_bar.setOpts(height=[peak_floor * scale])
-    
-    def set_peak_indicators_visible(self, visible: bool):
-        """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
-        if hasattr(self, 'peak_actual_bar'):
-            self.peak_actual_bar.setVisible(visible)
-        if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setVisible(visible)
-        if hasattr(self, 'peak_decay_bar'):
-            self.peak_decay_bar.setVisible(visible)
-
-    def set_range_indicators_visible(self, visible: bool):
-        """Show or hide frequency range band indicators and labels"""
-        self.beat_band.setVisible(visible)
-        self.depth_band.setVisible(visible)
-        self.p0_band.setVisible(visible)
-        self.f0_band.setVisible(visible)
-        self.beat_label.setVisible(visible)
-        self.depth_label.setVisible(visible)
-        self.pulse_label.setVisible(visible)
-        self.carrier_label.setVisible(visible)
-        
-    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
-        """Update waterfall with new spectrum data - scrolls upward with rainbow frequency colors"""
-        if spectrum is None or len(spectrum) == 0:
-            return
-        
-        # Use full Nyquist range (no cutoff)
-        # Track source FFT size for hz/bin conversions
-        self._fft_bins = len(spectrum)
-        # Resample to num_bins using log-frequency spacing
-        n = len(spectrum)
-        if n > 1:
-            x_old = np.arange(n)
-            # Log-spaced indices: more resolution at low frequencies
-            x_new = np.logspace(0, np.log10(n - 1), self.num_bins)
-            x_new = np.clip(x_new, 0, n - 1)
-            spectrum = np.interp(x_new, x_old, spectrum)
-        elif len(spectrum) != self.num_bins:
-            x_old = np.linspace(0, 1, n)
-            x_new = np.linspace(0, 1, self.num_bins)
-            spectrum = np.interp(x_new, x_old, spectrum)
-        
-        # Apply log scaling for better dynamic range visualization
-        spectrum = np.log10(spectrum + 1e-6)
-        # Normalize: full range -6 to 0 for normalized input, map to 0-1
-        spectrum = np.clip((spectrum + 6) / 6, 0, 1)
-        
-        # Scroll waterfall up: shift existing rows toward top and put new data at bottom
-        self.waterfall_data[:-1, :] = self.waterfall_data[1:, :]
-        self.waterfall_data[-1, :] = spectrum
-        
-        # Create RGB image with frequency-based hue and amplitude-based brightness
-        # Pre-compute base colors for each frequency bin if not done
-        if not hasattr(self, '_freq_colors'):
-            self._freq_colors = np.zeros((self.num_bins, 3), dtype=np.float32)
-            for i in range(self.num_bins):
-                hue = (i / self.num_bins) * 270  # 0-270 degrees (red->blue)
-                h = hue / 60.0
-                x_val = 1.0 - abs(h % 2 - 1)
-                if h < 1:
-                    r, g, b = 1.0, x_val, 0.0
-                elif h < 2:
-                    r, g, b = x_val, 1.0, 0.0
-                elif h < 3:
-                    r, g, b = 0.0, 1.0, x_val
-                elif h < 4:
-                    r, g, b = 0.0, x_val, 1.0
-                else:
-                    r, g, b = x_val, 0.0, 1.0
-                self._freq_colors[i] = [r, g, b]
-        
-        # Vectorized: brightness = waterfall_data ^ 0.7 for gamma correction
-        brightness = self.waterfall_data ** 0.7
-        
-        # Shape: (history, bins, 3) - multiply brightness by pre-computed colors
-        # brightness is (history, bins), colors is (bins, 3)
-        # Result: (history, bins, 3)
-        rgb_data = (brightness[:, :, np.newaxis] * self._freq_colors[np.newaxis, :, :] * 255).astype(np.uint8)
-        
-        # Update image - transpose so X=freq, Y=time (new at bottom)
-        # For RGB: shape should be (width, height, 3) so transpose first two axes
-        self.img_item.setImage(rgb_data.transpose(1, 0, 2), autoLevels=False)
-        # Position image to fill the view exactly (must be after setImage)
-        self.img_item.setRect(0, 0, self.num_bins, self.history_len)
-        
-        # Update peak indicator bars with current peak energy
-        if peak_energy is not None:
-            self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
-
-
 class MountainRangeCanvas(pg.PlotWidget):
     """Mountain range spectrum visualizer - glowing blue filled peaks"""
     
@@ -956,325 +571,6 @@ class MountainRangeCanvas(pg.PlotWidget):
             self.peak_scatter.setData([], [])
         
         # Update peak tracker line with current peak energy
-        if peak_energy is not None:
-            self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
-
-
-class BarGraphCanvas(pg.PlotWidget):
-    """Bar graph spectrum visualizer with frequency-based colors"""
-    
-    def __init__(self, parent=None, width=8, height=3):
-        super().__init__(parent)
-        
-        # Dark theme
-        self.setBackground('#0a0a12')
-        self.setMouseEnabled(x=False, y=False)
-        self.setMenuEnabled(False)
-        self.showGrid(x=False, y=False, alpha=0)
-        self.hideAxis('left')
-        self.hideAxis('bottom')
-        
-        # Spectrum dimensions - use fewer bars for cleaner look
-        self.num_bars = 64
-        
-        # Set view range (left margin includes peak indicator bars at negative X)
-        self.setXRange(-9, self.num_bars - 0.5)
-        self.setYRange(0, 1.2)
-        
-        # Create bar items - each bar is a separate BarGraphItem for individual colors
-        self.bars = []
-        self.bar_colors = []
-        
-        # Generate frequency-based colors (rainbow: red->yellow->green->cyan->blue->magenta)
-        for i in range(self.num_bars):
-            # Hue goes from 0 (red/bass) to 270 (blue/high) degrees
-            hue = int((i / self.num_bars) * 270)
-            color = QColor.fromHsv(hue, 255, 255, 200)
-            self.bar_colors.append(color)
-        
-        # Single BarGraphItem for all bars
-        self.bar_item = pg.BarGraphItem(x=np.arange(self.num_bars), height=np.zeros(self.num_bars),
-                                         width=0.8, brushes=self.bar_colors)
-        self.addItem(self.bar_item)
-        
-        # 4 Frequency band indicators (vertical regions with different heights)
-        # Band heights: beat=100%, stroke=92%, pulse=84%, carrier=76%
-        # Band 1: Beat Detection (red) - full height (tallest)
-        self.beat_band = pg.LinearRegionItem(values=(0, 32), orientation='vertical',
-                                              brush=pg.mkBrush(255, 50, 50, 40),
-                                              pen=pg.mkPen('#FF3232', width=1),
-                                              movable=True, span=(0, 1.0))
-        self.beat_band.setBounds([0, self.num_bars])
-        self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
-        self.addItem(self.beat_band)
-        
-        # Band 2: Stroke Depth (green) - 92% height
-        self.depth_band = pg.LinearRegionItem(values=(0, 32), orientation='vertical',
-                                               brush=pg.mkBrush(50, 255, 50, 35),
-                                               pen=pg.mkPen('#32FF32', width=1),
-                                               movable=True, span=(0, 0.92))
-        self.depth_band.setBounds([0, self.num_bars])
-        self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
-        self.addItem(self.depth_band)
-        
-        # Band 3: Pulse/P0 TCode (blue) - 84% height
-        self.p0_band = pg.LinearRegionItem(values=(0, 32), orientation='vertical',
-                                            brush=pg.mkBrush(50, 100, 255, 35),
-                                            pen=pg.mkPen('#3264FF', width=1),
-                                            movable=True, span=(0, 0.84))
-        self.p0_band.setBounds([0, self.num_bars])
-        self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
-        self.addItem(self.p0_band)
-        
-        # Band 4: Carrier/F0 TCode (cyan) - 76% height (shortest)
-        self.f0_band = pg.LinearRegionItem(values=(0, 32), orientation='vertical',
-                                            brush=pg.mkBrush(0, 200, 255, 35),
-                                            pen=pg.mkPen('#00C8FF', width=1),
-                                            movable=True, span=(0, 0.76))
-        self.f0_band.setBounds([0, self.num_bars])
-        self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
-        self.addItem(self.f0_band)
-        
-        # Labels placed at top of each respective band
-        # Each label sits just inside the upper limit of its own box
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, 0.73)
-        self.addItem(self.carrier_label)
-        
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, 0.81)
-        self.addItem(self.pulse_label)
-        
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, 0.89)
-        self.addItem(self.depth_label)
-        
-        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
-        self.beat_label.setPos(5, 0.97)
-        self.addItem(self.beat_label)
-        
-        # Reference to parent window
-        self.parent_window = parent
-        self.sample_rate = 44100
-        self._fft_bins = 513  # Default for 1024 FFT; updated on first spectrum
-        self._updating = False
-        
-        # Smoothing buffer
-        self._smooth_heights = np.zeros(self.num_bars)
-        self._smoothing = 0.4
-        
-        # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        bar_width = 1.42  # Width of each bar (~7% thinner than prior tweak)
-        bar_spacing = 0.4  # Gap between bars
-        bar_x_start = -7.5  # Start position (leftmost bar)
-        
-        # Bar 1: Actual Peak (green)
-        self.peak_actual_bar = pg.BarGraphItem(
-            x=[bar_x_start],
-            height=[0],
-            width=bar_width,
-            brush='#00FF00'
-        )
-        self.addItem(self.peak_actual_bar)
-        
-        # Bar 2: Peak Floor (yellow)
-        self.peak_floor_bar = pg.BarGraphItem(
-            x=[bar_x_start + bar_width + bar_spacing],
-            height=[0],
-            width=bar_width,
-            brush='#FFD700'
-        )
-        self.addItem(self.peak_floor_bar)
-        
-        # Bar 3: Peak Decay (orange)
-        self.peak_decay_bar = pg.BarGraphItem(
-            x=[bar_x_start + 2 * (bar_width + bar_spacing)],
-            height=[0],
-            width=bar_width,
-            brush='#FF8C00'
-        )
-        self.addItem(self.peak_decay_bar)
-        
-    def _hz_to_bin(self, hz: float) -> float:
-        """Convert Hz to log-spaced bar index"""
-        nyquist = self.sample_rate / 2
-        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bars
-        linear_idx = max(1.0, (hz / nyquist) * (n - 1))
-        log_max = np.log10(n - 1)
-        return (np.log10(linear_idx) / log_max) * self.num_bars if log_max > 0 else 0.0
-    
-    def _bin_to_hz(self, bin_idx: float) -> float:
-        """Convert log-spaced bar index to Hz"""
-        nyquist = self.sample_rate / 2
-        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bars
-        log_max = np.log10(n - 1)
-        linear_idx = 10 ** ((bin_idx / self.num_bars) * log_max) if log_max > 0 else bin_idx
-        return (linear_idx / (n - 1)) * nyquist
-        
-    def _on_beat_band_changed(self):
-        if self._updating:
-            return
-        region = self.beat_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'freq_range_slider'):
-            self._updating = True
-            self.parent_window.freq_range_slider.setLow(int(low_hz))
-            self.parent_window.freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, 0.97)
-    
-    def _on_depth_band_changed(self):
-        if self._updating:
-            return
-        region = self.depth_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'depth_freq_range_slider'):
-            self._updating = True
-            self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, 0.89)
-    
-    def _on_p0_band_changed(self):
-        if self._updating:
-            return
-        region = self.p0_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_range_slider'):
-            self._updating = True
-            self.parent_window.pulse_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, 0.81)
-    
-    def _on_f0_band_changed(self):
-        if self._updating:
-            return
-        region = self.f0_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'f0_freq_range_slider'):
-            self._updating = True
-            self.parent_window.f0_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, 0.73)
-    
-    def set_sample_rate(self, sr: int):
-        self.sample_rate = sr
-    
-    def set_frequency_band(self, low_norm: float, high_norm: float):
-        self._updating = True
-        nyquist = self.sample_rate / 2
-        low_bin = self._hz_to_bin(low_norm * nyquist)
-        high_bin = self._hz_to_bin(high_norm * nyquist)
-        self.beat_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, 0.97)
-        self._updating = False
-    
-    def set_depth_band(self, low_hz: float, high_hz: float):
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.depth_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, 0.89)
-        self._updating = False
-    
-    def set_p0_band(self, low_hz: float, high_hz: float):
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.p0_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, 0.81)
-        self._updating = False
-    
-    def set_f0_band(self, low_hz: float, high_hz: float):
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.f0_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, 0.73)
-        self._updating = False
-    
-    def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Update peak indicator bars - actual peak and peak decay"""
-        if hasattr(self, 'peak_actual_bar'):
-            self.peak_actual_bar.setOpts(height=[min(1.2, peak_value)])
-        if hasattr(self, 'peak_decay_bar'):
-            self.peak_decay_bar.setOpts(height=[min(1.2, flux_value)])
-    
-    def set_peak_floor(self, peak_floor: float):
-        """Update peak floor bar height"""
-        if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setOpts(height=[peak_floor])
-    
-    def set_peak_indicators_visible(self, visible: bool):
-        """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
-        if hasattr(self, 'peak_actual_bar'):
-            self.peak_actual_bar.setVisible(visible)
-        if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setVisible(visible)
-        if hasattr(self, 'peak_decay_bar'):
-            self.peak_decay_bar.setVisible(visible)
-
-    def set_range_indicators_visible(self, visible: bool):
-        """Show or hide frequency range band indicators and labels"""
-        self.beat_band.setVisible(visible)
-        self.depth_band.setVisible(visible)
-        self.p0_band.setVisible(visible)
-        self.f0_band.setVisible(visible)
-        self.beat_label.setVisible(visible)
-        self.depth_label.setVisible(visible)
-        self.pulse_label.setVisible(visible)
-        self.carrier_label.setVisible(visible)
-        
-    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
-        """Update bars with new spectrum data"""
-        if spectrum is None or len(spectrum) == 0:
-            return
-        
-        # Cut off at Nyquist (22050 Hz at 44.1kHz sample rate)
-        cutoff_hz = 22050
-        nyquist = self.sample_rate / 2
-        cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
-        spectrum = spectrum[:cutoff_idx]
-            
-        # Track source FFT size for hz/bin conversions
-        self._fft_bins = len(spectrum)
-        # Resample to num_bars using log-frequency spacing
-        n = len(spectrum)
-        if n > 1:
-            x_old = np.arange(n)
-            x_new = np.logspace(0, np.log10(n - 1), self.num_bars)
-            x_new = np.clip(x_new, 0, n - 1)
-            spectrum = np.interp(x_new, x_old, spectrum)
-        elif len(spectrum) != self.num_bars:
-            x_old = np.linspace(0, 1, n)
-            x_new = np.linspace(0, 1, self.num_bars)
-            spectrum = np.interp(x_new, x_old, spectrum)
-        
-        # Apply log scaling
-        spectrum = np.log10(spectrum + 1e-6)
-        spectrum = np.clip((spectrum + 6) / 6, 0, 1)
-        
-        # Smooth for less jittery animation
-        self._smooth_heights = self._smoothing * self._smooth_heights + (1 - self._smoothing) * spectrum
-        
-        # Update bar heights
-        self.bar_item.setOpts(height=self._smooth_heights)
-        
-        # Update peak indicator bars with current peak energy
         if peak_energy is not None:
             self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
 
@@ -3071,7 +2367,7 @@ class CalibrationPopoutWindow(QMainWindow):
 
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Waveform (Time/Amp)", "Spectrum (Freq/dB)"])
-        self.mode_combo.setCurrentIndex(0)
+        self.mode_combo.setCurrentIndex(1)
         controls_row.addWidget(self.mode_combo)
 
         self.speed_combo = QComboBox()
@@ -3089,7 +2385,8 @@ class CalibrationPopoutWindow(QMainWindow):
 
         self.waveform_canvas = WaveformCalibrationCanvas(parent)
         self.freqdb_canvas = FrequencyDbCalibrationCanvas(parent)
-        self.freqdb_canvas.setVisible(False)
+        self.waveform_canvas.setVisible(False)
+        self.freqdb_canvas.setVisible(True)
         layout.addWidget(self.waveform_canvas)
         layout.addWidget(self.freqdb_canvas)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -3296,6 +2593,7 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
+        self._apply_first_launch_auto_control_defaults()
         self._slider_tracker = SliderTuningTracker(get_config_dir())
         _set_active_slider_tracker(self._slider_tracker)
         # Apply persisted log level early so downstream modules inherit
@@ -3329,7 +2627,7 @@ class BREadbeatsWindow(QMainWindow):
 
         self._register_app_run_startup()
         self._schedule_startup_notices()
-        
+
         # Connect signals
         self.signals.beat_detected.connect(self._on_beat)
         self.signals.spectrum_ready.connect(self._on_spectrum)
@@ -3913,15 +3211,17 @@ class BREadbeatsWindow(QMainWindow):
         # Spectrum visualizer type submenu
         viz_menu = options_menu.addMenu("Spectrum Type")
         assert viz_menu is not None
+        viz_names = ["Mountain Range", "Phosphor", "Waveform", "Freq dB"]
+        default_viz_index = 2  # Waveform
         self.visualizer_type_combo = QComboBox()  # Hidden combo for state tracking
-        self.visualizer_type_combo.addItems(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor", "Waveform", "Freq dB"])
-        self.visualizer_type_combo.setCurrentIndex(4)  # Default: Waveform
+        self.visualizer_type_combo.addItems(viz_names)
+        self.visualizer_type_combo.setCurrentIndex(default_viz_index)
         self._viz_type_actions = []
-        for i, name in enumerate(["Waterfall", "Mountain Range", "Bar Graph", "Phosphor", "Waveform", "Freq dB"]):
+        for i, name in enumerate(viz_names):
             action = viz_menu.addAction(name)
             assert action is not None
             action.setCheckable(True)
-            action.setChecked(i == 4)  # Waveform default
+            action.setChecked(i == default_viz_index)
             action.triggered.connect(lambda checked, idx=i: self._on_viz_menu_change(idx))
             self._viz_type_actions.append(action)
 
@@ -5537,6 +4837,28 @@ class BREadbeatsWindow(QMainWindow):
         self.config.app_run_count = max(0, count) + 1
         save_config(self.config)
 
+    def _apply_first_launch_auto_control_defaults(self):
+        """Force auto controls ON for first launch only."""
+        try:
+            run_count = int(getattr(self.config, 'app_run_count', 0) or 0)
+        except Exception:
+            run_count = 0
+
+        if run_count > 0:
+            return
+
+        self.config.auto_adjust.metrics_global_enabled = True
+        enabled = dict(getattr(self.config.auto_adjust, 'enabled_params', {}) or {})
+        enabled.update({
+            'audio_amp': True,
+            'peak_floor': True,
+            'peak_decay': True,
+            'rise_sens': True,
+            'sensitivity': True,
+            'flux_mult': True,
+        })
+        self.config.auto_adjust.enabled_params = enabled
+
     def _schedule_startup_notices(self):
         show_first_run = not bool(getattr(self.config, 'privacy_notice_seen', False))
         reports_enabled = bool(getattr(self.config, 'report_generation_enabled', True))
@@ -5832,12 +5154,9 @@ class BREadbeatsWindow(QMainWindow):
                 # Volume (config stores 0-1, slider shows 0-100)
                 self.volume_slider.setValue(int(self.config.volume * 100))
 
-            # Set spectrum canvas sample rate and update all 3 frequency bands
-            self.spectrum_canvas.set_sample_rate(self.config.audio.sample_rate)
+            # Set active visualizer sample rates and update frequency bands
             if hasattr(self, 'mountain_canvas'):
                 self.mountain_canvas.set_sample_rate(self.config.audio.sample_rate)
-            if hasattr(self, 'bar_canvas'):
-                self.bar_canvas.set_sample_rate(self.config.audio.sample_rate)
             if hasattr(self, 'phosphor_canvas'):
                 self.phosphor_canvas.set_sample_rate(self.config.audio.sample_rate)
             self._on_freq_band_change()  # Update beat detection band (red)
@@ -6233,23 +5552,17 @@ class BREadbeatsWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         
-        # Create all visualizers (only one visible at a time)
-        self.spectrum_canvas = SpectrumCanvas(self, width=8, height=3)
+        # Create active visualizers (only one visible at a time)
         self.mountain_canvas = MountainRangeCanvas(self, width=8, height=3)
-        self.bar_canvas = BarGraphCanvas(self, width=8, height=3)
         self.phosphor_canvas = PhosphorCanvas(self, width=8, height=3)
         self.waveform_canvas = WaveformLiveCanvas(self, width=8, height=3)
         self.freqdb_canvas = FrequencyDbLiveCanvas(self, width=8, height=3)
-        self.spectrum_canvas.setVisible(False)
         self.mountain_canvas.setVisible(False)
-        self.bar_canvas.setVisible(False)
         self.phosphor_canvas.setVisible(False)
         self.waveform_canvas.setVisible(True)  # Start with waveform
         self.freqdb_canvas.setVisible(False)
         
-        layout.addWidget(self.spectrum_canvas)
         layout.addWidget(self.mountain_canvas)
-        layout.addWidget(self.bar_canvas)
         layout.addWidget(self.phosphor_canvas)
         layout.addWidget(self.waveform_canvas)
         layout.addWidget(self.freqdb_canvas)
@@ -6268,13 +5581,11 @@ class BREadbeatsWindow(QMainWindow):
             )
     
     def _on_visualizer_type_change(self, index: int):
-        """Switch between visualizer types: 0=Waterfall, 1=Mountain, 2=Bar, 3=Phosphor, 4=Waveform, 5=Freq dB"""
-        self.spectrum_canvas.setVisible(index == 0)
-        self.mountain_canvas.setVisible(index == 1)
-        self.bar_canvas.setVisible(index == 2)
-        self.phosphor_canvas.setVisible(index == 3)
-        self.waveform_canvas.setVisible(index == 4)
-        self.freqdb_canvas.setVisible(index == 5)
+        """Switch between visualizer types: 0=Mountain, 1=Phosphor, 2=Waveform, 3=Freq dB"""
+        self.mountain_canvas.setVisible(index == 0)
+        self.phosphor_canvas.setVisible(index == 1)
+        self.waveform_canvas.setVisible(index == 2)
+        self.freqdb_canvas.setVisible(index == 3)
 
         if self.calibration_popout is not None and self.calibration_popout.isVisible():
             self._set_main_visualizers_hidden_for_popout(True)
@@ -6290,31 +5601,27 @@ class BREadbeatsWindow(QMainWindow):
     def _set_main_visualizers_hidden_for_popout(self, hidden: bool) -> None:
         """Hide/show embedded visualizers while calibration popout is active."""
         if hidden:
-            self.spectrum_canvas.setVisible(False)
             self.mountain_canvas.setVisible(False)
-            self.bar_canvas.setVisible(False)
             self.phosphor_canvas.setVisible(False)
             self.waveform_canvas.setVisible(False)
             self.freqdb_canvas.setVisible(False)
             return
 
-        index = int(self.visualizer_type_combo.currentIndex()) if hasattr(self, 'visualizer_type_combo') else 0
-        self.spectrum_canvas.setVisible(index == 0)
-        self.mountain_canvas.setVisible(index == 1)
-        self.bar_canvas.setVisible(index == 2)
-        self.phosphor_canvas.setVisible(index == 3)
-        self.waveform_canvas.setVisible(index == 4)
-        self.freqdb_canvas.setVisible(index == 5)
+        index = int(self.visualizer_type_combo.currentIndex()) if hasattr(self, 'visualizer_type_combo') else 2
+        self.mountain_canvas.setVisible(index == 0)
+        self.phosphor_canvas.setVisible(index == 1)
+        self.waveform_canvas.setVisible(index == 2)
+        self.freqdb_canvas.setVisible(index == 3)
     
     def _on_show_peak_indicators_toggle(self, checked: bool):
         """Toggle visibility of peak indicator bars on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'set_peak_indicators_visible'):
                 canvas.set_peak_indicators_visible(checked)
 
     def _on_show_range_indicators_toggle(self, checked: bool):
         """Toggle visibility of range indicator bands on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'set_range_indicators_visible'):
                 canvas.set_range_indicators_visible(checked)
 
@@ -6351,7 +5658,7 @@ class BREadbeatsWindow(QMainWindow):
 
     def _on_toggle_beat_band(self, checked: bool):
         """Toggle visibility of beat detection band (red) on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'beat_band'):
                 canvas.beat_band.setVisible(checked)
             if hasattr(canvas, 'beat_label'):
@@ -6359,7 +5666,7 @@ class BREadbeatsWindow(QMainWindow):
 
     def _on_toggle_depth_band(self, checked: bool):
         """Toggle visibility of stroke depth band (green) on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'depth_band'):
                 canvas.depth_band.setVisible(checked)
             if hasattr(canvas, 'depth_label'):
@@ -6367,7 +5674,7 @@ class BREadbeatsWindow(QMainWindow):
 
     def _on_toggle_p0_band(self, checked: bool):
         """Toggle visibility of pulse frequency band (blue) on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'p0_band'):
                 canvas.p0_band.setVisible(checked)
             if hasattr(canvas, 'pulse_label'):
@@ -6375,7 +5682,7 @@ class BREadbeatsWindow(QMainWindow):
 
     def _on_toggle_f0_band(self, checked: bool):
         """Toggle visibility of carrier frequency band (cyan) on all visualizers"""
-        for canvas in [self.spectrum_canvas, self.mountain_canvas, self.bar_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
             if hasattr(canvas, 'f0_band'):
                 canvas.f0_band.setVisible(checked)
             if hasattr(canvas, 'carrier_label'):
@@ -7433,11 +6740,8 @@ class BREadbeatsWindow(QMainWindow):
         # Update spectrum overlay
         sr = self.config.audio.sample_rate
         max_freq = sr / 2
-        self.spectrum_canvas.set_frequency_band(low / max_freq, high / max_freq)
         if hasattr(self, 'mountain_canvas'):
             self.mountain_canvas.set_frequency_band(low / max_freq, high / max_freq)
-        if hasattr(self, 'bar_canvas'):
-            self.bar_canvas.set_frequency_band(low / max_freq, high / max_freq)
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_frequency_band(low / max_freq, high / max_freq)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_frequency_band'):
@@ -7457,11 +6761,8 @@ class BREadbeatsWindow(QMainWindow):
         self.config.stroke.depth_freq_high = high
         
         # Update spectrum overlay (green band)
-        self.spectrum_canvas.set_depth_band(low, high)
         if hasattr(self, 'mountain_canvas'):
             self.mountain_canvas.set_depth_band(low, high)
-        if hasattr(self, 'bar_canvas'):
-            self.bar_canvas.set_depth_band(low, high)
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_depth_band(low, high)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_depth_band'):
@@ -7481,11 +6782,8 @@ class BREadbeatsWindow(QMainWindow):
         self.config.pulse_freq.monitor_freq_max = high
         
         # Update spectrum overlay (blue band)
-        self.spectrum_canvas.set_p0_band(low, high)
         if hasattr(self, 'mountain_canvas'):
             self.mountain_canvas.set_p0_band(low, high)
-        if hasattr(self, 'bar_canvas'):
-            self.bar_canvas.set_p0_band(low, high)
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_p0_band(low, high)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_p0_band'):
@@ -7505,12 +6803,8 @@ class BREadbeatsWindow(QMainWindow):
         self.config.carrier_freq.monitor_freq_max = high
         
         # Update spectrum overlay (cyan band for F0)
-        if hasattr(self, 'spectrum_canvas'):
-            self.spectrum_canvas.set_f0_band(low, high)
         if hasattr(self, 'mountain_canvas'):
             self.mountain_canvas.set_f0_band(low, high)
-        if hasattr(self, 'bar_canvas'):
-            self.bar_canvas.set_f0_band(low, high)
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_f0_band(low, high)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_f0_band'):
@@ -9123,7 +8417,7 @@ class BREadbeatsWindow(QMainWindow):
     
     def _do_spectrum_update(self):
         """Actually update spectrum at throttled rate - only update visible visualizer"""
-        if self._pending_spectrum is not None and hasattr(self, 'spectrum_canvas') and self.spectrum_canvas is not None:
+        if self._pending_spectrum is not None:
             # Handle both old format (numpy array) and new format (dict with stats)
             if isinstance(self._pending_spectrum, dict):
                 spectrum = self._pending_spectrum['spectrum']
@@ -9137,12 +8431,8 @@ class BREadbeatsWindow(QMainWindow):
                         popout.update_from_audio(waveform, sample_rate, spectrum, self.config.stroke)
                 else:
                     # Only update the currently visible in-window visualizer for performance
-                    if self.spectrum_canvas.isVisible():
-                        self.spectrum_canvas.update_spectrum(spectrum, peak, flux)
-                    elif hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
+                    if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
                         self.mountain_canvas.update_spectrum(spectrum, peak, flux)
-                    elif hasattr(self, 'bar_canvas') and self.bar_canvas is not None and self.bar_canvas.isVisible():
-                        self.bar_canvas.update_spectrum(spectrum, peak, flux)
                     elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
                         self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
                     elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible():
@@ -9158,12 +8448,8 @@ class BREadbeatsWindow(QMainWindow):
                     if popout is not None:
                         popout.update_from_audio(None, int(getattr(self.config.audio, 'sample_rate', 44100)), self._pending_spectrum, self.config.stroke)
                 else:
-                    if self.spectrum_canvas.isVisible():
-                        self.spectrum_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-                    elif hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
+                    if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
                         self.mountain_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-                    elif hasattr(self, 'bar_canvas') and self.bar_canvas is not None and self.bar_canvas.isVisible():
-                        self.bar_canvas.update_spectrum(self._pending_spectrum, peak, flux)
                     elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
                         self.phosphor_canvas.update_spectrum(self._pending_spectrum, peak, flux)
                     elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible() and self.audio_engine is not None:
@@ -9286,7 +8572,7 @@ class BREadbeatsWindow(QMainWindow):
             
             # Update peak floor bars on all visualizers
             peak_floor = self.config.beat.peak_floor
-            for canvas_name in ['mountain_canvas', 'spectrum_canvas', 'bar_canvas', 'phosphor_canvas']:
+            for canvas_name in ['mountain_canvas', 'phosphor_canvas']:
                 if hasattr(self, canvas_name):
                     canvas = getattr(self, canvas_name)
                     if hasattr(canvas, 'set_peak_floor'):
