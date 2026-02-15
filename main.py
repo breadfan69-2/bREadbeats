@@ -5486,10 +5486,11 @@ class BREadbeatsWindow(QMainWindow):
     
     def _on_load_presets(self):
         """Open file dialog to load a presets .json file"""
+        start_dir = self._get_external_data_start_dir()
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Load Presets",
-            "",
+            start_dir,
             "JSON Files (*.json);;All Files (*)"
         )
         if file_path:
@@ -5502,6 +5503,22 @@ class BREadbeatsWindow(QMainWindow):
                 print(f"[Config] Loaded presets from {file_path}")
             except Exception as e:
                 QMessageBox.warning(self, "Load Error", f"Failed to load presets:\n{e}")
+
+    def _get_external_data_start_dir(self) -> str:
+        """Pick a sensible starting directory for user-provided files, preferring D: if available."""
+        candidates = [
+            Path("D:/breadbeats_datasets"),
+            Path("D:/"),
+            Path(str(get_config_dir())),
+            Path.cwd(),
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_dir():
+                    return str(candidate)
+            except Exception:
+                continue
+        return str(Path.cwd())
     
     def _apply_preset_data(self, data: dict):
         """Apply preset data dictionary to config and UI"""
@@ -6525,7 +6542,7 @@ Like the app?<br>
             file_path, _ = QFileDialog.getOpenFileName(
                 dialog,
                 "Select rule_fit.json",
-                str(get_config_dir()),
+                self._get_external_data_start_dir(),
                 "JSON Files (*.json);;All Files (*.*)",
             )
             if file_path:
