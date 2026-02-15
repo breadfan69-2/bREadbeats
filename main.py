@@ -4203,6 +4203,84 @@ class BREadbeatsWindow(QMainWindow):
         )
         gate_layout.addWidget(sync_fill_slider)
 
+        dual_band_gate_cb = QCheckBox("Enable dual-band dB gate (sub-bass + high)")
+        dual_band_gate_cb.setChecked(bool(getattr(self.config.stroke, 'dual_band_db_gate_enabled', True)))
+        dual_band_gate_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'dual_band_db_gate_enabled', state == 2)
+        )
+        gate_layout.addWidget(dual_band_gate_cb)
+
+        dual_sub_bass_db_slider = SliderWithLabel(
+            "Dual-band sub-bass min (dB)",
+            -80.0,
+            0.0,
+            float(getattr(self.config.stroke, 'dual_band_sub_bass_db_min', -15.0) or -15.0),
+            1,
+        )
+        dual_sub_bass_db_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'dual_band_sub_bass_db_min', float(v))
+        )
+        gate_layout.addWidget(dual_sub_bass_db_slider)
+
+        dual_high_db_slider = SliderWithLabel(
+            "Dual-band high min (dB)",
+            -80.0,
+            0.0,
+            float(getattr(self.config.stroke, 'dual_band_high_db_min', -30.0) or -30.0),
+            1,
+        )
+        dual_high_db_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'dual_band_high_db_min', float(v))
+        )
+        gate_layout.addWidget(dual_high_db_slider)
+
+        mid_block_cb = QCheckBox("Block beat/downbeat triggers in mid-frequency range")
+        mid_block_cb.setChecked(bool(getattr(self.config.stroke, 'block_mid_trigger_range_enabled', False)))
+        mid_block_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'block_mid_trigger_range_enabled', state == 2)
+        )
+        gate_layout.addWidget(mid_block_cb)
+
+        mid_block_row = QHBoxLayout()
+        mid_block_low_spin = QSpinBox()
+        mid_block_low_spin.setRange(0, 10000)
+        mid_block_low_spin.setSingleStep(10)
+        mid_block_low_spin.setValue(int(float(getattr(self.config.stroke, 'block_mid_trigger_low_hz', 100.0) or 100.0)))
+        mid_block_low_spin.setSuffix(" Hz")
+        mid_block_row.addWidget(QLabel("Mid block low:"))
+        mid_block_row.addWidget(mid_block_low_spin)
+
+        mid_block_high_spin = QSpinBox()
+        mid_block_high_spin.setRange(1, 12000)
+        mid_block_high_spin.setSingleStep(10)
+        mid_block_high_spin.setValue(int(float(getattr(self.config.stroke, 'block_mid_trigger_high_hz', 2000.0) or 2000.0)))
+        mid_block_high_spin.setSuffix(" Hz")
+        mid_block_row.addWidget(QLabel("high:"))
+        mid_block_row.addWidget(mid_block_high_spin)
+        mid_block_row.addStretch()
+
+        def _on_mid_block_low_change(v: int) -> None:
+            low = int(v)
+            high = int(mid_block_high_spin.value())
+            if high <= low:
+                high = low + 1
+                mid_block_high_spin.setValue(high)
+            self.config.stroke.block_mid_trigger_low_hz = float(low)
+            self.config.stroke.block_mid_trigger_high_hz = float(high)
+
+        def _on_mid_block_high_change(v: int) -> None:
+            high = int(v)
+            low = int(mid_block_low_spin.value())
+            if high <= low:
+                low = max(0, high - 1)
+                mid_block_low_spin.setValue(low)
+            self.config.stroke.block_mid_trigger_low_hz = float(low)
+            self.config.stroke.block_mid_trigger_high_hz = float(high)
+
+        mid_block_low_spin.valueChanged.connect(_on_mid_block_low_change)
+        mid_block_high_spin.valueChanged.connect(_on_mid_block_high_change)
+        gate_layout.addLayout(mid_block_row)
+
         scroll_layout.addWidget(gate_group)
 
         # ===== Noise Burst Controls (Hybrid System) =====
@@ -5330,6 +5408,7 @@ Like the app?<br>
                 self.combo_speed_spin,
                 self.combo_texture_spin,
                 self.combo_reaction_spin,
+                self.fill_gate_scale_spin,
                 self.stroke_range_slider,
                 self.fullness_slider,
                 self.freq_depth_slider,
@@ -5389,6 +5468,7 @@ Like the app?<br>
                 self.combo_speed_spin.setValue(float(getattr(self.config.stroke, 'combo_speed', 1.0)))
                 self.combo_texture_spin.setValue(float(getattr(self.config.stroke, 'combo_texture', 1.0)))
                 self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
+                self.fill_gate_scale_spin.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0))
                 self.depth_freq_range_slider.setLow(int(self.config.stroke.depth_freq_low))
                 self.depth_freq_range_slider.setHigh(int(self.config.stroke.depth_freq_high))
                 advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
@@ -6430,6 +6510,19 @@ Like the app?<br>
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_reaction', float(v)),
         )
+
+        layout.addWidget(QLabel("Fill gates x:"))
+        self.fill_gate_scale_spin = QDoubleSpinBox()
+        self.fill_gate_scale_spin.setRange(0.25, 3.00)
+        self.fill_gate_scale_spin.setSingleStep(0.05)
+        self.fill_gate_scale_spin.setDecimals(2)
+        self.fill_gate_scale_spin.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0))
+        self.fill_gate_scale_spin.setFixedWidth(68)
+        self.fill_gate_scale_spin.setToolTip("Scales downbeat/beat/sync fill requirements together")
+        self.fill_gate_scale_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'overall_amp_fill_required_scale', float(v))
+        )
+        layout.addWidget(self.fill_gate_scale_spin)
         layout.addStretch()
 
         self._on_flux_depth_mode_toggle(self.flux_depth_mode_toggle.isChecked())
@@ -6503,6 +6596,7 @@ Like the app?<br>
             'combo_speed': float(getattr(self.config.stroke, 'combo_speed', 1.0)),
             'combo_texture': float(getattr(self.config.stroke, 'combo_texture', 1.0)),
             'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
+            'overall_amp_fill_required_scale': float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0),
             'depth_freq_low': self.depth_freq_range_slider.low(),
             'depth_freq_high': self.depth_freq_range_slider.high(),
             'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
@@ -6623,6 +6717,8 @@ Like the app?<br>
         self.fullness_slider.setValue(preset_data['stroke_fullness'])
         self.config.stroke.minimum_depth = 0.0
         self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
+        if 'overall_amp_fill_required_scale' in preset_data:
+            self.fill_gate_scale_spin.setValue(float(preset_data['overall_amp_fill_required_scale']))
         if 'flux_depth_factor' in preset_data:
             self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
         self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
@@ -7627,6 +7723,7 @@ Like the app?<br>
             'combo_speed': float(getattr(self.config.stroke, 'combo_speed', 1.0)),
             'combo_texture': float(getattr(self.config.stroke, 'combo_texture', 1.0)),
             'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
+            'overall_amp_fill_required_scale': float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0),
             'depth_freq_low': self.depth_freq_range_slider.low(),
             'depth_freq_high': self.depth_freq_range_slider.high(),
             'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
@@ -7776,6 +7873,8 @@ Like the app?<br>
             self.fullness_slider.setValue(preset_data['stroke_fullness'])
             self.config.stroke.minimum_depth = 0.0
             self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
+            if 'overall_amp_fill_required_scale' in preset_data:
+                self.fill_gate_scale_spin.setValue(float(preset_data['overall_amp_fill_required_scale']))
             if 'flux_depth_factor' in preset_data:
                 self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
             if 'flux_depth_boost_enabled' in preset_data:

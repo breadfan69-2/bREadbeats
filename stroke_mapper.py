@@ -205,7 +205,7 @@ class StrokeMapper:
 
         # ---------- Pending arc: glide to top/bottom before firing ----------
         self._pending_arc_event: Optional[BeatEvent] = None
-        self._pending_arc_target: float = 0.0       # 0.0 = top, π = bottom
+        self._pending_arc_target: float = 0.0       # phase target for deferred arc fire
         self._pending_arc_is_downbeat: bool = False
         self._arc_anchor_threshold: float = 0.35     # radians (~20°) — close enough to fire
         self._single_anchor_bottom_phase: float = np.pi
@@ -310,12 +310,16 @@ class StrokeMapper:
         self._try_load_learning_model()
 
         # ---------- Landing / park anchors ----------
-        self._landing_offset_degrees: float = 10.0   # 10° right of bottom for beat landings
-        self._park_radius: float = 0.2               # park at bottom-center, 20% radius
+        # Display-bottom phase is 0.0 in current alpha/beta orientation.
+        self._landing_offset_degrees: float = 7.5
+        self._park_radius_min: float = 0.20
+        self._park_radius_max: float = 0.85
+        self._park_radius: float = 0.45
 
         # ---------- Park / wait target ----------
-        self._park_alpha: float = self._park_radius
+        self._park_alpha: float = 0.0
         self._park_beta: float = 0.0
+        self._update_park_anchor_from_radius(self._park_radius)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -326,9 +330,56 @@ class StrokeMapper:
         limit_pct = self.config.stroke.vol_reduction_limit / 100.0
         return base_vol * (1.0 - limit_pct)
 
+    def _update_park_anchor_from_radius(self, radius_hint: Optional[float] = None) -> None:
+        """Update park/landing anchor using dynamic radius from recent stroke size.
+
+        Landing target stays 5-10° right of display-bottom, with larger strokes
+        using a slightly larger rightward offset.
+        """
+        if radius_hint is None:
+            radius_hint = self._park_radius
+        radius = float(np.clip(radius_hint, self._park_radius_min, self._park_radius_max))
+        span = max(1e-6, self._park_radius_max - self._park_radius_min)
+        radius_norm = float(np.clip((radius - self._park_radius_min) / span, 0.0, 1.0))
+        self._landing_offset_degrees = 5.0 + (5.0 * radius_norm)
+        bottom_phase = float(self._single_anchor_bottom_phase)
+        self._park_radius = radius
+        self._park_alpha = float(np.sin(bottom_phase) * radius)
+        self._park_beta = float(np.cos(bottom_phase) * radius)
+
+    def _get_anchor_bass_norm(self, event: Optional[BeatEvent]) -> float:
+        """Return normalized low-bass activity for anchor-state motion shaping."""
+        activity = float(max(0.0, (self._sub_bass_energy * 1.0) + (self._low_mid_energy * 0.65)))
+
+        if activity <= 1e-6 and event is not None:
+            peak = float(getattr(event, 'peak_energy', 0.0) or 0.0)
+            freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+            beat_band = getattr(event, 'beat_band', '')
+            if beat_band in ('sub_bass', 'low_mid') or (30.0 <= freq <= 220.0):
+                activity = max(activity, peak * 0.55)
+
+        bass_floor = float(getattr(self.config.stroke, 'anchor_bass_floor', 0.02) or 0.02)
+        bass_ceil = float(getattr(self.config.stroke, 'anchor_bass_ceil', 0.22) or 0.22)
+        if bass_ceil <= bass_floor:
+            bass_ceil = bass_floor + 0.10
+        return float(np.clip((activity - bass_floor) / (bass_ceil - bass_floor), 0.0, 1.0))
+
+    def _update_anchor_from_bass_state(self, event: Optional[BeatEvent]) -> float:
+        """Drive park/anchor radius from low-bass activity.
+
+        Lower bass -> anchor closer to center. Higher bass -> farther from center,
+        while remaining in the bottom half.
+        """
+        bass_norm = self._get_anchor_bass_norm(event)
+        target_radius = self._park_radius_min + ((self._park_radius_max - self._park_radius_min) * bass_norm)
+        smooth = 0.28 if target_radius >= self._park_radius else 0.12
+        radius = self._park_radius + ((target_radius - self._park_radius) * smooth)
+        self._update_park_anchor_from_radius(radius)
+        return bass_norm
+
     def _get_park_anchor(self) -> Tuple[float, float]:
-        """Bottom-center park anchor at fixed radius."""
-        return self._park_radius, 0.0
+        """Bottom-center park anchor at dynamic radius."""
+        return self._park_alpha, self._park_beta
 
     def _get_park_phase(self) -> float:
         alpha, beta = self._get_park_anchor()
@@ -338,7 +389,7 @@ class StrokeMapper:
         return phase
 
     def _get_landing_phase(self) -> float:
-        return self._get_park_phase() - np.deg2rad(self._landing_offset_degrees)
+        return self._get_park_phase() + np.deg2rad(self._landing_offset_degrees)
 
     def _build_landing_arc_phases(self, current_phase: float, n_points: int, min_turns: float = 1.0) -> np.ndarray:
         """Build arc phases from current phase to landing phase with at least min_turns travel."""
@@ -1193,20 +1244,21 @@ class StrokeMapper:
 
     def _get_overall_amp_fill_required(self, phase: str) -> float:
         cfg = self.config.stroke
+        global_scale = float(np.clip(getattr(cfg, 'overall_amp_fill_required_scale', 1.0) or 1.0, 0.25, 3.0))
         if phase == 'syncopation':
             required = float(getattr(cfg, 'syncopation_overall_amp_fill_required', 0.12) or 0.12)
             if required >= 0.70:
                 required = 0.12
-            return float(np.clip(required, 0.0, 1.0))
+            return float(np.clip(required * global_scale, 0.0, 1.0))
         if phase == 'downbeat':
             required = float(getattr(cfg, 'downbeat_overall_amp_fill_required', 0.08) or 0.08)
             if required >= 0.60:
                 required = 0.08
-            return float(np.clip(required, 0.0, 1.0))
+            return float(np.clip(required * global_scale, 0.0, 1.0))
         required = float(getattr(cfg, 'beat_overall_amp_fill_required', 0.10) or 0.10)
         if required >= 0.70:
             required = 0.10
-        return float(np.clip(required, 0.0, 1.0))
+        return float(np.clip(required * global_scale, 0.0, 1.0))
 
     def _get_spectrum_fill_ratio(self, target: float) -> float:
         """Return fraction of active spectrum bins above target-normalized amplitude."""
@@ -2267,6 +2319,9 @@ class StrokeMapper:
             original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
             beat_target_time=beat_target_time,
         )
+        if n_points > 0:
+            landing_radius = float(np.hypot(alpha_arc[-1], beta_arc[-1]))
+            self._update_park_anchor_from_radius(landing_radius)
         follow_floor = 0.85 if cfg.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
         self._edge_follow_radius = float(np.clip(max(self._edge_follow_radius, arc_radius), follow_floor, 1.00))
 
@@ -2443,6 +2498,9 @@ class StrokeMapper:
             original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
             beat_target_time=beat_target_time,
         )
+        if n_points > 0:
+            landing_radius = float(np.hypot(alpha_arc[-1], beta_arc[-1]))
+            self._update_park_anchor_from_radius(landing_radius)
         if cfg.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.TEARDROP):
             follow_floor = 0.85 if cfg.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
             self._edge_follow_radius = float(np.clip(max(self._edge_follow_radius, arc_radius), follow_floor, 1.00))
@@ -2550,6 +2608,9 @@ class StrokeMapper:
             beat_target_time=beat_target_time,
             original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
         )
+        if n_points > 0:
+            landing_radius = float(np.hypot(alpha_arc[-1], beta_arc[-1]))
+            self._update_park_anchor_from_radius(landing_radius)
 
         self.state.last_stroke_time = now
         log_event("INFO", "StrokeMapper", "Syncopated arc",
@@ -2859,6 +2920,9 @@ class StrokeMapper:
             beat_target_time=beat_target_time,
             original_bpm=bpm,
         )
+        if n_points > 0:
+            landing_radius = float(np.hypot(alpha_arc[-1], beta_arc[-1]))
+            self._update_park_anchor_from_radius(landing_radius)
 
         log_event("INFO", "StrokeMapper", "Continuation arc",
                   bpm=f"{bpm:.1f}", points=n_points,
@@ -2933,6 +2997,14 @@ class StrokeMapper:
             self._last_any_beat_time > 0
             and (now - self._last_any_beat_time) <= 0.9
         )
+
+        anchor_state_active = (
+            self._trajectory is None
+            and (self.spiral_reset_active or self.state.creep_reset_active or not recent_beats_active)
+        )
+        anchor_bass_norm = 0.0
+        if anchor_state_active:
+            anchor_bass_norm = self._update_anchor_from_bass_state(event)
         if (recent_beats_active
                 and self._motion_mode == MotionMode.FULL_STROKE
                 and self._last_known_bpm > 0):
@@ -2942,6 +3014,8 @@ class StrokeMapper:
                 return self._advance_trajectory()
 
         jitter_active = jitter_cfg.enabled and jitter_cfg.amplitude > 0
+        if anchor_state_active:
+            jitter_active = True
         creep_active = creep_cfg.enabled and creep_cfg.speed > 0
 
         if not jitter_active and not creep_active and not self.spiral_reset_active and not self.state.creep_reset_active:
@@ -3108,6 +3182,11 @@ class StrokeMapper:
             else:
                 jitter_speed = jitter_cfg.intensity * 0.15
                 jitter_r = jitter_cfg.amplitude
+
+            if anchor_state_active:
+                jitter_r = max(jitter_r, 0.008 + (0.028 * anchor_bass_norm))
+                jitter_speed = max(jitter_speed, 0.45 + (1.15 * anchor_bass_norm))
+                jitter_speed *= (0.85 + 0.40 * anchor_bass_norm)
 
             # Modulate jitter size by mid/high energy in CREEP_MICRO mode
             if self._motion_mode == MotionMode.CREEP_MICRO and self._micro_effects_enabled:
