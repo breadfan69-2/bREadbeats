@@ -1,70 +1,31 @@
 # bREadbeats
 
-Real-time audio-reactive TCode generator for e-stim devices. Captures system audio, detects beats, and generates smooth stroke patterns.
+Real-time audio-to-motion app for e-stim control.
+It listens to audio, detects rhythm, and generates smooth TCode output.
 
-![bREadbeats](https://img.shields.io/badge/License-Non--Commercial-blue) ![Python](https://img.shields.io/badge/Python-3.10+-green)
+## What it does
+- Captures live audio input
+- Detects beat timing and intensity
+- Maps rhythm to stroke movement
+- Sends motion data to compatible devices
 
-## Features
+## Innovations (high-level)
+- Fast beat-driven mapping tuned for real-time response
+- Stable motion shaping to reduce jitter between beats
+- Practical live controls for adjustment during playback
 
-- **Beat Detection** - Spectral flux + peak energy with auto-adjusting parameters
-- **4 Stroke Modes** - Circle, Spiral, Teardrop, User-controlled
-- **Tempo Tracking** - Downbeat detection with pattern matching
-- **Frequency Mapping** - Maps audio frequencies to P0/F0 TCode axes
-- **Visualizers** - Spectrum, Mountain Range, Bar Graph, Phosphor displays
-- **Preset System** - 5 slots for saving/loading configurations
-- **Jitter & Creep** - Smooth idle motion when no beats
-
-## Quick Start
-
+## Quick start
 ```bash
 pip install -r requirements.txt
 python run.py
 ```
 
-1. Start restim with TCP enabled (port 12347)
-2. Connect → Start → Play
-
-## Building EXE (PyInstaller)
-
+## Build (Windows)
 ```bash
 .venv/Scripts/pyinstaller.exe bREadbeats.spec
 ```
 
-Some PyInstaller warnings are expected due to optional or platform-specific imports in third-party packages.
-If the build completes and `dist/bREadbeats.exe` launches, warnings like missing `pycparser.lextab` or excluded `numpy.f2py` are typically non-blocking.
-
-To fail only on truly critical missing imports (useful in CI):
-
-```bash
-.venv/Scripts/python.exe tools/check_pyinstaller_warnings.py
-```
-
-Optional stricter mode:
-
-```bash
-.venv/Scripts/python.exe tools/check_pyinstaller_warnings.py --strict-unknown
-```
-
-## System Requirements
-
-- Windows 10+ (WASAPI loopback audio)
+## Requirements
+- Windows 10+
 - Python 3.10+
-- restim application
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| main.py | GUI and application logic |
-| audio_engine.py | Audio capture and beat detection |
-| stroke_mapper.py | Beat-to-stroke pattern conversion |
-| network_engine.py | TCP/TCode communication |
-| config.py | Configuration dataclasses |
-
-## License
-
-Non-commercial use only. See [LICENSE](LICENSE) for details.
-
----
-
-*Created with assistance from Claude AI*
+- Compatible TCode receiver
