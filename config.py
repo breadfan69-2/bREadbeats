@@ -66,6 +66,10 @@ class BeatDetectionConfig:
     aggressive_snap_phase_error_ms: float = 35.0 # Max phase error allowed for aggressive snap
     aggressive_snap_min_matches: int = 1         # Min consecutive matching downbeats for snap
     aggressive_snap_max_bpm_jump_ratio: float = 0.12  # Max relative BPM jump allowed per snap
+    octave_target_bias_confidence_max: float = 0.35  # Only use target-BPM hint for octave disambiguation below this confidence
+    target_bps_lock_gate_enabled: bool = True        # Disable target-BPS metric adjustments when metronome lock is confident
+    target_bps_lock_gate_acf_conf: float = 0.40      # Minimum ACF confidence to consider lock-gating target-BPS metric
+    target_bps_lock_gate_downbeats: int = 1          # Minimum consecutive downbeat matches to consider lock-gating target-BPS metric
 
     # Syncopation / double-stroke detection
     syncopation_enabled: bool = True             # Master on/off for syncopation detection
@@ -79,6 +83,16 @@ class BeatDetectionConfig:
     center_jitter_flux_guard_enabled: bool = False # Prevent no-beat center+jitter reset while flux activity is still high
     center_jitter_flux_delta_threshold: float = 0.20  # Rising-flux threshold to hold center+jitter reset
     center_jitter_flux_avg_threshold: float = 0.25    # Recent-average flux threshold to hold center+jitter reset
+
+    # Teaching/learning runtime adapter (audio -> motion-control suggestions)
+    teaching_learning_enabled: bool = True      # Enable adaptive motion suggestions from recent beat-window features
+    teaching_learning_strength: float = 0.55    # Blend strength for adaptive suggestions (0=off, 1=full)
+    teaching_min_confidence: float = 0.12       # Minimum confidence required before adaptive suggestions apply
+    teaching_use_fitted_rules: bool = True      # Enable loading fitted rule model (rule_fit.json) for runtime suggestions
+    teaching_rule_fit_path: str = ""            # Optional explicit path to rule_fit.json (empty=auto-discover)
+    teaching_no_motion_bias: float = 1.0        # Multiplier for hold-still behavior in quiet/unscripted moments
+    teaching_apply_in_circle_mode: bool = False # Keep SIMPLE_CIRCLE behavior legacy by default unless explicitly enabled
+    teaching_isolation_mode: bool = True        # Branch-only: suspend selected legacy runtime modifiers while learning drives motion
 
 @dataclass
 class StrokeConfig:
@@ -166,6 +180,29 @@ class StrokeConfig:
     low_band_activity_threshold: float = 0.20
     low_band_delta_threshold: float = 0.06
     low_band_variance_threshold: float = 0.0015
+    low_band_fullness_occupancy_threshold: float = 0.62
+    low_band_to_high_ratio_min: float = 0.58
+    mid_bass_support_enabled: bool = True
+    mid_bass_freq_low_hz: float = 200.0
+    mid_bass_freq_high_hz: float = 400.0
+    mid_bass_activity_threshold: float = 0.035
+    mid_bass_occupancy_threshold: float = 0.45
+    dual_band_db_gate_enabled: bool = True
+    dual_band_sub_bass_db_min: float = -15.0
+    dual_band_high_db_min: float = -30.0
+    high_tip_fullness_enabled: bool = True
+    high_tip_freq_hz: float = 3500.0
+    high_tip_db_min: float = -28.0
+    high_tip_occupancy_threshold: float = 0.50
+    block_mid_trigger_range_enabled: bool = True
+    block_mid_trigger_low_hz: float = 100.0
+    block_mid_trigger_high_hz: float = 2000.0
+    overall_amp_fill_gate_enabled: bool = True
+    overall_amp_fill_target: float = 0.5
+    overall_amp_fill_tolerance: float = 0.5
+    downbeat_overall_amp_fill_required: float = 0.75
+    beat_overall_amp_fill_required: float = 0.90
+    syncopation_overall_amp_fill_required: float = 1.00
     downbeat_low_band_relax: float = 0.85
     low_band_drop_guard_enabled: bool = True
 
@@ -193,6 +230,8 @@ class StrokeConfig:
     # Overall full-spectrum quiet guard for beat/downbeat stroke generation.
     # Blocks beat-based strokes only when BOTH spectral flux and peak energy
     # are below these thresholds.
+    # Can be bypassed when new amplitude+fill gate is prioritized.
+    new_gate_priority_enabled: bool = True
     overall_activity_guard_enabled: bool = True
     overall_low_flux_threshold: float = 0.06
     overall_low_energy_threshold: float = 0.14

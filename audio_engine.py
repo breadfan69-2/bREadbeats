@@ -7,6 +7,7 @@ Uses pyaudiowpatch for WASAPI loopback capture.
 import numpy as np
 import pyaudiowpatch as pyaudio
 import threading
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -125,6 +126,7 @@ class BeatEvent:
     acf_confidence: float = 0.0   # ACF peak confidence (0-1, for UI sync indicator)
     is_syncopated: bool = False   # True if an off-beat "and" onset was detected near this beat
     monotonic_timestamp: float = 0.0  # Monotonic timestamp for drift-safe timing
+    beat_features: Optional[dict] = None  # Beat-window features for adaptive runtime learning
 
 
 class AudioEngine:
@@ -228,6 +230,18 @@ class AudioEngine:
         self.predicted_next_beat: float = 0.0  # Predicted next beat time
         self.predicted_next_beat_mono: float = 0.0  # Predicted next beat (monotonic clock)
         self.beat_position_in_measure: int = 0 # For downbeat tracking (1, 2, 3, 4...)
+
+        # Beat-window teaching feature buffers (runtime-only)
+        self._teach_frames: deque = deque(maxlen=8192)  # (mono_time, energy, flux, freq)
+        self._teach_last_beat_mono: float = 0.0
+        self._teach_history = {
+            'energy_mean': deque(maxlen=48),
+            'energy_peak': deque(maxlen=48),
+            'flux_mean': deque(maxlen=48),
+            'flux_peak': deque(maxlen=48),
+            'freq_mean': deque(maxlen=48),
+            'freq_delta': deque(maxlen=48),
+        }
         
         # These are now read from config (with fallback defaults)
         self.tempo_tracking_enabled: bool = config.beat.tempo_tracking_enabled if hasattr(config.beat, 'tempo_tracking_enabled') else True
@@ -364,6 +378,9 @@ class AudioEngine:
         self._bps_beat_times: list[float] = []          # Timestamps of recent beats
         self._bps_adjustment_speed: float = 1.0         # Hardcoded to max (was adjustable via slider)
         self._bps_base_step: float = 0.002              # Base step for peak_floor adjustment
+        self._target_bps_lock_gate_enabled: bool = bool(getattr(config.beat, 'target_bps_lock_gate_enabled', True))
+        self._target_bps_lock_gate_acf_conf: float = float(getattr(config.beat, 'target_bps_lock_gate_acf_conf', 0.40))
+        self._target_bps_lock_gate_downbeats: int = int(getattr(config.beat, 'target_bps_lock_gate_downbeats', 1))
         
         # ===== ACF AUTO-METRONOME =====
         # Autocorrelation-based tempo estimator + internal metronome clock.
@@ -402,6 +419,7 @@ class AudioEngine:
         self._phase_accept_window_ms: float = float(getattr(config.beat, 'phase_accept_window_ms', 85.0))
         self._phase_accept_low_conf_mult: float = float(getattr(config.beat, 'phase_accept_low_conf_mult', 2.0))
         self._last_accepted_raw_onset_time: float = 0.0
+        self._octave_target_bias_confidence_max: float = float(getattr(config.beat, 'octave_target_bias_confidence_max', 0.35))
         self._aggressive_tempo_snap_enabled: bool = bool(getattr(config.beat, 'aggressive_tempo_snap_enabled', False))
         self._aggressive_snap_confidence: float = float(getattr(config.beat, 'aggressive_snap_confidence', 0.55))
         self._aggressive_snap_phase_error_ms: float = float(getattr(config.beat, 'aggressive_snap_phase_error_ms', 35.0))
@@ -1083,6 +1101,24 @@ class AudioEngine:
         depth_low = float(getattr(self.config.stroke, 'depth_freq_low', 0.0))
         depth_high = float(getattr(self.config.stroke, 'depth_freq_high', self.config.audio.sample_rate / 2))
         freq = self._estimate_frequency(spectrum, depth_low, depth_high)
+
+        self._teach_frames.append((current_time, float(band_energy), float(spectral_flux), float(freq)))
+
+        beat_features = None
+        if is_beat:
+            if current_bpm > 0:
+                beat_interval_s = 60.0 / max(1e-6, current_bpm)
+            elif self._teach_last_beat_mono > 0:
+                beat_interval_s = max(0.1, current_time - self._teach_last_beat_mono)
+            else:
+                beat_interval_s = 0.60
+            beat_features = self._compute_teaching_features(
+                now_mono=current_time,
+                beat_interval_s=beat_interval_s,
+                is_downbeat=bool(is_downbeat_flag),
+                is_syncopated=bool(self._syncopation_detected),
+            )
+            self._teach_last_beat_mono = current_time
         
         event = BeatEvent(
             timestamp=wall_time,
@@ -1102,6 +1138,7 @@ class AudioEngine:
             acf_confidence=self._acf_confidence,
             is_syncopated=self._syncopation_detected,
             monotonic_timestamp=current_time,
+            beat_features=beat_features,
         )
         
         # Notify callback
@@ -1156,6 +1193,72 @@ class AudioEngine:
         if len(spectrum) > 0:
             flux = flux / len(spectrum)
         return flux * self.config.beat.flux_multiplier
+
+    def _compute_teaching_features(
+        self,
+        now_mono: float,
+        beat_interval_s: float,
+        is_downbeat: bool,
+        is_syncopated: bool,
+    ) -> dict:
+        """Build per-beat feature payload for runtime adaptive mapping."""
+        if self._teach_last_beat_mono > 0:
+            start = self._teach_last_beat_mono
+        else:
+            start = now_mono - float(np.clip(beat_interval_s, 0.25, 2.0))
+
+        window = [row for row in self._teach_frames if row[0] >= start]
+        if not window and self._teach_frames:
+            window = [self._teach_frames[-1]]
+
+        if window:
+            energies = np.array([row[1] for row in window], dtype=float)
+            fluxes = np.array([row[2] for row in window], dtype=float)
+            freqs = np.array([row[3] for row in window], dtype=float)
+            energy_mean = float(np.mean(energies))
+            energy_peak = float(np.max(energies))
+            flux_mean = float(np.mean(fluxes))
+            flux_peak = float(np.max(fluxes))
+            freq_mean = float(np.mean(freqs))
+            freq_delta = float(np.max(freqs) - np.min(freqs))
+        else:
+            energy_mean = energy_peak = 0.0
+            flux_mean = flux_peak = 0.0
+            freq_mean = freq_delta = 0.0
+
+        def _norm(name: str, value: float) -> float:
+            hist = self._teach_history[name]
+            hist.append(float(value))
+            values = np.array(hist, dtype=float)
+            if values.size < 4:
+                return float(np.clip(value, 0.0, 1.0))
+            lo = float(np.percentile(values, 10))
+            hi = float(np.percentile(values, 90))
+            if hi <= lo + 1e-9:
+                return 0.5
+            return float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
+
+        energy_norm = _norm('energy_mean', energy_mean)
+        flux_norm = _norm('flux_mean', flux_mean)
+        pitch_norm = _norm('freq_mean', freq_mean)
+        motion_delta_norm = _norm('freq_delta', freq_delta)
+        offbeat_score = 1.0 if is_syncopated else float(np.clip(self._syncopation_streak / 2.0, 0.0, 1.0))
+        confidence = float(np.clip((self._acf_confidence * 0.7) + (0.3 if is_downbeat else 0.0), 0.0, 1.0))
+
+        return {
+            'energy_mean': energy_mean,
+            'energy_peak': energy_peak,
+            'flux_mean': flux_mean,
+            'flux_peak': flux_peak,
+            'freq_mean': freq_mean,
+            'freq_delta': freq_delta,
+            'energy_norm': energy_norm,
+            'flux_norm': flux_norm,
+            'pitch_norm': pitch_norm,
+            'motion_delta_norm': motion_delta_norm,
+            'offbeat_score': offbeat_score,
+            'confidence': confidence,
+        }
 
     # ------------------------------------------------------------------
     # Multi-Band Z-Score
@@ -1300,7 +1403,12 @@ class AudioEngine:
 
         # Pick best candidate: prefer closest to target BPM if enabled
         target_bpm_hint = self._target_bps * 60.0 if self._target_bps_enabled and self._target_bps > 0 else 0.0
-        if target_bpm_hint > 0 and len(candidates) > 1:
+        use_target_guided_octave = (
+            target_bpm_hint > 0
+            and len(candidates) > 1
+            and self._acf_confidence < self._octave_target_bias_confidence_max
+        )
+        if use_target_guided_octave:
             # Score by distance to target BPM, weighted by confidence
             def octave_score(c):
                 bpm_c, conf_c = c
@@ -2228,6 +2336,16 @@ class AudioEngine:
         """
         if not self._target_bps_enabled:
             return 0.0, False, 0
+
+        if self._target_bps_lock_gate_enabled:
+            metronome_locked = (
+                self._acf_metronome_enabled
+                and self._metronome_bpm > 0
+                and self._acf_confidence >= self._target_bps_lock_gate_acf_conf
+                and self.consecutive_matching_downbeats >= self._target_bps_lock_gate_downbeats
+            )
+            if metronome_locked:
+                return 0.0, False, 0
         
         now = beat_time
         
