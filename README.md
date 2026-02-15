@@ -11,8 +11,8 @@ It listens to audio, detects rhythm, and generates smooth TCode output.
 
 ## Innovations (high-level)
 - Fast beat-driven mapping tuned for real-time response
-- Stable motion shaping to reduce jitter between beats
-- Practical live controls for adjustment during playback
+- Stable motion shaping to reduce jitter between beats (coming soon)
+- Practical live controls for adjustment during playback (coming soon)
 
 ## Quick start
 ```bash
