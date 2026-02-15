@@ -219,6 +219,7 @@ class StrokeMapper:
 
         # ---------- Last confirmed beat time (for no-beat timeout) ----------
         self._last_confirmed_beat_time: float = 0.0   # wall-clock of last beat with stroke_ready
+        self._last_any_beat_time: float = 0.0         # wall-clock of last detected beat (ungated)
 
         # ---------- Snap timing feedback (self-checking) ----------
         # When snap-to-target fires, record the timing error so the next arc
@@ -491,6 +492,9 @@ class StrokeMapper:
         cfg = self.config.stroke
         beat_cfg = self.config.beat
 
+        if event.is_beat:
+            self._last_any_beat_time = now
+
         # ===== LOW-BAND MOTION FILTER =====
         _BAND_LOWER_HZ = {'sub_bass': 30, 'low_mid': 100, 'mid': 500, 'high': 2000}
         cutoff = beat_cfg.motion_freq_cutoff
@@ -513,7 +517,11 @@ class StrokeMapper:
         # Track recent flux for drop detection — if upper spectrum flux
         # drops significantly, force back to creep mode
         self._recent_flux_values.append(event.spectral_flux)
-        if len(self._recent_flux_values) >= 30:
+        recent_beat_active = (
+            self._last_any_beat_time > 0
+            and (now - self._last_any_beat_time) <= 0.9
+        )
+        if len(self._recent_flux_values) >= 30 and not recent_beat_active:
             recent_avg = sum(list(self._recent_flux_values)[-15:]) / 15.0
             older_avg = sum(list(self._recent_flux_values)[:15]) / 15.0
             flux_drop_ratio = cfg.flux_drop_ratio if hasattr(cfg, 'flux_drop_ratio') else 0.25
@@ -678,12 +686,13 @@ class StrokeMapper:
 
                 is_downbeat = getattr(event, 'is_downbeat', False)
                 if is_downbeat:
-                    cmd = self._generate_downbeat_stroke(event)
+                    is_high_flux = event.spectral_flux >= cfg.flux_threshold
+                    if cfg.mode == StrokeMode.SIMPLE_CIRCLE and is_high_flux:
+                        cmd = self._generate_beat_stroke(event)
+                    else:
+                        cmd = self._generate_downbeat_stroke(event)
                     return self._apply_fade(cmd)
                 else:
-                    is_high_flux = event.spectral_flux >= cfg.flux_threshold
-                    if not is_high_flux:
-                        return None
                     cmd = self._generate_beat_stroke(event)
                     return self._apply_fade(cmd)
 
@@ -1513,6 +1522,22 @@ class StrokeMapper:
         if self._trajectory is not None and self._trajectory.active:
             self._last_idle_time = now
             return self._advance_trajectory()
+
+        # If beats are actively arriving, prefer continuation arcs over idle creep/park.
+        recent_beats_active = (
+            self._last_any_beat_time > 0
+            and (now - self._last_any_beat_time) <= 0.9
+        )
+        if (
+            recent_beats_active
+            and self._motion_mode == MotionMode.FULL_STROKE
+            and self._last_known_bpm > 0
+            and (self._trajectory is None or self._trajectory.finished)
+        ):
+            self._generate_continuation_arc()
+            if self._trajectory is not None and self._trajectory.active:
+                self._last_idle_time = now
+                return self._advance_trajectory()
 
         jitter_active = jitter_cfg.enabled and jitter_cfg.amplitude > 0
         creep_active = creep_cfg.enabled and creep_cfg.speed > 0
