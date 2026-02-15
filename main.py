@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QMenuBar, QMenu, QMessageBox, QFileDialog,
     QSplashScreen, QScrollArea, QSplitter
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QPixmap
 from typing import Optional
 
@@ -2199,7 +2199,7 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         super().__init__(parent)
         self.setBackground('#0d0d0d')
         self.setMenuEnabled(False)
-        self.showGrid(x=True, y=True, alpha=0.30)
+        self.showGrid(x=False, y=False, alpha=0.0)
         self.showAxis('left')
         self.showAxis('bottom')
         self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
@@ -2391,7 +2391,7 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
             "</div>"
         )
         self.info_text.setHtml(html)
-        self.info_text.setPos(0.5, 0.94)
+        self.info_text.setPos(0.5, -0.98)
 
     def update_from_audio(self, waveform: np.ndarray, sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
         if waveform is None:
@@ -2448,7 +2448,7 @@ class WaveformLiveCanvas(pg.PlotWidget):
         super().__init__(parent)
         self.setBackground('#0d0d0d')
         self.setMenuEnabled(False)
-        self.showGrid(x=True, y=True, alpha=0.25)
+        self.showGrid(x=False, y=False, alpha=0.0)
         self.showAxis('left')
         self.showAxis('bottom')
         self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
@@ -2500,7 +2500,7 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
         super().__init__(parent)
         self.setBackground('#0d0d0d')
         self.setMenuEnabled(False)
-        self.showGrid(x=True, y=True, alpha=0.30)
+        self.showGrid(x=False, y=False, alpha=0.0)
         self.showAxis('left')
         self.showAxis('bottom')
         self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
@@ -2516,11 +2516,15 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
 
         self.db_curve = self.plot(pen=pg.mkPen('#ffd24d', width=2))
         self.zero_db_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#aaaaaa', width=1, style=Qt.PenStyle.DashLine))
+        self.minus40_db_line = pg.InfiniteLine(pos=-40.0, angle=0, movable=False, pen=pg.mkPen('#7f7f7f', width=1, style=Qt.PenStyle.DashLine))
         self.addItem(self.zero_db_line)
+        self.addItem(self.minus40_db_line)
 
         self.minus6_db_line = pg.InfiniteLine(pos=-6.0, angle=0, movable=False, pen=pg.mkPen('#dddd66', width=1, style=Qt.PenStyle.DashLine))
+        self.minus40_db_line = pg.InfiniteLine(pos=-40.0, angle=0, movable=False, pen=pg.mkPen('#7f7f7f', width=1, style=Qt.PenStyle.DashLine))
         self.minus60_db_line = pg.InfiniteLine(pos=-60.0, angle=0, movable=False, pen=pg.mkPen('#777777', width=1, style=Qt.PenStyle.DotLine))
         self.addItem(self.minus6_db_line)
+        self.addItem(self.minus40_db_line)
         self.addItem(self.minus60_db_line)
 
         self.low_mean_threshold_line = pg.InfiniteLine(pos=-80.0, angle=0, movable=False, pen=pg.mkPen('#66ff99', width=2, style=Qt.PenStyle.DashLine))
@@ -2530,12 +2534,33 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
         self.addItem(self.high_mean_threshold_line)
         self.addItem(self.high_floor_threshold_line)
 
-        self.low_band_region = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(80, 255, 120, 26), pen=pg.mkPen('#66ff99', width=1), movable=False)
-        self.high_band_region = pg.LinearRegionItem(values=(np.log10(0.50), np.log10(4.0)), orientation='vertical', brush=pg.mkBrush(255, 140, 220, 22), pen=pg.mkPen('#ff9add', width=1), movable=False)
+        self.low_band_region = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(0, 0, 0, 0), pen=pg.mkPen('#66ff99', width=1), movable=False)
+        self.high_band_region = pg.LinearRegionItem(values=(np.log10(0.50), np.log10(4.0)), orientation='vertical', brush=pg.mkBrush(0, 0, 0, 0), pen=pg.mkPen('#ff9add', width=1), movable=False)
         self.low_band_region.setZValue(-3)
         self.high_band_region.setZValue(-3)
         self.addItem(self.low_band_region)
         self.addItem(self.high_band_region)
+
+        self.beat_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(255, 80, 80, 28), pen=pg.mkPen('#ff6666', width=1), movable=False)
+        self.depth_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(80, 255, 120, 22), pen=pg.mkPen('#44cc66', width=1), movable=False)
+        self.p0_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(80, 140, 255, 22), pen=pg.mkPen('#5599ff', width=1), movable=False)
+        self.f0_band = pg.LinearRegionItem(values=(np.log10(0.08), np.log10(1.50)), orientation='vertical', brush=pg.mkBrush(80, 240, 255, 20), pen=pg.mkPen('#55ddff', width=1), movable=False)
+        for region in (self.beat_band, self.depth_band, self.p0_band, self.f0_band):
+            region.setZValue(-2)
+            self.addItem(region)
+
+        self._zscore_boundary_hz: list[float] = [30.0, 100.0, 500.0, 2000.0, 16000.0]
+        self._zscore_boundary_lines: list[pg.InfiniteLine] = []
+        for hz in self._zscore_boundary_hz:
+            line = pg.InfiniteLine(
+                pos=self._hz_to_log_khz(hz),
+                angle=90,
+                movable=False,
+                pen=pg.mkPen('#ff8a00', width=3),
+            )
+            line.setZValue(8)
+            self.addItem(line)
+            self._zscore_boundary_lines.append(line)
 
         self.dominant_freq_line = pg.InfiniteLine(pos=np.log10(0.10), angle=90, movable=False, pen=pg.mkPen('#ffd24d', width=2))
         self.addItem(self.dominant_freq_line)
@@ -2550,6 +2575,211 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
         self._gate_snapshot: dict[str, object] = {}
         self._dominant_freq_hz: float = 0.0
         self._peak_db: float = -120.0
+        self._flux_ghost_overlays: dict[str, dict] = {}
+        self._flux_ghost_timer = QTimer(self)
+        self._flux_ghost_timer.setInterval(80)
+        self._flux_ghost_timer.timeout.connect(self._tick_flux_ghosts)
+        self._update_zscore_boundaries()
+
+    @staticmethod
+    def _hz_to_log_khz(hz: float) -> float:
+        khz = max(0.04, min(19.9, float(hz) / 1000.0))
+        return float(np.log10(khz))
+
+    def _set_region_hz(self, region: pg.LinearRegionItem, low_hz: float, high_hz: float) -> None:
+        low = self._hz_to_log_khz(min(low_hz, high_hz))
+        high = self._hz_to_log_khz(max(low_hz, high_hz))
+        if high <= low:
+            high = low + 1e-4
+        region.setRegion((low, high))
+
+    def _update_zscore_boundaries(self) -> None:
+        nyquist_hz = max(1.0, float(self._sample_rate) / 2.0)
+        for hz, line in zip(self._zscore_boundary_hz, self._zscore_boundary_lines):
+            khz = float(hz) / 1000.0
+            if hz > nyquist_hz or khz < 0.04 or khz > 19.9:
+                line.hide()
+                continue
+            line.setPos(self._hz_to_log_khz(hz))
+            line.show()
+
+    def set_frequency_band(self, low_ratio: float, high_ratio: float) -> None:
+        nyquist = max(1.0, float(self._sample_rate) / 2.0)
+        self._set_region_hz(self.beat_band, float(low_ratio) * nyquist, float(high_ratio) * nyquist)
+
+    def set_depth_band(self, low_hz: float, high_hz: float) -> None:
+        self._set_region_hz(self.depth_band, low_hz, high_hz)
+
+    def set_p0_band(self, low_hz: float, high_hz: float) -> None:
+        self._set_region_hz(self.p0_band, low_hz, high_hz)
+
+    def set_f0_band(self, low_hz: float, high_hz: float) -> None:
+        self._set_region_hz(self.f0_band, low_hz, high_hz)
+
+    def _band_x_range(self, band: str) -> tuple[float, float]:
+        nyquist_khz = min(19.9, max(0.04, float(self._sample_rate) / 2000.0))
+        if band == 'low':
+            return (np.log10(0.04), np.log10(0.50))
+        if band == 'high':
+            include_mid = bool(self._gate_snapshot.get('include_mid', True))
+            high_start_khz = 0.50 if include_mid else 2.0
+            high_end_khz = min(19.9, max(high_start_khz + 0.001, nyquist_khz))
+            return (np.log10(high_start_khz), np.log10(high_end_khz))
+        return (np.log10(0.04), np.log10(nyquist_khz))
+
+    def show_flux_ghost(
+        self,
+        key: str,
+        value: float,
+        label: str,
+        color: str = '#FF66AA',
+        duration_s: float = 15.0,
+        dashed: bool = False,
+        band: str = 'full',
+        range_box: bool = False,
+        mode: str = 'threshold',
+    ) -> None:
+        now = time.monotonic()
+        numeric_value = float(value)
+        y_db = float(self._to_db(numeric_value)) if mode != 'occupancy' else self._as_float(self.high_floor_threshold_line.value(), -80.0)
+
+        overlay = self._flux_ghost_overlays.get(key)
+        if overlay is None:
+            qcolor = QColor(color)
+            line = pg.InfiniteLine(pos=y_db, angle=0, movable=False, pen=pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)))
+            line.setZValue(18)
+            self.addItem(line)
+
+            text = pg.TextItem('', color=qcolor, anchor=(0.0, 1.0))
+            text.setZValue(19)
+            self.addItem(text)
+
+            box = pg.QtWidgets.QGraphicsRectItem()
+            box.setZValue(17)
+            self.addItem(box)
+            box.hide()
+
+            overlay = {
+                'line': line,
+                'text': text,
+                'box': box,
+                'color': qcolor,
+                'dashed': bool(dashed),
+                'started_at': now,
+                'duration_s': float(max(0.5, duration_s)),
+                'mode': mode,
+                'base_rect': None,
+            }
+            self._flux_ghost_overlays[key] = overlay
+
+        overlay['started_at'] = now
+        overlay['duration_s'] = float(max(0.5, duration_s))
+        overlay['mode'] = mode
+        overlay['dashed'] = bool(dashed)
+
+        x_left, x_right = self._band_x_range(band)
+        if mode == 'occupancy':
+            occ = float(np.clip(numeric_value, 0.0, 1.0))
+            span = max(0.001, x_right - x_left)
+            x_right = x_left + (span * occ)
+            y_low = self._as_float(self.high_floor_threshold_line.value(), -80.0)
+            y_high = 6.0
+            overlay['line'].hide()
+            overlay['base_rect'] = QRectF(min(x_left, x_right), min(y_low, y_high), max(0.001, abs(x_right - x_left)), max(0.2, abs(y_high - y_low)))
+            overlay['box'].show()
+            overlay['text'].setText(f"{label}: {occ:.3f}")
+            overlay['text'].setPos(x_left, min(5.5, y_high - 0.2))
+        else:
+            overlay['line'].show()
+            overlay['line'].setPos(y_db)
+            overlay['text'].setText(f"{label}: {numeric_value:.4f}")
+            overlay['text'].setPos(x_left, min(5.5, y_db + 1.2))
+            if range_box:
+                overlay['base_rect'] = QRectF(
+                    min(x_left, x_right),
+                    y_db - 0.2,
+                    max(0.001, abs(x_right - x_left)),
+                    0.4,
+                )
+                overlay['box'].show()
+            else:
+                overlay['base_rect'] = None
+                overlay['box'].hide()
+
+        self._apply_flux_ghost_style(overlay, 0.0)
+        if not self._flux_ghost_timer.isActive():
+            self._flux_ghost_timer.start()
+
+    def _apply_flux_ghost_style(self, overlay: dict, progress: float) -> None:
+        eased = float(np.clip(progress, 0.0, 1.0))
+        alpha = max(0, min(230, int(230 * (1.0 - eased))))
+        color = QColor(overlay['color'])
+        color.setAlpha(alpha)
+
+        if overlay['line'].isVisible():
+            overlay['line'].setPen(pg.mkPen(color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
+        overlay['text'].setColor(color)
+
+        base_rect = overlay.get('base_rect', None)
+        box = overlay.get('box', None)
+        if box is not None and base_rect is not None and box.isVisible():
+            cx = base_rect.x() + (base_rect.width() / 2.0)
+            cy = base_rect.y() + (base_rect.height() / 2.0)
+            x_expand = (base_rect.width() * 0.08 * eased) + 0.0005
+            y_expand = (6.0 * eased) if overlay.get('mode') != 'occupancy' else (2.0 * eased)
+            width = max(0.001, base_rect.width() + (2.0 * x_expand))
+            height = max(0.2, base_rect.height() + (2.0 * y_expand))
+            rect = QRectF(cx - (width / 2.0), cy - (height / 2.0), width, height)
+            box.setRect(rect)
+
+            pen = QPen(color)
+            pen.setWidth(1)
+            pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
+            box.setPen(pen)
+            fill = QColor(overlay['color'])
+            fill.setAlpha(max(0, int(alpha * 0.22)))
+            box.setBrush(QBrush(fill))
+
+    def _tick_flux_ghosts(self) -> None:
+        if not self._flux_ghost_overlays:
+            self._flux_ghost_timer.stop()
+            return
+
+        now = time.monotonic()
+        expired: list[str] = []
+        for key, overlay in list(self._flux_ghost_overlays.items()):
+            elapsed = max(0.0, now - float(overlay.get('started_at', now)))
+            duration = max(0.5, float(overlay.get('duration_s', 15.0)))
+            progress = elapsed / duration
+            if progress >= 1.0:
+                expired.append(key)
+                continue
+            self._apply_flux_ghost_style(overlay, progress)
+
+        for key in expired:
+            overlay = self._flux_ghost_overlays.pop(key, None)
+            if overlay is None:
+                continue
+            for item_key in ('line', 'text', 'box'):
+                item = overlay.get(item_key)
+                if item is not None:
+                    try:
+                        item.hide()
+                    except Exception:
+                        pass
+                    try:
+                        self.removeItem(item)
+                    except Exception:
+                        pass
+                    try:
+                        scene = item.scene()
+                        if scene is not None:
+                            scene.removeItem(item)
+                    except Exception:
+                        pass
+
+        if not self._flux_ghost_overlays:
+            self._flux_ghost_timer.stop()
 
     @staticmethod
     def _to_db(value: float, floor_db: float = -120.0) -> float:
@@ -2661,7 +2891,7 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
             "</div>"
         )
         self.info_text.setHtml(html)
-        self.info_text.setPos(np.log10(0.045), 3.0)
+        self.info_text.setPos(np.log10(0.045), -118.0)
 
     def update_from_spectrum(self, spectrum: Optional[np.ndarray], sample_rate: int, stroke_cfg) -> None:
         if spectrum is None:
@@ -2671,6 +2901,7 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
             return
 
         self._sample_rate = int(max(1, sample_rate))
+        self._update_zscore_boundaries()
         nyquist = self._sample_rate / 2.0
         freqs_hz = np.linspace(0.0, nyquist, arr.size, dtype=np.float32)
         freqs_khz = freqs_hz / 1000.0
@@ -2719,7 +2950,7 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
         super().__init__(parent)
         self.setBackground('#0d0d0d')
         self.setMenuEnabled(False)
-        self.showGrid(x=True, y=True, alpha=0.25)
+        self.showGrid(x=False, y=False, alpha=0.0)
         self.showAxis('left')
         self.showAxis('bottom')
         self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
@@ -2736,6 +2967,40 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
         self.db_curve = self.plot(pen=pg.mkPen('#ffd24d', width=2))
         self.zero_db_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#aaaaaa', width=1, style=Qt.PenStyle.DashLine))
         self.addItem(self.zero_db_line)
+        self.beat_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(255, 80, 80, 22), pen=pg.mkPen('#ff6666', width=1), movable=False)
+        self.depth_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(80, 255, 120, 18), pen=pg.mkPen('#44cc66', width=1), movable=False)
+        self.p0_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(80, 140, 255, 18), pen=pg.mkPen('#5599ff', width=1), movable=False)
+        self.f0_band = pg.LinearRegionItem(values=(np.log10(0.08), np.log10(1.50)), orientation='vertical', brush=pg.mkBrush(80, 240, 255, 16), pen=pg.mkPen('#55ddff', width=1), movable=False)
+        for region in (self.beat_band, self.depth_band, self.p0_band, self.f0_band):
+            region.setZValue(-2)
+            self.addItem(region)
+
+        self._sample_rate = 44100
+
+    @staticmethod
+    def _hz_to_log_khz(hz: float) -> float:
+        khz = max(0.04, min(19.9, float(hz) / 1000.0))
+        return float(np.log10(khz))
+
+    def _set_region_hz(self, region: pg.LinearRegionItem, low_hz: float, high_hz: float) -> None:
+        low = self._hz_to_log_khz(min(low_hz, high_hz))
+        high = self._hz_to_log_khz(max(low_hz, high_hz))
+        if high <= low:
+            high = low + 1e-4
+        region.setRegion((low, high))
+
+    def set_frequency_band(self, low_ratio: float, high_ratio: float) -> None:
+        nyquist = max(1.0, float(self._sample_rate) / 2.0)
+        self._set_region_hz(self.beat_band, float(low_ratio) * nyquist, float(high_ratio) * nyquist)
+
+    def set_depth_band(self, low_hz: float, high_hz: float) -> None:
+        self._set_region_hz(self.depth_band, low_hz, high_hz)
+
+    def set_p0_band(self, low_hz: float, high_hz: float) -> None:
+        self._set_region_hz(self.p0_band, low_hz, high_hz)
+
+    def set_f0_band(self, low_hz: float, high_hz: float) -> None:
+        self._set_region_hz(self.f0_band, low_hz, high_hz)
 
     def update_from_spectrum(self, spectrum: Optional[np.ndarray], sample_rate: int) -> None:
         if spectrum is None:
@@ -2745,6 +3010,7 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
             return
 
         sr = int(max(1, sample_rate))
+        self._sample_rate = sr
         nyquist = sr / 2.0
         freqs_khz = np.linspace(0.0, nyquist, arr.size, dtype=np.float32) / 1000.0
         db = 20.0 * np.log10(np.maximum(arr, 1e-12))
@@ -2758,7 +3024,8 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
         return
 
     def set_range_indicators_visible(self, visible: bool):
-        return
+        for region in (self.beat_band, self.depth_band, self.p0_band, self.f0_band):
+            region.setVisible(visible)
 
 
 class CalibrationPopoutWindow(QMainWindow):
@@ -3504,18 +3771,48 @@ class BREadbeatsWindow(QMainWindow):
         top_layout.addWidget(self._create_control_panel())
         main_layout.addLayout(top_layout)
         
-        # Middle: Visualizers + Splitter between viz and tabs+bottom
+        # Middle: Visualizers + fixed control rows above splitter handle, tabs below
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
 
-        # Top half of splitter: Visualizers
+        # Top half of splitter: Visualizers + locked rows (Main Controls / Presets)
+        top_pane = QWidget()
+        top_pane_layout = QVBoxLayout(top_pane)
+        top_pane_layout.setContentsMargins(0, 0, 0, 0)
+        top_pane_layout.setSpacing(8)
+
         viz_widget = QWidget()
         viz_layout = QHBoxLayout(viz_widget)
         viz_layout.setContentsMargins(0, 0, 0, 0)
         viz_layout.addWidget(self._create_spectrum_panel(), stretch=3)
         viz_layout.addWidget(self._create_position_panel(), stretch=1)
         viz_widget.setMinimumHeight(220)
-        splitter.addWidget(viz_widget)
+        top_pane_layout.addWidget(viz_widget, stretch=1)
+
+        # Fixed row: Main controls (locked, never squishes)
+        main_controls_widget = QWidget()
+        main_controls_widget.setFixedHeight(88)
+        main_controls_layout = QHBoxLayout(main_controls_widget)
+        main_controls_layout.setContentsMargins(0, 0, 0, 0)
+        main_controls_layout.addWidget(self._create_main_controls_panel())
+        top_pane_layout.addWidget(main_controls_widget, stretch=0)
+
+        # Fixed row: Presets + projectM launcher (locked, never squishes)
+        bottom_widget = QWidget()
+        bottom_widget.setFixedHeight(64)
+        bottom_layout = QHBoxLayout(bottom_widget)
+        bottom_layout.setContentsMargins(0, 0, 0, 0)
+        bottom_layout.addWidget(self._create_presets_panel())
+        bottom_layout.addStretch()
+
+        self.projectm_btn = QPushButton("Whip the Llama")
+        self.projectm_btn.setToolTip("Launch projectM music visualizer (if installed)")
+        self.projectm_btn.clicked.connect(self._on_launch_projectm)
+        self.projectm_btn.setMaximumWidth(120)
+        bottom_layout.addWidget(self.projectm_btn)
+        top_pane_layout.addWidget(bottom_widget, stretch=0)
+
+        splitter.addWidget(top_pane)
 
         # Bottom half of splitter: tabs only (absorbs compression)
         tabs_widget = QWidget()
@@ -3526,45 +3823,17 @@ class BREadbeatsWindow(QMainWindow):
         tabs_layout.addWidget(self._create_settings_tabs())
         splitter.addWidget(tabs_widget)
 
-        # Set initial splitter proportions (~72% viz, ~28% tabs)
+        # Set initial splitter proportions (~70% top pane, ~30% tabs)
         splitter.setStretchFactor(0, 5)
         splitter.setStretchFactor(1, 2)
         main_layout.addWidget(splitter, stretch=1)
-
-        # Fixed row: Main controls (LOCKED, never squishes)
-        main_controls_widget = QWidget()
-        main_controls_widget.setMinimumHeight(96)
-        main_controls_widget.setMaximumHeight(140)
-        main_controls_layout = QHBoxLayout(main_controls_widget)
-        main_controls_layout.setContentsMargins(0, 0, 0, 0)
-        main_controls_layout.addWidget(self._create_main_controls_panel())
-        main_layout.addWidget(main_controls_widget)
-
-        # Bottom row: Presets + projectM launcher (LOCKED, never squishes)
-        bottom_widget = QWidget()
-        bottom_widget.setMinimumHeight(48)
-        bottom_widget.setMaximumHeight(64)
-        bottom_layout = QHBoxLayout(bottom_widget)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.addWidget(self._create_presets_panel())
-        
-        bottom_layout.addStretch()  # Gap before Whip the Llama button
-        
-        # projectM launcher button (Winamp throwback)
-        self.projectm_btn = QPushButton("Whip the Llama")
-        self.projectm_btn.setToolTip("Launch projectM music visualizer (if installed)")
-        self.projectm_btn.clicked.connect(self._on_launch_projectm)
-        self.projectm_btn.setMaximumWidth(120)
-        bottom_layout.addWidget(self.projectm_btn)
-
-        main_layout.addWidget(bottom_widget)
     
     def _create_menu_bar(self):
-        """Create menu bar with Menu, Options, and Help"""
+        """Create menu bar with top-level menus for app controls, options, and help."""
         menubar = self.menuBar()
         assert menubar is not None
         
-        # Menu (main menu with Performance submenu and About)
+        # Menu (main menu with preset load and About)
         main_menu = menubar.addMenu("Menu")
         assert main_menu is not None
         
@@ -3576,12 +3845,12 @@ class BREadbeatsWindow(QMainWindow):
         # Separator
         main_menu.addSeparator()
         
-        # Performance submenu
-        perf_menu = main_menu.addMenu("Performance")
-        assert perf_menu is not None
+        # Nerds menu (advanced perf + diagnostics) - inserted near Help later
+        nerds_menu = QMenu("Nerds", menubar)
+        assert nerds_menu is not None
         
         # FFT Size submenu
-        fft_menu = perf_menu.addMenu("FFT Size (requires restart)")
+        fft_menu = nerds_menu.addMenu("FFT Size (requires restart)")
         assert fft_menu is not None
         fft_sizes = [512, 1024, 2048, 4096, 8192]
         fft_labels = [
@@ -3601,7 +3870,7 @@ class BREadbeatsWindow(QMainWindow):
                 action.setChecked(True)
         
         # Spectrum Updates submenu
-        spec_menu = perf_menu.addMenu("Spectrum Updates")
+        spec_menu = nerds_menu.addMenu("Spectrum Updates")
         assert spec_menu is not None
         spec_options = ["Every frame (smooth)", "Every 2 frames (fast)", "Every 4 frames (faster)"]
         spec_values = [1, 2, 4]
@@ -3667,10 +3936,10 @@ class BREadbeatsWindow(QMainWindow):
         assert popout_calibration_action is not None
         popout_calibration_action.triggered.connect(self._on_popout_calibration_visualizer)
 
-        options_menu.addSeparator()
+        nerds_menu.addSeparator()
 
         # Log level submenu
-        log_menu = options_menu.addMenu("Log Level")
+        log_menu = nerds_menu.addMenu("Log Level")
         assert log_menu is not None
         self._log_level_actions = []
         for level in ["DEBUG", "INFO", "WARNING", "ERROR"]:
@@ -3707,6 +3976,9 @@ class BREadbeatsWindow(QMainWindow):
         open_reports_action = reports_menu.addAction("Open Reports Folder")
         assert open_reports_action is not None
         open_reports_action.triggered.connect(self._on_open_reports_folder)
+
+        # Nerds menu should be second-to-last (right before Help)
+        menubar.addMenu(nerds_menu)
         
         # Help menu (separate top-level menu)
         help_menu = menubar.addMenu("Help")
@@ -4018,7 +4290,23 @@ class BREadbeatsWindow(QMainWindow):
             self.config.device_limits.prompted = True
             self.config.device_limits.dont_show_on_startup = dont_show_cb.isChecked()
 
-    def _on_advanced_controls(self):
+    def _scroll_advanced_controls_to_flux(self):
+        """Scroll open Advanced Controls dialog near the Flux Sensitivity group."""
+        scroll = getattr(self, '_advanced_controls_scroll', None)
+        flux_group = getattr(self, '_advanced_flux_group', None)
+        if scroll is None or flux_group is None:
+            return
+
+        def _apply_scroll():
+            bar = scroll.verticalScrollBar()
+            if bar is None:
+                return
+            target = max(0, int(flux_group.y()) - 12)
+            bar.setValue(min(target, bar.maximum()))
+
+        QTimer.singleShot(0, _apply_scroll)
+
+    def _on_advanced_controls(self, scroll_to_flux: bool = False):
         """Show Advanced Controls dialog with experimental/expert settings"""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QScrollArea, QGroupBox, QSpinBox
         
@@ -4026,6 +4314,8 @@ class BREadbeatsWindow(QMainWindow):
         if hasattr(self, '_advanced_controls_dialog') and self._advanced_controls_dialog is not None:
             self._advanced_controls_dialog.raise_()
             self._advanced_controls_dialog.activateWindow()
+            if scroll_to_flux:
+                self._scroll_advanced_controls_to_flux()
             return
         
         dialog = QDialog(self)
@@ -4036,7 +4326,12 @@ class BREadbeatsWindow(QMainWindow):
         dialog.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, False)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         # Clear reference when dialog is closed
-        dialog.destroyed.connect(lambda: setattr(self, '_advanced_controls_dialog', None))
+        def _on_advanced_dialog_destroyed():
+            self._advanced_controls_dialog = None
+            self._advanced_controls_scroll = None
+            self._advanced_flux_group = None
+
+        dialog.destroyed.connect(_on_advanced_dialog_destroyed)
         self._advanced_controls_dialog = dialog
         
         layout = QVBoxLayout(dialog)
@@ -4065,6 +4360,7 @@ class BREadbeatsWindow(QMainWindow):
         scroll = NoWheelScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._advanced_controls_scroll = scroll
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(10)
@@ -4583,6 +4879,7 @@ class BREadbeatsWindow(QMainWindow):
 
         # ===== Flux Controls =====
         flux_group = QGroupBox("Flux Sensitivity")
+        self._advanced_flux_group = flux_group
         flux_layout = QVBoxLayout(flux_group)
 
         flux_info = QLabel(
@@ -4618,20 +4915,61 @@ class BREadbeatsWindow(QMainWindow):
         low_band_info.setStyleSheet("color: #999; font-size: 10px;")
         flux_layout.addWidget(low_band_info)
 
-        def _set_stroke_attr_with_ref(attr_name: str, ref_key: str, ref_label: str, ref_color: str, dashed: bool = False):
+        def _set_stroke_attr_with_ref(
+            attr_name: str,
+            ref_key: str,
+            ref_label: str,
+            ref_color: str,
+            dashed: bool = False,
+            ghost_band: str = 'full',
+            ghost_range: bool = False,
+            ghost_mode: str = 'threshold',
+            ghost_value_resolver=None,
+        ):
             def _handler(v: float):
                 value = float(v)
                 setattr(self.config.stroke, attr_name, value)
+                resolved = ghost_value_resolver(value) if callable(ghost_value_resolver) else value
+                ghost_value = self.freqdb_canvas._as_float(resolved, value) if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, '_as_float') else float(value)
                 if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None:
                     self.mountain_canvas.show_reference_line(
                         ref_key,
-                        value,
+                        ghost_value,
                         ref_label,
                         color=ref_color,
-                        duration_s=10.0,
+                        duration_s=15.0,
                         dashed=dashed,
                     )
+
+                ghost_targets = []
+                if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
+                    ghost_targets.append(self.freqdb_canvas)
+                popout = getattr(self, 'calibration_popout', None)
+                popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
+                if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in ghost_targets:
+                    ghost_targets.append(popout_freqdb)
+
+                for canvas in ghost_targets:
+                    canvas.show_flux_ghost(
+                        ref_key,
+                        ghost_value,
+                        ref_label,
+                        color=ref_color,
+                        duration_s=15.0,
+                        dashed=dashed,
+                        band=ghost_band,
+                        range_box=ghost_range,
+                        mode=ghost_mode,
+                    )
             return _handler
+
+        def _style_ref_slider(widget: SliderWithLabel, ref_color: str, ref_label: str):
+            hint = f"Adjusts '{ref_label}' reference line shown on visualizers"
+            widget.label.setStyleSheet(f"color: {ref_color};")
+            widget.setToolTip(hint)
+            widget.label.setToolTip(hint)
+            widget.slider.setToolTip(hint)
+            widget.value_label.setToolTip(hint)
 
         low_band_window_row = QHBoxLayout()
         low_band_window_label = QLabel("Low-band gate window (frames):")
@@ -4655,7 +4993,8 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.001,
         )
-        low_band_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_activity_threshold', 'low_band_mean', 'Low mean', '#32FF32'))
+        low_band_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_activity_threshold', 'low_band_mean', 'Low mean', '#32FF32', ghost_band='low'))
+        _style_ref_slider(low_band_mean_slider, '#32FF32', 'Low mean')
         flux_layout.addWidget(low_band_mean_slider)
 
         low_band_delta_slider = SliderWithLabel(
@@ -4666,7 +5005,8 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.001,
         )
-        low_band_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_delta_threshold', 'low_band_delta', 'Low Δ', '#55FF88'))
+        low_band_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_delta_threshold', 'low_band_delta', 'Low Δ', '#55FF88', ghost_band='low', ghost_range=True))
+        _style_ref_slider(low_band_delta_slider, '#55FF88', 'Low Δ')
         flux_layout.addWidget(low_band_delta_slider)
 
         low_band_var_slider = SliderWithLabel(
@@ -4677,7 +5017,8 @@ class BREadbeatsWindow(QMainWindow):
             4,
             step=0.001,
         )
-        low_band_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_variance_threshold', 'low_band_var', 'Low var', '#77FFAA'))
+        low_band_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_variance_threshold', 'low_band_var', 'Low var', '#77FFAA', ghost_band='low', ghost_range=True))
+        _style_ref_slider(low_band_var_slider, '#77FFAA', 'Low var')
         flux_layout.addWidget(low_band_var_slider)
 
         downbeat_relax_slider = SliderWithLabel(
@@ -4688,9 +5029,17 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.001,
         )
-        downbeat_relax_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'downbeat_low_band_relax', float(v))
-        )
+        downbeat_relax_slider.valueChanged.connect(_set_stroke_attr_with_ref(
+            'downbeat_low_band_relax',
+            'downbeat_low_relax',
+            'Low relax eff mean',
+            '#66CC88',
+            dashed=True,
+            ghost_band='low',
+            ghost_range=True,
+            ghost_mode='threshold',
+            ghost_value_resolver=lambda relax: float(getattr(self.config.stroke, 'low_band_activity_threshold', 0.20) or 0.20) * float(relax),
+        ))
         flux_layout.addWidget(downbeat_relax_slider)
 
         high_gate_cb = QCheckBox("Require upper-band presence/pattern for beat strokes")
@@ -4733,7 +5082,8 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.001,
         )
-        high_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_mean_threshold', 'high_band_mean', 'High mean', '#FF66CC'))
+        high_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_mean_threshold', 'high_band_mean', 'High mean', '#FF66CC', ghost_band='high'))
+        _style_ref_slider(high_mean_slider, '#FF66CC', 'High mean')
         flux_layout.addWidget(high_mean_slider)
 
         high_floor_slider = SliderWithLabel(
@@ -4744,7 +5094,8 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.001,
         )
-        high_floor_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_floor_threshold', 'high_band_floor', 'High floor', '#FF88DD'))
+        high_floor_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_floor_threshold', 'high_band_floor', 'High floor', '#FF88DD', ghost_band='high'))
+        _style_ref_slider(high_floor_slider, '#FF88DD', 'High floor')
         flux_layout.addWidget(high_floor_slider)
 
         high_occ_slider = SliderWithLabel(
@@ -4755,7 +5106,8 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.001,
         )
-        high_occ_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_occupancy_threshold', 'high_band_occ', 'High occ', '#FFAAEE', dashed=True))
+        high_occ_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_occupancy_threshold', 'high_band_occ', 'High occ', '#FFAAEE', dashed=True, ghost_band='high', ghost_range=True, ghost_mode='occupancy'))
+        _style_ref_slider(high_occ_slider, '#FFAAEE', 'High occ')
         flux_layout.addWidget(high_occ_slider)
 
         high_delta_slider = SliderWithLabel(
@@ -4766,7 +5118,8 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.001,
         )
-        high_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_delta_threshold', 'high_band_delta', 'High Δ', '#FF99DD'))
+        high_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_delta_threshold', 'high_band_delta', 'High Δ', '#FF99DD', ghost_band='high', ghost_range=True))
+        _style_ref_slider(high_delta_slider, '#FF99DD', 'High Δ')
         flux_layout.addWidget(high_delta_slider)
 
         high_var_slider = SliderWithLabel(
@@ -4777,7 +5130,8 @@ class BREadbeatsWindow(QMainWindow):
             4,
             step=0.001,
         )
-        high_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_variance_threshold', 'high_band_var', 'High var', '#FFBBEE'))
+        high_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_variance_threshold', 'high_band_var', 'High var', '#FFBBEE', ghost_band='high', ghost_range=True))
+        _style_ref_slider(high_var_slider, '#FFBBEE', 'High var')
         flux_layout.addWidget(high_var_slider)
 
         high_pattern_window_row = QHBoxLayout()
@@ -4816,9 +5170,17 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.001,
         )
-        high_downbeat_relax_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'downbeat_high_band_relax', float(v))
-        )
+        high_downbeat_relax_slider.valueChanged.connect(_set_stroke_attr_with_ref(
+            'downbeat_high_band_relax',
+            'downbeat_high_relax',
+            'High relax eff mean',
+            '#FF9AD9',
+            dashed=True,
+            ghost_band='high',
+            ghost_range=True,
+            ghost_mode='threshold',
+            ghost_value_resolver=lambda relax: float(getattr(self.config.stroke, 'high_band_mean_threshold', 0.12) or 0.12) * float(relax),
+        ))
         flux_layout.addWidget(high_downbeat_relax_slider)
 
         overall_guard_cb = QCheckBox("Block beat/downbeat strokes when overall activity is low")
@@ -4836,7 +5198,8 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.005,
         )
-        overall_flux_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_flux_threshold', 'overall_low_flux', 'Overall flux', '#FFD166'))
+        overall_flux_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_flux_threshold', 'overall_low_flux', 'Overall flux', '#FFD166', ghost_band='full'))
+        _style_ref_slider(overall_flux_slider, '#FFD166', 'Overall flux')
         flux_layout.addWidget(overall_flux_slider)
 
         overall_energy_slider = SliderWithLabel(
@@ -4847,7 +5210,8 @@ class BREadbeatsWindow(QMainWindow):
             3,
             step=0.005,
         )
-        overall_energy_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_energy_threshold', 'overall_low_energy', 'Overall energy', '#FFC06A'))
+        overall_energy_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_energy_threshold', 'overall_low_energy', 'Overall energy', '#FFC06A', ghost_band='full'))
+        _style_ref_slider(overall_energy_slider, '#FFC06A', 'Overall energy')
         flux_layout.addWidget(overall_energy_slider)
 
         center_guard_cb = QCheckBox("Block center+jitter reset while flux activity is high")
@@ -4895,6 +5259,8 @@ class BREadbeatsWindow(QMainWindow):
         layout.addWidget(scroll)
         
         dialog.show()
+        if scroll_to_flux:
+            self._scroll_advanced_controls_to_flux()
 
     def _on_help(self):
         """Show Help/Troubleshooting dialog with reset buttons (non-modal)"""
@@ -5129,18 +5495,26 @@ class BREadbeatsWindow(QMainWindow):
     
     def _on_about(self):
         """Show About dialog"""
-        about_text = """bREadbeats v1.0
-Live Audio to Restim
+        about_html = """<b>bREadbeats v1.0</b><br>
+    Live Audio to Restim<br><br>
+    Inspired by:<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;digitalparkinglot's creations<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;edger477 (ideas from funscriptgenerator)<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;diglet48 (wouldn't be here without restim!)<br>
+    &nbsp;&nbsp;&nbsp;&nbsp;shadlock0133 (music-vibes)<br><br>
+    Bug reports/share your presets:<br>
+    bREadfan_69@hotmail.com<br><br>
+    Like the app?<br>
+    <a href=\"https://ko-fi.com/breadbeats\">https://ko-fi.com/breadbeats</a>"""
 
-Inspired by:
-    digitalparkinglot's creations
-    edger477 (ideas from funscriptgenerator)
-    diglet48 (wouldn't be here without restim!)
-    shadlock0133 (music-vibes)
-
-Bug reports/share your presets:
-bREadfan_69@hotmail.com"""
-        QMessageBox.information(self, "About bREadbeats", about_text)
+        about_box = QMessageBox(self)
+        about_box.setWindowTitle("About bREadbeats")
+        about_box.setIcon(QMessageBox.Icon.Information)
+        about_box.setTextFormat(Qt.TextFormat.RichText)
+        about_box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        about_box.setText(about_html)
+        about_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        about_box.exec()
 
     def _on_open_reports_folder(self):
         report_dir = get_config_dir()
@@ -5949,6 +6323,7 @@ bREadfan_69@hotmail.com"""
         if self.calibration_popout is not None and self.calibration_popout.isVisible():
             self.calibration_popout.raise_()
             self.calibration_popout.activateWindow()
+            self._on_advanced_controls(scroll_to_flux=True)
             if self._advanced_controls_dialog is not None:
                 self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
                 self._advanced_controls_dialog.show()
@@ -5959,6 +6334,7 @@ bREadfan_69@hotmail.com"""
         self.calibration_popout = CalibrationPopoutWindow(self, on_closed=self._on_calibration_popout_closed)
         self.calibration_popout.show()
         self._set_main_visualizers_hidden_for_popout(True)
+        self._on_advanced_controls(scroll_to_flux=True)
         if self._advanced_controls_dialog is not None:
             self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
             self._advanced_controls_dialog.show()
@@ -6156,38 +6532,28 @@ bREadfan_69@hotmail.com"""
         return group
 
     def _create_main_controls_panel(self) -> QGroupBox:
-        """Main stroke controls panel - always displayed below tabs"""
+        """Main stroke controls panel."""
         group = QGroupBox("Main Controls")
-        layout = QVBoxLayout(group)
+        layout = QHBoxLayout(group)
         layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(8)
 
-        top_row = QHBoxLayout()
-        top_row.addWidget(QLabel("Stroke Mode:"))
+        layout.addWidget(QLabel("Stroke Mode:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["1: Circle", "2: Spiral", "3: Teardrop", "4: User (Flux/Peak)"])
         self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
-        self.mode_combo.setMinimumWidth(220)
-        top_row.addWidget(self.mode_combo)
+        self.mode_combo.setMinimumWidth(200)
+        layout.addWidget(self.mode_combo)
 
-        top_row.addSpacing(8)
-        top_row.addWidget(QLabel("Flux-Depth:"))
+        layout.addWidget(QLabel("Flux-Depth:"))
         self.flux_depth_mode_toggle = QPushButton("off")
         self.flux_depth_mode_toggle.setCheckable(True)
         self.flux_depth_mode_toggle.setChecked(bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)))
         self.flux_depth_mode_toggle.toggled.connect(self._on_flux_depth_mode_toggle)
-        top_row.addWidget(self.flux_depth_mode_toggle)
-        top_row.addStretch()
-        layout.addLayout(top_row)
+        layout.addWidget(self.flux_depth_mode_toggle)
 
-        combos_row = QHBoxLayout()
-        combos_row.setSpacing(8)
-
-        def _make_combo_spinbox(title: str, value: float, min_val: float, max_val: float, step: float, handler):
-            col = QVBoxLayout()
-            col.setSpacing(1)
-            col.setContentsMargins(0, 0, 0, 0)
-            label = QLabel(title)
-            label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        def _add_combo_spinbox(title: str, value: float, min_val: float, max_val: float, step: float, handler):
+            layout.addWidget(QLabel(f"{title}:"))
             spin = QDoubleSpinBox()
             spin.setRange(min_val, max_val)
             spin.setSingleStep(step)
@@ -6195,11 +6561,10 @@ bREadfan_69@hotmail.com"""
             spin.setValue(float(value))
             spin.setFixedWidth(68)
             spin.valueChanged.connect(handler)
-            col.addWidget(label)
-            col.addWidget(spin, alignment=Qt.AlignmentFlag.AlignHCenter)
-            return col, spin
+            layout.addWidget(spin)
+            return spin
 
-        power_col, self.combo_power_spin = _make_combo_spinbox(
+        self.combo_power_spin = _add_combo_spinbox(
             "power",
             getattr(self.config.stroke, 'combo_power', 1.0),
             0.50,
@@ -6207,7 +6572,7 @@ bREadfan_69@hotmail.com"""
             0.05,
             lambda v: setattr(self.config.stroke, 'combo_power', float(v)),
         )
-        depth_col, self.combo_depth_spin = _make_combo_spinbox(
+        self.combo_depth_spin = _add_combo_spinbox(
             "depth",
             getattr(self.config.stroke, 'combo_depth', 1.0),
             0.70,
@@ -6215,7 +6580,7 @@ bREadfan_69@hotmail.com"""
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_depth', float(v)),
         )
-        speed_col, self.combo_speed_spin = _make_combo_spinbox(
+        self.combo_speed_spin = _add_combo_spinbox(
             "speed",
             getattr(self.config.stroke, 'combo_speed', 1.0),
             0.80,
@@ -6223,7 +6588,7 @@ bREadfan_69@hotmail.com"""
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_speed', float(v)),
         )
-        texture_col, self.combo_texture_spin = _make_combo_spinbox(
+        self.combo_texture_spin = _add_combo_spinbox(
             "texture",
             getattr(self.config.stroke, 'combo_texture', 1.0),
             0.70,
@@ -6231,7 +6596,7 @@ bREadfan_69@hotmail.com"""
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_texture', float(v)),
         )
-        reaction_col, self.combo_reaction_spin = _make_combo_spinbox(
+        self.combo_reaction_spin = _add_combo_spinbox(
             "reaction",
             getattr(self.config.stroke, 'combo_reaction', 1.0),
             0.75,
@@ -6239,14 +6604,7 @@ bREadfan_69@hotmail.com"""
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_reaction', float(v)),
         )
-
-        combos_row.addLayout(power_col)
-        combos_row.addLayout(depth_col)
-        combos_row.addLayout(speed_col)
-        combos_row.addLayout(texture_col)
-        combos_row.addLayout(reaction_col)
-        combos_row.addStretch()
-        layout.addLayout(combos_row)
+        layout.addStretch()
 
         self._on_flux_depth_mode_toggle(self.flux_depth_mode_toggle.isChecked())
 
@@ -7082,6 +7440,10 @@ bREadfan_69@hotmail.com"""
             self.bar_canvas.set_frequency_band(low / max_freq, high / max_freq)
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_frequency_band(low / max_freq, high / max_freq)
+        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_frequency_band'):
+            self.freqdb_canvas.set_frequency_band(low / max_freq, high / max_freq)
+        if self.calibration_popout is not None and hasattr(self.calibration_popout, 'freqdb_canvas') and hasattr(self.calibration_popout.freqdb_canvas, 'set_frequency_band'):
+            self.calibration_popout.freqdb_canvas.set_frequency_band(low / max_freq, high / max_freq)
     
     def _on_depth_band_change(self, low=None, high=None):
         """Update stroke depth frequency band in config and spectrum overlay"""
@@ -7102,6 +7464,10 @@ bREadfan_69@hotmail.com"""
             self.bar_canvas.set_depth_band(low, high)
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_depth_band(low, high)
+        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_depth_band'):
+            self.freqdb_canvas.set_depth_band(low, high)
+        if self.calibration_popout is not None and hasattr(self.calibration_popout, 'freqdb_canvas') and hasattr(self.calibration_popout.freqdb_canvas, 'set_depth_band'):
+            self.calibration_popout.freqdb_canvas.set_depth_band(low, high)
     
     def _on_p0_band_change(self, low=None, high=None):
         """Update P0 TCode frequency band in config and spectrum overlay"""
@@ -7122,6 +7488,10 @@ bREadfan_69@hotmail.com"""
             self.bar_canvas.set_p0_band(low, high)
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_p0_band(low, high)
+        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_p0_band'):
+            self.freqdb_canvas.set_p0_band(low, high)
+        if self.calibration_popout is not None and hasattr(self.calibration_popout, 'freqdb_canvas') and hasattr(self.calibration_popout.freqdb_canvas, 'set_p0_band'):
+            self.calibration_popout.freqdb_canvas.set_p0_band(low, high)
     
     def _on_f0_band_change(self, low=None, high=None):
         """Update F0 TCode frequency band in config and spectrum overlay"""
@@ -7143,6 +7513,10 @@ bREadfan_69@hotmail.com"""
             self.bar_canvas.set_f0_band(low, high)
         if hasattr(self, 'phosphor_canvas'):
             self.phosphor_canvas.set_f0_band(low, high)
+        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_f0_band'):
+            self.freqdb_canvas.set_f0_band(low, high)
+        if self.calibration_popout is not None and hasattr(self.calibration_popout, 'freqdb_canvas') and hasattr(self.calibration_popout.freqdb_canvas, 'set_f0_band'):
+            self.calibration_popout.freqdb_canvas.set_f0_band(low, high)
     
     def _on_stroke_range_change(self, low: float, high: float):
         """Update stroke min/max in config"""

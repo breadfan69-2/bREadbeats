@@ -25,16 +25,38 @@ class AudioSessionReporter:
         except Exception:
             return []
 
+    def _to_builtin(self, value):
+        if isinstance(value, dict):
+            return {str(k): self._to_builtin(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._to_builtin(v) for v in value]
+
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist):
+            try:
+                return self._to_builtin(tolist())
+            except Exception:
+                pass
+
+        item = getattr(value, "item", None)
+        if callable(item):
+            try:
+                return self._to_builtin(item())
+            except Exception:
+                pass
+
+        return value
+
     def save_session(self, session_summary: dict) -> None:
         sessions = self._load_existing_sessions()
-        sessions.append(session_summary)
+        sessions.append(self._to_builtin(session_summary))
         if len(sessions) > self.max_sessions:
             sessions = sessions[-self.max_sessions :]
 
         payload = {
             "generated_at": time.time(),
             "session_count": len(sessions),
-            "latest": session_summary,
+            "latest": sessions[-1],
             "sessions": sessions,
         }
 
