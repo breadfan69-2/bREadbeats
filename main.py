@@ -7,6 +7,7 @@ Qt GUI with beat detection, stroke mapping, and spectrum visualization.
 import sys
 from contextlib import contextmanager
 import time
+import json
 from datetime import datetime
 from types import SimpleNamespace
 import webbrowser
@@ -3681,6 +3682,10 @@ class BREadbeatsWindow(QMainWindow):
         assert learning_controls_action is not None
         learning_controls_action.triggered.connect(self._on_learning_controls)
 
+        load_learning_profile_action = options_menu.addAction("Load Learning Profile...")
+        assert load_learning_profile_action is not None
+        load_learning_profile_action.triggered.connect(self._on_load_learning_profile)
+
         self.teaching_capture_action = options_menu.addAction("Teaching Capture")
         assert self.teaching_capture_action is not None
         self.teaching_capture_action.setCheckable(True)
@@ -6479,6 +6484,90 @@ Like the app?<br>
             self._teaching_capture.stop(flush=True)
             print("[Teaching] Capture disabled and flushed")
 
+    def _apply_learning_config_to_mapper(self) -> None:
+        mapper_live = self.stroke_mapper
+        if mapper_live is None:
+            return
+        mapper_live._learning_enabled = bool(self.config.beat.teaching_learning_enabled)
+        mapper_live._learning_use_fitted_rules = bool(self.config.beat.teaching_use_fitted_rules)
+        mapper_live._learning_apply_in_circle_mode = bool(self.config.beat.teaching_apply_in_circle_mode)
+        mapper_live._learning_isolation_mode = bool(self.config.beat.teaching_isolation_mode)
+        mapper_live._learning_strength = float(self.config.beat.teaching_learning_strength)
+        mapper_live._learning_min_confidence = float(self.config.beat.teaching_min_confidence)
+        mapper_live._learning_no_motion_bias = float(self.config.beat.teaching_no_motion_bias)
+        mapper_live._learning_rule_fit_path = str(self.config.beat.teaching_rule_fit_path)
+        if mapper_live._learning_enabled and mapper_live._learning_use_fitted_rules:
+            mapper_live._try_load_learning_model()
+
+    def _on_load_learning_profile(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Learning Profile",
+            self._get_external_data_start_dir(),
+            "Profile JSON (profile*.json);;JSON Files (*.json);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+
+        profile_path = Path(file_path)
+        try:
+            payload = json.loads(profile_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            QMessageBox.warning(self, "Learning Profile", f"Failed to read profile:\n{exc}")
+            return
+
+        if not isinstance(payload, dict):
+            QMessageBox.warning(self, "Learning Profile", "Profile JSON must be an object.")
+            return
+
+        learning_cfg = payload.get("learning", {})
+        model_cfg = payload.get("model", {})
+        if not isinstance(learning_cfg, dict):
+            learning_cfg = {}
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+
+        bool_keys = {
+            "teaching_learning_enabled",
+            "teaching_use_fitted_rules",
+            "teaching_apply_in_circle_mode",
+            "teaching_isolation_mode",
+        }
+        float_keys = {
+            "teaching_learning_strength",
+            "teaching_min_confidence",
+            "teaching_no_motion_bias",
+        }
+
+        for key in bool_keys:
+            if key in learning_cfg:
+                setattr(self.config.beat, key, bool(learning_cfg.get(key)))
+        for key in float_keys:
+            if key in learning_cfg:
+                try:
+                    setattr(self.config.beat, key, float(learning_cfg.get(key)))
+                except Exception:
+                    pass
+
+        raw_rule_fit = model_cfg.get("rule_fit") or learning_cfg.get("teaching_rule_fit_path") or payload.get("rule_fit")
+        if isinstance(raw_rule_fit, str) and raw_rule_fit.strip():
+            candidate = Path(raw_rule_fit.strip())
+            if not candidate.is_absolute():
+                candidate = profile_path.parent / candidate
+            self.config.beat.teaching_rule_fit_path = str(candidate)
+
+        self.config.beat.teaching_profile_path = str(profile_path)
+        self._apply_learning_config_to_mapper()
+        self.config.save()
+
+        mapper_live = self.stroke_mapper
+        loaded = bool(getattr(mapper_live, '_learning_model_loaded', False)) if mapper_live is not None else False
+        model_path = str(getattr(mapper_live, '_learning_model_path', '') or '') if mapper_live is not None else ''
+        msg = f"Loaded profile: {profile_path.name}"
+        if model_path:
+            msg += f"\nModel: {'loaded' if loaded else 'not loaded'}\n{model_path}"
+        QMessageBox.information(self, "Learning Profile", msg)
+
     def _on_learning_controls(self) -> None:
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QHBoxLayout, QPushButton, QLineEdit
 
@@ -6580,25 +6669,15 @@ Like the app?<br>
             self.config.beat.teaching_no_motion_bias = float(no_motion_bias_slider.value())
             self.config.beat.teaching_rule_fit_path = str(path_edit.text() or '').strip()
 
-            mapper_live = self.stroke_mapper
-            if mapper_live is not None:
-                mapper_live._learning_enabled = bool(self.config.beat.teaching_learning_enabled)
-                mapper_live._learning_use_fitted_rules = bool(self.config.beat.teaching_use_fitted_rules)
-                mapper_live._learning_apply_in_circle_mode = bool(self.config.beat.teaching_apply_in_circle_mode)
-                mapper_live._learning_isolation_mode = bool(self.config.beat.teaching_isolation_mode)
-                mapper_live._learning_strength = float(self.config.beat.teaching_learning_strength)
-                mapper_live._learning_min_confidence = float(self.config.beat.teaching_min_confidence)
-                mapper_live._learning_no_motion_bias = float(self.config.beat.teaching_no_motion_bias)
-                mapper_live._learning_rule_fit_path = str(self.config.beat.teaching_rule_fit_path)
-                if mapper_live._learning_enabled and mapper_live._learning_use_fitted_rules:
-                    mapper_live._try_load_learning_model()
+            self._apply_learning_config_to_mapper()
 
-                loaded = bool(getattr(mapper_live, '_learning_model_loaded', False))
-                model_path = str(getattr(mapper_live, '_learning_model_path', '') or '')
-                text = f"Model status: {'loaded' if loaded else 'not loaded'}"
-                if model_path:
-                    text += f" ({model_path})"
-                status_label.setText(text)
+            mapper_live = self.stroke_mapper
+            loaded = bool(getattr(mapper_live, '_learning_model_loaded', False)) if mapper_live is not None else False
+            model_path = str(getattr(mapper_live, '_learning_model_path', '') or '') if mapper_live is not None else ''
+            text = f"Model status: {'loaded' if loaded else 'not loaded'}"
+            if model_path:
+                text += f" ({model_path})"
+            status_label.setText(text)
 
             self.config.save()
 
