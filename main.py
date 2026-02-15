@@ -4617,7 +4617,10 @@ class BREadbeatsWindow(QMainWindow):
         flux_thresh_slider = SliderWithLabel("Flux threshold", 0.005, 0.20, self.config.stroke.flux_threshold, 3)
         self._advanced_flux_threshold_slider = flux_thresh_slider
         flux_thresh_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'flux_threshold', v)
+            lambda v: (
+                setattr(self.config.stroke, 'flux_threshold', v),
+                _set_stroke_attr_with_ref('flux_threshold', 'flux_threshold', 'Flux threshold', '#66D9FF', ghost_band='full')(float(v))
+            )
         )
         flux_layout.addWidget(flux_thresh_slider)
 
@@ -4694,6 +4697,51 @@ class BREadbeatsWindow(QMainWindow):
             widget.label.setToolTip(hint)
             widget.slider.setToolTip(hint)
             widget.value_label.setToolTip(hint)
+
+        def _set_beat_attr_with_ref(
+            attr_name: str,
+            ref_key: str,
+            ref_label: str,
+            ref_color: str,
+            dashed: bool = False,
+            ghost_band: str = 'full',
+            ghost_range: bool = False,
+            ghost_mode: str = 'threshold',
+        ):
+            def _handler(v: float):
+                value = float(v)
+                setattr(self.config.beat, attr_name, value)
+                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None:
+                    self.mountain_canvas.show_reference_line(
+                        ref_key,
+                        value,
+                        ref_label,
+                        color=ref_color,
+                        duration_s=15.0,
+                        dashed=dashed,
+                    )
+
+                ghost_targets = []
+                if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
+                    ghost_targets.append(self.freqdb_canvas)
+                popout = getattr(self, 'calibration_popout', None)
+                popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
+                if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in ghost_targets:
+                    ghost_targets.append(popout_freqdb)
+
+                for canvas in ghost_targets:
+                    canvas.show_flux_ghost(
+                        ref_key,
+                        value,
+                        ref_label,
+                        color=ref_color,
+                        duration_s=15.0,
+                        dashed=dashed,
+                        band=ghost_band,
+                        range_box=ghost_range,
+                        mode=ghost_mode,
+                    )
+            return _handler
 
         low_band_window_row = QHBoxLayout()
         low_band_window_label = QLabel("Low-band gate window (frames):")
@@ -4952,9 +5000,16 @@ class BREadbeatsWindow(QMainWindow):
             float(getattr(self.config.beat, 'center_jitter_flux_delta_threshold', 0.20) or 0.20),
             2,
         )
-        center_guard_delta_slider.valueChanged.connect(
-            lambda v: setattr(self.config.beat, 'center_jitter_flux_delta_threshold', float(v))
-        )
+        center_guard_delta_slider.valueChanged.connect(_set_beat_attr_with_ref(
+            'center_jitter_flux_delta_threshold',
+            'center_reset_guard_delta',
+            'Center reset Δflux',
+            '#F7D774',
+            dashed=True,
+            ghost_band='full',
+            ghost_range=True,
+        ))
+        _style_ref_slider(center_guard_delta_slider, '#F7D774', 'Center reset Δflux')
         flux_layout.addWidget(center_guard_delta_slider)
 
         center_guard_avg_slider = SliderWithLabel(
@@ -4964,9 +5019,16 @@ class BREadbeatsWindow(QMainWindow):
             float(getattr(self.config.beat, 'center_jitter_flux_avg_threshold', 0.25) or 0.25),
             2,
         )
-        center_guard_avg_slider.valueChanged.connect(
-            lambda v: setattr(self.config.beat, 'center_jitter_flux_avg_threshold', float(v))
-        )
+        center_guard_avg_slider.valueChanged.connect(_set_beat_attr_with_ref(
+            'center_jitter_flux_avg_threshold',
+            'center_reset_guard_avg',
+            'Center reset avg',
+            '#E8C96A',
+            dashed=True,
+            ghost_band='full',
+            ghost_range=True,
+        ))
+        _style_ref_slider(center_guard_avg_slider, '#E8C96A', 'Center reset avg')
         flux_layout.addWidget(center_guard_avg_slider)
 
         scroll_layout.addWidget(flux_group)
