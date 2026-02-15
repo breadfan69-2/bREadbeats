@@ -2743,6 +2743,7 @@ class BREadbeatsWindow(QMainWindow):
         
         # Advanced controls dialog singleton reference
         self._advanced_controls_dialog = None
+        self._advanced_flux_threshold_slider = None
         
         # Auto-align target BPM tracking (wall-clock time-based)
         self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
@@ -3647,6 +3648,7 @@ class BREadbeatsWindow(QMainWindow):
             self._advanced_controls_dialog = None
             self._advanced_controls_scroll = None
             self._advanced_flux_group = None
+            self._advanced_flux_threshold_slider = None
 
         dialog.destroyed.connect(_on_advanced_dialog_destroyed)
         self._advanced_controls_dialog = dialog
@@ -4209,6 +4211,7 @@ class BREadbeatsWindow(QMainWindow):
 
         # Flux threshold slider
         flux_thresh_slider = SliderWithLabel("Flux threshold", 0.005, 0.20, self.config.stroke.flux_threshold, 3)
+        self._advanced_flux_threshold_slider = flux_thresh_slider
         flux_thresh_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'flux_threshold', v)
         )
@@ -5072,7 +5075,6 @@ class BREadbeatsWindow(QMainWindow):
                 self.fullness_slider,
                 self.freq_depth_slider,
                 self.depth_freq_range_slider,
-                self.flux_threshold_slider,
                 self.flux_scaling_slider,
                 self.phase_advance_slider,
                 self.jitter_enabled,
@@ -5130,7 +5132,8 @@ class BREadbeatsWindow(QMainWindow):
                 self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
                 self.depth_freq_range_slider.setLow(int(self.config.stroke.depth_freq_low))
                 self.depth_freq_range_slider.setHigh(int(self.config.stroke.depth_freq_high))
-                self.flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
+                if self._advanced_flux_threshold_slider is not None:
+                    self._advanced_flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
                 self.flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
                 self.phase_advance_slider.setValue(self.config.stroke.phase_advance)
 
@@ -5999,7 +6002,7 @@ class BREadbeatsWindow(QMainWindow):
             'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
             'depth_freq_low': self.depth_freq_range_slider.low(),
             'depth_freq_high': self.depth_freq_range_slider.high(),
-            'flux_threshold': self.flux_threshold_slider.value(),
+            'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
             'flux_scaling_weight': self.flux_scaling_slider.value(),
             'phase_advance': self.phase_advance_slider.value(),
 
@@ -6113,7 +6116,9 @@ class BREadbeatsWindow(QMainWindow):
             self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
         self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
         self.depth_freq_range_slider.setHigh(preset_data['depth_freq_high'])
-        self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
+        self.config.stroke.flux_threshold = float(preset_data['flux_threshold'])
+        if self._advanced_flux_threshold_slider is not None:
+            self._advanced_flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
         self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
         self.phase_advance_slider.setValue(preset_data['phase_advance'])
         
@@ -7084,7 +7089,7 @@ class BREadbeatsWindow(QMainWindow):
             'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
             'depth_freq_low': self.depth_freq_range_slider.low(),
             'depth_freq_high': self.depth_freq_range_slider.high(),
-            'flux_threshold': self.flux_threshold_slider.value(),
+            'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
             'flux_scaling_weight': self.flux_scaling_slider.value(),
             'phase_advance': self.phase_advance_slider.value(),
 
@@ -7244,7 +7249,9 @@ class BREadbeatsWindow(QMainWindow):
                 self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
             if 'depth_freq_high' in preset_data:
                 self.depth_freq_range_slider.setHigh(preset_data['depth_freq_high'])
-            self.flux_threshold_slider.setValue(preset_data['flux_threshold'])
+            self.config.stroke.flux_threshold = float(preset_data['flux_threshold'])
+            if self._advanced_flux_threshold_slider is not None:
+                self._advanced_flux_threshold_slider.setValue(self.config.stroke.flux_threshold)
             if 'flux_scaling_weight' in preset_data:
                 self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
             if 'phase_advance' in preset_data:
