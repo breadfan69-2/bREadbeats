@@ -1200,7 +1200,7 @@ class StrokeMapper:
         return float(np.clip(getattr(cfg, 'beat_overall_amp_fill_required', 0.90) or 0.90, 0.0, 1.0))
 
     def _get_spectrum_fill_ratio(self, target: float) -> float:
-        """Return fraction of spectrum bins above target-normalized amplitude."""
+        """Return fraction of active spectrum bins above target-normalized amplitude."""
         if not self.audio_engine or not hasattr(self.audio_engine, 'get_spectrum'):
             return 0.0
 
@@ -1215,7 +1215,12 @@ class StrokeMapper:
 
         norm = magnitudes / peak
         threshold = float(np.clip(target, 0.0, 1.0))
-        return float(np.sum(norm >= threshold) / max(1, norm.size))
+        active_floor = float(np.clip(getattr(self.config.stroke, 'overall_amp_fill_active_floor', 0.02) or 0.02, 0.0, 1.0))
+        active_bins = norm >= active_floor
+        if not np.any(active_bins):
+            return 0.0
+        active = norm[active_bins]
+        return float(np.sum(active >= threshold) / max(1, active.size))
 
     def _passes_overall_amp_fill_gate(self, event: BeatEvent, phase: str) -> tuple[bool, float, float, float, float]:
         """Gate beat/downbeat/syncopation strokes by overall amplitude + spectrum fill."""

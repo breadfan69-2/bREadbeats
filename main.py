@@ -5989,8 +5989,24 @@ Like the app?<br>
         path_label = QLabel("Rule-fit path (optional):")
         path_label.setStyleSheet("color: #ccc;")
         layout.addWidget(path_label)
+        path_row = QHBoxLayout()
         path_edit = QLineEdit(str(getattr(self.config.beat, 'teaching_rule_fit_path', '') or ''))
-        layout.addWidget(path_edit)
+        path_browse_btn = QPushButton("Browse...")
+        path_row.addWidget(path_edit)
+        path_row.addWidget(path_browse_btn)
+        layout.addLayout(path_row)
+
+        def _browse_rule_fit_path() -> None:
+            file_path, _ = QFileDialog.getOpenFileName(
+                dialog,
+                "Select rule_fit.json",
+                str(get_config_dir()),
+                "JSON Files (*.json);;All Files (*.*)",
+            )
+            if file_path:
+                path_edit.setText(file_path)
+
+        path_browse_btn.clicked.connect(_browse_rule_fit_path)
 
         mapper = self.stroke_mapper
         model_status = "Model status: unavailable"
