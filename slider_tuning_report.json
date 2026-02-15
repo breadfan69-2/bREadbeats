@@ -1,136 +1,136 @@
 {
-  "generated_at": 1771025437.1731455,
-  "slider_count": 50,
+  "generated_at": 1771123497.0641634,
+  "slider_count": 63,
   "stats": {
     "Freq Range (Hz) [low]": {
-      "count": 2607,
+      "count": 2635,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447,
-      "last_value": 30,
+      "last_seen": 1771122531.467738,
+      "last_value": 693.0,
       "min_value": 30.0,
-      "max_value": 221.0,
-      "sum_values": 92177.0,
-      "sum_abs_delta": 466.0
+      "max_value": 693.0,
+      "sum_values": 98559.0,
+      "sum_abs_delta": 5345.0
     },
     "Freq Range (Hz) [high]": {
-      "count": 2607,
+      "count": 2635,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447,
-      "last_value": 162.0,
+      "last_seen": 1771122531.467738,
+      "last_value": 10391.0,
       "min_value": 100.0,
       "max_value": 22050.0,
-      "sum_values": 13270096.0,
-      "sum_abs_delta": 1216950.0
+      "sum_values": 13445079.0,
+      "sum_abs_delta": 1295191.0
     },
     "Stability Threshold": {
-      "count": 84,
+      "count": 88,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447,
-      "last_value": 0.11,
+      "last_seen": 1771122481.51823,
+      "last_value": 0.05,
       "min_value": 0.05,
       "max_value": 0.28,
-      "sum_values": 14.93999999999998,
-      "sum_abs_delta": 0.29000000000000004
+      "sum_values": 15.829999999999979,
+      "sum_abs_delta": 0.6900000000000002
     },
     "Stroke Min/Max [low]": {
-      "count": 148,
+      "count": 309,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447,
-      "last_value": 0.0,
+      "last_seen": 1771122797.5112743,
+      "last_value": 0.04,
       "min_value": 0.0,
-      "max_value": 0.0,
-      "sum_values": 0.0,
-      "sum_abs_delta": 0.0
+      "max_value": 0.2,
+      "sum_values": 15.98000000000001,
+      "sum_abs_delta": 0.3600000000000001
     },
     "Stroke Min/Max [high]": {
-      "count": 148,
+      "count": 309,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447,
+      "last_seen": 1771122797.5112743,
       "last_value": 1.0,
       "min_value": 1.0,
       "max_value": 1.0,
-      "sum_values": 148.0,
+      "sum_values": 309.0,
       "sum_abs_delta": 0.0
     },
     "Min Interval (ms)": {
-      "count": 165,
+      "count": 1054,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447,
-      "last_value": 487.0,
-      "min_value": 256.0,
-      "max_value": 487.0,
-      "sum_values": 63742.0,
-      "sum_abs_delta": 301.0
+      "last_seen": 1771123114.3452137,
+      "last_value": 168.0,
+      "min_value": 50.0,
+      "max_value": 2224.0,
+      "sum_values": 809919.0,
+      "sum_abs_delta": 7010.0
     },
     "Depth Freq (Hz) [low]": {
-      "count": 2959,
+      "count": 3093,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413,
-      "last_value": 30,
+      "last_seen": 1771122815.0271902,
+      "last_value": 30.0,
       "min_value": 30.0,
       "max_value": 16198.0,
-      "sum_values": 4012232.0,
+      "sum_values": 4016252.0,
       "sum_abs_delta": 60368.0
     },
     "Depth Freq (Hz) [high]": {
-      "count": 2959,
+      "count": 3093,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413,
-      "last_value": 195,
+      "last_seen": 1771122815.0271902,
+      "last_value": 448.0,
       "min_value": 112.0,
       "max_value": 22050.0,
-      "sum_values": 12376644.0,
-      "sum_abs_delta": 961445.0
+      "sum_values": 12875512.0,
+      "sum_abs_delta": 1028840.0
     },
     "Circle Speed": {
-      "count": 692,
+      "count": 2335,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413,
-      "last_value": 6.9,
+      "last_seen": 1771122964.196477,
+      "last_value": 8.06,
       "min_value": 0.3,
-      "max_value": 8.49,
-      "sum_values": 3838.409999999996,
-      "sum_abs_delta": 12.540000000000028
+      "max_value": 10.0,
+      "sum_values": 12213.16,
+      "sum_abs_delta": 77.44000000000204
     },
     "Monitor Freq (Hz) [low]": {
-      "count": 742,
+      "count": 770,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413,
-      "last_value": 30,
+      "last_seen": 1771122520.719505,
+      "last_value": 53.0,
       "min_value": 30.0,
       "max_value": 356.0,
-      "sum_values": 116278.0,
-      "sum_abs_delta": 27528.0
+      "sum_values": 117486.0,
+      "sum_abs_delta": 27551.0
     },
     "Monitor Freq (Hz) [high]": {
-      "count": 742,
+      "count": 770,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413,
-      "last_value": 200.0,
+      "last_seen": 1771122520.719505,
+      "last_value": 21864,
       "min_value": 200.0,
       "max_value": 22050.0,
-      "sum_values": 2843292.0,
-      "sum_abs_delta": 2354448.0
+      "sum_values": 3023356.0,
+      "sum_abs_delta": 2551684.0
     },
     "Sent Value [low]": {
-      "count": 1331,
+      "count": 1359,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413,
-      "last_value": 4999,
+      "last_seen": 1771122520.7205172,
+      "last_value": 3215,
       "min_value": 0.0,
       "max_value": 4999.0,
-      "sum_values": 4031173.0,
-      "sum_abs_delta": 199858.0
+      "sum_values": 4074313.0,
+      "sum_abs_delta": 231382.0
     },
     "Sent Value [high]": {
-      "count": 1331,
+      "count": 1359,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413,
+      "last_seen": 1771122520.7205172,
       "last_value": 9999,
-      "min_value": 5000.0,
+      "min_value": 3216.0,
       "max_value": 9999.0,
-      "sum_values": 11237591.0,
-      "sum_abs_delta": 1067964.0
+      "sum_values": 11412557.0,
+      "sum_abs_delta": 1134438.0
     },
     "Peak Floor": {
       "count": 4316,
@@ -143,84 +143,84 @@
       "sum_abs_delta": 32.92400000000077
     },
     "Flux Multiplier": {
-      "count": 693,
+      "count": 749,
       "first_seen": 1770934142.5723836,
-      "last_seen": 1771023987.7496214,
-      "last_value": 1.8,
-      "min_value": 0.22,
+      "last_seen": 1771123480.8354547,
+      "last_value": 0.47,
+      "min_value": 0.2,
       "max_value": 3.18,
-      "sum_values": 1150.7299999999987,
-      "sum_abs_delta": 65.91000000000078
+      "sum_values": 1236.6199999999988,
+      "sum_abs_delta": 78.58000000000071
     },
     "Audio Amplification": {
-      "count": 1284,
+      "count": 1302,
       "first_seen": 1770934157.6665637,
-      "last_seen": 1771022565.3243966,
-      "last_value": 2.85,
+      "last_seen": 1771123157.6500382,
+      "last_value": 0.2,
       "min_value": 0.15,
       "max_value": 10.0,
-      "sum_values": 5735.04,
-      "sum_abs_delta": 34.90000000000008
+      "sum_values": 5777.470000000001,
+      "sum_abs_delta": 71.89000000000006
     },
     "Circle Size": {
-      "count": 278,
+      "count": 460,
       "first_seen": 1770934164.5898736,
-      "last_seen": 1771025351.1926413,
-      "last_value": 0.022,
+      "last_seen": 1771122915.5514467,
+      "last_value": 0.072,
       "min_value": 0.015,
-      "max_value": 0.099,
-      "sum_values": 14.003,
-      "sum_abs_delta": 0.36700000000000027
+      "max_value": 0.1,
+      "sum_values": 23.89399999999999,
+      "sum_abs_delta": 0.6550000000000005
     },
     "Creep Speed": {
-      "count": 764,
+      "count": 773,
       "first_seen": 1770935018.592049,
-      "last_seen": 1771025351.1926413,
-      "last_value": 0.252,
+      "last_seen": 1771122531.469732,
+      "last_value": 1.0,
       "min_value": 0.021,
       "max_value": 1.014,
-      "sum_values": 403.9250000000004,
-      "sum_abs_delta": 1.8210000000000255
+      "sum_values": 407.3030000000005,
+      "sum_abs_delta": 6.621000000000026
     },
     "Peak Decay": {
-      "count": 1920,
+      "count": 1931,
       "first_seen": 1770944421.872631,
-      "last_seen": 1771020553.2929204,
-      "last_value": 0.29,
+      "last_seen": 1771122531.4687347,
+      "last_value": 0.564,
       "min_value": 0.24,
       "max_value": 0.999,
-      "sum_values": 1090.9349999999995,
-      "sum_abs_delta": 3.5989999999999447
+      "sum_values": 1097.8709999999994,
+      "sum_abs_delta": 4.888999999999946
     },
     "Depth": {
-      "count": 18560,
+      "count": 20935,
       "first_seen": 1770945681.8173907,
-      "last_seen": 1771023980.480281,
-      "last_value": 0.121,
+      "last_seen": 1771123486.6266873,
+      "last_value": 0.02,
       "min_value": 0.015,
       "max_value": 2.0,
-      "sum_values": 12705.466999999913,
-      "sum_abs_delta": 147.77900000000102
+      "sum_values": 13015.469999999888,
+      "sum_abs_delta": 159.9459999999948
     },
     "Stroke Fullness": {
-      "count": 140,
+      "count": 164,
       "first_seen": 1770948248.4650495,
-      "last_seen": 1771025351.1916447,
-      "last_value": 0.78,
+      "last_seen": 1771122802.8946655,
+      "last_value": 0.93,
       "min_value": 0.71,
       "max_value": 1.0,
-      "sum_values": 120.46999999999998,
-      "sum_abs_delta": 0.9499999999999997
+      "sum_values": 140.17999999999998,
+      "sum_abs_delta": 1.3799999999999997
     },
     "Flux Rise Depth Factor": {
-      "count": 263,
+      "count": 282,
       "first_seen": 1770948299.3295135,
-      "last_seen": 1771009794.146372,
-      "last_value": 0.0,
+      "last_seen": 1771122806.881363,
+      "last_value": 0.18,
       "min_value": 0.0,
       "max_value": 1.44,
-      "sum_values": 146.24000000000007,
-      "sum_abs_delta": 4.06999999999999
+      "sum_values": 148.51000000000008,
+      "sum_abs_delta": 5.349999999999986
     },
     "Minimum Depth": {
       "count": 93,
@@ -233,14 +233,14 @@
       "sum_abs_delta": 0.5400000000000003
     },
     "Freq Depth Factor": {
-      "count": 651,
+      "count": 676,
       "first_seen": 1770948381.1861331,
-      "last_seen": 1771025351.1926413,
-      "last_value": 0.0,
+      "last_seen": 1771122805.579534,
+      "last_value": 0.1,
       "min_value": 0.0,
       "max_value": 1.37,
-      "sum_values": 326.79,
-      "sum_abs_delta": 7.049999999999902
+      "sum_values": 333.69000000000005,
+      "sum_abs_delta": 12.949999999999898
     },
     "BPM limit (disable above)": {
       "count": 26,
@@ -273,24 +273,24 @@
       "sum_abs_delta": 0.39
     },
     "Full stroke threshold (enter)": {
-      "count": 183,
+      "count": 474,
       "first_seen": 1770948458.22447,
-      "last_seen": 1770964737.6397154,
-      "last_value": 0.067,
-      "min_value": 0.031,
-      "max_value": 0.145,
-      "sum_values": 15.036000000000005,
-      "sum_abs_delta": 0.5700000000000003
+      "last_seen": 1771123440.1140852,
+      "last_value": 0.01,
+      "min_value": 0.01,
+      "max_value": 0.194,
+      "sum_values": 48.513999999999996,
+      "sum_abs_delta": 0.8810000000000006
     },
     "Creep threshold (exit)": {
-      "count": 63,
+      "count": 84,
       "first_seen": 1770948490.4906194,
-      "last_seen": 1770964768.223993,
-      "last_value": 0.038,
+      "last_seen": 1771123414.4905987,
+      "last_value": 0.022,
       "min_value": 0.011,
       "max_value": 0.062,
-      "sum_values": 2.3869999999999996,
-      "sum_abs_delta": 0.1730000000000001
+      "sum_values": 3.058999999999999,
+      "sum_abs_delta": 0.19700000000000012
     },
     "Burst magnitude (pattern size)": {
       "count": 374,
@@ -313,13 +313,13 @@
       "sum_abs_delta": 30.45000000000017
     },
     "Max Reduction %": {
-      "count": 64,
+      "count": 65,
       "first_seen": 1770948865.6510158,
-      "last_seen": 1771025351.1926413,
+      "last_seen": 1771122481.51823,
       "last_value": 20.0,
       "min_value": 5.0,
       "max_value": 20.0,
-      "sum_values": 1097.0,
+      "sum_values": 1117.0,
       "sum_abs_delta": 37.0
     },
     "Volume reduction (%)": {
@@ -333,14 +333,14 @@
       "sum_abs_delta": 0.15
     },
     "Silence Reset (ms)": {
-      "count": 83,
+      "count": 173,
       "first_seen": 1770949956.884033,
-      "last_seen": 1771025351.1916447,
-      "last_value": 298.0,
-      "min_value": 298.0,
-      "max_value": 397.0,
-      "sum_values": 26504.0,
-      "sum_abs_delta": 105.0
+      "last_seen": 1771123210.1979809,
+      "last_value": 163.0,
+      "min_value": 151.0,
+      "max_value": 1000.0,
+      "sum_values": 55221.0,
+      "sum_abs_delta": 4722.0
     },
     "Flux drop ratio (creep fallback)": {
       "count": 56,
@@ -373,34 +373,34 @@
       "sum_abs_delta": 3.539999999999968
     },
     "Flux Threshold": {
-      "count": 1103,
+      "count": 1111,
       "first_seen": 1770951604.8540344,
-      "last_seen": 1771025351.1926413,
-      "last_value": 0.021,
+      "last_seen": 1771122492.1002092,
+      "last_value": 0.1009,
       "min_value": 0.001,
       "max_value": 0.1062,
-      "sum_values": 56.6610000000001,
-      "sum_abs_delta": 0.45839999999999875
+      "sum_values": 57.19870000000012,
+      "sum_abs_delta": 0.8858999999999987
     },
     "Phase Advance (0=downbeats, 1=all)": {
-      "count": 105,
+      "count": 151,
       "first_seen": 1770953105.1122038,
-      "last_seen": 1770956267.1193078,
-      "last_value": 0.0,
+      "last_seen": 1771123203.9973934,
+      "last_value": 0.55,
       "min_value": 0.0,
       "max_value": 1.0,
-      "sum_values": 46.68,
-      "sum_abs_delta": 1.8600000000000005
+      "sum_values": 82.33,
+      "sum_abs_delta": 3.3099999999999907
     },
     "Flux Scaling (size)": {
-      "count": 148,
+      "count": 197,
       "first_seen": 1770953303.849281,
-      "last_seen": 1771025351.1926413,
-      "last_value": 0.0,
+      "last_seen": 1771123201.483217,
+      "last_value": 0.51,
       "min_value": 0.0,
       "max_value": 0.99,
-      "sum_values": 51.06000000000001,
-      "sum_abs_delta": 1.2900000000000007
+      "sum_values": 87.81,
+      "sum_abs_delta": 2.759999999999991
     },
     "Z-Score Sens": {
       "count": 4,
@@ -413,34 +413,34 @@
       "sum_abs_delta": 5.1
     },
     "Sensitivity": {
-      "count": 4,
+      "count": 15,
       "first_seen": 1770953963.8284225,
-      "last_seen": 1770953983.8607976,
-      "last_value": 0.8,
-      "min_value": 0.3,
+      "last_seen": 1771122531.4687347,
+      "last_value": 0.39,
+      "min_value": 0.13,
       "max_value": 0.8,
-      "sum_values": 2.2,
-      "sum_abs_delta": 1.5
+      "sum_values": 6.409999999999999,
+      "sum_abs_delta": 3.829999999999999
     },
     "Rise Sensitivity": {
-      "count": 4,
+      "count": 15,
       "first_seen": 1770953963.828451,
-      "last_seen": 1770953983.8608217,
-      "last_value": 0.1,
+      "last_seen": 1771122531.4687347,
+      "last_value": 0.2,
       "min_value": 0.1,
       "max_value": 0.7,
-      "sum_values": 1.6,
-      "sum_abs_delta": 1.7999999999999998
+      "sum_values": 4.540000000000001,
+      "sum_abs_delta": 3.6200000000000006
     },
     "Tempo Timeout (ms)": {
-      "count": 47,
+      "count": 58,
       "first_seen": 1770956014.665081,
-      "last_seen": 1771025351.1916447,
-      "last_value": 1985.0,
-      "min_value": 1985.0,
+      "last_seen": 1771122520.719505,
+      "last_value": 1499.0,
+      "min_value": 500.0,
       "max_value": 1997.0,
-      "sum_values": 93325.0,
-      "sum_abs_delta": 12.0
+      "sum_values": 104333.0,
+      "sum_abs_delta": 8490.0
     },
     "Vol": {
       "count": 108,
@@ -501,19 +501,149 @@
       "max_value": 0.67,
       "sum_values": 2.5,
       "sum_abs_delta": 0.09000000000000008
+    },
+    "Phase Snap": {
+      "count": 4,
+      "first_seen": 1771121526.336567,
+      "last_seen": 1771122481.51823,
+      "last_value": 0.8,
+      "min_value": 0.21,
+      "max_value": 0.8,
+      "sum_values": 1.4300000000000002,
+      "sum_abs_delta": 0.5900000000000001
+    },
+    "Alpha Weight": {
+      "count": 12,
+      "first_seen": 1771121526.337565,
+      "last_seen": 1771122531.469732,
+      "last_value": 1.0,
+      "min_value": 0.75,
+      "max_value": 1.02,
+      "sum_values": 11.639999999999999,
+      "sum_abs_delta": 1.1800000000000002
+    },
+    "Beta Weight": {
+      "count": 14,
+      "first_seen": 1771121526.337565,
+      "last_seen": 1771122531.469732,
+      "last_value": 1.0,
+      "min_value": 0.76,
+      "max_value": 1.03,
+      "sum_values": 13.3,
+      "sum_abs_delta": 2.02
+    },
+    "Frequency Weight": {
+      "count": 8,
+      "first_seen": 1771122481.51823,
+      "last_seen": 1771122520.7205172,
+      "last_value": 4.22,
+      "min_value": 0.0,
+      "max_value": 4.22,
+      "sum_values": 16.88,
+      "sum_abs_delta": 29.539999999999996
+    },
+    "Low-band mean threshold": {
+      "count": 49,
+      "first_seen": 1771123328.4643223,
+      "last_seen": 1771123329.428844,
+      "last_value": 0.546,
+      "min_value": 0.204,
+      "max_value": 0.546,
+      "sum_values": 18.497999999999998,
+      "sum_abs_delta": 0.342
+    },
+    "Low-band \u0394 threshold": {
+      "count": 104,
+      "first_seen": 1771123332.424588,
+      "last_seen": 1771123334.4634693,
+      "last_value": 0.43,
+      "min_value": 0.063,
+      "max_value": 0.43,
+      "sum_values": 25.507,
+      "sum_abs_delta": 0.367
+    },
+    "Low-band variance threshold": {
+      "count": 274,
+      "first_seen": 1771123335.971666,
+      "last_seen": 1771123338.2906687,
+      "last_value": 0.2,
+      "min_value": 0.0021,
+      "max_value": 0.2,
+      "sum_values": 27.5337,
+      "sum_abs_delta": 0.19790000000000002
+    },
+    "Downbeat gate relax": {
+      "count": 93,
+      "first_seen": 1771123343.1664581,
+      "last_seen": 1771123343.9425232,
+      "last_value": 0.673,
+      "min_value": 0.673,
+      "max_value": 0.848,
+      "sum_values": 70.70800000000001,
+      "sum_abs_delta": 0.17499999999999993
+    },
+    "Downbeat high-band relax": {
+      "count": 136,
+      "first_seen": 1771123350.280423,
+      "last_seen": 1771123351.7783144,
+      "last_value": 0.661,
+      "min_value": 0.661,
+      "max_value": 0.899,
+      "sum_values": 105.99299999999998,
+      "sum_abs_delta": 0.238
+    },
+    "High-band mean threshold": {
+      "count": 156,
+      "first_seen": 1771123359.8178892,
+      "last_seen": 1771123395.1779826,
+      "last_value": 0.001,
+      "min_value": 0.001,
+      "max_value": 0.364,
+      "sum_values": 27.342000000000002,
+      "sum_abs_delta": 1.1039999999999992
+    },
+    "High-band fill floor": {
+      "count": 27,
+      "first_seen": 1771123369.5704844,
+      "last_seen": 1771123394.3050053,
+      "last_value": 0.0,
+      "min_value": 0.0,
+      "max_value": 0.056,
+      "sum_values": 0.5570000000000003,
+      "sum_abs_delta": 0.09000000000000005
+    },
+    "High-band occupancy threshold": {
+      "count": 1132,
+      "first_seen": 1771123371.9840832,
+      "last_seen": 1771123396.5000029,
+      "last_value": 0.0,
+      "min_value": 0.0,
+      "max_value": 1.0,
+      "sum_values": 590.4709999999998,
+      "sum_abs_delta": 4.973000000000012
+    },
+    "High-band \u0394 threshold": {
+      "count": 109,
+      "first_seen": 1771123390.5734854,
+      "last_seen": 1771123393.194451,
+      "last_value": 0.0,
+      "min_value": 0.0,
+      "max_value": 0.22,
+      "sum_values": 13.181999999999999,
+      "sum_abs_delta": 0.3880000000000001
     }
   },
   "ranked": [
     {
       "name": "Depth",
-      "count": 18560,
-      "last_value": 0.121,
+      "count": 20935,
+      "last_value": 0.02,
       "min_value": 0.015,
       "max_value": 2.0,
-      "mean_value": 0.6845617995689608,
-      "sum_abs_delta": 147.77900000000102,
+      "mean_value": 0.6217086219250006,
+      "sum_abs_delta": 159.9459999999948,
       "first_seen": 1770945681.8173907,
-      "last_seen": 1771023980.480281
+      "last_seen": 1771123486.6266873
     },
     {
       "name": "Peak Floor",
@@ -528,168 +658,190 @@
     },
     {
       "name": "Depth Freq (Hz) [high]",
-      "count": 2959,
-      "last_value": 195.0,
+      "count": 3093,
+      "last_value": 448.0,
       "min_value": 112.0,
       "max_value": 22050.0,
-      "mean_value": 4182.7117269347755,
-      "sum_abs_delta": 961445.0,
+      "mean_value": 4162.790817976075,
+      "sum_abs_delta": 1028840.0,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413
+      "last_seen": 1771122815.0271902
     },
     {
       "name": "Depth Freq (Hz) [low]",
-      "count": 2959,
+      "count": 3093,
       "last_value": 30.0,
       "min_value": 30.0,
       "max_value": 16198.0,
-      "mean_value": 1355.94187225414,
+      "mean_value": 1298.4972518590366,
       "sum_abs_delta": 60368.0,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413
+      "last_seen": 1771122815.0271902
     },
     {
       "name": "Freq Range (Hz) [high]",
-      "count": 2607,
-      "last_value": 162.0,
+      "count": 2635,
+      "last_value": 10391.0,
       "min_value": 100.0,
       "max_value": 22050.0,
-      "mean_value": 5090.178749520522,
-      "sum_abs_delta": 1216950.0,
+      "mean_value": 5102.496774193548,
+      "sum_abs_delta": 1295191.0,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447
+      "last_seen": 1771122531.467738
     },
     {
       "name": "Freq Range (Hz) [low]",
-      "count": 2607,
-      "last_value": 30.0,
+      "count": 2635,
+      "last_value": 693.0,
       "min_value": 30.0,
-      "max_value": 221.0,
-      "mean_value": 35.35749904104335,
-      "sum_abs_delta": 466.0,
+      "max_value": 693.0,
+      "mean_value": 37.403795066413664,
+      "sum_abs_delta": 5345.0,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447
-    },
-    {
-      "name": "Peak Decay",
-      "count": 1920,
-      "last_value": 0.29,
-      "min_value": 0.24,
-      "max_value": 0.999,
-      "mean_value": 0.5681953124999998,
-      "sum_abs_delta": 3.5989999999999447,
-      "first_seen": 1770944421.872631,
-      "last_seen": 1771020553.2929204
-    },
-    {
-      "name": "Sent Value [high]",
-      "count": 1331,
-      "last_value": 9999.0,
-      "min_value": 5000.0,
-      "max_value": 9999.0,
-      "mean_value": 8442.968444778362,
-      "sum_abs_delta": 1067964.0,
-      "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413
-    },
-    {
-      "name": "Sent Value [low]",
-      "count": 1331,
-      "last_value": 4999.0,
-      "min_value": 0.0,
-      "max_value": 4999.0,
-      "mean_value": 3028.679939894816,
-      "sum_abs_delta": 199858.0,
-      "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413
-    },
-    {
-      "name": "Audio Amplification",
-      "count": 1284,
-      "last_value": 2.85,
-      "min_value": 0.15,
-      "max_value": 10.0,
-      "mean_value": 4.466542056074767,
-      "sum_abs_delta": 34.90000000000008,
-      "first_seen": 1770934157.6665637,
-      "last_seen": 1771022565.3243966
-    },
-    {
-      "name": "Flux Threshold",
-      "count": 1103,
-      "last_value": 0.021,
-      "min_value": 0.001,
-      "max_value": 0.1062,
-      "mean_value": 0.05136990027198558,
-      "sum_abs_delta": 0.45839999999999875,
-      "first_seen": 1770951604.8540344,
-      "last_seen": 1771025351.1926413
-    },
-    {
-      "name": "Creep Speed",
-      "count": 764,
-      "last_value": 0.252,
-      "min_value": 0.021,
-      "max_value": 1.014,
-      "mean_value": 0.5286976439790582,
-      "sum_abs_delta": 1.8210000000000255,
-      "first_seen": 1770935018.592049,
-      "last_seen": 1771025351.1926413
-    },
-    {
-      "name": "Monitor Freq (Hz) [high]",
-      "count": 742,
-      "last_value": 200.0,
-      "min_value": 200.0,
-      "max_value": 22050.0,
-      "mean_value": 3831.929919137466,
-      "sum_abs_delta": 2354448.0,
-      "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413
-    },
-    {
-      "name": "Monitor Freq (Hz) [low]",
-      "count": 742,
-      "last_value": 30.0,
-      "min_value": 30.0,
-      "max_value": 356.0,
-      "mean_value": 156.7088948787062,
-      "sum_abs_delta": 27528.0,
-      "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413
-    },
-    {
-      "name": "Flux Multiplier",
-      "count": 693,
-      "last_value": 1.8,
-      "min_value": 0.22,
-      "max_value": 3.18,
-      "mean_value": 1.6605050505050485,
-      "sum_abs_delta": 65.91000000000078,
-      "first_seen": 1770934142.5723836,
-      "last_seen": 1771023987.7496214
+      "last_seen": 1771122531.467738
     },
     {
       "name": "Circle Speed",
-      "count": 692,
-      "last_value": 6.9,
+      "count": 2335,
+      "last_value": 8.06,
       "min_value": 0.3,
-      "max_value": 8.49,
-      "mean_value": 5.546835260115602,
-      "sum_abs_delta": 12.540000000000028,
+      "max_value": 10.0,
+      "mean_value": 5.230475374732334,
+      "sum_abs_delta": 77.44000000000204,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1926413
+      "last_seen": 1771122964.196477
+    },
+    {
+      "name": "Peak Decay",
+      "count": 1931,
+      "last_value": 0.564,
+      "min_value": 0.24,
+      "max_value": 0.999,
+      "mean_value": 0.5685504919730706,
+      "sum_abs_delta": 4.888999999999946,
+      "first_seen": 1770944421.872631,
+      "last_seen": 1771122531.4687347
+    },
+    {
+      "name": "Sent Value [high]",
+      "count": 1359,
+      "last_value": 9999.0,
+      "min_value": 3216.0,
+      "max_value": 9999.0,
+      "mean_value": 8397.760853568801,
+      "sum_abs_delta": 1134438.0,
+      "first_seen": 1770934131.5067172,
+      "last_seen": 1771122520.7205172
+    },
+    {
+      "name": "Sent Value [low]",
+      "count": 1359,
+      "last_value": 3215.0,
+      "min_value": 0.0,
+      "max_value": 4999.0,
+      "mean_value": 2998.0228108903607,
+      "sum_abs_delta": 231382.0,
+      "first_seen": 1770934131.5067172,
+      "last_seen": 1771122520.7205172
+    },
+    {
+      "name": "Audio Amplification",
+      "count": 1302,
+      "last_value": 0.2,
+      "min_value": 0.15,
+      "max_value": 10.0,
+      "mean_value": 4.437380952380953,
+      "sum_abs_delta": 71.89000000000006,
+      "first_seen": 1770934157.6665637,
+      "last_seen": 1771123157.6500382
+    },
+    {
+      "name": "High-band occupancy threshold",
+      "count": 1132,
+      "last_value": 0.0,
+      "min_value": 0.0,
+      "max_value": 1.0,
+      "mean_value": 0.5216174911660776,
+      "sum_abs_delta": 4.973000000000012,
+      "first_seen": 1771123371.9840832,
+      "last_seen": 1771123396.5000029
+    },
+    {
+      "name": "Flux Threshold",
+      "count": 1111,
+      "last_value": 0.1009,
+      "min_value": 0.001,
+      "max_value": 0.1062,
+      "mean_value": 0.05148397839783989,
+      "sum_abs_delta": 0.8858999999999987,
+      "first_seen": 1770951604.8540344,
+      "last_seen": 1771122492.1002092
+    },
+    {
+      "name": "Min Interval (ms)",
+      "count": 1054,
+      "last_value": 168.0,
+      "min_value": 50.0,
+      "max_value": 2224.0,
+      "mean_value": 768.4240986717267,
+      "sum_abs_delta": 7010.0,
+      "first_seen": 1770934131.5067172,
+      "last_seen": 1771123114.3452137
+    },
+    {
+      "name": "Creep Speed",
+      "count": 773,
+      "last_value": 1.0,
+      "min_value": 0.021,
+      "max_value": 1.014,
+      "mean_value": 0.5269120310478661,
+      "sum_abs_delta": 6.621000000000026,
+      "first_seen": 1770935018.592049,
+      "last_seen": 1771122531.469732
+    },
+    {
+      "name": "Monitor Freq (Hz) [high]",
+      "count": 770,
+      "last_value": 21864.0,
+      "min_value": 200.0,
+      "max_value": 22050.0,
+      "mean_value": 3926.4363636363637,
+      "sum_abs_delta": 2551684.0,
+      "first_seen": 1770934131.5067172,
+      "last_seen": 1771122520.719505
+    },
+    {
+      "name": "Monitor Freq (Hz) [low]",
+      "count": 770,
+      "last_value": 53.0,
+      "min_value": 30.0,
+      "max_value": 356.0,
+      "mean_value": 152.57922077922078,
+      "sum_abs_delta": 27551.0,
+      "first_seen": 1770934131.5067172,
+      "last_seen": 1771122520.719505
+    },
+    {
+      "name": "Flux Multiplier",
+      "count": 749,
+      "last_value": 0.47,
+      "min_value": 0.2,
+      "max_value": 3.18,
+      "mean_value": 1.6510280373831758,
+      "sum_abs_delta": 78.58000000000071,
+      "first_seen": 1770934142.5723836,
+      "last_seen": 1771123480.8354547
     },
     {
       "name": "Freq Depth Factor",
-      "count": 651,
-      "last_value": 0.0,
+      "count": 676,
+      "last_value": 0.1,
       "min_value": 0.0,
       "max_value": 1.37,
-      "mean_value": 0.5019815668202765,
-      "sum_abs_delta": 7.049999999999902,
+      "mean_value": 0.49362426035502965,
+      "sum_abs_delta": 12.949999999999898,
       "first_seen": 1770948381.1861331,
-      "last_seen": 1771025351.1926413
+      "last_seen": 1771122805.579534
     },
     {
       "name": "Burst sensitivity (flux multiplier)",
@@ -701,6 +853,28 @@
       "sum_abs_delta": 30.45000000000017,
       "first_seen": 1770948718.7340636,
       "last_seen": 1771020639.7080438
+    },
+    {
+      "name": "Full stroke threshold (enter)",
+      "count": 474,
+      "last_value": 0.01,
+      "min_value": 0.01,
+      "max_value": 0.194,
+      "mean_value": 0.10235021097046412,
+      "sum_abs_delta": 0.8810000000000006,
+      "first_seen": 1770948458.22447,
+      "last_seen": 1771123440.1140852
+    },
+    {
+      "name": "Circle Size",
+      "count": 460,
+      "last_value": 0.072,
+      "min_value": 0.015,
+      "max_value": 0.1,
+      "mean_value": 0.05194347826086955,
+      "sum_abs_delta": 0.6550000000000005,
+      "first_seen": 1770934164.5898736,
+      "last_seen": 1771122915.5514467
     },
     {
       "name": "Burst magnitude (pattern size)",
@@ -725,48 +899,81 @@
       "last_seen": 1770950886.5425725
     },
     {
-      "name": "Circle Size",
-      "count": 278,
-      "last_value": 0.022,
-      "min_value": 0.015,
-      "max_value": 0.099,
-      "mean_value": 0.0503705035971223,
-      "sum_abs_delta": 0.36700000000000027,
-      "first_seen": 1770934164.5898736,
-      "last_seen": 1771025351.1926413
+      "name": "Stroke Min/Max [low]",
+      "count": 309,
+      "last_value": 0.04,
+      "min_value": 0.0,
+      "max_value": 0.2,
+      "mean_value": 0.051715210355987085,
+      "sum_abs_delta": 0.3600000000000001,
+      "first_seen": 1770934131.5067172,
+      "last_seen": 1771122797.5112743
+    },
+    {
+      "name": "Stroke Min/Max [high]",
+      "count": 309,
+      "last_value": 1.0,
+      "min_value": 1.0,
+      "max_value": 1.0,
+      "mean_value": 1.0,
+      "sum_abs_delta": 0.0,
+      "first_seen": 1770934131.5067172,
+      "last_seen": 1771122797.5112743
     },
     {
       "name": "Flux Rise Depth Factor",
-      "count": 263,
-      "last_value": 0.0,
+      "count": 282,
+      "last_value": 0.18,
       "min_value": 0.0,
       "max_value": 1.44,
-      "mean_value": 0.5560456273764262,
-      "sum_abs_delta": 4.06999999999999,
+      "mean_value": 0.5266312056737591,
+      "sum_abs_delta": 5.349999999999986,
       "first_seen": 1770948299.3295135,
-      "last_seen": 1771009794.146372
+      "last_seen": 1771122806.881363
     },
     {
-      "name": "Full stroke threshold (enter)",
-      "count": 183,
-      "last_value": 0.067,
-      "min_value": 0.031,
-      "max_value": 0.145,
-      "mean_value": 0.08216393442622953,
-      "sum_abs_delta": 0.5700000000000003,
-      "first_seen": 1770948458.22447,
-      "last_seen": 1770964737.6397154
+      "name": "Low-band variance threshold",
+      "count": 274,
+      "last_value": 0.2,
+      "min_value": 0.0021,
+      "max_value": 0.2,
+      "mean_value": 0.10048795620437956,
+      "sum_abs_delta": 0.19790000000000002,
+      "first_seen": 1771123335.971666,
+      "last_seen": 1771123338.2906687
     },
     {
-      "name": "Min Interval (ms)",
-      "count": 165,
-      "last_value": 487.0,
-      "min_value": 256.0,
-      "max_value": 487.0,
-      "mean_value": 386.3151515151515,
-      "sum_abs_delta": 301.0,
-      "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447
+      "name": "Flux Scaling (size)",
+      "count": 197,
+      "last_value": 0.51,
+      "min_value": 0.0,
+      "max_value": 0.99,
+      "mean_value": 0.4457360406091371,
+      "sum_abs_delta": 2.759999999999991,
+      "first_seen": 1770953303.849281,
+      "last_seen": 1771123201.483217
+    },
+    {
+      "name": "Silence Reset (ms)",
+      "count": 173,
+      "last_value": 163.0,
+      "min_value": 151.0,
+      "max_value": 1000.0,
+      "mean_value": 319.1965317919075,
+      "sum_abs_delta": 4722.0,
+      "first_seen": 1770949956.884033,
+      "last_seen": 1771123210.1979809
+    },
+    {
+      "name": "Stroke Fullness",
+      "count": 164,
+      "last_value": 0.93,
+      "min_value": 0.71,
+      "max_value": 1.0,
+      "mean_value": 0.8547560975609755,
+      "sum_abs_delta": 1.3799999999999997,
+      "first_seen": 1770948248.4650495,
+      "last_seen": 1771122802.8946655
     },
     {
       "name": "Flux threshold",
@@ -780,48 +987,48 @@
       "last_seen": 1771011965.073514
     },
     {
-      "name": "Flux Scaling (size)",
-      "count": 148,
+      "name": "High-band mean threshold",
+      "count": 156,
+      "last_value": 0.001,
+      "min_value": 0.001,
+      "max_value": 0.364,
+      "mean_value": 0.1752692307692308,
+      "sum_abs_delta": 1.1039999999999992,
+      "first_seen": 1771123359.8178892,
+      "last_seen": 1771123395.1779826
+    },
+    {
+      "name": "Phase Advance (0=downbeats, 1=all)",
+      "count": 151,
+      "last_value": 0.55,
+      "min_value": 0.0,
+      "max_value": 1.0,
+      "mean_value": 0.5452317880794701,
+      "sum_abs_delta": 3.3099999999999907,
+      "first_seen": 1770953105.1122038,
+      "last_seen": 1771123203.9973934
+    },
+    {
+      "name": "Downbeat high-band relax",
+      "count": 136,
+      "last_value": 0.661,
+      "min_value": 0.661,
+      "max_value": 0.899,
+      "mean_value": 0.779360294117647,
+      "sum_abs_delta": 0.238,
+      "first_seen": 1771123350.280423,
+      "last_seen": 1771123351.7783144
+    },
+    {
+      "name": "High-band \u0394 threshold",
+      "count": 109,
       "last_value": 0.0,
       "min_value": 0.0,
-      "max_value": 0.99,
-      "mean_value": 0.3450000000000001,
-      "sum_abs_delta": 1.2900000000000007,
-      "first_seen": 1770953303.849281,
-      "last_seen": 1771025351.1926413
-    },
-    {
-      "name": "Stroke Min/Max [low]",
-      "count": 148,
-      "last_value": 0.0,
-      "min_value": 0.0,
-      "max_value": 0.0,
-      "mean_value": 0.0,
-      "sum_abs_delta": 0.0,
-      "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447
-    },
-    {
-      "name": "Stroke Min/Max [high]",
-      "count": 148,
-      "last_value": 1.0,
-      "min_value": 1.0,
-      "max_value": 1.0,
-      "mean_value": 1.0,
-      "sum_abs_delta": 0.0,
-      "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447
-    },
-    {
-      "name": "Stroke Fullness",
-      "count": 140,
-      "last_value": 0.78,
-      "min_value": 0.71,
-      "max_value": 1.0,
-      "mean_value": 0.8604999999999999,
-      "sum_abs_delta": 0.9499999999999997,
-      "first_seen": 1770948248.4650495,
-      "last_seen": 1771025351.1916447
+      "max_value": 0.22,
+      "mean_value": 0.12093577981651375,
+      "sum_abs_delta": 0.3880000000000001,
+      "first_seen": 1771123390.5734854,
+      "last_seen": 1771123393.194451
     },
     {
       "name": "Vol",
@@ -835,15 +1042,15 @@
       "last_seen": 1770956558.5846663
     },
     {
-      "name": "Phase Advance (0=downbeats, 1=all)",
-      "count": 105,
-      "last_value": 0.0,
-      "min_value": 0.0,
-      "max_value": 1.0,
-      "mean_value": 0.44457142857142856,
-      "sum_abs_delta": 1.8600000000000005,
-      "first_seen": 1770953105.1122038,
-      "last_seen": 1770956267.1193078
+      "name": "Low-band \u0394 threshold",
+      "count": 104,
+      "last_value": 0.43,
+      "min_value": 0.063,
+      "max_value": 0.43,
+      "mean_value": 0.2452596153846154,
+      "sum_abs_delta": 0.367,
+      "first_seen": 1771123332.424588,
+      "last_seen": 1771123334.4634693
     },
     {
       "name": "Minimum Depth",
@@ -857,48 +1064,59 @@
       "last_seen": 1771025351.1926413
     },
     {
+      "name": "Downbeat gate relax",
+      "count": 93,
+      "last_value": 0.673,
+      "min_value": 0.673,
+      "max_value": 0.848,
+      "mean_value": 0.7603010752688173,
+      "sum_abs_delta": 0.17499999999999993,
+      "first_seen": 1771123343.1664581,
+      "last_seen": 1771123343.9425232
+    },
+    {
       "name": "Stability Threshold",
-      "count": 84,
-      "last_value": 0.11,
+      "count": 88,
+      "last_value": 0.05,
       "min_value": 0.05,
       "max_value": 0.28,
-      "mean_value": 0.17785714285714263,
-      "sum_abs_delta": 0.29000000000000004,
+      "mean_value": 0.1798863636363634,
+      "sum_abs_delta": 0.6900000000000002,
       "first_seen": 1770934131.5067172,
-      "last_seen": 1771025351.1916447
-    },
-    {
-      "name": "Silence Reset (ms)",
-      "count": 83,
-      "last_value": 298.0,
-      "min_value": 298.0,
-      "max_value": 397.0,
-      "mean_value": 319.32530120481925,
-      "sum_abs_delta": 105.0,
-      "first_seen": 1770949956.884033,
-      "last_seen": 1771025351.1916447
-    },
-    {
-      "name": "Max Reduction %",
-      "count": 64,
-      "last_value": 20.0,
-      "min_value": 5.0,
-      "max_value": 20.0,
-      "mean_value": 17.140625,
-      "sum_abs_delta": 37.0,
-      "first_seen": 1770948865.6510158,
-      "last_seen": 1771025351.1926413
+      "last_seen": 1771122481.51823
     },
     {
       "name": "Creep threshold (exit)",
-      "count": 63,
-      "last_value": 0.038,
+      "count": 84,
+      "last_value": 0.022,
       "min_value": 0.011,
       "max_value": 0.062,
-      "mean_value": 0.03788888888888888,
-      "sum_abs_delta": 0.1730000000000001,
+      "mean_value": 0.03641666666666665,
+      "sum_abs_delta": 0.19700000000000012,
       "first_seen": 1770948490.4906194,
-      "last_seen": 1770964768.223993
+      "last_seen": 1771123414.4905987
+    },
+    {
+      "name": "Max Reduction %",
+      "count": 65,
+      "last_value": 20.0,
+      "min_value": 5.0,
+      "max_value": 20.0,
+      "mean_value": 17.184615384615384,
+      "sum_abs_delta": 37.0,
+      "first_seen": 1770948865.6510158,
+      "last_seen": 1771122481.51823
+    },
+    {
+      "name": "Tempo Timeout (ms)",
+      "count": 58,
+      "last_value": 1499.0,
+      "min_value": 500.0,
+      "max_value": 1997.0,
+      "mean_value": 1798.844827586207,
+      "sum_abs_delta": 8490.0,
+      "first_seen": 1770956014.665081,
+      "last_seen": 1771122520.719505
     },
     {
       "name": "Flux drop ratio (creep fallback)",
@@ -912,15 +1130,26 @@
       "last_seen": 1770956450.9568512
     },
     {
-      "name": "Tempo Timeout (ms)",
-      "count": 47,
-      "last_value": 1985.0,
-      "min_value": 1985.0,
-      "max_value": 1997.0,
-      "mean_value": 1985.6382978723404,
-      "sum_abs_delta": 12.0,
-      "first_seen": 1770956014.665081,
-      "last_seen": 1771025351.1916447
+      "name": "Low-band mean threshold",
+      "count": 49,
+      "last_value": 0.546,
+      "min_value": 0.204,
+      "max_value": 0.546,
+      "mean_value": 0.3775102040816326,
+      "sum_abs_delta": 0.342,
+      "first_seen": 1771123328.4643223,
+      "last_seen": 1771123329.428844
+    },
+    {
+      "name": "High-band fill floor",
+      "count": 27,
+      "last_value": 0.0,
+      "min_value": 0.0,
+      "max_value": 0.056,
+      "mean_value": 0.02062962962962964,
+      "sum_abs_delta": 0.09000000000000005,
+      "first_seen": 1771123369.5704844,
+      "last_seen": 1771123394.3050053
     },
     {
       "name": "BPM limit (disable above)",
@@ -956,6 +1185,61 @@
       "last_seen": 1771009642.017444
     },
     {
+      "name": "Sensitivity",
+      "count": 15,
+      "last_value": 0.39,
+      "min_value": 0.13,
+      "max_value": 0.8,
+      "mean_value": 0.4273333333333333,
+      "sum_abs_delta": 3.829999999999999,
+      "first_seen": 1770953963.8284225,
+      "last_seen": 1771122531.4687347
+    },
+    {
+      "name": "Rise Sensitivity",
+      "count": 15,
+      "last_value": 0.2,
+      "min_value": 0.1,
+      "max_value": 0.7,
+      "mean_value": 0.30266666666666675,
+      "sum_abs_delta": 3.6200000000000006,
+      "first_seen": 1770953963.828451,
+      "last_seen": 1771122531.4687347
+    },
+    {
+      "name": "Beta Weight",
+      "count": 14,
+      "last_value": 1.0,
+      "min_value": 0.76,
+      "max_value": 1.03,
+      "mean_value": 0.9500000000000001,
+      "sum_abs_delta": 2.02,
+      "first_seen": 1771121526.337565,
+      "last_seen": 1771122531.469732
+    },
+    {
+      "name": "Alpha Weight",
+      "count": 12,
+      "last_value": 1.0,
+      "min_value": 0.75,
+      "max_value": 1.02,
+      "mean_value": 0.9699999999999999,
+      "sum_abs_delta": 1.1800000000000002,
+      "first_seen": 1771121526.337565,
+      "last_seen": 1771122531.469732
+    },
+    {
+      "name": "Frequency Weight",
+      "count": 8,
+      "last_value": 4.22,
+      "min_value": 0.0,
+      "max_value": 4.22,
+      "mean_value": 2.11,
+      "sum_abs_delta": 29.539999999999996,
+      "first_seen": 1771122481.51823,
+      "last_seen": 1771122520.7205172
+    },
+    {
       "name": "Volume reduction (%)",
       "count": 6,
       "last_value": 0.15,
@@ -978,26 +1262,15 @@
       "last_seen": 1770953983.8597245
     },
     {
-      "name": "Rise Sensitivity",
-      "count": 4,
-      "last_value": 0.1,
-      "min_value": 0.1,
-      "max_value": 0.7,
-      "mean_value": 0.4,
-      "sum_abs_delta": 1.7999999999999998,
-      "first_seen": 1770953963.828451,
-      "last_seen": 1770953983.8608217
-    },
-    {
-      "name": "Sensitivity",
+      "name": "Phase Snap",
       "count": 4,
       "last_value": 0.8,
-      "min_value": 0.3,
+      "min_value": 0.21,
       "max_value": 0.8,
-      "mean_value": 0.55,
-      "sum_abs_delta": 1.5,
-      "first_seen": 1770953963.8284225,
-      "last_seen": 1770953983.8607976
+      "mean_value": 0.35750000000000004,
+      "sum_abs_delta": 0.5900000000000001,
+      "first_seen": 1771121526.336567,
+      "last_seen": 1771122481.51823
     },
     {
       "name": "Snap min confidence",
