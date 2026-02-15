@@ -1541,6 +1541,10 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         self._low_band_history: deque[float] = deque(maxlen=240)
         self._high_band_history: deque[float] = deque(maxlen=240)
         self._gate_snapshot: dict[str, object] = {}
+        self._reference_overlays: dict[str, dict] = {}
+        self._reference_fade_timer = QTimer(self)
+        self._reference_fade_timer.setInterval(80)
+        self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
 
     @staticmethod
     def _as_float(value, default: float = 0.0) -> float:
@@ -1689,6 +1693,91 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         )
         self.info_text.setHtml(html)
         self.info_text.setPos(0.5, -0.98)
+
+    def show_reference_line(self, key: str, value: float, label: str, color: str = '#FF66AA', duration_s: float = 15.0, dashed: bool = False) -> None:
+        """Show or refresh a temporary symmetric +/- amplitude guide that fades out."""
+        amp = float(np.clip(abs(value), 0.0, 1.0))
+        now = time.monotonic()
+
+        overlay = self._reference_overlays.get(key)
+        if overlay is None:
+            qcolor = QColor(color)
+            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
+            line_pos = pg.InfiniteLine(pos=amp, angle=0, movable=False, pen=pen)
+            line_neg = pg.InfiniteLine(pos=-amp, angle=0, movable=False, pen=pen)
+            line_pos.setZValue(15)
+            line_neg.setZValue(15)
+            self.addItem(line_pos)
+            self.addItem(line_neg)
+
+            text = pg.TextItem("", color=qcolor, anchor=(1.0, 0.0))
+            text.setZValue(16)
+            self.addItem(text)
+
+            overlay = {
+                'line_pos': line_pos,
+                'line_neg': line_neg,
+                'text': text,
+                'color': qcolor,
+                'dashed': bool(dashed),
+                'started_at': now,
+                'duration_s': float(max(0.5, duration_s)),
+            }
+            self._reference_overlays[key] = overlay
+
+        overlay['started_at'] = now
+        overlay['duration_s'] = float(max(0.5, duration_s))
+
+        line_pos = overlay['line_pos']
+        line_neg = overlay['line_neg']
+        text = overlay['text']
+        line_pos.setPos(amp)
+        line_neg.setPos(-amp)
+        text.setPos(self._x_max_ms - 0.2, min(1.0, amp + 0.03))
+        text.setText(f"{label}: ±{amp:.3f}")
+
+        full_color = QColor(overlay['color'])
+        full_color.setAlpha(210)
+        pen = pg.mkPen(full_color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
+        line_pos.setPen(pen)
+        line_neg.setPen(pen)
+        text.setColor(full_color)
+
+        if not self._reference_fade_timer.isActive():
+            self._reference_fade_timer.start()
+
+    def _tick_reference_overlays(self) -> None:
+        """Fade and remove expired amplitude reference overlays."""
+        if not self._reference_overlays:
+            self._reference_fade_timer.stop()
+            return
+
+        now = time.monotonic()
+        expired: list[str] = []
+        for key, overlay in self._reference_overlays.items():
+            age = now - float(overlay['started_at'])
+            duration_s = float(overlay['duration_s'])
+            if age >= duration_s:
+                self.removeItem(overlay['line_pos'])
+                self.removeItem(overlay['line_neg'])
+                self.removeItem(overlay['text'])
+                expired.append(key)
+                continue
+
+            fade = max(0.0, 1.0 - (age / duration_s))
+            alpha = int(210 * fade)
+            qcolor = QColor(overlay['color'])
+            qcolor.setAlpha(alpha)
+            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
+            overlay['line_pos'].setPen(pen)
+            overlay['line_neg'].setPen(pen)
+            overlay['text'].setColor(qcolor)
+
+        for key in expired:
+            self._reference_overlays.pop(key, None)
+
+        if not self._reference_overlays:
+            self._reference_fade_timer.stop()
 
     def update_from_audio(self, waveform: np.ndarray, sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
         if waveform is None:
@@ -3838,6 +3927,54 @@ class BREadbeatsWindow(QMainWindow):
         _set_slider_row_tooltip(low_conf_mult_slider, "Multiplies phase-accept window when confidence is low, so relock stays flexible.")
         tempo_resp_layout.addWidget(low_conf_mult_slider)
 
+        octave_target_bias_slider = SliderWithLabel(
+            "Target-hint max conf",
+            0.05,
+            0.80,
+            getattr(self.config.beat, 'octave_target_bias_confidence_max', 0.35),
+            2,
+        )
+        octave_target_bias_slider.valueChanged.connect(self._on_octave_target_bias_confidence_max_change)
+        _set_slider_row_tooltip(
+            octave_target_bias_slider,
+            "Only use target BPM to guide octave disambiguation below this ACF confidence."
+        )
+        tempo_resp_layout.addWidget(octave_target_bias_slider)
+
+        target_bps_lock_gate_cb = QCheckBox("Gate Target BPM metric when metronome lock is confident")
+        target_bps_lock_gate_cb.setChecked(getattr(self.config.beat, 'target_bps_lock_gate_enabled', True))
+        target_bps_lock_gate_cb.setToolTip("When enabled, target-BPM metric stops nudging peak_floor while metronome lock is strong.")
+        target_bps_lock_gate_cb.stateChanged.connect(lambda state: self._on_target_bps_lock_gate_toggle(state == 2))
+        tempo_resp_layout.addWidget(target_bps_lock_gate_cb)
+
+        target_bps_lock_conf_slider = SliderWithLabel(
+            "Target-BPS lock conf",
+            0.10,
+            0.90,
+            getattr(self.config.beat, 'target_bps_lock_gate_acf_conf', 0.40),
+            2,
+        )
+        target_bps_lock_conf_slider.valueChanged.connect(self._on_target_bps_lock_gate_acf_conf_change)
+        _set_slider_row_tooltip(
+            target_bps_lock_conf_slider,
+            "Minimum ACF confidence required before Target-BPS metric gating is applied."
+        )
+        tempo_resp_layout.addWidget(target_bps_lock_conf_slider)
+
+        target_bps_lock_match_row = QHBoxLayout()
+        target_bps_lock_match_label = QLabel("Target-BPS lock min downbeat matches:")
+        target_bps_lock_match_label.setStyleSheet("color: #ccc;")
+        target_bps_lock_match_row.addWidget(target_bps_lock_match_label)
+        target_bps_lock_match_spin = QSpinBox()
+        target_bps_lock_match_spin.setMinimum(0)
+        target_bps_lock_match_spin.setMaximum(4)
+        target_bps_lock_match_spin.setValue(int(getattr(self.config.beat, 'target_bps_lock_gate_downbeats', 1)))
+        target_bps_lock_match_label.setToolTip("Minimum consecutive matching downbeats required before Target-BPS metric gating applies.")
+        target_bps_lock_match_spin.setToolTip("Minimum consecutive matching downbeats required before Target-BPS metric gating applies.")
+        target_bps_lock_match_spin.valueChanged.connect(self._on_target_bps_lock_gate_downbeats_change)
+        target_bps_lock_match_row.addWidget(target_bps_lock_match_spin)
+        tempo_resp_layout.addLayout(target_bps_lock_match_row)
+
         aggressive_snap_cb = QCheckBox("Aggressive tempo snap when lock is confident")
         aggressive_snap_cb.setChecked(getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False))
         aggressive_snap_cb.setToolTip("When enabled, metronome BPM can hard-snap to target under strict confidence/phase safeguards.")
@@ -3888,6 +4025,10 @@ class BREadbeatsWindow(QMainWindow):
             dedup_slider.setValue(0.22)
             phase_accept_slider.setValue(85.0)
             low_conf_mult_slider.setValue(2.0)
+            octave_target_bias_slider.setValue(0.35)
+            target_bps_lock_gate_cb.setChecked(True)
+            target_bps_lock_conf_slider.setValue(0.40)
+            target_bps_lock_match_spin.setValue(1)
             aggressive_snap_cb.setChecked(False)
             snap_conf_slider.setValue(0.55)
             snap_phase_slider.setValue(35.0)
@@ -3909,15 +4050,30 @@ class BREadbeatsWindow(QMainWindow):
 
         # Gate high slider (threshold to enter FULL_STROKE)
         gate_high_slider = SliderWithLabel("Full stroke threshold (enter)", 0.01, 0.20, self.config.stroke.amplitude_gate_high, 3)
+        def _show_waveform_amp_ref(key: str, value: float, label: str, color: str = '#FF66AA', dashed: bool = False):
+            canvas = None
+            if self.calibration_popout is not None and self.calibration_popout.isVisible():
+                if hasattr(self.calibration_popout, 'mode_combo') and self.calibration_popout.mode_combo.currentIndex() == 0:
+                    canvas = getattr(self.calibration_popout, 'waveform_canvas', None)
+            if canvas is not None and hasattr(canvas, 'show_reference_line'):
+                canvas.show_reference_line(key, float(value), label, color=color, duration_s=15.0, dashed=dashed)
+
+        def _update_overall_amp_fill_refs():
+            target = float(getattr(self.config.stroke, 'overall_amp_fill_target', 0.5) or 0.5)
+            tol = float(abs(getattr(self.config.stroke, 'overall_amp_fill_tolerance', 0.5) or 0.5))
+            min_amp = max(0.0, target - tol)
+            _show_waveform_amp_ref('overall_amp_target', target, 'Amp target', '#66CCFF', dashed=False)
+            _show_waveform_amp_ref('overall_amp_min', min_amp, 'Amp min', '#FFAA66', dashed=True)
+
         gate_high_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'amplitude_gate_high', v)
+            lambda v: (setattr(self.config.stroke, 'amplitude_gate_high', v), _show_waveform_amp_ref('full_stroke_enter', float(v), 'Full enter', '#44FF88'))
         )
         gate_layout.addWidget(gate_high_slider)
 
         # Gate low slider (threshold to drop to CREEP_MICRO)
         gate_low_slider = SliderWithLabel("Creep threshold (exit)", 0.005, 0.10, self.config.stroke.amplitude_gate_low, 3)
         gate_low_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'amplitude_gate_low', v)
+            lambda v: (setattr(self.config.stroke, 'amplitude_gate_low', v), _show_waveform_amp_ref('creep_exit', float(v), 'Creep exit', '#FF8866', dashed=True))
         )
         gate_layout.addWidget(gate_low_slider)
 
@@ -3962,6 +4118,82 @@ class BREadbeatsWindow(QMainWindow):
         motion_cutoff_row.addWidget(self.motion_freq_cutoff_spin)
         motion_cutoff_row.addStretch()
         gate_layout.addLayout(motion_cutoff_row)
+
+        amp_fill_gate_cb = QCheckBox("Enable overall amplitude + fill gate")
+        amp_fill_gate_cb.setChecked(bool(getattr(self.config.stroke, 'overall_amp_fill_gate_enabled', True)))
+        amp_fill_gate_cb.setToolTip("Require both overall amplitude and spectrum fill before beat/downbeat/syncopation strokes fire")
+        amp_fill_gate_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'overall_amp_fill_gate_enabled', state == 2)
+        )
+        gate_layout.addWidget(amp_fill_gate_cb)
+
+        new_gate_priority_cb = QCheckBox("New Gate Priority (bypass legacy overall low-activity guard)")
+        new_gate_priority_cb.setChecked(bool(getattr(self.config.stroke, 'new_gate_priority_enabled', True)))
+        new_gate_priority_cb.setToolTip("When enabled with overall amp+fill gate, legacy overall low flux/energy block is skipped")
+        new_gate_priority_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'new_gate_priority_enabled', state == 2)
+        )
+        gate_layout.addWidget(new_gate_priority_cb)
+
+        amp_fill_target_slider = SliderWithLabel(
+            "Overall amp target",
+            0.0,
+            1.0,
+            float(getattr(self.config.stroke, 'overall_amp_fill_target', 0.5) or 0.5),
+            2,
+        )
+        amp_fill_target_slider.valueChanged.connect(
+            lambda v: (setattr(self.config.stroke, 'overall_amp_fill_target', float(v)), _update_overall_amp_fill_refs())
+        )
+        gate_layout.addWidget(amp_fill_target_slider)
+
+        amp_fill_tol_slider = SliderWithLabel(
+            "Overall amp tolerance",
+            0.0,
+            1.0,
+            float(getattr(self.config.stroke, 'overall_amp_fill_tolerance', 0.5) or 0.5),
+            2,
+        )
+        amp_fill_tol_slider.valueChanged.connect(
+            lambda v: (setattr(self.config.stroke, 'overall_amp_fill_tolerance', float(v)), _update_overall_amp_fill_refs())
+        )
+        gate_layout.addWidget(amp_fill_tol_slider)
+
+        downbeat_fill_slider = SliderWithLabel(
+            "Downbeat fill required",
+            0.0,
+            1.0,
+            float(getattr(self.config.stroke, 'downbeat_overall_amp_fill_required', 0.75) or 0.75),
+            2,
+        )
+        downbeat_fill_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'downbeat_overall_amp_fill_required', float(v))
+        )
+        gate_layout.addWidget(downbeat_fill_slider)
+
+        beat_fill_slider = SliderWithLabel(
+            "Beat fill required",
+            0.0,
+            1.0,
+            float(getattr(self.config.stroke, 'beat_overall_amp_fill_required', 0.90) or 0.90),
+            2,
+        )
+        beat_fill_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'beat_overall_amp_fill_required', float(v))
+        )
+        gate_layout.addWidget(beat_fill_slider)
+
+        sync_fill_slider = SliderWithLabel(
+            "Syncopation fill required",
+            0.0,
+            1.0,
+            float(getattr(self.config.stroke, 'syncopation_overall_amp_fill_required', 1.00) or 1.00),
+            2,
+        )
+        sync_fill_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'syncopation_overall_amp_fill_required', float(v))
+        )
+        gate_layout.addWidget(sync_fill_slider)
 
         scroll_layout.addWidget(gate_group)
 
@@ -5302,7 +5534,7 @@ Like the app?<br>
         self.play_mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         play_stack.addWidget(self.play_mode_label)
         btn_layout.addLayout(play_stack, 0, 1)
-        
+
         # Volume slider (0 - 100) - uses compact label for control panel
         self.volume_slider = SliderWithLabel("Vol", 0, 100, 100, decimals=0)
         self.volume_slider.label.setFixedWidth(30)  # Compact label for controls box
@@ -6108,6 +6340,10 @@ Like the app?<br>
             'beat_dedup_fraction': getattr(self.config.beat, 'beat_dedup_fraction', 0.22),
             'phase_accept_window_ms': getattr(self.config.beat, 'phase_accept_window_ms', 85.0),
             'phase_accept_low_conf_mult': getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0),
+            'octave_target_bias_confidence_max': getattr(self.config.beat, 'octave_target_bias_confidence_max', 0.35),
+            'target_bps_lock_gate_enabled': getattr(self.config.beat, 'target_bps_lock_gate_enabled', True),
+            'target_bps_lock_gate_acf_conf': getattr(self.config.beat, 'target_bps_lock_gate_acf_conf', 0.40),
+            'target_bps_lock_gate_downbeats': getattr(self.config.beat, 'target_bps_lock_gate_downbeats', 1),
             'aggressive_tempo_snap_enabled': getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False),
             'aggressive_snap_confidence': getattr(self.config.beat, 'aggressive_snap_confidence', 0.55),
             'aggressive_snap_phase_error_ms': getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0),
@@ -6221,6 +6457,14 @@ Like the app?<br>
             self._on_phase_accept_window_ms_change(preset_data['phase_accept_window_ms'])
         if 'phase_accept_low_conf_mult' in preset_data:
             self._on_phase_accept_low_conf_mult_change(preset_data['phase_accept_low_conf_mult'])
+        if 'octave_target_bias_confidence_max' in preset_data:
+            self._on_octave_target_bias_confidence_max_change(preset_data['octave_target_bias_confidence_max'])
+        if 'target_bps_lock_gate_enabled' in preset_data:
+            self._on_target_bps_lock_gate_toggle(bool(preset_data['target_bps_lock_gate_enabled']))
+        if 'target_bps_lock_gate_acf_conf' in preset_data:
+            self._on_target_bps_lock_gate_acf_conf_change(preset_data['target_bps_lock_gate_acf_conf'])
+        if 'target_bps_lock_gate_downbeats' in preset_data:
+            self._on_target_bps_lock_gate_downbeats_change(int(preset_data['target_bps_lock_gate_downbeats']))
         if 'aggressive_tempo_snap_enabled' in preset_data:
             self._on_aggressive_tempo_snap_toggle(bool(preset_data['aggressive_tempo_snap_enabled']))
         if 'aggressive_snap_confidence' in preset_data:
@@ -7094,6 +7338,30 @@ Like the app?<br>
         if self.audio_engine:
             self.audio_engine._phase_accept_low_conf_mult = value
 
+    def _on_octave_target_bias_confidence_max_change(self, value: float):
+        """Update max confidence where target-BPM hint can guide octave disambiguation."""
+        self.config.beat.octave_target_bias_confidence_max = value
+        if self.audio_engine:
+            self.audio_engine._octave_target_bias_confidence_max = value
+
+    def _on_target_bps_lock_gate_toggle(self, enabled: bool):
+        """Enable/disable lock-aware gating for target-BPS metric adjustments."""
+        self.config.beat.target_bps_lock_gate_enabled = enabled
+        if self.audio_engine:
+            self.audio_engine._target_bps_lock_gate_enabled = enabled
+
+    def _on_target_bps_lock_gate_acf_conf_change(self, value: float):
+        """Update confidence threshold for lock-aware target-BPS gating."""
+        self.config.beat.target_bps_lock_gate_acf_conf = value
+        if self.audio_engine:
+            self.audio_engine._target_bps_lock_gate_acf_conf = value
+
+    def _on_target_bps_lock_gate_downbeats_change(self, value: int):
+        """Update minimum downbeat matches for lock-aware target-BPS gating."""
+        self.config.beat.target_bps_lock_gate_downbeats = int(value)
+        if self.audio_engine:
+            self.audio_engine._target_bps_lock_gate_downbeats = int(value)
+
     def _on_aggressive_tempo_snap_toggle(self, enabled: bool):
         """Toggle confidence-gated aggressive metronome BPM snapping."""
         self.config.beat.aggressive_tempo_snap_enabled = enabled
@@ -7195,6 +7463,10 @@ Like the app?<br>
             'beat_dedup_fraction': getattr(self.config.beat, 'beat_dedup_fraction', 0.22),
             'phase_accept_window_ms': getattr(self.config.beat, 'phase_accept_window_ms', 85.0),
             'phase_accept_low_conf_mult': getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0),
+            'octave_target_bias_confidence_max': getattr(self.config.beat, 'octave_target_bias_confidence_max', 0.35),
+            'target_bps_lock_gate_enabled': getattr(self.config.beat, 'target_bps_lock_gate_enabled', True),
+            'target_bps_lock_gate_acf_conf': getattr(self.config.beat, 'target_bps_lock_gate_acf_conf', 0.40),
+            'target_bps_lock_gate_downbeats': getattr(self.config.beat, 'target_bps_lock_gate_downbeats', 1),
             'aggressive_tempo_snap_enabled': getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False),
             'aggressive_snap_confidence': getattr(self.config.beat, 'aggressive_snap_confidence', 0.55),
             'aggressive_snap_phase_error_ms': getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0),
@@ -7337,6 +7609,14 @@ Like the app?<br>
                 self._on_phase_accept_window_ms_change(preset_data['phase_accept_window_ms'])
             if 'phase_accept_low_conf_mult' in preset_data:
                 self._on_phase_accept_low_conf_mult_change(preset_data['phase_accept_low_conf_mult'])
+            if 'octave_target_bias_confidence_max' in preset_data:
+                self._on_octave_target_bias_confidence_max_change(preset_data['octave_target_bias_confidence_max'])
+            if 'target_bps_lock_gate_enabled' in preset_data:
+                self._on_target_bps_lock_gate_toggle(bool(preset_data['target_bps_lock_gate_enabled']))
+            if 'target_bps_lock_gate_acf_conf' in preset_data:
+                self._on_target_bps_lock_gate_acf_conf_change(preset_data['target_bps_lock_gate_acf_conf'])
+            if 'target_bps_lock_gate_downbeats' in preset_data:
+                self._on_target_bps_lock_gate_downbeats_change(int(preset_data['target_bps_lock_gate_downbeats']))
             if 'aggressive_tempo_snap_enabled' in preset_data:
                 self._on_aggressive_tempo_snap_toggle(bool(preset_data['aggressive_tempo_snap_enabled']))
             if 'aggressive_snap_confidence' in preset_data:
@@ -8795,24 +9075,37 @@ Like the app?<br>
                         self._auto_align_is_stable = False
                         self._auto_align_stable_since = 0.0
                     
+                    acf_conf = float(np.clip(tempo_info.get('acf_confidence', 0.0), 0.0, 1.0))
+                    conf_boost = float(np.clip((acf_conf - 0.25) / 0.45, 0.0, 1.0))
+                    adaptive_required_seconds = self._auto_align_required_seconds * (1.0 - 0.50 * conf_boost)
+                    adaptive_cooldown = self._auto_align_cooldown * (1.0 - 0.67 * conf_boost)
+
                     # Check if stable long enough to start aligning
                     if (self._auto_align_is_stable and 
-                            (now - self._auto_align_stable_since) >= self._auto_align_required_seconds):
+                            (now - self._auto_align_stable_since) >= adaptive_required_seconds):
                         current_target = self.target_bpm_spin.value()
                         diff = sensed_bpm - current_target
                         
                         # Only align if difference >= 1 BPM AND cooldown elapsed
-                        if abs(diff) >= 1.0 and (now - self._auto_align_last_adjust_time) >= self._auto_align_cooldown:
+                        if abs(diff) >= 1.0 and (now - self._auto_align_last_adjust_time) >= adaptive_cooldown:
+                            step_bpm = 1
+                            if acf_conf >= 0.55 and abs(diff) >= 4.0:
+                                step_bpm = 2
+                            if acf_conf >= 0.70 and abs(diff) >= 8.0:
+                                step_bpm = 3
                             if diff > 0:
-                                new_target = min(int(current_target) + 1, int(sensed_bpm))
+                                new_target = min(int(current_target) + step_bpm, int(sensed_bpm))
                             else:
-                                new_target = max(int(current_target) - 1, int(np.ceil(sensed_bpm)))
+                                new_target = max(int(current_target) - step_bpm, int(np.ceil(sensed_bpm)))
                             
                             if new_target != int(current_target):
                                 self.target_bpm_spin.setValue(new_target)
                                 self._auto_align_last_adjust_time = now
                                 stable_elapsed = now - self._auto_align_stable_since
-                                print(f"[Auto-align] Target BPM: {int(current_target)} → {new_target} (sensed: {sensed_bpm:.1f}, stable for {stable_elapsed:.1f}s)")
+                                print(
+                                    f"[Auto-align] Target BPM: {int(current_target)} → {new_target} "
+                                    f"(sensed: {sensed_bpm:.1f}, conf: {acf_conf:.2f}, stable for {stable_elapsed:.1f}s, step: {step_bpm})"
+                                )
                 else:
                     # Invalid BPM, reset stability
                     self._auto_align_is_stable = False
