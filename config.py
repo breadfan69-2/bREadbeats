@@ -105,7 +105,7 @@ class StrokeConfig:
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
 
-    # Volume reduction limit: max % volume can be reduced by effects (subtractive clamp)
+    # Volume reduction limit: max % volume can be reduced by band/fade/creep effects (post-silence excluded)
     vol_reduction_limit: float = 10.0  # 0-20, default 10 means max 10% reduction (floor = 0.90)
 
     # Flux-rise depth factor over 250ms. Behavior is selected by flux_depth_boost_enabled.
