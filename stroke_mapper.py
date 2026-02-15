@@ -314,7 +314,7 @@ class StrokeMapper:
         self._park_radius: float = 0.2               # park at bottom-center, 20% radius
 
         # ---------- Park / wait target ----------
-        self._park_alpha: float = -self._park_radius
+        self._park_alpha: float = self._park_radius
         self._park_beta: float = 0.0
 
     # ------------------------------------------------------------------
@@ -328,7 +328,7 @@ class StrokeMapper:
 
     def _get_park_anchor(self) -> Tuple[float, float]:
         """Bottom-center park anchor at fixed radius."""
-        return -self._park_radius, 0.0
+        return self._park_radius, 0.0
 
     def _get_park_phase(self) -> float:
         alpha, beta = self._get_park_anchor()
@@ -1194,10 +1194,19 @@ class StrokeMapper:
     def _get_overall_amp_fill_required(self, phase: str) -> float:
         cfg = self.config.stroke
         if phase == 'syncopation':
-            return float(np.clip(getattr(cfg, 'syncopation_overall_amp_fill_required', 1.00) or 1.00, 0.0, 1.0))
+            required = float(getattr(cfg, 'syncopation_overall_amp_fill_required', 0.12) or 0.12)
+            if required >= 0.70:
+                required = 0.12
+            return float(np.clip(required, 0.0, 1.0))
         if phase == 'downbeat':
-            return float(np.clip(getattr(cfg, 'downbeat_overall_amp_fill_required', 0.75) or 0.75, 0.0, 1.0))
-        return float(np.clip(getattr(cfg, 'beat_overall_amp_fill_required', 0.90) or 0.90, 0.0, 1.0))
+            required = float(getattr(cfg, 'downbeat_overall_amp_fill_required', 0.08) or 0.08)
+            if required >= 0.60:
+                required = 0.08
+            return float(np.clip(required, 0.0, 1.0))
+        required = float(getattr(cfg, 'beat_overall_amp_fill_required', 0.10) or 0.10)
+        if required >= 0.70:
+            required = 0.10
+        return float(np.clip(required, 0.0, 1.0))
 
     def _get_spectrum_fill_ratio(self, target: float) -> float:
         """Return fraction of active spectrum bins above target-normalized amplitude."""

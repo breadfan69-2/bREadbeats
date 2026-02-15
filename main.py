@@ -4167,7 +4167,7 @@ class BREadbeatsWindow(QMainWindow):
             "Downbeat fill required",
             0.0,
             1.0,
-            float(getattr(self.config.stroke, 'downbeat_overall_amp_fill_required', 0.75) or 0.75),
+            float(getattr(self.config.stroke, 'downbeat_overall_amp_fill_required', 0.08) or 0.08),
             2,
         )
         downbeat_fill_slider.valueChanged.connect(
@@ -4179,7 +4179,7 @@ class BREadbeatsWindow(QMainWindow):
             "Beat fill required",
             0.0,
             1.0,
-            float(getattr(self.config.stroke, 'beat_overall_amp_fill_required', 0.90) or 0.90),
+            float(getattr(self.config.stroke, 'beat_overall_amp_fill_required', 0.10) or 0.10),
             2,
         )
         beat_fill_slider.valueChanged.connect(
@@ -4191,7 +4191,7 @@ class BREadbeatsWindow(QMainWindow):
             "Syncopation fill required",
             0.0,
             1.0,
-            float(getattr(self.config.stroke, 'syncopation_overall_amp_fill_required', 1.00) or 1.00),
+            float(getattr(self.config.stroke, 'syncopation_overall_amp_fill_required', 0.12) or 0.12),
             2,
         )
         sync_fill_slider.valueChanged.connect(
