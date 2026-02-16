@@ -324,12 +324,12 @@ class StrokeMapper:
         )
 
         # ---------- Landing / park anchors ----------
-        # Display-bottom phase is 0.0 in current alpha/beta orientation.
+        # Display-bottom phase is π in current alpha/beta orientation.
         self._landing_offset_degrees: float = 7.5
         self._park_radius_min: float = 0.20
         self._park_radius_max: float = 0.95
         self._park_radius: float = 0.80
-        self._park_bottom_phase: float = 0.0
+        self._park_bottom_phase: float = np.pi
         self._park_freq_bias: float = 0.0
 
         # ---------- Park / wait target ----------
