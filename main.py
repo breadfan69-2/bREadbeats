@@ -7487,7 +7487,7 @@ Like the app?<br>
         layout.addWidget(QLabel("Sensitivity:"))
         self.fill_gate_scale_spin = QDoubleSpinBox()
         self.fill_gate_scale_spin.setRange(-90.0, 300.0)
-        self.fill_gate_scale_spin.setSingleStep(5.0)
+        self.fill_gate_scale_spin.setSingleStep(0.1)
         self.fill_gate_scale_spin.setDecimals(1)
         self.fill_gate_scale_spin.setSuffix("%")
         self.fill_gate_scale_spin.setValue(
