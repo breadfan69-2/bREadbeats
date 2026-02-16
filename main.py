@@ -7548,7 +7548,7 @@ Like the app?<br>
         self.fill_gate_scale_spin.setSuffix("%")
         self.fill_gate_scale_spin.setValue(
             self._fill_gate_scale_to_percent(
-                float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0)
+                float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 0.5) or 0.5)
             )
         )
         self.fill_gate_scale_spin.setFixedWidth(78)

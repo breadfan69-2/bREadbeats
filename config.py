@@ -211,7 +211,7 @@ class StrokeConfig:
     downbeat_overall_amp_fill_required: float = 0.75
     beat_overall_amp_fill_required: float = 0.90
     syncopation_overall_amp_fill_required: float = 1.00
-    overall_amp_fill_required_scale: float = 1.0
+    overall_amp_fill_required_scale: float = 0.5
 
     # FFT-bin windows used by overall fill gate for each phase.
     # Values are bin indexes (0..N/2) from current FFT size.
