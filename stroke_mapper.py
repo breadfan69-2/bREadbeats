@@ -93,7 +93,7 @@ class StrokeMapper:
       - Tempo-synced continuous rotation (one full circle per beat)
       - Amplitude-gated mode switching (FULL_STROKE vs CREEP_MICRO)
       - Micro-effect system: small jerks on beats scaled by mid/high energy
-      - Downbeat anchored at top of circle
+            - Park-aware launch continuity for beat arcs
 
     All stroke modes create circular/arc patterns in the alpha/beta plane.
     Alpha and beta range from -1 to 1, with (0,0) at center.
@@ -204,18 +204,18 @@ class StrokeMapper:
         # Keep initialized for branches that reference scheduled burst deactivation.
         self._burst_scheduled_active: bool = False
 
-        # ---------- Pending arc: glide to top/bottom before firing ----------
+        # ---------- Pending arc launch / anchor compatibility ----------
         self._pending_arc_event: Optional[BeatEvent] = None
         self._pending_arc_target: float = 0.0       # phase target for deferred arc fire
         self._pending_arc_is_downbeat: bool = False
         self._arc_anchor_threshold: float = 0.35     # radians (~20°) — close enough to fire
         self._single_anchor_bottom_phase: float = 0.0
         self._single_anchor_prebottom_offset: float = 0.22
-        self._single_anchor_enabled_modes = {StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL}
+        # Keep legacy single-anchor behavior only for mode3 (TEARDROP).
+        self._single_anchor_enabled_modes = {StrokeMode.TEARDROP}
         self._spiral_direction: int = 1
 
-        # ---------- Locked anchor: pick top or bottom once, keep until silence ----------
-        # None = unlocked (first beat picks nearest), 0.0 = locked to top, π = locked to bottom
+        # ---------- Locked anchor placeholder (kept for backward compatibility) ----------
         self._locked_anchor: Optional[float] = None
 
         # ---------- Stroke readiness gating ----------
@@ -600,6 +600,22 @@ class StrokeMapper:
         return self._band_speed_scale.get(band, 1.0)
 
     def _get_anchor_phase_for_mode(self, mode: StrokeMode, fallback_phase: float, direction_override: Optional[int] = None) -> float:
+        current_radius = float(np.hypot(self.state.alpha, self.state.beta))
+        recent_beats_active = (
+            self._last_any_beat_time > 0
+            and (time.time() - self._last_any_beat_time) <= 1.2
+        )
+        edge_creep_continuation = (
+            self.config.creep.enabled
+            and not self.state.creep_reset_active
+            and not self.spiral_reset_active
+            and self._trajectory is None
+            and recent_beats_active
+            and current_radius >= 0.72
+        )
+        if edge_creep_continuation:
+            return fallback_phase
+
         if mode in self._single_anchor_enabled_modes:
             if direction_override in (-1, 1):
                 direction = int(direction_override)
