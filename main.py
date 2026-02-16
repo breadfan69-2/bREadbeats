@@ -75,7 +75,6 @@ from transport_wiring import (
     trigger_network_test,
 )
 from stroke_mapper import StrokeMapper
-from teaching_capture import TeachingCapture
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
 
@@ -3290,12 +3289,15 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
+        
+        # Initialize engines to None early (required before learning-config apply)
+        self.audio_engine = None
+        self.network_engine = None
+        self.stroke_mapper = None
+        
         self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
-        self._teaching_capture = TeachingCapture(get_config_dir())
-        self._teaching_capture_enabled: bool = False
-        self._teaching_last_metric_log_time: float = 0.0
-        self._teaching_metric_interval_s: float = 1.0 / 25.0
-        self._teaching_last_visual: dict[str, float] = {}
+        self._apply_release_learning_defaults()
+        self._apply_learning_config_to_mapper()
         self._apply_first_launch_auto_control_defaults()
         self._slider_tracker = SliderTuningTracker(get_config_dir())
         _set_active_slider_tracker(self._slider_tracker)
@@ -3306,10 +3308,7 @@ class BREadbeatsWindow(QMainWindow):
         # Command queue
         self.cmd_queue = queue.Queue()
         
-        # Initialize engines to None early (before UI setup needs to check them)
-        self.audio_engine = None
-        self.network_engine = None
-        self.stroke_mapper = None
+        # Initialize optional UI state
         self._dry_run_enabled = bool(getattr(self.config.device_limits, 'dry_run', False))
         self._advanced_controls_dialog = None
         self._advanced_flux_threshold_slider = None
@@ -3972,26 +3971,12 @@ class BREadbeatsWindow(QMainWindow):
         assert popout_calibration_action is not None
         popout_calibration_action.triggered.connect(self._on_popout_calibration_visualizer)
 
-        learning_controls_action = options_menu.addAction("Learning Controls...")
-        assert learning_controls_action is not None
-        learning_controls_action.triggered.connect(self._on_learning_controls)
-
         developer_controls_menu = options_menu.addMenu("Developer Controls")
         assert developer_controls_menu is not None
 
         tempo_tracking_action = developer_controls_menu.addAction("Tempo Tracking...")
         assert tempo_tracking_action is not None
         tempo_tracking_action.triggered.connect(self._on_options_tempo_tracking)
-
-        load_learning_profile_action = options_menu.addAction("Load Learning Profile...")
-        assert load_learning_profile_action is not None
-        load_learning_profile_action.triggered.connect(self._on_load_learning_profile)
-
-        self.teaching_capture_action = options_menu.addAction("Teaching Capture")
-        assert self.teaching_capture_action is not None
-        self.teaching_capture_action.setCheckable(True)
-        self.teaching_capture_action.setChecked(False)
-        self.teaching_capture_action.triggered.connect(self._on_teaching_capture_toggle)
 
         nerds_menu.addSeparator()
 
@@ -6541,6 +6526,7 @@ Like the app?<br>
                 self.combo_speed_spin,
                 self.combo_texture_spin,
                 self.combo_reaction_spin,
+                self.tempo_lock_required_cb,
                 self.fill_gate_scale_spin,
                 self.stroke_range_slider,
                 self.fullness_slider,
@@ -6593,6 +6579,7 @@ Like the app?<br>
                 self.combo_speed_spin.setValue(float(getattr(self.config.stroke, 'combo_speed', 1.0)))
                 self.combo_texture_spin.setValue(float(getattr(self.config.stroke, 'combo_texture', 1.0)))
                 self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
+                self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
                 self.fill_gate_scale_spin.setValue(
                     self._fill_gate_scale_to_percent(
                         float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0)
@@ -6735,10 +6722,6 @@ Like the app?<br>
         start_stack = QVBoxLayout()
         start_stack.setSpacing(2)
         start_stack.addWidget(self.start_btn)
-
-        self.start_mode_label = QLabel("audio processing")
-        self.start_mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        start_stack.addWidget(self.start_mode_label)
         btn_layout.addLayout(start_stack, 0, 0)
         
         # Play/Pause sending
@@ -6749,10 +6732,6 @@ Like the app?<br>
         play_stack = QVBoxLayout()
         play_stack.setSpacing(2)
         play_stack.addWidget(self.play_btn)
-
-        self.play_mode_label = QLabel("motion generation")
-        self.play_mode_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        play_stack.addWidget(self.play_mode_label)
         btn_layout.addLayout(play_stack, 0, 1)
 
         # Volume slider (0 - 100) - uses compact label for control panel
@@ -7151,15 +7130,81 @@ Like the app?<br>
         self.calibration_popout = None
         self._set_main_visualizers_hidden_for_popout(False)
 
-    def _on_teaching_capture_toggle(self, checked: bool) -> None:
-        self._teaching_capture_enabled = bool(checked)
-        if self._teaching_capture_enabled:
-            session_dir = self._teaching_capture.start()
-            self._teaching_last_metric_log_time = 0.0
-            print(f"[Teaching] Capture enabled: {session_dir}")
-        else:
-            self._teaching_capture.stop(flush=True)
-            print("[Teaching] Capture disabled and flushed")
+    def _apply_release_learning_defaults(self) -> None:
+        base_dir = Path(r"D:\breadbeats_datasets\blends")
+        if not base_dir.exists() or not base_dir.is_dir():
+            print(f"[Learning] Release defaults directory missing: {base_dir}")
+            return
+
+        def _by_mtime_desc(path: Path) -> float:
+            try:
+                return path.stat().st_mtime
+            except Exception:
+                return 0.0
+
+        profile_candidates = sorted(base_dir.glob("profile*.json"), key=_by_mtime_desc, reverse=True)
+        selected_profile = profile_candidates[0] if profile_candidates else None
+        selected_rule_fit: Path | None = None
+
+        if selected_profile is not None:
+            try:
+                payload = json.loads(selected_profile.read_text(encoding="utf-8"))
+            except Exception as exc:
+                print(f"[Learning] Failed reading release profile {selected_profile}: {exc}")
+                payload = {}
+
+            if isinstance(payload, dict):
+                learning_cfg = payload.get("learning", {})
+                model_cfg = payload.get("model", {})
+                if not isinstance(learning_cfg, dict):
+                    learning_cfg = {}
+                if not isinstance(model_cfg, dict):
+                    model_cfg = {}
+
+                bool_keys = {
+                    "teaching_learning_enabled",
+                    "teaching_use_fitted_rules",
+                    "teaching_apply_in_circle_mode",
+                    "teaching_isolation_mode",
+                }
+                float_keys = {
+                    "teaching_learning_strength",
+                    "teaching_min_confidence",
+                    "teaching_no_motion_bias",
+                }
+
+                for key in bool_keys:
+                    if key in learning_cfg:
+                        setattr(self.config.beat, key, bool(learning_cfg.get(key)))
+                for key in float_keys:
+                    if key in learning_cfg:
+                        try:
+                            setattr(self.config.beat, key, float(learning_cfg.get(key)))
+                        except Exception:
+                            pass
+
+                raw_rule_fit = model_cfg.get("rule_fit") or learning_cfg.get("teaching_rule_fit_path") or payload.get("rule_fit")
+                if isinstance(raw_rule_fit, str) and raw_rule_fit.strip():
+                    candidate = Path(raw_rule_fit.strip())
+                    if not candidate.is_absolute():
+                        candidate = selected_profile.parent / candidate
+                    selected_rule_fit = candidate
+
+        if selected_rule_fit is None:
+            rule_fit_candidates = sorted(base_dir.glob("rule_fit*.json"), key=_by_mtime_desc, reverse=True)
+            selected_rule_fit = rule_fit_candidates[0] if rule_fit_candidates else None
+
+        if selected_profile is not None:
+            setattr(self.config.beat, 'teaching_profile_path', str(selected_profile))
+        if selected_rule_fit is not None:
+            self.config.beat.teaching_rule_fit_path = str(selected_rule_fit)
+
+        self.config.beat.teaching_learning_enabled = True
+        self.config.beat.teaching_use_fitted_rules = True
+
+        profile_label = selected_profile.name if selected_profile is not None else "(none)"
+        rule_fit_label = selected_rule_fit.name if selected_rule_fit is not None else "(none)"
+        print(f"[Learning] Release defaults: profile={profile_label}, rule_fit={rule_fit_label}")
 
     def _apply_learning_config_to_mapper(self) -> None:
         mapper_live = self.stroke_mapper
@@ -7176,306 +7221,62 @@ Like the app?<br>
         if mapper_live._learning_enabled and mapper_live._learning_use_fitted_rules:
             mapper_live._try_load_learning_model()
 
-    def _on_load_learning_profile(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Learning Profile",
-            self._get_external_data_start_dir(),
-            "Profile JSON (profile*.json);;JSON Files (*.json);;All Files (*.*)",
-        )
-        if not file_path:
-            return
-
-        profile_path = Path(file_path)
-        try:
-            payload = json.loads(profile_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            QMessageBox.warning(self, "Learning Profile", f"Failed to read profile:\n{exc}")
-            return
-
-        if not isinstance(payload, dict):
-            QMessageBox.warning(self, "Learning Profile", "Profile JSON must be an object.")
-            return
-
-        learning_cfg = payload.get("learning", {})
-        model_cfg = payload.get("model", {})
-        if not isinstance(learning_cfg, dict):
-            learning_cfg = {}
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-
-        bool_keys = {
-            "teaching_learning_enabled",
-            "teaching_use_fitted_rules",
-            "teaching_apply_in_circle_mode",
-            "teaching_isolation_mode",
-        }
-        float_keys = {
-            "teaching_learning_strength",
-            "teaching_min_confidence",
-            "teaching_no_motion_bias",
-        }
-
-        for key in bool_keys:
-            if key in learning_cfg:
-                setattr(self.config.beat, key, bool(learning_cfg.get(key)))
-        for key in float_keys:
-            if key in learning_cfg:
-                try:
-                    setattr(self.config.beat, key, float(learning_cfg.get(key)))
-                except Exception:
-                    pass
-
-        raw_rule_fit = model_cfg.get("rule_fit") or learning_cfg.get("teaching_rule_fit_path") or payload.get("rule_fit")
-        selected_rule_fit_path = ""
-        if isinstance(raw_rule_fit, str) and raw_rule_fit.strip():
-            candidate = Path(raw_rule_fit.strip())
-            if not candidate.is_absolute():
-                candidate = profile_path.parent / candidate
-            self.config.beat.teaching_rule_fit_path = str(candidate)
-            selected_rule_fit_path = str(candidate)
-
-        self.config.beat.teaching_profile_path = str(profile_path)
-        self._apply_learning_config_to_mapper()
-        self.config.save()
-
-        mapper_live = self.stroke_mapper
-        loaded = bool(getattr(mapper_live, '_learning_model_loaded', False)) if mapper_live is not None else False
-        model_path = str(getattr(mapper_live, '_learning_model_path', '') or '') if mapper_live is not None else ''
-        msg = f"Loaded profile: {profile_path.name}"
-        if model_path:
-            msg += f"\nModel: {'loaded' if loaded else 'not loaded'}\n{model_path}"
-
-        profile_id_raw = payload.get("profile_id", "")
-        profile_id = str(profile_id_raw).strip().lower() if isinstance(profile_id_raw, str) else ""
-        if profile_id and selected_rule_fit_path:
-            rule_fit_name = Path(selected_rule_fit_path).name.lower()
-            if profile_id not in rule_fit_name:
-                msg += (
-                    "\n\nWarning: profile_id does not appear in rule_fit filename."
-                    "\nThis may still work, but matched profile/model pairs usually feel better."
-                )
-
-        QMessageBox.information(self, "Learning Profile", msg)
-
-    def _on_learning_controls(self) -> None:
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox, QHBoxLayout, QPushButton, QLineEdit
+    def _on_learning_tune_controls(self) -> None:
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QHBoxLayout, QPushButton
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Learning Controls")
+        dialog.setWindowTitle("Tuning")
         dialog.setMinimumWidth(560)
         layout = QVBoxLayout(dialog)
 
-        info = QLabel(
-            "Runtime learning adapter controls.\n"
-            "These update teaching_* config and the live StrokeMapper immediately when applied."
-        )
-        info.setStyleSheet("color: #ccc;")
-        layout.addWidget(info)
-
-        enabled_cb = QCheckBox("Enable runtime learning adapter")
-        enabled_cb.setChecked(bool(getattr(self.config.beat, 'teaching_learning_enabled', True)))
-        layout.addWidget(enabled_cb)
-
-        use_fitted_cb = QCheckBox("Use fitted rule model (rule_fit.json)")
-        use_fitted_cb.setChecked(bool(getattr(self.config.beat, 'teaching_use_fitted_rules', True)))
-        layout.addWidget(use_fitted_cb)
-
-        apply_circle_cb = QCheckBox("Apply learning in Circle mode")
-        apply_circle_cb.setChecked(bool(getattr(self.config.beat, 'teaching_apply_in_circle_mode', False)))
-        layout.addWidget(apply_circle_cb)
-
-        isolation_cb = QCheckBox("Learning isolation mode")
-        isolation_cb.setChecked(bool(getattr(self.config.beat, 'teaching_isolation_mode', True)))
-        layout.addWidget(isolation_cb)
-
         strength_slider = SliderWithLabel(
-            "Learning strength", 0.0, 1.0,
+            "Advance", 0.0, 1.0,
             float(getattr(self.config.beat, 'teaching_learning_strength', 0.55) or 0.55), 2
         )
         layout.addWidget(strength_slider)
 
-        min_conf_slider = SliderWithLabel(
-            "Min confidence", 0.0, 1.0,
+        holdback_slider = SliderWithLabel(
+            "Restraint", 0.0, 1.0,
             float(getattr(self.config.beat, 'teaching_min_confidence', 0.12) or 0.12), 2
         )
-        layout.addWidget(min_conf_slider)
+        layout.addWidget(holdback_slider)
 
         no_motion_bias_slider = SliderWithLabel(
-            "No-motion bias", 0.25, 3.0,
+            "Quiet Bias", 0.25, 3.0,
             float(getattr(self.config.beat, 'teaching_no_motion_bias', 1.0) or 1.0), 2
         )
         layout.addWidget(no_motion_bias_slider)
 
-        path_label = QLabel("Rule-fit path (optional):")
-        path_label.setStyleSheet("color: #ccc;")
-        layout.addWidget(path_label)
-        path_row = QHBoxLayout()
-        path_edit = QLineEdit(str(getattr(self.config.beat, 'teaching_rule_fit_path', '') or ''))
-        path_browse_btn = QPushButton("Browse...")
-        path_row.addWidget(path_edit)
-        path_row.addWidget(path_browse_btn)
-        layout.addLayout(path_row)
+        direction_hint = QLabel("⬅️ less         more ➡️")
+        direction_hint.setStyleSheet("color: #d0d0d0; font-size: 18px; font-weight: 500;")
+        direction_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(direction_hint)
 
-        def _browse_rule_fit_path() -> None:
-            file_path, _ = QFileDialog.getOpenFileName(
-                dialog,
-                "Select rule_fit.json",
-                self._get_external_data_start_dir(),
-                "JSON Files (*.json);;All Files (*.*)",
-            )
-            if file_path:
-                path_edit.setText(file_path)
-
-        path_browse_btn.clicked.connect(_browse_rule_fit_path)
-
-        mapper = self.stroke_mapper
-        model_status = "Model status: unavailable"
-        if mapper is not None:
-            loaded = bool(getattr(mapper, '_learning_model_loaded', False))
-            model_path = str(getattr(mapper, '_learning_model_path', '') or '')
-            model_status = f"Model status: {'loaded' if loaded else 'not loaded'}"
-            if model_path:
-                model_status += f" ({model_path})"
-        status_label = QLabel(model_status)
-        status_label.setStyleSheet("color: #9cc;")
-        layout.addWidget(status_label)
+        settle_hint = QLabel("Move one, wait for adjust")
+        settle_hint.setStyleSheet("color: #c7c7c7; font-size: 14px;")
+        settle_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(settle_hint)
 
         button_row = QHBoxLayout()
         apply_btn = QPushButton("Apply")
         close_btn = QPushButton("Close")
+        apply_btn.setStyleSheet("font-weight: 500;")
+        close_btn.setStyleSheet("font-weight: 500;")
         button_row.addStretch()
         button_row.addWidget(apply_btn)
         button_row.addWidget(close_btn)
         layout.addLayout(button_row)
 
         def _apply_learning_settings() -> None:
-            self.config.beat.teaching_learning_enabled = bool(enabled_cb.isChecked())
-            self.config.beat.teaching_use_fitted_rules = bool(use_fitted_cb.isChecked())
-            self.config.beat.teaching_apply_in_circle_mode = bool(apply_circle_cb.isChecked())
-            self.config.beat.teaching_isolation_mode = bool(isolation_cb.isChecked())
             self.config.beat.teaching_learning_strength = float(strength_slider.value())
-            self.config.beat.teaching_min_confidence = float(min_conf_slider.value())
+            self.config.beat.teaching_min_confidence = float(holdback_slider.value())
             self.config.beat.teaching_no_motion_bias = float(no_motion_bias_slider.value())
-            self.config.beat.teaching_rule_fit_path = str(path_edit.text() or '').strip()
-
             self._apply_learning_config_to_mapper()
-
-            mapper_live = self.stroke_mapper
-            loaded = bool(getattr(mapper_live, '_learning_model_loaded', False)) if mapper_live is not None else False
-            model_path = str(getattr(mapper_live, '_learning_model_path', '') or '') if mapper_live is not None else ''
-            text = f"Model status: {'loaded' if loaded else 'not loaded'}"
-            if model_path:
-                text += f" ({model_path})"
-            status_label.setText(text)
-
             self.config.save()
 
         apply_btn.clicked.connect(_apply_learning_settings)
         close_btn.clicked.connect(dialog.close)
         dialog.exec()
-
-    def _collect_gate_metrics_snapshot(self) -> dict[str, float]:
-        mapper = self.stroke_mapper
-        if mapper is None:
-            return {}
-
-        out: dict[str, float] = {}
-        try:
-            low_vals = list(getattr(mapper, '_recent_low_band_values', []))
-            high_vals = list(getattr(mapper, '_recent_high_band_values', []))
-            low_window = int(getattr(self.config.stroke, 'low_band_window_frames', 18) or 18)
-            high_window = int(getattr(self.config.stroke, 'high_band_window_frames', 18) or 18)
-
-            if len(low_vals) >= 1:
-                seg = np.asarray(low_vals[-max(1, min(low_window, len(low_vals))):], dtype=np.float32)
-                out['low_mean'] = float(np.mean(seg))
-                out['low_delta'] = float(np.max(seg) - np.min(seg))
-                out['low_var'] = float(np.var(seg))
-
-            if len(high_vals) >= 1:
-                seg = np.asarray(high_vals[-max(1, min(high_window, len(high_vals))):], dtype=np.float32)
-                floor_th = float(getattr(self.config.stroke, 'high_band_floor_threshold', 0.06) or 0.06)
-                out['high_mean'] = float(np.mean(seg))
-                out['high_delta'] = float(np.max(seg) - np.min(seg))
-                out['high_var'] = float(np.var(seg))
-                out['high_occ'] = float(np.sum(seg >= floor_th) / max(1, seg.size))
-        except Exception:
-            return out
-
-        return out
-
-    def _log_teaching_metric_row(self, spectrum: np.ndarray, sample_rate: int) -> None:
-        if not self._teaching_capture_enabled:
-            return
-
-        now = time.time()
-        if self._teaching_last_metric_log_time > 0 and (now - self._teaching_last_metric_log_time) < self._teaching_metric_interval_s:
-            return
-        self._teaching_last_metric_log_time = now
-
-        arr = np.asarray(spectrum, dtype=np.float32)
-        if arr.size == 0:
-            return
-
-        nyquist = float(sample_rate) / 2.0
-        freqs = np.linspace(0.0, nyquist, arr.size, dtype=np.float32)
-        peak_idx = int(np.argmax(arr)) if arr.size > 0 else 0
-        dominant_hz = float(freqs[peak_idx]) if arr.size > 0 else 0.0
-        peak_db = float(20.0 * np.log10(max(float(np.max(arr)), 1e-12)))
-
-        row = {
-            'timestamp_s': now,
-            'sample_rate_hz': int(sample_rate),
-            'dominant_hz': dominant_hz,
-            'peak_db': peak_db,
-            'beat_detected': 1 if bool(self._teaching_last_visual.get('last_event_is_beat', 0.0)) else 0,
-            'downbeat_detected': 1 if bool(self._teaching_last_visual.get('last_event_is_downbeat', 0.0)) else 0,
-        }
-        row.update(self._collect_gate_metrics_snapshot())
-        self._teaching_capture.add_metric(row)
-
-        self._teaching_last_visual['dominant_hz'] = dominant_hz
-        self._teaching_last_visual['peak_db'] = peak_db
-
-    def _capture_teaching_beat_snapshot(self, event: BeatEvent) -> None:
-        if not self._teaching_capture_enabled or not event.is_beat:
-            return
-
-        widget = None
-        if self.calibration_popout is not None and self.calibration_popout.isVisible():
-            if hasattr(self.calibration_popout, 'mode_combo') and self.calibration_popout.mode_combo.currentIndex() == 1:
-                widget = self.calibration_popout.freqdb_canvas
-            elif hasattr(self.calibration_popout, 'waveform_canvas'):
-                widget = self.calibration_popout.waveform_canvas
-        elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas.isVisible():
-            widget = self.freqdb_canvas
-        elif hasattr(self, 'waveform_canvas') and self.waveform_canvas.isVisible():
-            widget = self.waveform_canvas
-
-        snapshot_rel = ''
-        if widget is not None:
-            path = self._teaching_capture.next_snapshot_path('beat')
-            if path is not None:
-                pixmap = widget.grab()
-                if pixmap is not None and not pixmap.isNull() and pixmap.save(str(path), 'PNG'):
-                    snapshot_rel = str(path.name)
-
-        row = {
-            'timestamp_s': float(getattr(event, 'timestamp', time.time()) or time.time()),
-            'is_beat': 1,
-            'is_downbeat': 1 if bool(getattr(event, 'is_downbeat', False)) else 0,
-            'bpm': float(getattr(event, 'bpm', 0.0) or 0.0),
-            'metronome_bpm': float(getattr(event, 'metronome_bpm', 0.0) or 0.0),
-            'acf_confidence': float(getattr(event, 'acf_confidence', 0.0) or 0.0),
-            'peak_energy': float(getattr(event, 'peak_energy', 0.0) or 0.0),
-            'spectral_flux': float(getattr(event, 'spectral_flux', 0.0) or 0.0),
-            'dominant_hz_latest': float(self._teaching_last_visual.get('dominant_hz', 0.0)),
-            'peak_db_latest': float(self._teaching_last_visual.get('peak_db', -120.0)),
-            'snapshot_png': snapshot_rel,
-        }
-        row.update(self._collect_gate_metrics_snapshot())
-        self._teaching_capture.add_event(row)
 
     def _on_show_peak_indicators_menu_toggle(self, checked: bool):
         """Handle Show Peak Indicators toggle from Options menu"""
@@ -7695,47 +7496,53 @@ Like the app?<br>
         self.combo_power_spin = _add_combo_spinbox(
             "power",
             getattr(self.config.stroke, 'combo_power', 1.0),
-            0.50,
-            2.00,
+            -2.00,
+            3.00,
             0.05,
             lambda v: setattr(self.config.stroke, 'combo_power', float(v)),
         )
         self.combo_depth_spin = _add_combo_spinbox(
             "depth",
             getattr(self.config.stroke, 'combo_depth', 1.0),
-            0.70,
-            1.60,
+            -2.00,
+            3.00,
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_depth', float(v)),
         )
         self.combo_speed_spin = _add_combo_spinbox(
             "speed",
             getattr(self.config.stroke, 'combo_speed', 1.0),
-            0.80,
-            1.30,
+            -2.00,
+            3.00,
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_speed', float(v)),
         )
         self.combo_texture_spin = _add_combo_spinbox(
             "texture",
             getattr(self.config.stroke, 'combo_texture', 1.0),
-            0.70,
-            1.60,
+            -2.00,
+            3.00,
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_texture', float(v)),
         )
         self.combo_reaction_spin = _add_combo_spinbox(
             "reaction",
             getattr(self.config.stroke, 'combo_reaction', 1.0),
-            0.75,
-            1.45,
+            -2.00,
+            3.00,
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_reaction', float(v)),
         )
 
+        layout.addWidget(QLabel("Tempo lock required:"))
+        self.tempo_lock_required_cb = QCheckBox()
+        self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
+        self.tempo_lock_required_cb.toggled.connect(self._on_tempo_lock_required_toggle)
+        layout.addWidget(self.tempo_lock_required_cb)
+
         layout.addWidget(QLabel("Sensitivity:"))
         self.fill_gate_scale_spin = QDoubleSpinBox()
-        self.fill_gate_scale_spin.setRange(-90.0, 300.0)
+        self.fill_gate_scale_spin.setRange(-300.0, 300.0)
         self.fill_gate_scale_spin.setSingleStep(0.1)
         self.fill_gate_scale_spin.setDecimals(1)
         self.fill_gate_scale_spin.setSuffix("%")
@@ -7747,20 +7554,28 @@ Like the app?<br>
         self.fill_gate_scale_spin.setFixedWidth(78)
         self.fill_gate_scale_spin.setToolTip(
             "Exponential fill-gate scaling applied proportionally to downbeat/beat/sync thresholds. "
-            "0% = 1.00x, +100% = 2.00x, -50% = 0.50x."
+            "0% = 1.00x, +100% = 0.50x, -100% = 2.00x."
         )
         self.fill_gate_scale_spin.valueChanged.connect(self._on_fill_gate_scale_change)
         layout.addWidget(self.fill_gate_scale_spin)
+
+        self.learning_tune_btn = QPushButton("Tuning")
+        self.learning_tune_btn.setToolTip(
+            "Open simple fit-rule tuning sliders: learning strength, motion holdback threshold, and quiet-part stillness bias."
+        )
+        self.learning_tune_btn.clicked.connect(self._on_learning_tune_controls)
+        layout.addWidget(self.learning_tune_btn)
+
         layout.addStretch()
 
         return group
 
     def _fill_gate_scale_to_percent(self, scale: float) -> float:
         safe_scale = max(1e-6, float(scale))
-        return float(np.log2(safe_scale) * 100.0)
+        return float(-np.log2(safe_scale) * 100.0)
 
     def _fill_gate_percent_to_scale(self, percent: float) -> float:
-        scale = float(np.power(2.0, float(percent) / 100.0))
+        scale = float(np.power(2.0, -float(percent) / 100.0))
         return float(np.clip(scale, 0.05, 20.0))
 
     def _on_fill_gate_scale_change(self, pct: float) -> None:
@@ -7770,6 +7585,9 @@ Like the app?<br>
             self._fill_gate_percent_to_scale(float(pct)),
         )
         self._preview_fill_requirement_ghosts()
+
+    def _on_tempo_lock_required_toggle(self, checked: bool) -> None:
+        setattr(self.config.beat, 'tempo_lock_required', bool(checked))
 
     def _capture_current_settings(self) -> dict:
         """Capture all current UI settings for revert functionality"""
@@ -7791,6 +7609,7 @@ Like the app?<br>
             
             # Tempo Tracking
             'tempo_tracking_enabled': self.tempo_tracking_checkbox.isChecked(),
+            'tempo_lock_required': self.tempo_lock_required_cb.isChecked(),
             'time_sig_index': self.time_sig_combo.currentIndex(),
             'stability_threshold': self.stability_threshold_slider.value(),
             'tempo_timeout_ms': int(self.tempo_timeout_slider.value()),
@@ -7889,6 +7708,8 @@ Like the app?<br>
         # Tempo Tracking
         self.tempo_tracking_checkbox.setChecked(preset_data['tempo_tracking_enabled'])
         self._on_tempo_tracking_toggle(2 if preset_data['tempo_tracking_enabled'] else 0)
+        if 'tempo_lock_required' in preset_data:
+            self.tempo_lock_required_cb.setChecked(bool(preset_data['tempo_lock_required']))
         self.time_sig_combo.setCurrentIndex(preset_data['time_sig_index'])
         self._on_time_sig_change(preset_data['time_sig_index'])
         self.stability_threshold_slider.setValue(preset_data['stability_threshold'])
@@ -9624,8 +9445,6 @@ Like the app?<br>
                 send_zero_volume_immediate(self.network_engine, duration_ms=100)
                 set_transport_sending(self.network_engine, False)
                 self._stop_engines()
-                if self._teaching_capture_enabled:
-                    self._teaching_capture.flush()
                 # Note: Auto-range state is preserved across stop/start - no reset here
         finally:
             self._transport_transition = False
@@ -10227,10 +10046,6 @@ Like the app?<br>
     
     def _on_beat(self, event: BeatEvent):
         """Handle beat event in GUI thread"""
-        self._teaching_last_visual['last_event_is_beat'] = 1.0 if bool(getattr(event, 'is_beat', False)) else 0.0
-        self._teaching_last_visual['last_event_is_downbeat'] = 1.0 if bool(getattr(event, 'is_downbeat', False)) else 0.0
-        if event.is_beat:
-            self._capture_teaching_beat_snapshot(event)
         # ===== METRONOME SYNC INDICATOR (updates every frame, not just on beat) =====
         acf_conf = getattr(event, 'acf_confidence', 0.0)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
@@ -10364,7 +10179,6 @@ Like the app?<br>
                 peak, flux = self._compute_visual_metrics(spectrum)
                 waveform = self._pending_spectrum.get('waveform')
                 sample_rate = int(self._pending_spectrum.get('sample_rate', getattr(self.config.audio, 'sample_rate', 44100)))
-                self._log_teaching_metric_row(spectrum, sample_rate)
                 popout = self.calibration_popout
                 popout_visible = popout is not None and popout.isVisible()
                 if popout_visible:
@@ -10612,8 +10426,6 @@ Like the app?<br>
 
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
-        if self._teaching_capture_enabled:
-            self._teaching_capture.stop(flush=True)
         shutdown_runtime(self._stop_engines, self.network_engine)
 
         persist_runtime_ui_to_config(self, self.config)
