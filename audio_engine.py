@@ -1059,7 +1059,11 @@ class AudioEngine:
             bpm_limit = self.config.beat.syncopation_bpm_limit
             if self._metronome_bpm <= bpm_limit:
                 phase_frac = self._metronome_phase % 1.0
-                texture_factor = float(np.clip(getattr(self.config.stroke, 'combo_texture', 1.0) or 1.0, 0.5, 2.0))
+                combo_texture = float(np.clip(float(getattr(self.config.stroke, 'combo_texture', 1.0) or 1.0), -2.0, 3.0))
+                if combo_texture >= 1.0:
+                    texture_factor = float(1.0 + ((combo_texture - 1.0) / 2.0) * (2.0 - 1.0))
+                else:
+                    texture_factor = float(1.0 - ((1.0 - combo_texture) / 3.0) * (1.0 - 0.5))
                 window = float(np.clip(self.config.beat.syncopation_window * texture_factor, 0.05, 0.45))
                 dist_to_half = abs(phase_frac - 0.5)
                 if dist_to_half < window:
@@ -1084,7 +1088,11 @@ class AudioEngine:
         # reset streak so the NEXT beat won't produce a false syncopation.
         if self._metronome_bpm > 0 and not self._metronome_beat_fired:
             phase_frac = self._metronome_phase % 1.0
-            texture_factor = float(np.clip(getattr(self.config.stroke, 'combo_texture', 1.0) or 1.0, 0.5, 2.0))
+            combo_texture = float(np.clip(float(getattr(self.config.stroke, 'combo_texture', 1.0) or 1.0), -2.0, 3.0))
+            if combo_texture >= 1.0:
+                texture_factor = float(1.0 + ((combo_texture - 1.0) / 2.0) * (2.0 - 1.0))
+            else:
+                texture_factor = float(1.0 - ((1.0 - combo_texture) / 3.0) * (1.0 - 0.5))
             window = float(np.clip(self.config.beat.syncopation_window * texture_factor, 0.05, 0.45))
             if phase_frac > (0.5 + window) and not self._syncopation_had_offbeat:
                 # Past the "and" window with no onset → pattern broken

@@ -95,6 +95,7 @@ class BeatDetectionConfig:
     teaching_isolation_mode: bool = True        # Branch-only: suspend selected legacy runtime modifiers while learning drives motion
     teaching_relax_phase1_gates: bool = True    # Keep selected non-tempo gates relaxed while learning is active
     teaching_ignore_traffic_lights: bool = False  # Re-enable traffic-light stroke readiness by default
+    tempo_lock_required: bool = True             # Require metronome lock confidence for stroke readiness
     teaching_metronome_relaxed_confidence: float = 0.14  # Metronome-only fallback confidence for relaxed readiness
     teaching_stroke_ready_grace_ms: float = 450.0  # Hold readiness briefly through short confidence dips
     teaching_stroke_finish_beats: int = 4        # When readiness drops, allow this many final beat strokes before idling

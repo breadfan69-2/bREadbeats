@@ -355,6 +355,31 @@ class StrokeMapper:
         limit_pct = self.config.stroke.vol_reduction_limit / 100.0
         return base_vol * (1.0 - limit_pct)
 
+    def _combo_raw(self, name: str, default: float = 1.0) -> float:
+        return float(np.clip(float(getattr(self.config.stroke, name, default) or default), -2.0, 3.0))
+
+    def _combo_scale(self, name: str, min_scale: float, max_scale: float, default: float = 1.0) -> float:
+        raw = self._combo_raw(name, default)
+        if raw >= 1.0:
+            t = float(np.clip((raw - 1.0) / 2.0, 0.0, 1.0))
+            return float(1.0 + (max_scale - 1.0) * t)
+        t = float(np.clip((1.0 - raw) / 3.0, 0.0, 1.0))
+        return float(1.0 - (1.0 - min_scale) * t)
+
+    @staticmethod
+    def _snap_divisor(value: float) -> int:
+        candidates = (1, 2, 4, 8)
+        if value <= 0:
+            return 1
+        target = float(value)
+        return min(candidates, key=lambda c: abs(np.log2(target) - np.log2(float(c))))
+
+    def _effective_min_interval_ms(self) -> float:
+        base_ms = float(getattr(self.config.stroke, 'min_interval_ms', 260) or 260)
+        speed_scale = self._combo_scale('combo_speed', 0.65, 1.55)
+        effective_ms = base_ms / max(speed_scale, 1e-6)
+        return float(np.clip(effective_ms, 80.0, 1400.0))
+
     def _update_park_anchor_from_radius(self, radius_hint: Optional[float] = None) -> None:
         """Update park/landing anchor using dynamic radius from recent stroke size.
 
@@ -715,6 +740,10 @@ class StrokeMapper:
                     # Preserve tempo safety by only increasing divisor density reduction.
                     base_divisor = max(base_divisor, hint)
 
+        speed_density = self._combo_scale('combo_speed', 0.65, 1.55)
+        sped_divisor = float(base_divisor) / max(speed_density, 1e-6)
+        base_divisor = self._snap_divisor(sped_divisor)
+
         return base_divisor
 
     def _is_learning_isolation_active(self) -> bool:
@@ -1050,13 +1079,22 @@ class StrokeMapper:
         acf_conf = getattr(event, 'acf_confidence', 0.0)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         now = time.time()
+        tempo_lock_required = bool(getattr(self.config.beat, 'tempo_lock_required', True))
+        metro_relaxed_conf = float(np.clip(
+            getattr(self.config.beat, 'teaching_metronome_relaxed_confidence', self._metronome_relaxed_confidence)
+            or self._metronome_relaxed_confidence,
+            0.05,
+            0.40,
+        ))
+        ignore_traffic_lights = bool(getattr(self.config.beat, 'teaching_ignore_traffic_lights', self._ignore_traffic_lights))
         
         metro_green = acf_conf >= 0.25 and metro_bpm > 0
         metro_yellow = acf_conf >= 0.05 and metro_bpm > 0
-        metro_relaxed = acf_conf >= self._metronome_relaxed_confidence and metro_bpm > 0
+        metro_relaxed = acf_conf >= metro_relaxed_conf and metro_bpm > 0
+        metronome_ready = metro_green if tempo_lock_required else metro_relaxed
 
-        if self._ignore_traffic_lights:
-            conditions_met = metro_relaxed
+        if ignore_traffic_lights:
+            conditions_met = metronome_ready
             self._prev_had_any_light = metro_yellow or metro_green
             if conditions_met:
                 self._stroke_ready = True
@@ -1131,13 +1169,13 @@ class StrokeMapper:
             option_stable = metro_stable_2s
             # Metronome-first: if metronome is yellow/green, don't hard-block
             # on red traffic while metrics are still hunting.
-            option_metronome = metro_relaxed
+            option_metronome = metronome_ready
             
             conditions_met = (both_green or mixed_green_yellow
                               or both_yellow_ok or option_recovery
                               or option_stable or option_metronome)
         else:
-            conditions_met = metro_yellow
+            conditions_met = metronome_ready
 
         # Update previous-light tracking for next iteration
         self._prev_had_any_light = has_any_light
@@ -1449,6 +1487,8 @@ class StrokeMapper:
     def _get_overall_amp_fill_required(self, phase: str) -> float:
         cfg = self.config.stroke
         global_scale = float(np.clip(getattr(cfg, 'overall_amp_fill_required_scale', 1.0) or 1.0, 0.05, 20.0))
+        reaction_scale = self._combo_scale('combo_reaction', 0.60, 1.70)
+        global_scale = float(np.clip(global_scale * reaction_scale, 0.05, 20.0))
         if phase == 'syncopation':
             required = float(getattr(cfg, 'syncopation_overall_amp_fill_required', 0.12) or 0.12)
             if required >= 0.70:
@@ -1652,12 +1692,16 @@ class StrokeMapper:
         """Return configured pre-landing lead offset in seconds."""
         lead_ms = float(getattr(self.config.beat, 'scheduled_lead_ms', 0.0) or 0.0)
         lead_ms = float(np.clip(lead_ms, 0.0, 200.0))
+        speed_target_scale = self._combo_scale('combo_speed', 0.75, 1.40)
+        lead_ms *= speed_target_scale
         return lead_ms / 1000.0
 
     def _get_effective_lead_seconds(self) -> float:
         """Return bounded lead offset with adaptive trim to prevent drift buildup."""
         base_ms = float(getattr(self.config.beat, 'scheduled_lead_ms', 0.0) or 0.0)
         base_ms = float(np.clip(base_ms, 0.0, 200.0))
+        speed_target_scale = self._combo_scale('combo_speed', 0.75, 1.40)
+        base_ms *= speed_target_scale
         if self._is_learning_isolation_active():
             effective_ms = float(np.clip(base_ms + self._learned_lead_ms, 0.0, 220.0))
             return effective_ms / 1000.0
@@ -1708,6 +1752,7 @@ class StrokeMapper:
         now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
         cfg = self.config.stroke
         beat_cfg = self.config.beat
+        min_interval_ms = self._effective_min_interval_ms()
 
         if bool(getattr(event, 'tempo_reset', False)):
             self._arm_tempo_reset_motion_hold(now)
@@ -1861,7 +1906,8 @@ class StrokeMapper:
             flux_ratio = event.spectral_flux / max(cfg.flux_threshold, 0.001)
             flux_ratio = np.clip(flux_ratio, 0.2, 3.0)
             base_factor = 0.5 + (flux_ratio / 3.0)
-            scaling_weight = cfg.flux_scaling_weight
+            depth_flux_scale = self._combo_scale('combo_depth', 0.40, 1.80)
+            scaling_weight = float(np.clip(cfg.flux_scaling_weight * depth_flux_scale, 0.0, 3.0))
             self._flux_stroke_factor = 1.0 + (base_factor - 1.0) * scaling_weight
 
         # ===== DISPATCH by behavioral mode =====
@@ -1880,7 +1926,7 @@ class StrokeMapper:
                 pass
             elif self._trajectory is None or self._trajectory.finished:
                 time_since_stroke = (now - self.state.last_stroke_time) * 1000
-                if time_since_stroke >= cfg.min_interval_ms * 0.5:
+                if time_since_stroke >= min_interval_ms * 0.5:
                     sync_gate_pass, sync_amp, sync_fill, sync_min_amp, sync_fill_req = self._passes_overall_amp_fill_gate(event, 'syncopation')
                     if not sync_gate_pass:
                         self._note_motion_block(
@@ -1907,10 +1953,12 @@ class StrokeMapper:
             and self._is_low_band_full_enough(event)
             and self._passes_dual_band_db_gate(event)
                 and (self._trajectory is None or self._trajectory.finished)):
-            noise_thresh = cfg.flux_threshold * cfg.noise_burst_flux_multiplier
+            texture_burst = self._combo_scale('combo_texture', 0.60, 1.70)
+            noise_mult = float(getattr(cfg, 'noise_burst_flux_multiplier', 2.0) or 2.0)
+            noise_thresh = cfg.flux_threshold * (noise_mult / max(texture_burst, 1e-6))
             if event.spectral_flux >= noise_thresh:
                 time_since_stroke = (now - self.state.last_stroke_time) * 1000
-                if time_since_stroke >= cfg.min_interval_ms * 0.4:
+                if time_since_stroke >= min_interval_ms * 0.4:
                     # In noise-primary mode, fire a FULL beat stroke (not a burst)
                     # using the metronome BPM for duration if available
                     cmd = self._generate_beat_stroke(event)
@@ -1927,10 +1975,12 @@ class StrokeMapper:
             and self._is_low_band_full_enough(event)
             and self._passes_dual_band_db_gate(event)
                 and (self._trajectory is None or self._trajectory.finished)):
-            noise_thresh = cfg.flux_threshold * cfg.noise_burst_flux_multiplier
+            texture_burst = self._combo_scale('combo_texture', 0.60, 1.70)
+            noise_mult = float(getattr(cfg, 'noise_burst_flux_multiplier', 2.0) or 2.0)
+            noise_thresh = cfg.flux_threshold * (noise_mult / max(texture_burst, 1e-6))
             if event.spectral_flux >= noise_thresh:
                 time_since_stroke = (now - self.state.last_stroke_time) * 1000
-                if time_since_stroke >= cfg.min_interval_ms * 0.4:
+                if time_since_stroke >= min_interval_ms * 0.4:
                     cmd = self._generate_noise_burst_stroke(event)
                     self._note_motion_resumed("noise_burst")
                     return self._apply_fade(cmd)
@@ -1945,10 +1995,12 @@ class StrokeMapper:
             and self._is_low_band_full_enough(event)
             and self._passes_dual_band_db_gate(event)
                 and (self._trajectory is None or self._trajectory.finished)):
-            noise_thresh = cfg.flux_threshold * cfg.noise_burst_flux_multiplier * 1.5
+            texture_burst = self._combo_scale('combo_texture', 0.60, 1.70)
+            noise_mult = float(getattr(cfg, 'noise_burst_flux_multiplier', 2.0) or 2.0)
+            noise_thresh = cfg.flux_threshold * (noise_mult / max(texture_burst, 1e-6)) * 1.5
             if event.spectral_flux >= noise_thresh:
                 time_since_stroke = (now - self.state.last_stroke_time) * 1000
-                if time_since_stroke >= cfg.min_interval_ms * 0.6:
+                if time_since_stroke >= min_interval_ms * 0.6:
                     cmd = self._generate_noise_burst_stroke(event)
                     self._note_motion_resumed("noise_burst_full")
                     return self._apply_fade(cmd)
@@ -1969,6 +2021,9 @@ class StrokeMapper:
                     and not (self._learning_enabled and self._learning_relax_phase1_gates)):
                 low_flux = float(getattr(cfg, 'overall_low_flux_threshold', 0.06) or 0.06)
                 low_energy = float(getattr(cfg, 'overall_low_energy_threshold', 0.14) or 0.14)
+                reaction_scale = self._combo_scale('combo_reaction', 0.65, 1.60)
+                low_flux = float(np.clip(low_flux * reaction_scale, 0.001, 1.0))
+                low_energy = float(np.clip(low_energy * reaction_scale, 0.001, 1.0))
                 if (event.spectral_flux < low_flux) and (event.peak_energy < low_energy):
                     self._note_motion_block(
                         "overall_activity_gate",
@@ -2406,6 +2461,7 @@ class StrokeMapper:
         Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
         cfg = self.config.stroke
         now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
+        min_interval_ms = self._effective_min_interval_ms()
 
         # Beat duration — prefer metronome BPM if available
         # Downbeat arc spans configured beats for this mode.
@@ -2413,20 +2469,20 @@ class StrokeMapper:
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         if metro_bpm > 0:
             beat_interval_ms = 60000.0 / metro_bpm
-            beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+            beat_interval_ms = max(min_interval_ms, min(1000, beat_interval_ms))
             measure_duration_ms = int(beat_interval_ms * beats_in_measure)
         elif self.state.last_beat_time == 0.0:
             measure_duration_ms = 500 * beats_in_measure
         else:
             beat_interval_ms = (now - self.state.last_beat_time) * 1000
-            beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+            beat_interval_ms = max(min_interval_ms, min(1000, beat_interval_ms))
             measure_duration_ms = int(beat_interval_ms * beats_in_measure)
 
         # Clamp to avoid huge sweeps at very low BPM
-        measure_duration_ms = max(cfg.min_interval_ms, min(4000, measure_duration_ms))
+        measure_duration_ms = max(min_interval_ms, min(4000, measure_duration_ms))
         if cfg.mode == StrokeMode.TEARDROP:
             measure_duration_ms = int(measure_duration_ms * 1.30)
-            measure_duration_ms = max(cfg.min_interval_ms, min(5000, measure_duration_ms))
+            measure_duration_ms = max(min_interval_ms, min(5000, measure_duration_ms))
 
         # ===== PRE-FIRE: time arc to LAND on beat+N =====
         # For mode1 this is 4 beats ahead by default (full measure travel).
@@ -2452,12 +2508,12 @@ class StrokeMapper:
         event_time = getattr(event, 'monotonic_timestamp', 0.0) or event.timestamp
         event_age_ms = (now - event_time) * 1000
         if beat_target_time == 0.0 and 0 < event_age_ms < measure_duration_ms * 0.3:
-            measure_duration_ms = max(cfg.min_interval_ms, int(measure_duration_ms - event_age_ms))
+            measure_duration_ms = max(min_interval_ms, int(measure_duration_ms - event_age_ms))
 
         duration_mult = float(max(1.0, duration_mult))
         if duration_mult > 1.0:
             measure_duration_ms = int(measure_duration_ms * duration_mult)
-            measure_duration_ms = max(cfg.min_interval_ms, min(8000, measure_duration_ms))
+            measure_duration_ms = max(min_interval_ms, min(8000, measure_duration_ms))
 
         if self._is_learning_isolation_active():
             flux_factor = self._learned_radius_mult
@@ -2466,7 +2522,9 @@ class StrokeMapper:
         flux_factor = float(np.clip(flux_factor, 1.0, 1.60))
         tempo_locked = getattr(event, 'tempo_locked', False)
         # Slightly stronger downbeat boost than regular beats for emphasis
-        lock_boost = 1.35 if tempo_locked else 1.15
+        power_punch = self._combo_scale('combo_power', 0.85, 1.35)
+        lock_boost = (1.35 if tempo_locked else 1.15) * power_punch
+        lock_boost = float(np.clip(lock_boost, 0.90, 2.20))
 
         stroke_len = cfg.stroke_max * flux_factor * lock_boost * self.motion_intensity
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max * 1.25, stroke_len))
@@ -2569,17 +2627,18 @@ class StrokeMapper:
         Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
         cfg = self.config.stroke
         now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
+        min_interval_ms = self._effective_min_interval_ms()
 
         # Prefer metronome BPM for beat timing
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         if metro_bpm > 0:
             beat_interval_ms = 60000.0 / metro_bpm
-            beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+            beat_interval_ms = max(min_interval_ms, min(1000, beat_interval_ms))
         elif self.state.last_beat_time > 0:
             beat_interval_ms = (now - self.state.last_beat_time) * 1000
-            beat_interval_ms = max(cfg.min_interval_ms, min(1000, beat_interval_ms))
+            beat_interval_ms = max(min_interval_ms, min(1000, beat_interval_ms))
         else:
-            beat_interval_ms = cfg.min_interval_ms
+            beat_interval_ms = min_interval_ms
         # Use single-beat arc span; beat skipping gate has been removed.
         beat_interval_ms = int(beat_interval_ms)
 
@@ -2600,7 +2659,7 @@ class StrokeMapper:
         event_time = getattr(event, 'monotonic_timestamp', 0.0) or event.timestamp
         event_age_ms = (now - event_time) * 1000
         if beat_target_time == 0.0 and 0 < event_age_ms < beat_interval_ms * 0.3:
-            beat_interval_ms = max(cfg.min_interval_ms, int(beat_interval_ms - event_age_ms))
+            beat_interval_ms = max(min_interval_ms, int(beat_interval_ms - event_age_ms))
 
         # === SELF-CHECK: Apply snap timing correction from previous arc ===
         # If the last arc had to snap-to-target, the timing was slightly off.
@@ -2608,7 +2667,7 @@ class StrokeMapper:
         # extend the next arc by 20ms so the next landing takes that into account).
         if abs(self._last_snap_correction_ms) > 5.0:
             correction = self._last_snap_correction_ms * 0.7  # 70% correction
-            beat_interval_ms = max(cfg.min_interval_ms, int(beat_interval_ms + correction))
+            beat_interval_ms = max(min_interval_ms, int(beat_interval_ms + correction))
             self._last_snap_correction_ms = 0.0  # consumed
 
         intensity = event.intensity
@@ -2617,8 +2676,12 @@ class StrokeMapper:
         else:
             flux_factor = getattr(self, '_flux_stroke_factor', 1.0) * self._learned_radius_mult
         flux_factor = float(np.clip(flux_factor, 1.0, 1.60))
+        power_punch = self._combo_scale('combo_power', 0.85, 1.35)
+        flux_factor = float(np.clip(flux_factor * power_punch, 1.0, 2.0))
 
-        base_stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * intensity * cfg.stroke_fullness
+        depth_fullness = self._combo_scale('combo_depth', 0.55, 1.35)
+        effective_fullness = float(np.clip(cfg.stroke_fullness * depth_fullness, 0.05, 1.50))
+        base_stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * intensity * effective_fullness
         stroke_len = base_stroke_len * flux_factor * self.motion_intensity
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
 
@@ -2745,6 +2808,7 @@ class StrokeMapper:
         cfg = self.config.stroke
         beat_cfg = self.config.beat
         now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
+        min_interval_ms = self._effective_min_interval_ms()
 
         # Duration is configurable fraction of beat interval
         speed_frac = getattr(beat_cfg, 'syncopation_speed', 0.5) * self._learned_sync_speed_mult
@@ -2756,8 +2820,8 @@ class StrokeMapper:
         elif self.state.last_beat_time > 0:
             beat_ms = (now - self.state.last_beat_time) * 1000
         else:
-            beat_ms = cfg.min_interval_ms * 2
-        duration_ms = max(cfg.min_interval_ms * 0.4, min(1000, beat_ms * speed_frac * mode_multiplier))
+            beat_ms = min_interval_ms * 2
+        duration_ms = max(min_interval_ms * 0.4, min(1000, beat_ms * speed_frac * mode_multiplier))
         duration_ms = int(duration_ms)
 
         # Pre-fire: if metronome predicts next beat, adjust duration so
@@ -2783,7 +2847,9 @@ class StrokeMapper:
         flux_factor = float(np.clip(flux_factor, 1.0, 1.60))
         intensity = event.intensity
         curved_intensity = self._intensity_curve(intensity)
-        stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * curved_intensity * cfg.stroke_fullness
+        depth_fullness = self._combo_scale('combo_depth', 0.55, 1.35)
+        effective_fullness = float(np.clip(cfg.stroke_fullness * depth_fullness, 0.05, 1.50))
+        stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * curved_intensity * effective_fullness
         stroke_len = stroke_len * flux_factor * self.motion_intensity * 0.7
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
 
@@ -2856,7 +2922,8 @@ class StrokeMapper:
 
         # Pick a random micro-pattern type
         pattern = random.choice(['jerk', 'swirl', 'star', 'zigzag'])
-        magnitude_scale = getattr(self.config.stroke, 'noise_burst_magnitude', 1.0)
+        texture_burst = self._combo_scale('combo_texture', 0.60, 1.70)
+        magnitude_scale = float(getattr(self.config.stroke, 'noise_burst_magnitude', 1.0) or 1.0) * texture_burst
         energy_scale = 1.0 + (self._mid_energy + self._high_energy) * 2.0
         energy_scale = min(energy_scale, 2.0)
         jerk_mag = random.uniform(0.03, 0.07) * self.motion_intensity * magnitude_scale * energy_scale
@@ -3068,8 +3135,9 @@ class StrokeMapper:
             self._trajectory = None
             return
 
+        min_interval_ms = self._effective_min_interval_ms()
         beat_interval_ms = int(60000.0 / bpm)
-        beat_interval_ms = max(cfg.min_interval_ms, min(4000, beat_interval_ms))
+        beat_interval_ms = max(min_interval_ms, min(4000, beat_interval_ms))
 
         # ===== PRE-FIRE: time arc to LAND on beat =====
         # If we have a predicted next beat time from the metronome,
@@ -3331,7 +3399,7 @@ class StrokeMapper:
             if (self._motion_mode == MotionMode.FULL_STROKE
                     and self.config.stroke.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL, StrokeMode.TEARDROP)):
                 follow_floor = 0.85 if self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
-                creep_radius = float(np.clip(max(creep_radius, self._edge_follow_radius, follow_floor), follow_floor, 1.00))
+                creep_radius = float(np.clip(max(creep_radius, self._edge_follow_radius, follow_floor), follow_floor, 0.85))
 
             target_alpha = np.sin(self.state.creep_angle) * creep_radius
             target_beta = np.cos(self.state.creep_angle) * creep_radius
@@ -3358,6 +3426,7 @@ class StrokeMapper:
 
         # ---------- Jitter: sinusoidal micro-circles ----------
         if jitter_active:
+            texture_jitter = self._combo_scale('combo_texture', 0.65, 1.60)
             if self._motion_mode == MotionMode.CREEP_MICRO:
                 # CREEP_MICRO: slower, smaller jitter
                 jitter_speed = jitter_cfg.intensity * 0.08
@@ -3365,6 +3434,9 @@ class StrokeMapper:
             else:
                 jitter_speed = jitter_cfg.intensity * 0.15
                 jitter_r = jitter_cfg.amplitude
+
+            jitter_speed *= texture_jitter
+            jitter_r *= float(np.clip(0.85 + (0.15 * texture_jitter), 0.5, 1.6))
 
             if anchor_state_active:
                 jitter_r = max(jitter_r, 0.008 + (0.028 * anchor_bass_norm))
@@ -3429,7 +3501,9 @@ class StrokeMapper:
         mode = self.config.stroke.mode
         alpha_weight = self.config.alpha_weight
         beta_weight = self.config.beta_weight
-        phase_advance = self.config.stroke.phase_advance
+        phase_advance = float(self.config.stroke.phase_advance)
+        phase_advance *= self._combo_scale('combo_power', 0.50, 1.80)
+        phase_advance = float(np.clip(phase_advance, 0.0, 1.0))
 
         if mode == StrokeMode.SIMPLE_CIRCLE:
             self.state.phase = (self.state.phase + phase_advance) % 1.0
