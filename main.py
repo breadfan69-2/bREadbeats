@@ -6029,7 +6029,7 @@ class BREadbeatsWindow(QMainWindow):
         group1 = QGroupBox("No motion?")
         g1_layout = QVBoxLayout(group1)
         g1_layout.setSpacing(4)
-        
+
         # Audio device check with button
         audio_box = QGroupBox()
         audio_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
@@ -6040,85 +6040,88 @@ class BREadbeatsWindow(QMainWindow):
         audio_btn.clicked.connect(lambda: self._on_options_audio_device())
         ab_layout.addWidget(audio_btn)
         g1_layout.addWidget(audio_box)
-        
+
         g1_layout.addWidget(QLabel("• Check [Start] and [Play] are pressed"))
-        g1_layout.addWidget(QLabel("• Both BPM lights should blink with stable count"))
-        g1_layout.addWidget(QLabel("• Raise sensitivity/amplification until beats detected"))
-        
+        g1_layout.addWidget(QLabel("• BPM lights should blink with stable count"))
+        g1_layout.addWidget(QLabel("• On digital outputs (HDMI/monitor), keep Windows output volume high (recommended 90-100%)"))
+        g1_layout.addWidget(QLabel("• If Windows volume changes, recalibrate or reset controls below"))
+
         scroll_layout.addWidget(group1)
-        
-        # === Still no motion? ===
-        group2 = QGroupBox("Still no motion?")
+
+        # === Quick resets ===
+        group2 = QGroupBox("Quick resets (current UI)")
         g2_layout = QVBoxLayout(group2)
-        g2_layout.setSpacing(4)
-        
-        # Stroke min/max reset
-        stroke_box = QGroupBox()
-        stroke_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
-        sb_layout = QVBoxLayout(stroke_box)
-        sb_layout.setSpacing(2)
-        sb_layout.addWidget(QLabel("[Stroke Settings] Check stroke min/max:"))
-        stroke_reset_btn = QPushButton("Reset to 0-100%")
-        stroke_reset_btn.clicked.connect(lambda: (
-            self.stroke_range_slider.setLow(0.0),
-            self.stroke_range_slider.setHigh(1.0),
-            self._on_stroke_range_change(0.0, 1.0)
-        ))
-        sb_layout.addWidget(stroke_reset_btn)
-        g2_layout.addWidget(stroke_box)
-        
-        # Fullness reset
-        full_box = QGroupBox()
-        full_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
-        fb_layout = QVBoxLayout(full_box)
-        fb_layout.setSpacing(2)
-        fb_layout.addWidget(QLabel("[Stroke Settings] Check stroke fullness:"))
-        fullness_reset_btn = QPushButton("Reset to 100%")
-        fullness_reset_btn.clicked.connect(lambda: (
-            self.fullness_slider.setValue(1.0),
-            setattr(self.config.stroke, 'stroke_fullness', 1.0)
-        ))
-        fb_layout.addWidget(fullness_reset_btn)
-        g2_layout.addWidget(full_box)
-        
-        # Peak floor reset
-        floor_box = QGroupBox()
-        floor_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
-        flb_layout = QVBoxLayout(floor_box)
-        flb_layout.setSpacing(2)
-        flb_layout.addWidget(QLabel("[Beat Detection] Check depth:"))
-        floor_reset_btn = QPushButton("Reset Depth to 0")
-        floor_reset_btn.clicked.connect(lambda: self.peak_floor_slider.setValue(0.0))
-        flb_layout.addWidget(floor_reset_btn)
-        g2_layout.addWidget(floor_box)
-        
-        g2_layout.addWidget(QLabel("If using stroke mode 1, 2, or 3:"))
-        
-        # Axis weights reset
-        axis_box = QGroupBox()
-        axis_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
-        axb_layout = QVBoxLayout(axis_box)
-        axb_layout.setSpacing(2)
-        axb_layout.addWidget(QLabel("[Effects/Axis] Check axis weights (0=no motion):"))
-        axis_reset_btn = QPushButton("Reset to 1.0")
-        axis_reset_btn.clicked.connect(lambda: (
-            self.alpha_weight_slider.setValue(1.0),
-            self.beta_weight_slider.setValue(1.0),
-            setattr(self.config, 'alpha_weight', 1.0),
-            setattr(self.config, 'beta_weight', 1.0)
-        ))
-        axb_layout.addWidget(axis_reset_btn)
-        g2_layout.addWidget(axis_box)
-        
+        g2_layout.setSpacing(6)
+
+        def _reset_beat_detection_defaults() -> None:
+            self.audio_gain_slider.setValue(float(BEAT_RESET_DEFAULTS.get('audio_amp', 0.15)))
+            self.peak_floor_slider.setValue(float(BEAT_RESET_DEFAULTS.get('peak_floor', 0.08)))
+            self.peak_decay_slider.setValue(float(BEAT_RESET_DEFAULTS.get('peak_decay', 0.999)))
+            self.rise_sens_slider.setValue(float(BEAT_RESET_DEFAULTS.get('rise_sens', 0.02)))
+            self.sensitivity_slider.setValue(float(BEAT_RESET_DEFAULTS.get('sensitivity', 0.1)))
+            self.flux_mult_slider.setValue(float(BEAT_RESET_DEFAULTS.get('flux_mult', 0.2)))
+
+        def _reset_motion_defaults() -> None:
+            self.stroke_range_slider.setLow(0.2)
+            self.stroke_range_slider.setHigh(1.0)
+            self._on_stroke_range_change(0.2, 1.0)
+            self.fullness_slider.setValue(0.70)
+            self.config.stroke.stroke_fullness = 0.70
+            self.alpha_weight_slider.setValue(1.0)
+            self.beta_weight_slider.setValue(1.0)
+            self.config.alpha_weight = 1.0
+            self.config.beta_weight = 1.0
+
+        def _reset_fill_bin_ranges() -> None:
+            fft_size = int(getattr(self.config.audio, 'fft_size', 1024) or 1024)
+            max_bin = max(1, fft_size // 2)
+            self.config.stroke.downbeat_fill_bin_low = 0
+            self.config.stroke.downbeat_fill_bin_high = max_bin
+            self.config.stroke.beat_fill_bin_low = 0
+            self.config.stroke.beat_fill_bin_high = max_bin
+            self.config.stroke.syncopation_fill_bin_low = 0
+            self.config.stroke.syncopation_fill_bin_high = max_bin
+            self._preview_fill_requirement_ghosts()
+
+        beat_box = QGroupBox()
+        beat_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
+        beat_layout = QVBoxLayout(beat_box)
+        beat_layout.setSpacing(2)
+        beat_layout.addWidget(QLabel("Beat detection baseline:"))
+        beat_reset_btn = QPushButton("Reset beat detection defaults")
+        beat_reset_btn.clicked.connect(_reset_beat_detection_defaults)
+        beat_layout.addWidget(beat_reset_btn)
+        g2_layout.addWidget(beat_box)
+
+        motion_box = QGroupBox()
+        motion_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
+        motion_layout = QVBoxLayout(motion_box)
+        motion_layout.setSpacing(2)
+        motion_layout.addWidget(QLabel("Motion baseline (range/fullness/axis):"))
+        motion_reset_btn = QPushButton("Reset motion defaults")
+        motion_reset_btn.clicked.connect(_reset_motion_defaults)
+        motion_layout.addWidget(motion_reset_btn)
+        g2_layout.addWidget(motion_box)
+
+        fill_box = QGroupBox()
+        fill_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
+        fill_layout = QVBoxLayout(fill_box)
+        fill_layout.setSpacing(2)
+        fill_layout.addWidget(QLabel("Amp+fill bin windows:"))
+        fill_reset_btn = QPushButton("Reset fill-bin ranges to full FFT")
+        fill_reset_btn.clicked.connect(_reset_fill_bin_ranges)
+        fill_layout.addWidget(fill_reset_btn)
+        g2_layout.addWidget(fill_box)
+
         scroll_layout.addWidget(group2)
-        
+
         # === Too much motion? ===
         group3 = QGroupBox("Too much motion?")
         g3_layout = QVBoxLayout(group3)
         g3_layout.setSpacing(4)
-        g3_layout.addWidget(QLabel("• [Beat Detection] Lower audio amplification,\n  sensitivity, flux multiplier"))
-        g3_layout.addWidget(QLabel("• [Effects/Axis] Lower axis weights"))
-        g3_layout.addWidget(QLabel("• [Tempo Tracking] Check spectral flux control"))
+        g3_layout.addWidget(QLabel("• [Beat Detection] Lower audio amplification, sensitivity, flux multiplier"))
+        g3_layout.addWidget(QLabel("• [Axis Weights] Lower alpha/beta weights"))
+        g3_layout.addWidget(QLabel("• [Advanced Controls] Raise amp+fill requirements or narrow fill-bin windows"))
         scroll_layout.addWidget(group3)
         
         scroll_layout.addStretch()
