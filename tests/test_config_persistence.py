@@ -10,6 +10,21 @@ import config_persistence
 
 
 class TestConfigPersistence(unittest.TestCase):
+    def test_get_config_dir_prefers_env_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.dict("os.environ", {"BREADBEATS_CONFIG_DIR": tmpdir}):
+                path = config_persistence.get_config_dir()
+        self.assertEqual(path, Path(tmpdir).resolve())
+
+    def test_get_config_dir_uses_project_dir_when_not_frozen(self):
+        fake_module_path = Path("C:/tmp/breadbeats_src/config_persistence.py")
+        with mock.patch.object(config_persistence, "__file__", str(fake_module_path)):
+            with mock.patch.object(config_persistence.sys, "frozen", False, create=True):
+                with mock.patch.dict("os.environ", {}, clear=True):
+                    with mock.patch("builtins.open", mock.mock_open()):
+                        path = config_persistence.get_config_dir()
+        self.assertEqual(path, fake_module_path.resolve().parent)
+
     def test_save_and_load_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg_file = Path(tmpdir) / "config.json"
