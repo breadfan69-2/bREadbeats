@@ -2277,8 +2277,7 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
             self.addItem(line)
             self._zscore_boundary_lines.append(line)
 
-        self.dominant_freq_line = pg.InfiniteLine(pos=np.log10(0.10), angle=90, movable=False, pen=pg.mkPen('#ffd24d', width=2))
-        self.addItem(self.dominant_freq_line)
+        self.dominant_freq_line = None
 
         self.info_text = pg.TextItem("", color='#f2f2f2', anchor=(0.0, 0.0))
         self.info_text.setZValue(20)
@@ -2692,8 +2691,6 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
         high_end_khz = min(19.9, max(high_start_khz + 0.001, nyquist / 1000.0))
         self.low_band_region.setRegion((np.log10(low_start_khz), np.log10(low_end_khz)))
         self.high_band_region.setRegion((np.log10(high_start_khz), np.log10(high_end_khz)))
-
-        self.dominant_freq_line.setPos(np.log10(min(19.9, max(0.04, self._dominant_freq_hz / 1000.0))))
 
         low_mean_th_db = self._to_db(float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20))
         high_mean_th_db = self._to_db(float(getattr(stroke_cfg, 'high_band_mean_threshold', 0.12) or 0.12))
