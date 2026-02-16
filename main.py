@@ -2253,6 +2253,7 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
         overlay['duration_s'] = float(max(0.5, duration_s))
         overlay['mode'] = mode
         overlay['dashed'] = bool(dashed)
+        overlay['hz_max'] = hz_max
 
         x_left, x_right = self._band_x_range(band)
         if mode_kind == 'occupancy':
@@ -2332,22 +2333,30 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
         base_rect = overlay.get('base_rect', None)
         box = overlay.get('box', None)
         if box is not None and base_rect is not None and box.isVisible():
-            cx = base_rect.x() + (base_rect.width() / 2.0)
-            cy = base_rect.y() + (base_rect.height() / 2.0)
-            x_expand = (base_rect.width() * 0.08 * eased) + 0.0005
-            y_expand = (6.0 * eased) if overlay.get('mode') != 'occupancy' else (2.0 * eased)
-            width = max(0.001, base_rect.width() + (2.0 * x_expand))
-            height = max(0.2, base_rect.height() + (2.0 * y_expand))
-            rect = QRectF(cx - (width / 2.0), cy - (height / 2.0), width, height)
-            box.setRect(rect)
+            mode_kind = str(overlay.get('mode') or '')
+            hz_range_box = mode_kind == 'hz_line' and overlay.get('hz_max') is not None
+            if hz_range_box:
+                box.setRect(base_rect)
+            else:
+                cx = base_rect.x() + (base_rect.width() / 2.0)
+                cy = base_rect.y() + (base_rect.height() / 2.0)
+                x_expand = (base_rect.width() * 0.08 * eased) + 0.0005
+                y_expand = (6.0 * eased) if mode_kind != 'occupancy' else (2.0 * eased)
+                width = max(0.001, base_rect.width() + (2.0 * x_expand))
+                height = max(0.2, base_rect.height() + (2.0 * y_expand))
+                rect = QRectF(cx - (width / 2.0), cy - (height / 2.0), width, height)
+                box.setRect(rect)
 
             pen = QPen(color)
             pen.setWidth(1)
             pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
             box.setPen(pen)
-            fill = QColor(overlay['color'])
-            fill.setAlpha(max(0, int(alpha * 0.22)))
-            box.setBrush(QBrush(fill))
+            if hz_range_box:
+                box.setBrush(Qt.BrushStyle.NoBrush)
+            else:
+                fill = QColor(overlay['color'])
+                fill.setAlpha(max(0, int(alpha * 0.22)))
+                box.setBrush(QBrush(fill))
 
     def _tick_flux_ghosts(self) -> None:
         if not self._flux_ghost_overlays:
@@ -2691,6 +2700,7 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
         overlay['duration_s'] = float(max(0.5, duration_s))
         overlay['mode'] = mode
         overlay['dashed'] = bool(dashed)
+        overlay['hz_max'] = hz_max
 
         x_left, x_right = self._band_x_range(band)
         if mode_kind == 'occupancy':
@@ -2770,22 +2780,30 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
         base_rect = overlay.get('base_rect', None)
         box = overlay.get('box', None)
         if box is not None and base_rect is not None and box.isVisible():
-            cx = base_rect.x() + (base_rect.width() / 2.0)
-            cy = base_rect.y() + (base_rect.height() / 2.0)
-            x_expand = (base_rect.width() * 0.08 * eased) + 0.0005
-            y_expand = (6.0 * eased) if overlay.get('mode') != 'occupancy' else (2.0 * eased)
-            width = max(0.001, base_rect.width() + (2.0 * x_expand))
-            height = max(0.2, base_rect.height() + (2.0 * y_expand))
-            rect = QRectF(cx - (width / 2.0), cy - (height / 2.0), width, height)
-            box.setRect(rect)
+            mode_kind = str(overlay.get('mode') or '')
+            hz_range_box = mode_kind == 'hz_line' and overlay.get('hz_max') is not None
+            if hz_range_box:
+                box.setRect(base_rect)
+            else:
+                cx = base_rect.x() + (base_rect.width() / 2.0)
+                cy = base_rect.y() + (base_rect.height() / 2.0)
+                x_expand = (base_rect.width() * 0.08 * eased) + 0.0005
+                y_expand = (6.0 * eased) if mode_kind != 'occupancy' else (2.0 * eased)
+                width = max(0.001, base_rect.width() + (2.0 * x_expand))
+                height = max(0.2, base_rect.height() + (2.0 * y_expand))
+                rect = QRectF(cx - (width / 2.0), cy - (height / 2.0), width, height)
+                box.setRect(rect)
 
             pen = QPen(color)
             pen.setWidth(1)
             pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
             box.setPen(pen)
-            fill = QColor(overlay['color'])
-            fill.setAlpha(max(0, int(alpha * 0.22)))
-            box.setBrush(QBrush(fill))
+            if hz_range_box:
+                box.setBrush(Qt.BrushStyle.NoBrush)
+            else:
+                fill = QColor(overlay['color'])
+                fill.setAlpha(max(0, int(alpha * 0.22)))
+                box.setBrush(QBrush(fill))
 
     def _tick_flux_ghosts(self) -> None:
         if not self._flux_ghost_overlays:
