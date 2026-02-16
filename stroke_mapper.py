@@ -2977,28 +2977,8 @@ class StrokeMapper:
                 self.state.creep_angle += 2 * np.pi
         traj.current_index = target_idx + 1
 
-        # ===== SNAP TO TARGET (post-target catch-up) =====
-        # Timing trick: do not rush *before* the beat. If we're going to miss,
-        # allow a brief catch-up snap only *after* the target time.
-        if (traj.beat_target_time > 0
-                and traj.current_index < traj.n_points
-                and 0 < (now - traj.beat_target_time) < 0.060):
-            final_a = float(traj.alpha_points[-1])
-            final_b = float(traj.beta_points[-1])
-            dist = np.sqrt((alpha - final_a)**2 + (beta - final_b)**2)
-            if dist < 0.14:
-                # Beat is slightly in the past and we're close — catch up now
-                alpha = final_a
-                beta = final_b
-                self.state.alpha = alpha
-                self.state.beta = beta
-                traj.current_index = traj.n_points  # mark finished
-                # === SELF-CHECK: Record timing discrepancy for next arc ===
-                # If we had to catch up late, record lateness for next arc correction.
-                snap_error_ms = (traj.beat_target_time - now) * 1000.0
-                self._last_snap_correction_ms = snap_error_ms
-                log_event("INFO", "StrokeMapper", "Post-target catch-up snap",
-                          error_ms=f"{snap_error_ms:.1f}", dist=f"{dist:.3f}")
+        # Intentionally do NOT snap/catch-up to target after beat time.
+        # Preference: keep natural pace and allow a miss rather than rushing.
 
         # Check if trajectory just completed
         if traj.finished:
