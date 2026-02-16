@@ -230,7 +230,9 @@ class StrokeMapper:
 
         # ---------- Last confirmed beat time (for no-beat timeout) ----------
         self._last_confirmed_beat_time: float = 0.0   # wall-clock of last beat with stroke_ready
-        self._last_any_beat_time: float = 0.0         # wall-clock of last detected beat (ungated)
+        self._last_any_beat_time: float = 0.0         # monotonic time of last detected beat (ungated)
+        self._tempo_reset_motion_hold_s: float = 1.8
+        self._tempo_reset_motion_hold_until: float = 0.0
 
         # ---------- Snap timing feedback (self-checking) ----------
         # When snap-to-target fires, record the timing error so the next arc
@@ -585,6 +587,22 @@ class StrokeMapper:
         is_active = (recent_delta >= delta_thresh) or (recent_avg >= avg_thresh)
         return bool(is_active), recent_avg, recent_delta
 
+    def _has_recent_beats(self, now: Optional[float] = None, window_s: float = 0.9) -> bool:
+        current = now if now is not None else time.perf_counter()
+        beat_recent = (
+            self._last_any_beat_time > 0
+            and (current - self._last_any_beat_time) <= window_s
+        )
+        reset_hold_active = current < self._tempo_reset_motion_hold_until
+        return bool(beat_recent or reset_hold_active)
+
+    def _arm_tempo_reset_motion_hold(self, now: float) -> None:
+        self._last_any_beat_time = now
+        self._tempo_reset_motion_hold_until = max(
+            self._tempo_reset_motion_hold_until,
+            now + self._tempo_reset_motion_hold_s,
+        )
+
     def _get_band_duration_scale(self, event: BeatEvent) -> float:
         band = getattr(event, 'beat_band', 'sub_bass')
         return self._band_speed_scale.get(band, 1.0)
@@ -594,10 +612,7 @@ class StrokeMapper:
             return self._get_park_phase()
 
         current_radius = float(np.hypot(self.state.alpha, self.state.beta))
-        recent_beats_active = (
-            self._last_any_beat_time > 0
-            and (time.time() - self._last_any_beat_time) <= 1.2
-        )
+        recent_beats_active = self._has_recent_beats(window_s=1.2)
         edge_creep_continuation = (
             self.config.creep.enabled
             and not self.state.creep_reset_active
@@ -633,10 +648,7 @@ class StrokeMapper:
             abs(self.state.alpha - self._park_alpha) < 0.02
             and abs(self.state.beta - self._park_beta) < 0.02
         )
-        recent_beats_active = (
-            self._last_any_beat_time > 0
-            and (time.time() - self._last_any_beat_time) <= 0.9
-        )
+        recent_beats_active = self._has_recent_beats(window_s=0.9)
         if parked or self.state.creep_reset_active or not recent_beats_active:
             return self._get_park_phase()
 
@@ -1656,6 +1668,9 @@ class StrokeMapper:
         cfg = self.config.stroke
         beat_cfg = self.config.beat
 
+        if bool(getattr(event, 'tempo_reset', False)):
+            self._arm_tempo_reset_motion_hold(now)
+
         # ===== SPECTRUM-TUNABLE MOTION GATE =====
         # Uses a configurable frequency cutoff over a COMBINATION of sources:
         # - bands that fired this frame (fired_bands)
@@ -1697,10 +1712,7 @@ class StrokeMapper:
         self._recent_low_band_values.append(low_band_activity)
         self._recent_high_band_values.append(high_band_activity)
         self._recent_mid_bass_values.append(mid_bass_activity)
-        recent_beats_active = (
-            self._last_any_beat_time > 0
-            and (now - self._last_any_beat_time) <= 0.9
-        )
+        recent_beats_active = self._has_recent_beats(now=now, window_s=0.9)
         if len(self._recent_flux_values) >= 30:
             if bool(getattr(cfg, 'low_band_drop_guard_enabled', True)):
                 recent_avg = sum(list(self._recent_low_band_values)[-15:]) / 15.0
@@ -2125,7 +2137,7 @@ class StrokeMapper:
             # Post-silence volume ramp: reduce volume and slowly raise back
             if self._post_silence_ramp_active:
                 cfg = self.config.stroke
-                elapsed = time.time() - self._post_silence_ramp_start
+                elapsed = time.perf_counter() - self._post_silence_ramp_start
                 ramp_dur = max(0.5, cfg.post_silence_ramp_seconds)
                 if elapsed >= ramp_dur:
                     self._post_silence_ramp_active = False
@@ -2256,15 +2268,7 @@ class StrokeMapper:
         alpha_weight = self.config.alpha_weight
         beta_weight = self.config.beta_weight
         angle = phase * 2 * np.pi
-        preserve_outer_radius = self._learning_enabled and mode in (
-            StrokeMode.SIMPLE_CIRCLE,
-            StrokeMode.SPIRAL,
-            StrokeMode.TEARDROP,
-        )
-        if preserve_outer_radius:
-            radius_cap = max(0.05, min(1.0, radius))
-        else:
-            radius_cap = min(max(0.05, min(1.0, radius)), self._radius_cap_from_depth(depth, 1.0))
+        radius_cap = max(0.05, min(1.0, radius))
 
         if mode == StrokeMode.TEARDROP:
             # Trace full piriform each arc so it descends one side and
@@ -2397,7 +2401,7 @@ class StrokeMapper:
             flux_factor = self._learned_radius_mult
         else:
             flux_factor = getattr(self, '_flux_stroke_factor', 1.0) * self._learned_radius_mult
-        flux_factor = float(np.clip(flux_factor, 0.60, 1.60))
+        flux_factor = float(np.clip(flux_factor, 1.0, 1.60))
         tempo_locked = getattr(event, 'tempo_locked', False)
         # Slightly stronger downbeat boost than regular beats for emphasis
         lock_boost = 1.35 if tempo_locked else 1.15
@@ -2405,16 +2409,7 @@ class StrokeMapper:
         stroke_len = cfg.stroke_max * flux_factor * lock_boost * self.motion_intensity
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max * 1.25, stroke_len))
 
-        freq_factor = self._freq_to_factor(event.frequency)
-        depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
-        preserve_outer_radius = self._learning_enabled and cfg.mode in (
-            StrokeMode.SIMPLE_CIRCLE,
-            StrokeMode.SPIRAL,
-            StrokeMode.TEARDROP,
-        )
-        if cfg.flux_depth_factor > 0 and not preserve_outer_radius and not self._is_learning_isolation_active():
-            flux_rise = self._get_flux_rise_factor()
-            depth = cfg.minimum_depth + (depth - cfg.minimum_depth) * max(0.0, 1.0 - cfg.flux_depth_factor * flux_rise)
+        depth = 1.0
 
         min_radius = 0.3
         # Non-linear intensity curve: quiet taps small, loud taps dramatic
@@ -2426,7 +2421,7 @@ class StrokeMapper:
         alpha_arc = np.zeros(n_points)
         beta_arc = np.zeros(n_points)
         arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity
-        arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 1.0), arc_radius))
+        arc_radius = max(min_radius, min(1.0, arc_radius))
         if cfg.mode == StrokeMode.SPIRAL:
             spiral_drive = float(np.clip((curved_intensity + np.clip(event.spectral_flux / max(cfg.flux_threshold, 0.001), 0.0, 1.5)) * 0.5, 0.0, 1.0))
             if random.random() < (0.40 + 0.20 * spiral_drive):
@@ -2437,7 +2432,7 @@ class StrokeMapper:
             spiral_inner = 0.24
             spiral_outer = float(np.clip(max(self._edge_follow_radius * 0.95, 0.78 + 0.18 * spiral_drive), 0.78, 1.0))
             r_start, r_end = (spiral_inner, spiral_outer) if direction > 0 else (spiral_outer, spiral_inner)
-            spiral_cap = self._radius_cap_from_depth(depth, 1.0)
+            spiral_cap = 1.0
             max_norm_seen = 0.0
             for i in range(n_points):
                 progress = i / max(1, n_points - 1)
@@ -2559,22 +2554,13 @@ class StrokeMapper:
             flux_factor = self._learned_radius_mult
         else:
             flux_factor = getattr(self, '_flux_stroke_factor', 1.0) * self._learned_radius_mult
-        flux_factor = float(np.clip(flux_factor, 0.60, 1.60))
+        flux_factor = float(np.clip(flux_factor, 1.0, 1.60))
 
         base_stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * intensity * cfg.stroke_fullness
         stroke_len = base_stroke_len * flux_factor * self.motion_intensity
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
 
-        freq_factor = self._freq_to_factor(event.frequency)
-        depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
-        preserve_outer_radius = self._learning_enabled and cfg.mode in (
-            StrokeMode.SIMPLE_CIRCLE,
-            StrokeMode.SPIRAL,
-            StrokeMode.TEARDROP,
-        )
-        if cfg.flux_depth_factor > 0 and not preserve_outer_radius and not self._is_learning_isolation_active():
-            flux_rise = self._get_flux_rise_factor()
-            depth = cfg.minimum_depth + (depth - cfg.minimum_depth) * max(0.0, 1.0 - cfg.flux_depth_factor * flux_rise)
+        depth = 1.0
 
         min_radius = 0.2
         max_radius = 1.0
@@ -2609,7 +2595,7 @@ class StrokeMapper:
             launch_phase = self._get_arc_launch_phase(cfg.mode)
             base_angle = self._get_anchor_phase_for_mode(cfg.mode, launch_phase, direction_override=direction)
             turns = 1.0
-            spiral_cap = self._radius_cap_from_depth(depth, 1.0)
+            spiral_cap = 1.0
             for i in range(n_points):
                 progress = i / max(1, n_points - 1)
                 theta = base_angle + (progress * 2 * np.pi * turns * direction)
@@ -2640,7 +2626,7 @@ class StrokeMapper:
             beta_arc = np.zeros(n_points)
             arc_radius = min_radius + (max_radius - min_radius) * curved_intensity
             arc_radius = arc_radius * flux_factor
-            arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 1.0), arc_radius))
+            arc_radius = max(min_radius, min(1.0, arc_radius))
             if cfg.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.TEARDROP):
                 arc_floor = 0.85 if cfg.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
                 arc_radius = float(np.clip(max(arc_radius, self._edge_follow_radius, arc_floor), arc_floor, 1.0))
@@ -2732,15 +2718,14 @@ class StrokeMapper:
             flux_factor = self._learned_radius_mult
         else:
             flux_factor = getattr(self, '_flux_stroke_factor', 1.0) * self._learned_radius_mult
-        flux_factor = float(np.clip(flux_factor, 0.60, 1.60))
+        flux_factor = float(np.clip(flux_factor, 1.0, 1.60))
         intensity = event.intensity
         curved_intensity = self._intensity_curve(intensity)
         stroke_len = cfg.stroke_min + (cfg.stroke_max - cfg.stroke_min) * curved_intensity * cfg.stroke_fullness
         stroke_len = stroke_len * flux_factor * self.motion_intensity * 0.7
         stroke_len = max(cfg.stroke_min, min(cfg.stroke_max, stroke_len))
 
-        freq_factor = self._freq_to_factor(event.frequency)
-        depth = cfg.minimum_depth + (1.0 - cfg.minimum_depth) * (1.0 - cfg.freq_depth_factor * freq_factor)
+        depth = 1.0
 
         # Arc size: configurable fraction of circle (0.5 = 180°)
         arc_size = getattr(beat_cfg, 'syncopation_arc_size', 0.5) * self._learned_sync_size_mult
@@ -2757,7 +2742,7 @@ class StrokeMapper:
 
         min_radius = 0.15
         arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity * 0.7
-        arc_radius = max(min_radius, min(self._radius_cap_from_depth(depth, 0.8), arc_radius))
+        arc_radius = max(min_radius, min(1.0, arc_radius))
         if cfg.mode == StrokeMode.SIMPLE_CIRCLE:
             arc_radius = float(np.clip(max(arc_radius, self._edge_follow_radius, 0.82), 0.82, 1.0))
         for i, phase in enumerate(arc_phases):
@@ -3143,7 +3128,7 @@ class StrokeMapper:
 
     def _generate_idle_motion(self, event: Optional[BeatEvent]) -> Optional[TCodeCommand]:
         """Generate motion: trajectory playback OR creep/jitter when idle."""
-        now = time.time()
+        now = time.perf_counter()
         jitter_cfg = self.config.jitter
         creep_cfg = self.config.creep
 
@@ -3157,10 +3142,7 @@ class StrokeMapper:
             self._last_idle_time = now
             return self._advance_trajectory()
 
-        recent_beats_active = (
-            self._last_any_beat_time > 0
-            and (now - self._last_any_beat_time) <= 0.9
-        )
+        recent_beats_active = self._has_recent_beats(now=now, window_s=0.9)
 
         anchor_state_active = (
             self._trajectory is None

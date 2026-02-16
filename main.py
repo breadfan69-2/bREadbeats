@@ -6270,8 +6270,6 @@ Like the app?<br>
                 self.fill_gate_scale_spin,
                 self.stroke_range_slider,
                 self.fullness_slider,
-                self.freq_depth_slider,
-                self.depth_freq_range_slider,
                 self.flux_scaling_slider,
                 self.phase_advance_slider,
                 self.jitter_enabled,
@@ -6318,8 +6316,6 @@ Like the app?<br>
                 self.config.stroke.min_interval_ms = 150
                 self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
                 self.config.stroke.minimum_depth = 0.0
-                self.freq_depth_slider.setValue(self.config.stroke.freq_depth_factor)
-                self.flux_depth_slider.setValue(self.config.stroke.flux_depth_factor)
                 self.flux_depth_mode_toggle.setChecked(bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)))
                 self._on_flux_depth_mode_toggle(self.flux_depth_mode_toggle.isChecked())
                 self.combo_power_spin.setValue(float(getattr(self.config.stroke, 'combo_power', 1.0)))
@@ -6328,8 +6324,6 @@ Like the app?<br>
                 self.combo_texture_spin.setValue(float(getattr(self.config.stroke, 'combo_texture', 1.0)))
                 self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
                 self.fill_gate_scale_spin.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0))
-                self.depth_freq_range_slider.setLow(int(self.config.stroke.depth_freq_low))
-                self.depth_freq_range_slider.setHigh(int(self.config.stroke.depth_freq_high))
                 advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
                 if advanced_flux_slider is not None:
                     advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
@@ -7545,8 +7539,6 @@ Like the app?<br>
             'min_interval_ms': 150,
             'stroke_fullness': self.fullness_slider.value(),
             'minimum_depth': 0.0,
-            'freq_depth_factor': self.freq_depth_slider.value(),
-            'flux_depth_factor': self.flux_depth_slider.value(),
             'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
             'combo_size': float(getattr(self.config.stroke, 'combo_size', 1.0)),
             'combo_power': float(getattr(self.config.stroke, 'combo_power', 1.0)),
@@ -7555,8 +7547,6 @@ Like the app?<br>
             'combo_texture': float(getattr(self.config.stroke, 'combo_texture', 1.0)),
             'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
             'overall_amp_fill_required_scale': float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0),
-            'depth_freq_low': self.depth_freq_range_slider.low(),
-            'depth_freq_high': self.depth_freq_range_slider.high(),
             'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
             'flux_scaling_weight': self.flux_scaling_slider.value(),
             'phase_advance': self.phase_advance_slider.value(),
@@ -7674,13 +7664,8 @@ Like the app?<br>
         self.config.stroke.min_interval_ms = 150
         self.fullness_slider.setValue(preset_data['stroke_fullness'])
         self.config.stroke.minimum_depth = 0.0
-        self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
         if 'overall_amp_fill_required_scale' in preset_data:
             self.fill_gate_scale_spin.setValue(float(preset_data['overall_amp_fill_required_scale']))
-        if 'flux_depth_factor' in preset_data:
-            self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
-        self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
-        self.depth_freq_range_slider.setHigh(preset_data['depth_freq_high'])
         self.config.stroke.flux_threshold = float(preset_data['flux_threshold'])
         advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
         if advanced_flux_slider is not None:
@@ -8824,26 +8809,6 @@ Like the app?<br>
         self.fullness_slider = SliderWithLabel("Stroke Fullness", 0.0, 1.0, 0.7)
         self.fullness_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'stroke_fullness', v))
         stroke_layout.addWidget(self.fullness_slider)
-        
-        self.freq_depth_slider = SliderWithLabel("Freq Depth Factor", 0.0, 2.0, 0.3)
-        self.freq_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'freq_depth_factor', v))
-        stroke_layout.addWidget(self.freq_depth_slider)
-        
-        self.flux_depth_slider = SliderWithLabel("Flux Rise Depth Factor", 0.0, 5.0, 0.0)
-        self.flux_depth_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_depth_factor', v))
-        stroke_layout.addWidget(self.flux_depth_slider)
-        
-        # Depth Freq slider with visibility toggle (green stroke depth band)
-        depth_slider_row = QHBoxLayout()
-        self.depth_freq_range_slider = RangeSliderWithLabel("Depth Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
-        self.depth_freq_range_slider.rangeChanged.connect(self._on_depth_band_change)
-        depth_slider_row.addWidget(self.depth_freq_range_slider)
-        self.depth_band_toggle = QCheckBox("Show")
-        self.depth_band_toggle.setToolTip("Show/hide green overlay on spectrum")
-        self.depth_band_toggle.setChecked(False)
-        self.depth_band_toggle.stateChanged.connect(lambda state: self._on_toggle_depth_band(state == 2))
-        depth_slider_row.addWidget(self.depth_band_toggle)
-        stroke_layout.addLayout(depth_slider_row)
 
         layout.addWidget(stroke_group)
 
