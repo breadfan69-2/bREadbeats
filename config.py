@@ -122,6 +122,13 @@ class StrokeConfig:
     # Volume reduction limit: max % volume can be reduced by band/fade/creep effects (post-silence excluded)
     vol_reduction_limit: float = 10.0  # 0-20, default 10 means max 10% reduction (floor = 0.90)
 
+    # Per-band volume drops applied when that beat band triggers motion.
+    # Value is percent points (0-99): e.g. 5 means -5% volume.
+    volume_drop_on_sub_bass_percent: float = 0.0
+    volume_drop_on_low_mid_percent: float = 2.0
+    volume_drop_on_mid_percent: float = 3.0
+    volume_drop_on_high_percent: float = 7.0
+
     # Flux-rise depth factor over 250ms. Behavior is selected by flux_depth_boost_enabled.
     # boost=False: compress depth toward minimum_depth on flux rise (legacy/default)
     # boost=True:  boost depth toward 1.0 on flux rise
