@@ -6271,7 +6271,7 @@ class BREadbeatsWindow(QMainWindow):
 Live Audio to Restim<br><br>
 Inspired by:<br>
 &nbsp;&nbsp;&nbsp;&nbsp;digitalparkinglot's creations<br>
-&nbsp;&nbsp;&nbsp;&nbsp;edger477 (ideas from funscriptgenerator)<br>
+&nbsp;&nbsp;&nbsp;&nbsp;edger477 (ideas from generator tooling)<br>
 &nbsp;&nbsp;&nbsp;&nbsp;diglet48 (wouldn't be here without restim!)<br>
 &nbsp;&nbsp;&nbsp;&nbsp;shadlock0133 (music-vibes)<br><br>
 Bug reports/share your presets:<br>
