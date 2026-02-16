@@ -1218,13 +1218,30 @@ class StrokeMapper:
         dt = now - self._phase_time
         self._phase_time = now
 
-        bpm = getattr(event, 'bpm', 0.0) or 0.0
+        bpm = self._get_reliable_metronome_bpm(event)
         self._current_bpm = bpm
 
         if bpm > 0 and dt > 0 and dt < 1.0:
             beats_per_sec = bpm / 60.0
             self._beat_phase += beats_per_sec * dt
             self._beat_phase %= 1.0
+
+    def _get_reliable_metronome_bpm(self, event: Optional[BeatEvent], min_conf: Optional[float] = None) -> float:
+        """Return metronome BPM only when confidence is reliable enough for motion timing."""
+        if event is None:
+            return 0.0
+
+        metro_bpm = float(getattr(event, 'metronome_bpm', 0.0) or 0.0)
+        if metro_bpm <= 0.0:
+            return 0.0
+
+        if bool(getattr(event, 'tempo_locked', False)):
+            return metro_bpm
+
+        conf = float(getattr(event, 'acf_confidence', 0.0) or 0.0)
+        threshold = self._metronome_relaxed_confidence if min_conf is None else float(min_conf)
+        threshold = float(np.clip(threshold, 0.05, 0.40))
+        return metro_bpm if conf >= threshold else 0.0
 
     # ------------------------------------------------------------------
     # Band energy extraction (for micro-effects)
@@ -3177,6 +3194,10 @@ class StrokeMapper:
             self._last_idle_time = now
             return self._advance_trajectory()
 
+        reliable_tempo_bpm = self._get_reliable_metronome_bpm(event)
+        if reliable_tempo_bpm > 0:
+            self._last_known_bpm = reliable_tempo_bpm
+
         recent_beats_active = self._has_recent_beats(now=now, window_s=0.9)
 
         anchor_state_active = (
@@ -3188,7 +3209,7 @@ class StrokeMapper:
             anchor_bass_norm = self._update_anchor_from_bass_state(event)
         if (recent_beats_active
                 and self._motion_mode == MotionMode.FULL_STROKE
-                and self._last_known_bpm > 0):
+                and reliable_tempo_bpm > 0):
             self._generate_continuation_arc()
             if self._trajectory is not None and self._trajectory.active:
                 self._last_idle_time = now
@@ -3287,13 +3308,7 @@ class StrokeMapper:
             # (via _sync_creep_angle_to_position), not every frame.
             # This prevents the sync from fighting the tempo-based rotation.
             
-            bpm = getattr(event, 'bpm', 0.0) if event else 0.0
-            # Persist last known BPM so creep continues at last tempo
-            # when metronome confidence drops (instead of stopping)
-            if bpm > 0:
-                self._last_known_bpm = bpm
-            elif self._last_known_bpm > 0:
-                bpm = self._last_known_bpm
+            bpm = reliable_tempo_bpm
 
             if bpm > 0:
                 beats_per_sec = bpm / 60.0
