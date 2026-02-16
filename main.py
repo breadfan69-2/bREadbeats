@@ -2009,11 +2009,15 @@ class WaveformLiveCanvas(pg.PlotWidget):
         self._sample_rate = 44100
         self._x_max_ms = 25.0
         self._latest_peak = 0.0
+        self._freeze_until_monotonic = 0.0
         self._reference_overlays: dict[str, dict] = {}
         self._fill_ratio_overlays: dict[str, dict] = {}
         self._reference_fade_timer = QTimer(self)
         self._reference_fade_timer.setInterval(80)
         self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
+
+    def freeze_frame(self, duration_s: float = 4.0) -> None:
+        self._freeze_until_monotonic = max(self._freeze_until_monotonic, time.monotonic() + max(0.0, float(duration_s)))
 
     def show_reference_line(self, key: str, value: float, label: str, color: str = '#FF66AA', duration_s: float = 15.0, dashed: bool = False) -> None:
         """Show or refresh a temporary symmetric +/- amplitude guide that fades out."""
@@ -2178,6 +2182,8 @@ class WaveformLiveCanvas(pg.PlotWidget):
             self._reference_fade_timer.stop()
 
     def update_from_audio(self, waveform: Optional[np.ndarray], sample_rate: int) -> None:
+        if time.monotonic() < float(self._freeze_until_monotonic):
+            return
         if waveform is None:
             return
         arr = np.asarray(waveform, dtype=np.float32)
@@ -7500,16 +7506,7 @@ Like the app?<br>
             "Exponential fill-gate scaling applied proportionally to downbeat/beat/sync thresholds. "
             "0% = 1.00x, +100% = 2.00x, -50% = 0.50x."
         )
-        self.fill_gate_scale_spin.valueChanged.connect(
-            lambda pct: (
-                setattr(
-                    self.config.stroke,
-                    'overall_amp_fill_required_scale',
-                    self._fill_gate_percent_to_scale(float(pct)),
-                ),
-                self._preview_fill_requirement_ghosts(),
-            )
-        )
+        self.fill_gate_scale_spin.valueChanged.connect(self._on_fill_gate_scale_change)
         layout.addWidget(self.fill_gate_scale_spin)
         layout.addStretch()
 
@@ -7522,6 +7519,16 @@ Like the app?<br>
     def _fill_gate_percent_to_scale(self, percent: float) -> float:
         scale = float(np.power(2.0, float(percent) / 100.0))
         return float(np.clip(scale, 0.05, 20.0))
+
+    def _on_fill_gate_scale_change(self, pct: float) -> None:
+        setattr(
+            self.config.stroke,
+            'overall_amp_fill_required_scale',
+            self._fill_gate_percent_to_scale(float(pct)),
+        )
+        self._preview_fill_requirement_ghosts()
+        if hasattr(self, 'waveform_canvas') and hasattr(self.waveform_canvas, 'freeze_frame'):
+            self.waveform_canvas.freeze_frame(4.0)
 
     def _capture_current_settings(self) -> dict:
         """Capture all current UI settings for revert functionality"""
