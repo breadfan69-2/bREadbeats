@@ -4285,7 +4285,7 @@ class BREadbeatsWindow(QMainWindow):
 
         # On/Off checkbox
         syncope_enabled_cb = QCheckBox("Enable syncopation detection")
-        syncope_enabled_cb.setChecked(self.config.beat.syncopation_enabled)
+        syncope_enabled_cb.setChecked(bool(getattr(self.config.beat, 'syncopation_enabled', True)))
         syncope_enabled_cb.stateChanged.connect(
             lambda state: setattr(self.config.beat, 'syncopation_enabled', state == 2)
         )
@@ -4300,7 +4300,7 @@ class BREadbeatsWindow(QMainWindow):
         band_combo = QComboBox()
         band_options = ['any', 'sub_bass', 'low_mid', 'mid', 'high']
         band_combo.addItems(band_options)
-        current_band = self.config.beat.syncopation_band
+        current_band = str(getattr(self.config.beat, 'syncopation_band', 'any'))
         if current_band in band_options:
             band_combo.setCurrentIndex(band_options.index(current_band))
         band_combo.currentTextChanged.connect(
@@ -4310,28 +4310,52 @@ class BREadbeatsWindow(QMainWindow):
         syncope_layout.addLayout(band_row)
 
         # Syncopation window slider
-        syncope_window_slider = SliderWithLabel("Off-beat window (± beat fraction)", 0.05, 0.30, self.config.beat.syncopation_window, 2)
+        syncope_window_slider = SliderWithLabel(
+            "Off-beat window (± beat fraction)",
+            0.05,
+            0.30,
+            float(getattr(self.config.beat, 'syncopation_window', 0.16)),
+            2,
+        )
         syncope_window_slider.valueChanged.connect(
             lambda v: setattr(self.config.beat, 'syncopation_window', v)
         )
         syncope_layout.addWidget(syncope_window_slider)
 
         # BPM limit slider
-        syncope_bpm_slider = SliderWithLabel("BPM limit (disable above)", 80.0, 200.0, self.config.beat.syncopation_bpm_limit, 0)
+        syncope_bpm_slider = SliderWithLabel(
+            "BPM limit (disable above)",
+            80.0,
+            200.0,
+            float(getattr(self.config.beat, 'syncopation_bpm_limit', 130.0)),
+            0,
+        )
         syncope_bpm_slider.valueChanged.connect(
             lambda v: setattr(self.config.beat, 'syncopation_bpm_limit', v)
         )
         syncope_layout.addWidget(syncope_bpm_slider)
 
         # Arc size: fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
-        syncope_arc_slider = SliderWithLabel("Syncopation arc size (circle fraction)", 0.10, 1.0, self.config.beat.syncopation_arc_size, 2)
+        syncope_arc_slider = SliderWithLabel(
+            "Syncopation arc size (circle fraction)",
+            0.10,
+            1.0,
+            float(getattr(self.config.beat, 'syncopation_arc_size', 0.30)),
+            2,
+        )
         syncope_arc_slider.valueChanged.connect(
             lambda v: setattr(self.config.beat, 'syncopation_arc_size', v)
         )
         syncope_layout.addWidget(syncope_arc_slider)
 
         # Speed: duration as fraction of beat interval (0.25=quarter beat, 0.5=half, 1.0=full)
-        syncope_speed_slider = SliderWithLabel("Syncopation speed (beat fraction)", 0.10, 1.0, self.config.beat.syncopation_speed, 2)
+        syncope_speed_slider = SliderWithLabel(
+            "Syncopation speed (beat fraction)",
+            0.10,
+            1.0,
+            float(getattr(self.config.beat, 'syncopation_speed', 0.20)),
+            2,
+        )
         syncope_speed_slider.valueChanged.connect(
             lambda v: setattr(self.config.beat, 'syncopation_speed', v)
         )
