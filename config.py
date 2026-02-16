@@ -127,13 +127,6 @@ class StrokeConfig:
     # Volume reduction limit: max % volume can be reduced by band/fade/creep effects (post-silence excluded)
     vol_reduction_limit: float = 10.0  # 0-20, default 10 means max 10% reduction (floor = 0.90)
 
-    # Per-band volume drops applied when that beat band triggers motion.
-    # Value is percent points (0-99): e.g. 5 means -5% volume.
-    volume_drop_on_sub_bass_percent: float = 0.0
-    volume_drop_on_low_mid_percent: float = 0.0
-    volume_drop_on_mid_percent: float = 0.0
-    volume_drop_on_high_percent: float = 0.0
-
     # Flux-rise depth factor over 250ms. Behavior is selected by flux_depth_boost_enabled.
     # boost=False: compress depth toward minimum_depth on flux rise (legacy/default)
     # boost=True:  boost depth toward 1.0 on flux rise
@@ -261,6 +254,7 @@ class StrokeConfig:
     # Post-silence volume ramp: reduce volume after silence/track-change, ramp back up
     post_silence_vol_reduction: float = 0.15  # Fraction to reduce volume by (0.0-0.50, 0.15 = 15%)
     post_silence_ramp_seconds: float = 3.0    # Seconds to ramp volume back to full (1.0-8.0)
+    silence_fade_drop_points: int = 10        # Max points (out of 100) fade can lower volume by in runtime fade pass
 
 @dataclass
 class JitterConfig:

@@ -5225,6 +5225,22 @@ class BREadbeatsWindow(QMainWindow):
         )
         silence_ramp_layout.addWidget(ramp_dur_slider)
 
+        fade_drop_row = QHBoxLayout()
+        fade_drop_label = QLabel("Fade max drop points (out of 100):")
+        fade_drop_label.setStyleSheet("color: #ccc;")
+        fade_drop_row.addWidget(fade_drop_label)
+        fade_drop_spin = QSpinBox()
+        fade_drop_spin.setRange(0, 10)
+        fade_drop_spin.setSingleStep(1)
+        fade_drop_spin.setValue(int(np.clip(getattr(self.config.stroke, 'silence_fade_drop_points', 10) or 10, 0, 10)))
+        fade_drop_spin.setToolTip("Caps runtime fade reduction to this many volume points (0-10)")
+        fade_drop_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'silence_fade_drop_points', int(v))
+        )
+        fade_drop_row.addWidget(fade_drop_spin)
+        fade_drop_row.addStretch()
+        silence_ramp_layout.addLayout(fade_drop_row)
+
         scroll_layout.addWidget(silence_ramp_group)
 
         # ===== Flux Controls =====

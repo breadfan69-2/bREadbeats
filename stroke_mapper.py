@@ -2180,7 +2180,10 @@ class StrokeMapper:
         if hasattr(cmd, 'intensity'):
             cmd.intensity *= self._fade_intensity
         if hasattr(cmd, 'volume'):
-            cmd.volume *= self._fade_intensity
+            drop_points = int(np.clip(getattr(self.config.stroke, 'silence_fade_drop_points', 10) or 10, 0, 10))
+            min_fade_mult = 1.0 - (drop_points / 100.0)
+            fade_mult = max(min_fade_mult, float(self._fade_intensity))
+            cmd.volume *= fade_mult
             # Post-silence volume ramp: reduce volume and slowly raise back
             if self._post_silence_ramp_active:
                 cfg = self.config.stroke
