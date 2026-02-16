@@ -2177,9 +2177,6 @@ class WaveformLiveCanvas(pg.PlotWidget):
         if not self._reference_overlays and not self._fill_ratio_overlays:
             self._reference_fade_timer.stop()
 
-        if not self._reference_overlays:
-            self._reference_fade_timer.stop()
-
     def update_from_audio(self, waveform: Optional[np.ndarray], sample_rate: int) -> None:
         if waveform is None:
             return
@@ -8362,7 +8359,7 @@ Like the app?<br>
         return float(np.clip(base_required * scale, 0.0, 1.0))
 
     def _preview_fill_requirement_ghosts(self) -> None:
-        """Preview fill-gate requirements on waveform and bin windows on frequency-dB visualizers."""
+        """Preview fill-gate requirements on waveform visualizers."""
         down_val = self._effective_fill_requirement('downbeat')
         beat_val = self._effective_fill_requirement('beat')
         sync_val = self._effective_fill_requirement('syncopation')
@@ -8379,44 +8376,6 @@ Like the app?<br>
             canvas.show_fill_ratio_ghost('fill_req_downbeat_ratio', down_val, '% fill for (downbeat)', color='#66E0FF', duration_s=15.0, dashed=True)
             canvas.show_fill_ratio_ghost('fill_req_beat_ratio', beat_val, '% fill for (beat)', color='#55CCFF', duration_s=15.0, dashed=True)
             canvas.show_fill_ratio_ghost('fill_req_sync_ratio', sync_val, '% fill for (synco)', color='#44B8FF', duration_s=15.0, dashed=True)
-
-        fft_size = int(getattr(self.config.audio, 'fft_size', 1024) or 1024)
-        max_bin = max(1, fft_size // 2)
-        sample_rate = float(getattr(self.config.audio, 'sample_rate', 44100) or 44100)
-
-        def _bin_to_hz(bin_value: int) -> float:
-            return float(np.clip(bin_value, 0, max_bin) * (sample_rate / max(1, fft_size)))
-
-        freqdb_targets = []
-        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
-            freqdb_targets.append(self.freqdb_canvas)
-        popout = getattr(self, 'calibration_popout', None)
-        popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
-        if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in freqdb_targets:
-            freqdb_targets.append(popout_freqdb)
-
-        for phase, key, label in (
-            ('downbeat', 'fill_bin_downbeat_range', 'Downbeat fill bins'),
-            ('beat', 'fill_bin_beat_range', 'Beat fill bins'),
-            ('syncopation', 'fill_bin_sync_range', 'Sync fill bins'),
-        ):
-            low = int(getattr(self.config.stroke, f'{phase}_fill_bin_low', 0) or 0)
-            high = int(getattr(self.config.stroke, f'{phase}_fill_bin_high', max_bin) or max_bin)
-            low_hz = _bin_to_hz(min(low, high))
-            high_hz = _bin_to_hz(max(low, high))
-            for canvas in freqdb_targets:
-                canvas.show_flux_ghost(
-                    key,
-                    low_hz,
-                    label,
-                    color='#FFFFFF',
-                    duration_s=15.0,
-                    dashed=False,
-                    band='full',
-                    range_box=True,
-                    mode='hz_line',
-                    hz_max=high_hz,
-                )
     
     def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""
