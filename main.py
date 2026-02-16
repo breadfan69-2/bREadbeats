@@ -2009,30 +2009,11 @@ class WaveformLiveCanvas(pg.PlotWidget):
         self._sample_rate = 44100
         self._x_max_ms = 25.0
         self._latest_peak = 0.0
-        self._peak_history: deque[tuple[float, float]] = deque()
-        self._peak_avg_window_s = 0.100
         self._reference_overlays: dict[str, dict] = {}
         self._fill_ratio_overlays: dict[str, dict] = {}
         self._reference_fade_timer = QTimer(self)
         self._reference_fade_timer.setInterval(80)
         self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
-
-    def _record_peak_sample(self, peak: float) -> None:
-        now = time.monotonic()
-        peak_clamped = float(np.clip(peak, 0.0, 1.0))
-        self._peak_history.append((now, peak_clamped))
-        cutoff = now - float(self._peak_avg_window_s)
-        while self._peak_history and self._peak_history[0][0] < cutoff:
-            self._peak_history.popleft()
-
-    def _get_recent_peak_average(self) -> float:
-        now = time.monotonic()
-        cutoff = now - float(self._peak_avg_window_s)
-        while self._peak_history and self._peak_history[0][0] < cutoff:
-            self._peak_history.popleft()
-        if not self._peak_history:
-            return float(np.clip(self._latest_peak, 0.0, 1.0))
-        return float(np.mean([peak for _, peak in self._peak_history]))
 
     def show_reference_line(self, key: str, value: float, label: str, color: str = '#FF66AA', duration_s: float = 15.0, dashed: bool = False) -> None:
         """Show or refresh a temporary symmetric +/- amplitude guide that fades out."""
@@ -2087,14 +2068,9 @@ class WaveformLiveCanvas(pg.PlotWidget):
             self._reference_fade_timer.start()
 
     def show_fill_ratio_ghost(self, key: str, ratio: float, label: str, color: str = '#FFFFFF', duration_s: float = 15.0, dashed: bool = False) -> None:
-        """Show or refresh a temporary symmetric fill-ratio band around zero.
-
-        Ratio is projected onto waveform amplitude using current visible peak, so
-        fill thresholds can be compared directly against on-screen waveform height.
-        """
+        """Show or refresh a temporary symmetric static fill-ratio band around zero."""
         ratio_clamped = float(np.clip(ratio, 0.0, 1.0))
-        visible_peak = self._get_recent_peak_average()
-        amp = float(np.clip(ratio_clamped * visible_peak, 0.0, 1.0))
+        amp = ratio_clamped
         now = time.monotonic()
 
         overlay = self._fill_ratio_overlays.get(key)
@@ -2208,7 +2184,6 @@ class WaveformLiveCanvas(pg.PlotWidget):
         if peak_abs > 1.0:
             arr = arr / peak_abs
         self._latest_peak = float(np.max(np.abs(arr))) if arr.size > 0 else 0.0
-        self._record_peak_sample(self._latest_peak)
 
         x_ms = (np.arange(arr.size, dtype=np.float32) / float(self._sample_rate)) * 1000.0
         x_end = float(x_ms[-1]) if x_ms.size > 0 else 25.0
