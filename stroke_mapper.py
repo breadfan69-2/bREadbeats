@@ -334,9 +334,9 @@ class StrokeMapper:
         # Display-bottom phase is 0 in current alpha/beta orientation.
         # (PositionCanvas maps display Y from -beta after restim transforms.)
         self._landing_offset_degrees: float = 7.5
-        self._park_radius_min: float = 0.20
-        self._park_radius_max: float = 0.95
-        self._park_radius: float = 0.80
+        self._park_radius_min: float = 0.65
+        self._park_radius_max: float = 0.90
+        self._park_radius: float = 0.70
         self._park_bottom_phase: float = 0.0
         self._park_freq_bias: float = 0.0
         self._single_anchor_bottom_phase = self._park_bottom_phase
@@ -392,8 +392,8 @@ class StrokeMapper:
     def _update_anchor_from_bass_state(self, event: Optional[BeatEvent]) -> float:
         """Drive park/anchor radius from low-bass activity.
 
-        Parking prefers ~0.80 on the horizontal axis. Lower bass frequencies
-        nudge it farther out (toward edge), capped at 0.95.
+        Parking prefers ~0.70 on the horizontal axis. Lower bass frequencies
+        nudge it farther out (toward edge), capped at 0.90.
         """
         bass_norm = self._get_anchor_bass_norm(event)
         freq_bias_target = 0.0
@@ -411,8 +411,8 @@ class StrokeMapper:
             1.0,
         ))
 
-        target_radius = 0.80 + (0.15 * self._park_freq_bias) + (0.02 * bass_norm)
-        target_radius = float(np.clip(target_radius, 0.75, 0.95))
+        target_radius = 0.70 + (0.18 * self._park_freq_bias) + (0.02 * bass_norm)
+        target_radius = float(np.clip(target_radius, 0.65, 0.90))
         smooth = 0.28 if target_radius >= self._park_radius else 0.12
         radius = self._park_radius + ((target_radius - self._park_radius) * smooth)
         self._update_park_anchor_from_radius(radius)
@@ -449,7 +449,7 @@ class StrokeMapper:
         return np.linspace(current_phase, target + turns, n_points, endpoint=True) % 1.0
 
     def _generate_park_return_arc(self, duration_ms: int = 380) -> bool:
-        """Continue current rotational path and land exactly on park anchor."""
+        """Continue current rotational path and land on landing target (off-right)."""
         if self._trajectory is None:
             return False
 
@@ -461,7 +461,8 @@ class StrokeMapper:
             current_phase += 2 * np.pi
         current_phase /= (2 * np.pi)
 
-        target_phase = self._get_park_phase() / (2 * np.pi)
+        landing_phase = self._get_landing_phase()
+        target_phase = landing_phase / (2 * np.pi)
         arc_phases = self._build_arc_phases_to_target(current_phase, target_phase, n_points, min_turns=0.0)
 
         start_radius = float(np.hypot(current_a, current_b))
@@ -479,8 +480,8 @@ class StrokeMapper:
             alpha_pts[i] = np.sin(angle) * radius * alpha_weight
             beta_pts[i] = np.cos(angle) * radius * beta_weight
 
-        alpha_pts[-1] = self._park_alpha
-        beta_pts[-1] = self._park_beta
+        alpha_pts[-1] = float(np.sin(landing_phase) * target_radius)
+        beta_pts[-1] = float(np.cos(landing_phase) * target_radius)
 
         step_durations = self._make_landing_durations(int(max(120, duration_ms)), n_points)
         band_volume = float(self._trajectory.band_volume if self._trajectory is not None else self.get_volume())
