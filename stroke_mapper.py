@@ -3287,56 +3287,48 @@ class StrokeMapper:
             # This prevents the sync from fighting the tempo-based rotation.
             
             bpm = reliable_tempo_bpm
+            if bpm <= 0:
+                fallback_bpm = self._last_known_bpm if self._last_known_bpm > 0 else 90.0
+                bpm = float(np.clip(fallback_bpm, 45.0, 160.0))
 
-            if bpm > 0:
-                beats_per_sec = bpm / 60.0
-                updates_per_sec = 1000.0 / 17.0
-                updates_per_beat = updates_per_sec / beats_per_sec
-                angle_increment = (np.pi / 2.0) / updates_per_beat * creep_cfg.speed
+            beats_per_sec = bpm / 60.0
+            updates_per_sec = 1000.0 / 17.0
+            updates_per_beat = updates_per_sec / beats_per_sec
+            angle_increment = (np.pi / 2.0) / updates_per_beat * creep_cfg.speed
 
-                if self._motion_mode == MotionMode.CREEP_MICRO:
-                    # In CREEP_MICRO: one full rotation per measure (4 beats -> 2pi)
-                    # Override speed: exactly 2pi per measure
-                    angle_increment = (2 * np.pi) / (updates_per_beat * self.config.beat.beats_per_measure)
+            if self._motion_mode == MotionMode.CREEP_MICRO:
+                # In CREEP_MICRO: one full rotation per measure (4 beats -> 2pi)
+                # Override speed: exactly 2pi per measure
+                angle_increment = (2 * np.pi) / (updates_per_beat * self.config.beat.beats_per_measure)
 
-                if not self.state.creep_reset_active:
-                    # Normal creep rotation — keeps moving smoothly between arcs
-                    self.state.creep_angle += angle_increment
-                    if self.state.creep_angle >= 2 * np.pi:
-                        self.state.creep_angle -= 2 * np.pi
+            if not self.state.creep_reset_active:
+                # Normal creep rotation — keeps moving smoothly between arcs
+                self.state.creep_angle += angle_increment
+                if self.state.creep_angle >= 2 * np.pi:
+                    self.state.creep_angle -= 2 * np.pi
 
-                if self._motion_mode == MotionMode.CREEP_MICRO:
-                    # CREEP_MICRO: smaller radius, drift toward center not edges
-                    creep_radius = 0.20
-                else:
-                    creep_radius = 0.50
-
-                if (self._motion_mode == MotionMode.FULL_STROKE
-                        and self.config.stroke.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL, StrokeMode.TEARDROP)):
-                    follow_floor = 0.85 if self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
-                    creep_radius = float(np.clip(max(creep_radius, self._edge_follow_radius, follow_floor), follow_floor, 1.00))
-
-                target_alpha = np.sin(self.state.creep_angle) * creep_radius
-                target_beta = np.cos(self.state.creep_angle) * creep_radius
-
-                # Smooth blend from arc endpoint to creep orbit
-                if self._post_arc_blend < 1.0:
-                    self._post_arc_blend = min(1.0, self._post_arc_blend + self._post_arc_blend_rate)
-                    base_alpha = alpha + (target_alpha - alpha) * self._post_arc_blend
-                    base_beta = beta + (target_beta - beta) * self._post_arc_blend
-                else:
-                    base_alpha = target_alpha
-                    base_beta = target_beta
+            if self._motion_mode == MotionMode.CREEP_MICRO:
+                # CREEP_MICRO: smaller radius, drift toward center not edges
+                creep_radius = 0.20
             else:
-                # No tempo: return to park target, let jitter handle micro-motion
-                # No orbital oscillation — just smoothly blend position toward park
-                if self._post_arc_blend < 1.0:
-                    self._post_arc_blend = min(1.0, self._post_arc_blend + self._post_arc_blend_rate)
-                    base_alpha = alpha + (self._park_alpha - alpha) * self._post_arc_blend
-                    base_beta = beta + (self._park_beta - beta) * self._post_arc_blend
-                else:
-                    base_alpha = self._park_alpha
-                    base_beta = self._park_beta
+                creep_radius = 0.50
+
+            if (self._motion_mode == MotionMode.FULL_STROKE
+                    and self.config.stroke.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL, StrokeMode.TEARDROP)):
+                follow_floor = 0.85 if self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
+                creep_radius = float(np.clip(max(creep_radius, self._edge_follow_radius, follow_floor), follow_floor, 1.00))
+
+            target_alpha = np.sin(self.state.creep_angle) * creep_radius
+            target_beta = np.cos(self.state.creep_angle) * creep_radius
+
+            # Smooth blend from arc endpoint to creep orbit
+            if self._post_arc_blend < 1.0:
+                self._post_arc_blend = min(1.0, self._post_arc_blend + self._post_arc_blend_rate)
+                base_alpha = alpha + (target_alpha - alpha) * self._post_arc_blend
+                base_beta = beta + (target_beta - beta) * self._post_arc_blend
+            else:
+                base_alpha = target_alpha
+                base_beta = target_beta
         else:
             # Creep disabled: quickly wobble toward park so dot
             # doesn't get stuck at the edge after an arc finishes.
