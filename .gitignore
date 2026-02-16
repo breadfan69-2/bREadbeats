@@ -25,11 +25,41 @@ Thumbs.db
 
 # Documentation/working notes - NOT for version control
 *instruction*.txt
+*note*.txt
 *notes*.txt
 *research*.txt
 *session*.txt
+*funscript*.md
+FUNSCRIPT*.md
+FUNSCRIPTDANCER_*.md
+summaryofgoal.txt
+teaching_*.py
+teaching_captures/
+*.funscript
+session_*.md
+session-summary*.md
+session_summary_*.md
+session_handoff*.md
+session-handoff*.md
 *agent*.md
+*proposal*.md
+*proposal*.txt
+IMPROVEMENT_PROPOSAL_*.md
+next_agent_motion_control_proposals_*.txt
 PORT_V1_STROKEMODES_PLAN.md
 chathistory.txt
 build.log
 *finaldebug.txt
+scripts/*.beta.txt
+
+# Runtime-generated reports
+audio_session_report.json
+audio_session_report.csv
+slider_tuning_report.json
+slider_tuning_report.csv
+breadbeats_reports_*.zip
+
+# Local runtime config artifacts
+config.json
+config.json.bak
+learned_profile_slots.json
