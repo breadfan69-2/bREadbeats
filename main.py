@@ -64,7 +64,6 @@ from config_facade import (
     save_config,
 )
 from frequency_utils import extract_dominant_freq
-from presets_wiring import get_presets_file_path, load_presets_data, resolve_p0_tcode_bounds, save_presets_data
 from slider_tuning_tracker import SliderTuningTracker
 from transport_wiring import (
     begin_volume_ramp,
@@ -7098,16 +7097,18 @@ Like the app?<br>
         self._revert_settings = None  # Stores settings before preset load for revert
         self.preset_buttons = []
         for i in range(5):
-            btn = PresetButton(f"{i+1}")
-            btn.left_clicked.connect(lambda idx=i: self._load_beat_preset(idx))
-            btn.right_clicked.connect(lambda idx=i: self._save_beat_preset(idx))
+            btn = PresetButton("empty")
+            btn.setToolTip("Reserved preset slot")
+            btn.setEnabled(False)
+            btn.set_has_preset(False)
+            btn.set_active(False)
             self.preset_buttons.append(btn)
             layout.addWidget(btn)
         
         # Revert button - restores settings from before last preset load
         self.revert_btn = QPushButton("↩")  # Circular go-back arrow
         self.revert_btn.setFixedWidth(52)  # Half width of preset buttons (104/2)
-        self.revert_btn.setToolTip("Revert to settings before last preset load")
+        self.revert_btn.setToolTip("Preset slots are fixed and not user-configurable")
         self.revert_btn.clicked.connect(self._revert_preset)
         self.revert_btn.setEnabled(False)  # Disabled until a preset is loaded
         layout.addWidget(self.revert_btn)
@@ -8323,379 +8324,35 @@ Like the app?<br>
             self.audio_engine._aggressive_snap_max_bpm_jump_ratio = value
     
     def _save_freq_preset(self, idx: int):
-        """Save ALL settings from all 4 tabs to custom preset, with overwrite confirmation and optional rename"""
-        from PyQt6.QtWidgets import QMessageBox, QInputDialog
-        
-        # Check if this slot already has a preset
-        key = str(idx)
-        custom_name = None
-        if key in self.custom_beat_presets:
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("WARNING - OVERWRITE PRESET")
-            msg_box.setText(f"Preset {idx+1} already exists.\nAre you sure you want to overwrite it?")
-            msg_box.setIcon(QMessageBox.Icon.Warning)
-            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-            ok_button = msg_box.button(QMessageBox.StandardButton.Ok)
-            rename_button = msg_box.addButton("Rename", QMessageBox.ButtonRole.AcceptRole)
-            if ok_button:
-                ok_button.setText("Overwrite")
-            msg_box.setDefaultButton(QMessageBox.StandardButton.Cancel)
-            result = msg_box.exec()
-            
-            clicked_button = msg_box.clickedButton()
-            if clicked_button == rename_button:
-                # User wants to rename - show input dialog
-                existing_name = self.custom_beat_presets[key].get('preset_name', f'Preset {idx+1}')
-                new_name, ok = QInputDialog.getText(
-                    self, "Rename Preset", 
-                    "Enter a new name for this preset:",
-                    text=existing_name
-                )
-                if ok and new_name.strip():
-                    custom_name = new_name.strip()[:12]  # Limit to 12 chars for button display
-                else:
-                    print(f"[Config] Preset {idx+1} rename cancelled")
-                    return
-            elif result != QMessageBox.StandardButton.Ok:
-                print(f"[Config] Preset {idx+1} overwrite cancelled")
-                return
-
-        preset_data = {
-            # Beat Detection Tab
-            'freq_low': self.freq_range_slider.low(),
-            'freq_high': self.freq_range_slider.high(),
-            'sensitivity': self.sensitivity_slider.value(),
-            'peak_floor': self.peak_floor_slider.value(),
-            'peak_decay': self.peak_decay_slider.value(),
-            'rise_sensitivity': self.rise_sens_slider.value(),
-            'flux_multiplier': self.flux_mult_slider.value(),
-            'audio_gain': self.audio_gain_slider.value(),
-            'zscore_threshold': self.zscore_threshold_slider.value(),
-            'amp_gate_high': self.config.stroke.amplitude_gate_high,
-            'amp_gate_low': self.config.stroke.amplitude_gate_low,
-            'silence_reset_ms': int(self.silence_reset_slider.value()),
-            'detection_type': self.detection_type_combo.currentIndex(),
-            
-            # Tempo Tracking (Beat Detection Tab)
-            'tempo_tracking_enabled': self.tempo_tracking_checkbox.isChecked(),
-            'time_sig_index': self.time_sig_combo.currentIndex(),
-            'stability_threshold': self.stability_threshold_slider.value(),
-            'tempo_timeout_ms': int(self.tempo_timeout_slider.value()),
-            'phase_snap_weight': self.phase_snap_slider.value(),
-            'acf_interval_ms': getattr(self.config.beat, 'acf_interval_ms', 250.0),
-            'metronome_bpm_alpha_slow': getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03),
-            'metronome_bpm_alpha_fast': getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22),
-            'metronome_pll_window': getattr(self.config.beat, 'metronome_pll_window', 0.35),
-            'metronome_pll_base_gain': getattr(self.config.beat, 'metronome_pll_base_gain', 0.09),
-            'metronome_pll_conf_gain': getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08),
-            'tempo_fusion_min_acf_weight': getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20),
-            'tempo_fusion_max_acf_weight': getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95),
-            'beat_dedup_fraction': getattr(self.config.beat, 'beat_dedup_fraction', 0.22),
-            'phase_accept_window_ms': getattr(self.config.beat, 'phase_accept_window_ms', 85.0),
-            'phase_accept_low_conf_mult': getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0),
-            'octave_target_bias_confidence_max': getattr(self.config.beat, 'octave_target_bias_confidence_max', 0.35),
-            'target_bps_lock_gate_enabled': getattr(self.config.beat, 'target_bps_lock_gate_enabled', True),
-            'target_bps_lock_gate_acf_conf': getattr(self.config.beat, 'target_bps_lock_gate_acf_conf', 0.40),
-            'target_bps_lock_gate_downbeats': getattr(self.config.beat, 'target_bps_lock_gate_downbeats', 1),
-            'aggressive_tempo_snap_enabled': getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False),
-            'aggressive_snap_confidence': getattr(self.config.beat, 'aggressive_snap_confidence', 0.55),
-            'aggressive_snap_phase_error_ms': getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0),
-            'aggressive_snap_min_matches': getattr(self.config.beat, 'aggressive_snap_min_matches', 1),
-            'aggressive_snap_max_bpm_jump_ratio': getattr(self.config.beat, 'aggressive_snap_max_bpm_jump_ratio', 0.12),
-            'metric_response_speed': getattr(self.config.auto_adjust, 'metric_response_speed', 1.0),
-
-            # Stroke Settings Tab
-            'stroke_mode': self.mode_combo.currentIndex(),
-            'stroke_min': self.stroke_range_slider.low(),
-            'stroke_max': self.stroke_range_slider.high(),
-            'min_interval_ms': 150,
-            'stroke_fullness': self.fullness_slider.value(),
-            'minimum_depth': 0.0,
-            'freq_depth_factor': self.freq_depth_slider.value(),
-            'flux_depth_factor': self.flux_depth_slider.value(),
-            'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
-            'combo_size': float(getattr(self.config.stroke, 'combo_size', 1.0)),
-            'combo_power': float(getattr(self.config.stroke, 'combo_power', 1.0)),
-            'combo_depth': float(getattr(self.config.stroke, 'combo_depth', 1.0)),
-            'combo_speed': float(getattr(self.config.stroke, 'combo_speed', 1.0)),
-            'combo_texture': float(getattr(self.config.stroke, 'combo_texture', 1.0)),
-            'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
-            'overall_amp_fill_required_scale': float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0),
-            'depth_freq_low': self.depth_freq_range_slider.low(),
-            'depth_freq_high': self.depth_freq_range_slider.high(),
-            'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
-            'flux_scaling_weight': self.flux_scaling_slider.value(),
-            'phase_advance': self.phase_advance_slider.value(),
-
-            # Jitter / Creep Tab
-            'jitter_enabled': self.jitter_enabled.isChecked(),
-            'jitter_amplitude': self.jitter_amplitude_slider.value(),
-            'jitter_intensity': self.jitter_intensity_slider.value(),
-            'creep_enabled': self.creep_enabled.isChecked(),
-            'creep_speed': self.creep_speed_slider.value(),
-            'thump_enabled': self.config.stroke.thump_enabled,
-
-            # Axis Weights Tab
-            'alpha_weight': self.alpha_weight_slider.value(),
-            'beta_weight': self.beta_weight_slider.value(),
-
-            # Effects Tab
-            'vol_reduction_limit': self.vol_reduction_limit_slider.value(),
-
-            # Other Tab
-            'pulse_freq_low': self.pulse_freq_range_slider.low(),
-            'pulse_freq_high': self.pulse_freq_range_slider.high(),
-            'tcode_min': int(self.tcode_freq_range_slider.low()),
-            'tcode_max': int(self.tcode_freq_range_slider.high()),
-            'freq_weight': self.freq_weight_slider.value(),
-        }
-        
-        # Add custom name if provided
-        if custom_name:
-            preset_data['preset_name'] = custom_name
-        
-        self.custom_beat_presets[str(idx)] = preset_data
-        # Mark this button as having a preset and make it active
-        self.preset_buttons[idx].set_has_preset(True)
-        self.preset_buttons[idx].set_active(True)
-        
-        # Update button text if custom name is set
-        if custom_name:
-            self.preset_buttons[idx].setText(custom_name)
-        else:
-            self.preset_buttons[idx].setText(str(idx + 1))
-        
-        # Deactivate other preset buttons
-        for i, btn in enumerate(self.preset_buttons):
-            if i != idx:
-                btn.set_active(False)
-        self._save_presets_to_disk()
-        print(f"[Config] Saved preset {idx+1}{' (' + custom_name + ')' if custom_name else ''} with all settings")
+        """Preset slots are currently fixed and not user-configurable."""
+        print(f"[Presets] Slot {idx+1} is reserved (empty)")
     
     def _load_freq_preset(self, idx: int):
-        """Load ALL settings from all 4 tabs from custom preset"""
-        from config import StrokeMode
-        key = str(idx)
-        if key in self.custom_beat_presets:
-            # Capture current settings before loading for revert functionality
-            self._revert_settings = self._capture_current_settings()
-            self.revert_btn.setEnabled(True)
-            
-            preset_data = self.custom_beat_presets[key]
-            # Beat Detection Tab
-            self.freq_range_slider.setLow(preset_data['freq_low'])
-            self.freq_range_slider.setHigh(preset_data['freq_high'])
-            self.sensitivity_slider.setValue(preset_data['sensitivity'])
-            self.peak_floor_slider.setValue(preset_data['peak_floor'])
-            self.peak_decay_slider.setValue(preset_data['peak_decay'])
-            self.rise_sens_slider.setValue(preset_data['rise_sensitivity'])
-            self.flux_mult_slider.setValue(preset_data['flux_multiplier'])
-            self.audio_gain_slider.setValue(preset_data['audio_gain'])
-            if 'zscore_threshold' in preset_data:
-                self.zscore_threshold_slider.setValue(preset_data['zscore_threshold'])
-                self._on_zscore_threshold_change(preset_data['zscore_threshold'])
-            if 'amp_gate_high' in preset_data:
-                self.config.stroke.amplitude_gate_high = preset_data['amp_gate_high']
-            if 'amp_gate_low' in preset_data:
-                self.config.stroke.amplitude_gate_low = preset_data['amp_gate_low']
-            if 'silence_reset_ms' in preset_data:
-                self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
-            self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
-            
-            # Tempo Tracking settings
-            if 'tempo_tracking_enabled' in preset_data:
-                self.tempo_tracking_checkbox.setChecked(preset_data['tempo_tracking_enabled'])
-                self._on_tempo_tracking_toggle(2 if preset_data['tempo_tracking_enabled'] else 0)
-            if 'time_sig_index' in preset_data:
-                self.time_sig_combo.setCurrentIndex(preset_data['time_sig_index'])
-                self._on_time_sig_change(preset_data['time_sig_index'])
-            if 'stability_threshold' in preset_data:
-                self.stability_threshold_slider.setValue(preset_data['stability_threshold'])
-                self._on_stability_threshold_change(preset_data['stability_threshold'])
-            if 'tempo_timeout_ms' in preset_data:
-                self.tempo_timeout_slider.setValue(preset_data['tempo_timeout_ms'])
-                self._on_tempo_timeout_change(preset_data['tempo_timeout_ms'])
-            if 'phase_snap_weight' in preset_data:
-                self.phase_snap_slider.setValue(preset_data['phase_snap_weight'])
-                self._on_phase_snap_change(preset_data['phase_snap_weight'])
-            if 'acf_interval_ms' in preset_data:
-                self._on_acf_interval_change(int(preset_data['acf_interval_ms']))
-            if 'metronome_bpm_alpha_slow' in preset_data:
-                self._on_metronome_bpm_alpha_slow_change(preset_data['metronome_bpm_alpha_slow'])
-            if 'metronome_bpm_alpha_fast' in preset_data:
-                self._on_metronome_bpm_alpha_fast_change(preset_data['metronome_bpm_alpha_fast'])
-            if 'metronome_pll_window' in preset_data:
-                self._on_metronome_pll_window_change(preset_data['metronome_pll_window'])
-            if 'metronome_pll_base_gain' in preset_data:
-                self._on_metronome_pll_base_gain_change(preset_data['metronome_pll_base_gain'])
-            if 'metronome_pll_conf_gain' in preset_data:
-                self._on_metronome_pll_conf_gain_change(preset_data['metronome_pll_conf_gain'])
-            if 'tempo_fusion_min_acf_weight' in preset_data:
-                self._on_tempo_fusion_min_acf_weight_change(preset_data['tempo_fusion_min_acf_weight'])
-            if 'tempo_fusion_max_acf_weight' in preset_data:
-                self._on_tempo_fusion_max_acf_weight_change(preset_data['tempo_fusion_max_acf_weight'])
-            if 'beat_dedup_fraction' in preset_data:
-                self._on_beat_dedup_fraction_change(preset_data['beat_dedup_fraction'])
-            if 'phase_accept_window_ms' in preset_data:
-                self._on_phase_accept_window_ms_change(preset_data['phase_accept_window_ms'])
-            if 'phase_accept_low_conf_mult' in preset_data:
-                self._on_phase_accept_low_conf_mult_change(preset_data['phase_accept_low_conf_mult'])
-            if 'octave_target_bias_confidence_max' in preset_data:
-                self._on_octave_target_bias_confidence_max_change(preset_data['octave_target_bias_confidence_max'])
-            if 'target_bps_lock_gate_enabled' in preset_data:
-                self._on_target_bps_lock_gate_toggle(bool(preset_data['target_bps_lock_gate_enabled']))
-            if 'target_bps_lock_gate_acf_conf' in preset_data:
-                self._on_target_bps_lock_gate_acf_conf_change(preset_data['target_bps_lock_gate_acf_conf'])
-            if 'target_bps_lock_gate_downbeats' in preset_data:
-                self._on_target_bps_lock_gate_downbeats_change(int(preset_data['target_bps_lock_gate_downbeats']))
-            if 'aggressive_tempo_snap_enabled' in preset_data:
-                self._on_aggressive_tempo_snap_toggle(bool(preset_data['aggressive_tempo_snap_enabled']))
-            if 'aggressive_snap_confidence' in preset_data:
-                self._on_aggressive_snap_confidence_change(preset_data['aggressive_snap_confidence'])
-            if 'aggressive_snap_phase_error_ms' in preset_data:
-                self._on_aggressive_snap_phase_error_ms_change(preset_data['aggressive_snap_phase_error_ms'])
-            if 'aggressive_snap_min_matches' in preset_data:
-                self._on_aggressive_snap_min_matches_change(int(preset_data['aggressive_snap_min_matches']))
-            if 'aggressive_snap_max_bpm_jump_ratio' in preset_data:
-                self._on_aggressive_snap_max_jump_change(preset_data['aggressive_snap_max_bpm_jump_ratio'])
-            if 'metric_response_speed' in preset_data:
-                self._on_metric_response_speed_change(preset_data['metric_response_speed'])
-            
-            # Stroke Settings Tab
-            self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
-            self._on_mode_change(preset_data['stroke_mode'])  # Apply axis weight limits for this mode
-            self.stroke_range_slider.setLow(preset_data['stroke_min'])
-            self.stroke_range_slider.setHigh(preset_data['stroke_max'])
-            self.config.stroke.min_interval_ms = 150
-            self.fullness_slider.setValue(preset_data['stroke_fullness'])
-            self.config.stroke.minimum_depth = 0.0
-            self.freq_depth_slider.setValue(preset_data['freq_depth_factor'])
-            if 'overall_amp_fill_required_scale' in preset_data:
-                self.fill_gate_scale_spin.setValue(float(preset_data['overall_amp_fill_required_scale']))
-            if 'flux_depth_factor' in preset_data:
-                self.flux_depth_slider.setValue(preset_data['flux_depth_factor'])
-            if 'flux_depth_boost_enabled' in preset_data:
-                self.flux_depth_mode_toggle.setChecked(bool(preset_data['flux_depth_boost_enabled']))
-                self._on_flux_depth_mode_toggle(bool(preset_data['flux_depth_boost_enabled']))
-            if 'combo_power' in preset_data:
-                self.combo_power_spin.setValue(float(preset_data['combo_power']))
-            if 'combo_depth' in preset_data:
-                self.combo_depth_spin.setValue(float(preset_data['combo_depth']))
-            elif 'combo_size' in preset_data:
-                self.combo_depth_spin.setValue(float(preset_data['combo_size']))
-            if 'combo_speed' in preset_data:
-                self.combo_speed_spin.setValue(float(preset_data['combo_speed']))
-            if 'combo_texture' in preset_data:
-                self.combo_texture_spin.setValue(float(preset_data['combo_texture']))
-            if 'combo_reaction' in preset_data:
-                self.combo_reaction_spin.setValue(float(preset_data['combo_reaction']))
-            if 'depth_freq_low' in preset_data:
-                self.depth_freq_range_slider.setLow(preset_data['depth_freq_low'])
-            if 'depth_freq_high' in preset_data:
-                self.depth_freq_range_slider.setHigh(preset_data['depth_freq_high'])
-            self.config.stroke.flux_threshold = float(preset_data['flux_threshold'])
-            advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
-            if advanced_flux_slider is not None:
-                advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
-            if 'flux_scaling_weight' in preset_data:
-                self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
-            if 'phase_advance' in preset_data:
-                self.phase_advance_slider.setValue(preset_data['phase_advance'])
-            # Jitter / Creep Tab
-            self.jitter_enabled.setChecked(preset_data['jitter_enabled'])
-            self.jitter_amplitude_slider.setValue(preset_data['jitter_amplitude'])
-            self.jitter_intensity_slider.setValue(preset_data['jitter_intensity'])
-            self.creep_enabled.setChecked(preset_data['creep_enabled'])
-            self.creep_speed_slider.setValue(preset_data['creep_speed'])
-            if 'thump_enabled' in preset_data:
-                self.config.stroke.thump_enabled = preset_data['thump_enabled']
-            # Axis Weights Tab
-            self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
-            self.beta_weight_slider.setValue(preset_data['beta_weight'])
-
-            # Effects Tab
-            if 'vol_reduction_limit' in preset_data:
-                self.vol_reduction_limit_slider.setValue(preset_data['vol_reduction_limit'])
-
-            # Other Tab
-            if 'pulse_freq_low' in preset_data:
-                self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
-            if 'pulse_freq_high' in preset_data:
-                self.pulse_freq_range_slider.setHigh(preset_data['pulse_freq_high'])
-            # Support both new/old preset keys and legacy Hz-scale values
-            p0_tcode_min, p0_tcode_max = resolve_p0_tcode_bounds(preset_data)
-            if p0_tcode_min is not None:
-                self.tcode_freq_range_slider.setLow(p0_tcode_min)
-            if p0_tcode_max is not None:
-                self.tcode_freq_range_slider.setHigh(p0_tcode_max)
-            if 'freq_weight' in preset_data:
-                self.freq_weight_slider.setValue(preset_data['freq_weight'])
-
-            # --- Sync config object with UI (especially enum) ---
-            self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)
-            
-            # Mark this preset as active, deactivate others
-            for i, btn in enumerate(self.preset_buttons):
-                btn.set_active(i == idx)
-            
-            print(f"[Config] Loaded preset {idx+1} with all settings")
-        else:
-            print(f"[Config] Preset {idx+1} not saved yet")
+        """Preset slots are currently fixed and not user-configurable."""
+        print(f"[Presets] Slot {idx+1} is reserved (empty)")
     
     def _save_beat_preset(self, idx: int):
-        """Alias for _save_freq_preset (called by right-click)"""
+        """Preset slots are currently fixed and not user-configurable."""
         self._save_freq_preset(idx)
     
     def _load_beat_preset(self, idx: int):
-        """Alias for _load_freq_preset (called by left-click)"""
+        """Preset slots are currently fixed and not user-configurable."""
         self._load_freq_preset(idx)
     
-    def _get_presets_file_path(self) -> Path:
-        """Get the path to the presets file - exe folder when packaged, workspace when developing"""
-        return get_presets_file_path(
-            frozen=getattr(sys, 'frozen', False),
-            executable_path=str(sys.executable),
-            source_file=__file__,
-        )
-    
     def _save_presets_to_disk(self):
-        """Save all custom presets to disk"""
-        try:
-            presets_file = self._get_presets_file_path()
-            save_presets_data(presets_file, self.custom_beat_presets)
-            print(f"[Presets] Saved {len(self.custom_beat_presets)} presets to {presets_file}")
-        except Exception as e:
-            print(f"[Presets] Error saving presets: {e}")
+        """Preset slots are fixed; no disk persistence for slot edits."""
+        return
     
     def _load_presets_from_disk(self):
-        """Load custom presets from disk"""
-        try:
-            presets_file = self._get_presets_file_path()
-            was_missing = not presets_file.exists()
-            self.custom_beat_presets = load_presets_data(
-                presets_file,
-                frozen=getattr(sys, 'frozen', False),
-                meipass=getattr(sys, '_MEIPASS', None),
-            )
-
-            if was_missing and presets_file.exists() and self.custom_beat_presets:
-                print(f"[Presets] Copied factory presets to {presets_file}")
-
-            if self.custom_beat_presets:
-                # Mark buttons that have saved presets and apply custom names
-                for idx, preset_data in self.custom_beat_presets.items():
-                    idx_int = int(idx)
-                    if idx_int < len(self.preset_buttons):
-                        self.preset_buttons[idx_int].set_has_preset(True)
-                        # Apply custom name if stored
-                        if isinstance(preset_data, dict) and 'preset_name' in preset_data:
-                            self.preset_buttons[idx_int].setText(preset_data['preset_name'])
-                print(f"[Presets] Loaded {len(self.custom_beat_presets)} presets from {presets_file}")
-            else:
-                print(f"[Presets] No presets file found, starting with empty presets")
-        except Exception as e:
-            print(f"[Presets] Error loading presets: {e}")
-            self.custom_beat_presets = {}
+        """Initialize reserved preset slots as fixed empty placeholders."""
+        self.custom_beat_presets = {}
+        for btn in getattr(self, 'preset_buttons', []):
+            btn.setText("empty")
+            btn.set_has_preset(False)
+            btn.set_active(False)
+            btn.setEnabled(False)
+        if hasattr(self, 'revert_btn'):
+            self.revert_btn.setEnabled(False)
     
     def _create_stroke_settings_tab(self) -> QWidget:
         """Stroke generation settings"""
