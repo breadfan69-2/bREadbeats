@@ -157,9 +157,6 @@ class StrokeMapper:
         # ---------- Spiral mode persistent state ----------
         self.spiral_beat_index = 0
         self.spiral_revolutions = 3
-        self.spiral_reset_active = False
-        self.spiral_reset_start_time = 0.0
-        self.spiral_reset_from = (0.0, 0.0)
 
         # ---------- Flux tracking ----------
         self._flux_history: deque = deque()
@@ -631,7 +628,6 @@ class StrokeMapper:
         edge_creep_continuation = (
             self.config.creep.enabled
             and not self.state.creep_reset_active
-            and not self.spiral_reset_active
             and self._trajectory is None
             and recent_beats_active
             and current_radius >= 0.72
@@ -3205,7 +3201,7 @@ class StrokeMapper:
 
         anchor_state_active = (
             self._trajectory is None
-            and (self.spiral_reset_active or self.state.creep_reset_active or not recent_beats_active)
+            and (self.state.creep_reset_active or not recent_beats_active)
         )
         anchor_bass_norm = 0.0
         if anchor_state_active:
@@ -3223,7 +3219,7 @@ class StrokeMapper:
             jitter_active = True
         creep_active = creep_cfg.enabled and creep_cfg.speed > 0
 
-        if not jitter_active and not creep_active and not self.spiral_reset_active and not self.state.creep_reset_active:
+        if not jitter_active and not creep_active and not self.state.creep_reset_active:
             # Still allow micro-jerk decay to produce motion
             jerk_a, jerk_b = self._get_micro_jerk_offset()
             parked = (abs(self.state.alpha - self._park_alpha) < 0.01 and abs(self.state.beta - self._park_beta) < 0.01)
@@ -3232,29 +3228,7 @@ class StrokeMapper:
 
         alpha, beta = self.state.alpha, self.state.beta
 
-        # ---------- Spiral reset (fade to park target) ----------
-        if self.spiral_reset_active:
-            reset_duration_ms = 400
-            elapsed_ms = (now - self.spiral_reset_start_time) * 1000
-            if elapsed_ms < reset_duration_ms:
-                progress = elapsed_ms / reset_duration_ms
-                eased = 1.0 - (1.0 - progress) ** 2
-                from_a, from_b = self.spiral_reset_from
-                alpha_t = from_a + (self._park_alpha - from_a) * eased
-                beta_t = from_b + (self._park_beta - from_b) * eased
-                self.state.alpha = alpha_t
-                self.state.beta = beta_t
-                self._last_idle_time = now
-                fade = self._fade_intensity
-                volume = self.get_volume() * fade
-                return TCodeCommand(alpha_t, beta_t, 200, volume)
-            else:
-                self.spiral_reset_active = False
-                self.state.alpha = self._park_alpha
-                self.state.beta = self._park_beta
-                self._sync_creep_angle_to_position()
-
-        elif self.state.creep_reset_active:
+        if self.state.creep_reset_active:
             reset_duration_ms = 400
             elapsed_ms = (now - self.state.creep_reset_start_time) * 1000
             if elapsed_ms < reset_duration_ms:
