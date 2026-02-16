@@ -2333,17 +2333,14 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
                 rect = QRectF(cx - (width / 2.0), cy - (height / 2.0), width, height)
                 box.setRect(rect)
 
-            pen = QPen(color)
-            pen.setWidthF(0.6)
+            box_color = QColor('#FFFFFF')
+            box_color.setAlpha(alpha)
+            pen = QPen(box_color)
+            pen.setWidthF(0.7)
             pen.setCosmetic(True)
-            pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
+            pen.setStyle(Qt.PenStyle.SolidLine)
             box.setPen(pen)
-            if hz_range_box:
-                box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-            else:
-                fill = QColor(overlay['color'])
-                fill.setAlpha(max(0, int(alpha * 0.22)))
-                box.setBrush(QBrush(fill))
+            box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
 
     def _tick_flux_ghosts(self) -> None:
         if not self._flux_ghost_overlays:
@@ -2781,17 +2778,14 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
                 rect = QRectF(cx - (width / 2.0), cy - (height / 2.0), width, height)
                 box.setRect(rect)
 
-            pen = QPen(color)
-            pen.setWidthF(0.6)
+            box_color = QColor('#FFFFFF')
+            box_color.setAlpha(alpha)
+            pen = QPen(box_color)
+            pen.setWidthF(0.7)
             pen.setCosmetic(True)
-            pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
+            pen.setStyle(Qt.PenStyle.SolidLine)
             box.setPen(pen)
-            if hz_range_box:
-                box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-            else:
-                fill = QColor(overlay['color'])
-                fill.setAlpha(max(0, int(alpha * 0.22)))
-                box.setBrush(QBrush(fill))
+            box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
 
     def _tick_flux_ghosts(self) -> None:
         if not self._flux_ghost_overlays:
@@ -6138,7 +6132,6 @@ Like the app?<br>
                 self.tempo_timeout_slider,
                 self.phase_snap_slider,
                 self.mode_combo,
-                self.flux_depth_mode_toggle,
                 self.combo_power_spin,
                 self.combo_depth_spin,
                 self.combo_speed_spin,
@@ -6191,14 +6184,16 @@ Like the app?<br>
                 self.config.stroke.min_interval_ms = 150
                 self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
                 self.config.stroke.minimum_depth = 0.0
-                self.flux_depth_mode_toggle.setChecked(bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)))
-                self._on_flux_depth_mode_toggle(self.flux_depth_mode_toggle.isChecked())
                 self.combo_power_spin.setValue(float(getattr(self.config.stroke, 'combo_power', 1.0)))
                 self.combo_depth_spin.setValue(float(getattr(self.config.stroke, 'combo_depth', 1.0)))
                 self.combo_speed_spin.setValue(float(getattr(self.config.stroke, 'combo_speed', 1.0)))
                 self.combo_texture_spin.setValue(float(getattr(self.config.stroke, 'combo_texture', 1.0)))
                 self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
-                self.fill_gate_scale_spin.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0))
+                self.fill_gate_scale_spin.setValue(
+                    self._fill_gate_scale_to_percent(
+                        float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0)
+                    )
+                )
                 advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
                 if advanced_flux_slider is not None:
                     advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
@@ -7281,13 +7276,6 @@ Like the app?<br>
         self.mode_combo.setMinimumWidth(200)
         layout.addWidget(self.mode_combo)
 
-        layout.addWidget(QLabel("Flux-Depth:"))
-        self.flux_depth_mode_toggle = QPushButton("off")
-        self.flux_depth_mode_toggle.setCheckable(True)
-        self.flux_depth_mode_toggle.setChecked(bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)))
-        self.flux_depth_mode_toggle.toggled.connect(self._on_flux_depth_mode_toggle)
-        layout.addWidget(self.flux_depth_mode_toggle)
-
         def _add_combo_spinbox(title: str, value: float, min_val: float, max_val: float, step: float, handler):
             layout.addWidget(QLabel(f"{title}:"))
             spin = QDoubleSpinBox()
@@ -7341,29 +7329,45 @@ Like the app?<br>
             lambda v: setattr(self.config.stroke, 'combo_reaction', float(v)),
         )
 
-        layout.addWidget(QLabel("Fill gates x:"))
+        layout.addWidget(QLabel("Sensitivity:"))
         self.fill_gate_scale_spin = QDoubleSpinBox()
-        self.fill_gate_scale_spin.setRange(0.25, 3.00)
-        self.fill_gate_scale_spin.setSingleStep(0.05)
-        self.fill_gate_scale_spin.setDecimals(2)
-        self.fill_gate_scale_spin.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0))
-        self.fill_gate_scale_spin.setFixedWidth(68)
-        self.fill_gate_scale_spin.setToolTip("Scales downbeat/beat/sync fill requirements together (previewed on waveform as ± guides)")
+        self.fill_gate_scale_spin.setRange(-90.0, 300.0)
+        self.fill_gate_scale_spin.setSingleStep(5.0)
+        self.fill_gate_scale_spin.setDecimals(1)
+        self.fill_gate_scale_spin.setSuffix("%")
+        self.fill_gate_scale_spin.setValue(
+            self._fill_gate_scale_to_percent(
+                float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0)
+            )
+        )
+        self.fill_gate_scale_spin.setFixedWidth(78)
+        self.fill_gate_scale_spin.setToolTip(
+            "Exponential fill-gate scaling applied proportionally to downbeat/beat/sync thresholds. "
+            "0% = 1.00x, +100% = 2.00x, -50% = 0.50x."
+        )
         self.fill_gate_scale_spin.valueChanged.connect(
-            lambda v: (setattr(self.config.stroke, 'overall_amp_fill_required_scale', float(v)), self._preview_fill_requirement_ghosts())
+            lambda pct: (
+                setattr(
+                    self.config.stroke,
+                    'overall_amp_fill_required_scale',
+                    self._fill_gate_percent_to_scale(float(pct)),
+                ),
+                self._preview_fill_requirement_ghosts(),
+            )
         )
         layout.addWidget(self.fill_gate_scale_spin)
         layout.addStretch()
 
-        self._on_flux_depth_mode_toggle(self.flux_depth_mode_toggle.isChecked())
-
         return group
 
-    def _on_flux_depth_mode_toggle(self, enabled: bool):
-        """Toggle flux-depth behavior between compressed (off) and boost."""
-        self.config.stroke.flux_depth_boost_enabled = bool(enabled)
-        self.flux_depth_mode_toggle.setText("boost" if enabled else "off")
-    
+    def _fill_gate_scale_to_percent(self, scale: float) -> float:
+        safe_scale = max(1e-6, float(scale))
+        return float(np.log2(safe_scale) * 100.0)
+
+    def _fill_gate_percent_to_scale(self, percent: float) -> float:
+        scale = float(np.power(2.0, float(percent) / 100.0))
+        return float(np.clip(scale, 0.05, 20.0))
+
     def _capture_current_settings(self) -> dict:
         """Capture all current UI settings for revert functionality"""
         return {
@@ -7543,7 +7547,9 @@ Like the app?<br>
         self.fullness_slider.setValue(preset_data['stroke_fullness'])
         self.config.stroke.minimum_depth = 0.0
         if 'overall_amp_fill_required_scale' in preset_data:
-            self.fill_gate_scale_spin.setValue(float(preset_data['overall_amp_fill_required_scale']))
+            self.fill_gate_scale_spin.setValue(
+                self._fill_gate_scale_to_percent(float(preset_data['overall_amp_fill_required_scale']))
+            )
         self.config.stroke.flux_threshold = float(preset_data['flux_threshold'])
         advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
         if advanced_flux_slider is not None:
@@ -8178,25 +8184,30 @@ Like the app?<br>
         self.config.beat.motion_freq_cutoff = float(value)
         print(f"[Config] Allow motion only below: {value} Hz (bands with lower edge >= {value} are filtered)")
 
+    def _effective_fill_requirement(self, phase: str) -> float:
+        cfg = self.config.stroke
+        scale = float(np.clip(getattr(cfg, 'overall_amp_fill_required_scale', 1.0) or 1.0, 0.05, 20.0))
+
+        if phase == 'syncopation':
+            base_required = float(getattr(cfg, 'syncopation_overall_amp_fill_required', 0.12) or 0.12)
+            if base_required >= 0.70:
+                base_required = 0.12
+        elif phase == 'downbeat':
+            base_required = float(getattr(cfg, 'downbeat_overall_amp_fill_required', 0.08) or 0.08)
+            if base_required >= 0.60:
+                base_required = 0.08
+        else:
+            base_required = float(getattr(cfg, 'beat_overall_amp_fill_required', 0.10) or 0.10)
+            if base_required >= 0.70:
+                base_required = 0.10
+
+        return float(np.clip(base_required * scale, 0.0, 1.0))
+
     def _preview_fill_requirement_ghosts(self) -> None:
-        """Show combined downbeat/beat/sync fill requirements as waveform ±amplitude guides."""
-        scale = float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0)
-        down_val = float(np.clip((getattr(self.config.stroke, 'downbeat_overall_amp_fill_required', 0.08) or 0.08) * scale, 0.0, 1.0))
-        beat_val = float(np.clip((getattr(self.config.stroke, 'beat_overall_amp_fill_required', 0.10) or 0.10) * scale, 0.0, 1.0))
-        sync_val = float(np.clip((getattr(self.config.stroke, 'syncopation_overall_amp_fill_required', 0.12) or 0.12) * scale, 0.0, 1.0))
-
-        waveform_targets = []
-        if hasattr(self, 'waveform_canvas') and hasattr(self.waveform_canvas, 'show_reference_line'):
-            waveform_targets.append(self.waveform_canvas)
-        popout = getattr(self, 'calibration_popout', None)
-        popout_waveform = getattr(popout, 'waveform_canvas', None) if popout is not None else None
-        if popout_waveform is not None and hasattr(popout_waveform, 'show_reference_line') and popout_waveform not in waveform_targets:
-            waveform_targets.append(popout_waveform)
-
-        for canvas in waveform_targets:
-            canvas.show_reference_line('fill_req_downbeat', down_val, 'Fill req downbeat', color='#66E0FF', duration_s=15.0, dashed=True)
-            canvas.show_reference_line('fill_req_beat', beat_val, 'Fill req beat', color='#55CCFF', duration_s=15.0, dashed=True)
-            canvas.show_reference_line('fill_req_sync', sync_val, 'Fill req sync', color='#44B8FF', duration_s=15.0, dashed=True)
+        """Preview fill-gate requirements and bin windows on frequency-dB visualizers."""
+        down_val = self._effective_fill_requirement('downbeat')
+        beat_val = self._effective_fill_requirement('beat')
+        sync_val = self._effective_fill_requirement('syncopation')
 
         fft_size = int(getattr(self.config.audio, 'fft_size', 1024) or 1024)
         max_bin = max(1, fft_size // 2)
@@ -8212,6 +8223,41 @@ Like the app?<br>
         popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
         if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in freqdb_targets:
             freqdb_targets.append(popout_freqdb)
+
+        for canvas in freqdb_targets:
+            canvas.show_flux_ghost(
+                'fill_req_downbeat_occ',
+                down_val,
+                'Fill req downbeat',
+                color='#66E0FF',
+                duration_s=15.0,
+                dashed=False,
+                band='full',
+                range_box=True,
+                mode='occupancy',
+            )
+            canvas.show_flux_ghost(
+                'fill_req_beat_occ',
+                beat_val,
+                'Fill req beat',
+                color='#55CCFF',
+                duration_s=15.0,
+                dashed=False,
+                band='full',
+                range_box=True,
+                mode='occupancy',
+            )
+            canvas.show_flux_ghost(
+                'fill_req_sync_occ',
+                sync_val,
+                'Fill req sync',
+                color='#44B8FF',
+                duration_s=15.0,
+                dashed=False,
+                band='full',
+                range_box=True,
+                mode='occupancy',
+            )
 
         for phase, key, label in (
             ('downbeat', 'fill_bin_downbeat_range', 'Downbeat fill bins'),

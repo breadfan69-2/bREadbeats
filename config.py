@@ -127,11 +127,11 @@ class StrokeConfig:
     # Volume reduction limit: max % volume can be reduced by band/fade/creep effects (post-silence excluded)
     vol_reduction_limit: float = 10.0  # 0-20, default 10 means max 10% reduction (floor = 0.90)
 
-    # Flux-rise depth factor over 250ms. Behavior is selected by flux_depth_boost_enabled.
-    # boost=False: compress depth toward minimum_depth on flux rise (legacy/default)
-    # boost=True:  boost depth toward 1.0 on flux rise
+    # Flux-rise depth factor over 250ms.
+    # Note: flux_depth_boost_enabled is legacy/internal (UI toggle removed).
+    # It remains for backward compatibility with older saved configs.
     flux_depth_factor: float = 0.0     # 0-5, 0=disabled
-    flux_depth_boost_enabled: bool = False  # False=compressed (legacy), True=boost
+    flux_depth_boost_enabled: bool = False
 
     # Main Controls master combinations (1.0 = neutral)
     combo_size: float = 1.0      # stroke size/fullness/flux-scaling/intensity-curve influence

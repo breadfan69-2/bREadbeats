@@ -1437,7 +1437,7 @@ class StrokeMapper:
 
     def _get_overall_amp_fill_required(self, phase: str) -> float:
         cfg = self.config.stroke
-        global_scale = float(np.clip(getattr(cfg, 'overall_amp_fill_required_scale', 1.0) or 1.0, 0.25, 3.0))
+        global_scale = float(np.clip(getattr(cfg, 'overall_amp_fill_required_scale', 1.0) or 1.0, 0.05, 20.0))
         if phase == 'syncopation':
             required = float(getattr(cfg, 'syncopation_overall_amp_fill_required', 0.12) or 0.12)
             if required >= 0.70:
