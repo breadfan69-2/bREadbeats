@@ -125,9 +125,9 @@ class StrokeConfig:
     # Per-band volume drops applied when that beat band triggers motion.
     # Value is percent points (0-99): e.g. 5 means -5% volume.
     volume_drop_on_sub_bass_percent: float = 0.0
-    volume_drop_on_low_mid_percent: float = 2.0
-    volume_drop_on_mid_percent: float = 3.0
-    volume_drop_on_high_percent: float = 7.0
+    volume_drop_on_low_mid_percent: float = 0.0
+    volume_drop_on_mid_percent: float = 0.0
+    volume_drop_on_high_percent: float = 0.0
 
     # Flux-rise depth factor over 250ms. Behavior is selected by flux_depth_boost_enabled.
     # boost=False: compress depth toward minimum_depth on flux rise (legacy/default)
@@ -527,3 +527,4 @@ BEAT_RANGE_LIMITS = {
     'sensitivity': (0.10, 1.0),
     'flux_mult': (0.2, 10.0),
 }
+

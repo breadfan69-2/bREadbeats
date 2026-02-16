@@ -147,13 +147,6 @@ class StrokeMapper:
         self._bass_jitter_release: float = 0.06
 
         # ---------- Band-based scaling tables ----------
-        self._band_volume_scale = {
-            'sub_bass': 1.00,
-            'low_mid':  0.98,
-            'mid':      0.97,
-            'high':     0.93,
-        }
-        self._apply_band_volume_drop_config()
         self._band_speed_scale = {
             'sub_bass': 0.70,
             'low_mid':  0.85,
@@ -591,32 +584,6 @@ class StrokeMapper:
 
         is_active = (recent_delta >= delta_thresh) or (recent_avg >= avg_thresh)
         return bool(is_active), recent_avg, recent_delta
-
-    def _get_band_volume(self, event: BeatEvent) -> float:
-        self._apply_band_volume_drop_config()
-        band = getattr(event, 'beat_band', 'sub_bass')
-        base_vol = self.get_volume()
-        band_reduction = (1.0 - self._band_volume_scale.get(band, 1.0)) * base_vol
-        return max(self._vol_floor(base_vol), base_vol - band_reduction)
-
-    def _apply_band_volume_drop_config(self) -> None:
-        cfg = self.config.stroke
-
-        def _drop(attr_name: str, default_value: float) -> float:
-            raw = float(getattr(cfg, attr_name, default_value) or default_value)
-            return float(np.clip(raw, 0.0, 99.0))
-
-        sub_bass_drop = _drop('volume_drop_on_sub_bass_percent', 0.0)
-        low_mid_drop = _drop('volume_drop_on_low_mid_percent', 2.0)
-        mid_drop = _drop('volume_drop_on_mid_percent', 3.0)
-        high_drop = _drop('volume_drop_on_high_percent', 7.0)
-
-        self._band_volume_scale = {
-            'sub_bass': float(np.clip(1.0 - (sub_bass_drop / 100.0), 0.01, 1.0)),
-            'low_mid': float(np.clip(1.0 - (low_mid_drop / 100.0), 0.01, 1.0)),
-            'mid': float(np.clip(1.0 - (mid_drop / 100.0), 0.01, 1.0)),
-            'high': float(np.clip(1.0 - (high_drop / 100.0), 0.01, 1.0)),
-        }
 
     def _get_band_duration_scale(self, event: BeatEvent) -> float:
         band = getattr(event, 'beat_band', 'sub_bass')
@@ -2520,7 +2487,7 @@ class StrokeMapper:
             step_durations=step_durations,
             n_points=n_points,
             current_index=0,
-            band_volume=self._get_band_volume(event),
+            band_volume=self.get_volume(),
             start_time=now,
             original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
             beat_target_time=beat_target_time,
@@ -2700,7 +2667,7 @@ class StrokeMapper:
             step_durations=step_durations,
             n_points=n_points,
             current_index=0,
-            band_volume=self._get_band_volume(event),
+            band_volume=self.get_volume(),
             start_time=now,
             original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
             beat_target_time=beat_target_time,
@@ -2811,7 +2778,7 @@ class StrokeMapper:
             step_durations=step_durations,
             n_points=n_points,
             current_index=0,
-            band_volume=self._get_band_volume(event),
+            band_volume=self.get_volume(),
             start_time=now,
             beat_target_time=beat_target_time,
             original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
@@ -2909,7 +2876,7 @@ class StrokeMapper:
             step_durations=step_durations,
             n_points=n_points,
             current_index=0,
-            band_volume=self._get_band_volume(event),
+            band_volume=self.get_volume(),
             start_time=now,
             is_micro=True,
         )

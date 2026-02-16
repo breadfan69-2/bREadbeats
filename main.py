@@ -5227,42 +5227,6 @@ class BREadbeatsWindow(QMainWindow):
 
         scroll_layout.addWidget(silence_ramp_group)
 
-        # ===== Per-Band Volume Drop (on beat band) =====
-        band_drop_group = QGroupBox("Volume Drop on(*)")
-        band_drop_layout = QVBoxLayout(band_drop_group)
-
-        band_drop_info = QLabel(
-            "Per-band volume drop when that beat band triggers motion.\n"
-            "Range 0-99 where 5 means -5 of 100 possible (-5%)."
-        )
-        band_drop_info.setStyleSheet("color: #aaa; font-size: 11px;")
-        band_drop_layout.addWidget(band_drop_info)
-
-        def _add_band_drop_spin(label_text: str, attr_name: str, default_value: int) -> None:
-            row = QHBoxLayout()
-            label = QLabel(label_text)
-            label.setStyleSheet("color: #ccc;")
-            row.addWidget(label)
-
-            spin = QSpinBox()
-            spin.setRange(0, 99)
-            spin.setSingleStep(1)
-            spin.setValue(int(round(float(getattr(self.config.stroke, attr_name, default_value) or default_value))))
-            spin.setSuffix(" %")
-            spin.valueChanged.connect(
-                lambda v, key=attr_name: setattr(self.config.stroke, key, float(v))
-            )
-            row.addWidget(spin)
-            row.addStretch()
-            band_drop_layout.addLayout(row)
-
-        _add_band_drop_spin("Volume drop on sub_bass:", "volume_drop_on_sub_bass_percent", 0)
-        _add_band_drop_spin("Volume drop on low_mid:", "volume_drop_on_low_mid_percent", 2)
-        _add_band_drop_spin("Volume drop on mid:", "volume_drop_on_mid_percent", 3)
-        _add_band_drop_spin("Volume drop on high:", "volume_drop_on_high_percent", 7)
-
-        scroll_layout.addWidget(band_drop_group)
-
         # ===== Flux Controls =====
         flux_group = QGroupBox("Flux Sensitivity")
         self._advanced_flux_group = flux_group
