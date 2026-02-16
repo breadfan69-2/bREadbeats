@@ -399,13 +399,6 @@ class MountainRangeCanvas(pg.PlotWidget):
         if self._updating:
             return
         region = self.depth_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'depth_freq_range_slider'):
-            self._updating = True
-            self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
         center_bin = (region[0] + region[1]) / 2  # type: ignore
         self.depth_label.setPos(center_bin, self._depth_label_y)
     
@@ -751,13 +744,6 @@ class PhosphorCanvas(pg.PlotWidget):
         if self._updating:
             return
         region = self.depth_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'depth_freq_range_slider'):
-            self._updating = True
-            self.parent_window.depth_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.depth_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
         center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
         self.depth_label.setPos(center_bin, self.num_mag_levels * 0.89)
     
@@ -3182,8 +3168,12 @@ class BREadbeatsWindow(QMainWindow):
         self._dry_run_enabled = bool(getattr(self.config.device_limits, 'dry_run', False))
         self._advanced_controls_dialog = None
         self._advanced_flux_threshold_slider = None
+        self._advanced_flux_scaling_slider = None
+        self._advanced_phase_advance_slider = None
         self._advanced_controls_scroll = None
         self._advanced_flux_group = None
+        self._tempo_tracking_dialog = None
+        self._tempo_tracking_popout_content = None
         
         # Setup UI
         self._setup_ui()
@@ -3320,6 +3310,9 @@ class BREadbeatsWindow(QMainWindow):
         # Advanced controls dialog singleton reference
         self._advanced_controls_dialog = None
         self._advanced_flux_threshold_slider = None
+        self._advanced_flux_scaling_slider = None
+        self._advanced_phase_advance_slider = None
+        self._tempo_tracking_dialog = None
         
         # Auto-align target BPM tracking (wall-clock time-based)
         self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
@@ -3838,6 +3831,10 @@ class BREadbeatsWindow(QMainWindow):
         assert learning_controls_action is not None
         learning_controls_action.triggered.connect(self._on_learning_controls)
 
+        tempo_tracking_action = options_menu.addAction("Tempo Tracking...")
+        assert tempo_tracking_action is not None
+        tempo_tracking_action.triggered.connect(self._on_options_tempo_tracking)
+
         load_learning_profile_action = options_menu.addAction("Load Learning Profile...")
         assert load_learning_profile_action is not None
         load_learning_profile_action.triggered.connect(self._on_load_learning_profile)
@@ -4012,6 +4009,44 @@ class BREadbeatsWindow(QMainWindow):
             # Reconnect if already connected
             if hasattr(self, 'network_engine') and self.network_engine:
                 self._on_connect()
+
+    def _on_options_tempo_tracking(self):
+        """Show Tempo Tracking controls popout (tempo tab + advanced tempo controls)."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout
+
+        dialog = getattr(self, '_tempo_tracking_dialog', None)
+        if dialog is not None:
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._tempo_tracking_dialog = None
+                dialog = None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Tempo Tracking")
+        dialog.setMinimumWidth(520)
+        dialog.setMinimumHeight(560)
+        dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        content = getattr(self, '_tempo_tracking_popout_content', None)
+        if content is None:
+            content = self._create_tempo_tracking_tab(include_advanced_controls=True, advanced_locked=True)
+            self._tempo_tracking_popout_content = content
+            self._apply_config_to_ui()
+        layout.addWidget(content)
+
+        self._tempo_tracking_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
     
     def _on_device_limits(self, first_run: bool = False):
         """Show Device Limits dialog for value-to-real-units conversion.
@@ -4237,6 +4272,8 @@ class BREadbeatsWindow(QMainWindow):
                 self._advanced_controls_scroll = None
                 self._advanced_flux_group = None
                 self._advanced_flux_threshold_slider = None
+                self._advanced_flux_scaling_slider = None
+                self._advanced_phase_advance_slider = None
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Advanced Controls")
@@ -4252,6 +4289,8 @@ class BREadbeatsWindow(QMainWindow):
             self._advanced_controls_scroll = None
             self._advanced_flux_group = None
             self._advanced_flux_threshold_slider = None
+            self._advanced_flux_scaling_slider = None
+            self._advanced_phase_advance_slider = None
 
         dialog.destroyed.connect(_on_advanced_dialog_destroyed)
         self._advanced_controls_dialog = dialog
@@ -4370,210 +4409,6 @@ class BREadbeatsWindow(QMainWindow):
         syncope_layout.addWidget(syncope_speed_slider)
 
         scroll_layout.addWidget(syncope_group)
-
-        # ===== Tempo Response Controls =====
-        tempo_resp_group = QGroupBox("Tempo Response")
-        tempo_resp_layout = QVBoxLayout(tempo_resp_group)
-
-        tempo_resp_info = QLabel("Tune lock/relock speed and phase correction behavior.\nLower smoothing = faster response, higher can be steadier.")
-        tempo_resp_info.setStyleSheet("color: #aaa; font-size: 11px;")
-        tempo_resp_layout.addWidget(tempo_resp_info)
-
-        def _set_slider_row_tooltip(widget: SliderWithLabel, text: str):
-            widget.setToolTip(text)
-            widget.label.setToolTip(text)
-            widget.slider.setToolTip(text)
-            widget.value_label.setToolTip(text)
-
-        def _show_waveform_time_ref(key: str, value_ms: float, label: str, color: str = '#66CCFF', dashed: bool = True):
-            canvas = None
-            if self.calibration_popout is not None and self.calibration_popout.isVisible():
-                if hasattr(self.calibration_popout, 'mode_combo') and self.calibration_popout.mode_combo.currentIndex() == 0:
-                    canvas = getattr(self.calibration_popout, 'waveform_canvas', None)
-            if canvas is not None and hasattr(canvas, 'show_time_window_ghost'):
-                canvas.show_time_window_ghost(key, float(value_ms), label, color=color, duration_s=15.0, dashed=dashed)
-
-        acf_row = QHBoxLayout()
-        acf_label = QLabel("ACF interval (ms):")
-        acf_label.setStyleSheet("color: #ccc;")
-        acf_row.addWidget(acf_label)
-        acf_spin = QSpinBox()
-        acf_spin.setMinimum(150)
-        acf_spin.setMaximum(800)
-        acf_spin.setSingleStep(10)
-        acf_spin.setValue(int(getattr(self.config.beat, 'acf_interval_ms', 250)))
-        acf_spin.setToolTip("How often to run ACF tempo estimation")
-        acf_label.setToolTip("How often to run ACF tempo estimation. Lower = faster tempo updates, higher = steadier updates.")
-        acf_spin.valueChanged.connect(self._on_acf_interval_change)
-        acf_row.addWidget(acf_spin)
-        tempo_resp_layout.addLayout(acf_row)
-
-        alpha_slow_slider = SliderWithLabel("BPM alpha (slow)", 0.01, 0.20, getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03), 3)
-        alpha_slow_slider.valueChanged.connect(self._on_metronome_bpm_alpha_slow_change)
-        _set_slider_row_tooltip(alpha_slow_slider, "Smoothing used when confidence is low. Lower = steadier but slower relock; higher = faster catch-up.")
-        tempo_resp_layout.addWidget(alpha_slow_slider)
-
-        alpha_fast_slider = SliderWithLabel("BPM alpha (fast)", 0.05, 0.40, getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22), 3)
-        alpha_fast_slider.valueChanged.connect(self._on_metronome_bpm_alpha_fast_change)
-        _set_slider_row_tooltip(alpha_fast_slider, "Smoothing used when confidence is high. Higher values react faster to tempo changes.")
-        tempo_resp_layout.addWidget(alpha_fast_slider)
-
-        pll_window_slider = SliderWithLabel("PLL window", 0.10, 0.50, getattr(self.config.beat, 'metronome_pll_window', 0.35), 2)
-        pll_window_slider.valueChanged.connect(self._on_metronome_pll_window_change)
-        _set_slider_row_tooltip(pll_window_slider, "How far from expected phase an onset can be and still correct metronome timing.")
-        tempo_resp_layout.addWidget(pll_window_slider)
-
-        pll_base_slider = SliderWithLabel("PLL gain (base)", 0.01, 0.20, getattr(self.config.beat, 'metronome_pll_base_gain', 0.09), 3)
-        pll_base_slider.valueChanged.connect(self._on_metronome_pll_base_gain_change)
-        _set_slider_row_tooltip(pll_base_slider, "Base strength of phase correction on each accepted onset.")
-        tempo_resp_layout.addWidget(pll_base_slider)
-
-        pll_conf_slider = SliderWithLabel("PLL gain (conf)", 0.00, 0.20, getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08), 3)
-        pll_conf_slider.valueChanged.connect(self._on_metronome_pll_conf_gain_change)
-        _set_slider_row_tooltip(pll_conf_slider, "Extra phase-correction gain added as confidence rises.")
-        tempo_resp_layout.addWidget(pll_conf_slider)
-
-        fusion_min_slider = SliderWithLabel("Fusion min ACF wt", 0.00, 0.80, getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20), 2)
-        fusion_min_slider.valueChanged.connect(self._on_tempo_fusion_min_acf_weight_change)
-        _set_slider_row_tooltip(fusion_min_slider, "Minimum ACF contribution when blending ACF BPM with onset BPM.")
-        tempo_resp_layout.addWidget(fusion_min_slider)
-
-        fusion_max_slider = SliderWithLabel("Fusion max ACF wt", 0.20, 1.00, getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95), 2)
-        fusion_max_slider.valueChanged.connect(self._on_tempo_fusion_max_acf_weight_change)
-        _set_slider_row_tooltip(fusion_max_slider, "Maximum ACF contribution when confidence is high.")
-        tempo_resp_layout.addWidget(fusion_max_slider)
-
-        dedup_slider = SliderWithLabel("Beat de-dup frac", 0.10, 0.35, getattr(self.config.beat, 'beat_dedup_fraction', 0.22), 2)
-        dedup_slider.valueChanged.connect(self._on_beat_dedup_fraction_change)
-        _set_slider_row_tooltip(dedup_slider, "Reject a second raw onset if it arrives within this fraction of the current beat period. Reduces double-beat chatter.")
-        tempo_resp_layout.addWidget(dedup_slider)
-
-        phase_accept_slider = SliderWithLabel("Phase accept win ms", 20.0, 220.0, getattr(self.config.beat, 'phase_accept_window_ms', 85.0), 0)
-        phase_accept_slider.valueChanged.connect(
-            lambda v: self._on_phase_accept_window_ms_change(v)
-        )
-        _set_slider_row_tooltip(phase_accept_slider, "Accept raw onsets only when they are this close (ms) to expected beat phase.")
-        tempo_resp_layout.addWidget(phase_accept_slider)
-
-        low_conf_mult_slider = SliderWithLabel("Low-conf win x", 1.00, 3.50, getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0), 2)
-        low_conf_mult_slider.valueChanged.connect(self._on_phase_accept_low_conf_mult_change)
-        _set_slider_row_tooltip(low_conf_mult_slider, "Multiplies phase-accept window when confidence is low, so relock stays flexible.")
-        tempo_resp_layout.addWidget(low_conf_mult_slider)
-
-        octave_target_bias_slider = SliderWithLabel(
-            "Target-hint max conf",
-            0.05,
-            0.80,
-            getattr(self.config.beat, 'octave_target_bias_confidence_max', 0.35),
-            2,
-        )
-        octave_target_bias_slider.valueChanged.connect(self._on_octave_target_bias_confidence_max_change)
-        _set_slider_row_tooltip(
-            octave_target_bias_slider,
-            "Only use target BPM to guide octave disambiguation below this ACF confidence."
-        )
-        tempo_resp_layout.addWidget(octave_target_bias_slider)
-
-        target_bps_lock_gate_cb = QCheckBox("Gate Target BPM metric when metronome lock is confident")
-        target_bps_lock_gate_cb.setChecked(getattr(self.config.beat, 'target_bps_lock_gate_enabled', True))
-        target_bps_lock_gate_cb.setToolTip("When enabled, target-BPM metric stops nudging peak_floor while metronome lock is strong.")
-        target_bps_lock_gate_cb.stateChanged.connect(lambda state: self._on_target_bps_lock_gate_toggle(state == 2))
-        tempo_resp_layout.addWidget(target_bps_lock_gate_cb)
-
-        target_bps_lock_conf_slider = SliderWithLabel(
-            "Target-BPS lock conf",
-            0.10,
-            0.90,
-            getattr(self.config.beat, 'target_bps_lock_gate_acf_conf', 0.40),
-            2,
-        )
-        target_bps_lock_conf_slider.valueChanged.connect(self._on_target_bps_lock_gate_acf_conf_change)
-        _set_slider_row_tooltip(
-            target_bps_lock_conf_slider,
-            "Minimum ACF confidence required before Target-BPS metric gating is applied."
-        )
-        tempo_resp_layout.addWidget(target_bps_lock_conf_slider)
-
-        target_bps_lock_match_row = QHBoxLayout()
-        target_bps_lock_match_label = QLabel("Target-BPS lock min downbeat matches:")
-        target_bps_lock_match_label.setStyleSheet("color: #ccc;")
-        target_bps_lock_match_row.addWidget(target_bps_lock_match_label)
-        target_bps_lock_match_spin = QSpinBox()
-        target_bps_lock_match_spin.setMinimum(0)
-        target_bps_lock_match_spin.setMaximum(4)
-        target_bps_lock_match_spin.setValue(int(getattr(self.config.beat, 'target_bps_lock_gate_downbeats', 1)))
-        target_bps_lock_match_label.setToolTip("Minimum consecutive matching downbeats required before Target-BPS metric gating applies.")
-        target_bps_lock_match_spin.setToolTip("Minimum consecutive matching downbeats required before Target-BPS metric gating applies.")
-        target_bps_lock_match_spin.valueChanged.connect(self._on_target_bps_lock_gate_downbeats_change)
-        target_bps_lock_match_row.addWidget(target_bps_lock_match_spin)
-        tempo_resp_layout.addLayout(target_bps_lock_match_row)
-
-        aggressive_snap_cb = QCheckBox("Aggressive tempo snap when lock is confident")
-        aggressive_snap_cb.setChecked(getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False))
-        aggressive_snap_cb.setToolTip("When enabled, metronome BPM can hard-snap to target under strict confidence/phase safeguards.")
-        aggressive_snap_cb.stateChanged.connect(lambda state: self._on_aggressive_tempo_snap_toggle(state == 2))
-        tempo_resp_layout.addWidget(aggressive_snap_cb)
-
-        snap_conf_slider = SliderWithLabel("Snap min confidence", 0.20, 0.90, getattr(self.config.beat, 'aggressive_snap_confidence', 0.55), 2)
-        snap_conf_slider.valueChanged.connect(self._on_aggressive_snap_confidence_change)
-        _set_slider_row_tooltip(snap_conf_slider, "Minimum ACF confidence required before aggressive snap is allowed.")
-        tempo_resp_layout.addWidget(snap_conf_slider)
-
-        snap_phase_slider = SliderWithLabel("Snap max phase err ms", 10.0, 120.0, getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0), 0)
-        snap_phase_slider.valueChanged.connect(
-            lambda v: self._on_aggressive_snap_phase_error_ms_change(v)
-        )
-        _set_slider_row_tooltip(snap_phase_slider, "Only snap if beat phase error is below this many milliseconds.")
-        tempo_resp_layout.addWidget(snap_phase_slider)
-
-        snap_jump_slider = SliderWithLabel("Snap max BPM jump", 0.03, 0.30, getattr(self.config.beat, 'aggressive_snap_max_bpm_jump_ratio', 0.12), 2)
-        snap_jump_slider.valueChanged.connect(self._on_aggressive_snap_max_jump_change)
-        _set_slider_row_tooltip(snap_jump_slider, "Maximum one-step relative BPM change allowed during aggressive snap.")
-        tempo_resp_layout.addWidget(snap_jump_slider)
-
-        snap_match_row = QHBoxLayout()
-        snap_match_label = QLabel("Snap min downbeat matches:")
-        snap_match_label.setStyleSheet("color: #ccc;")
-        snap_match_row.addWidget(snap_match_label)
-        snap_match_spin = QSpinBox()
-        snap_match_spin.setMinimum(0)
-        snap_match_spin.setMaximum(4)
-        snap_match_spin.setValue(int(getattr(self.config.beat, 'aggressive_snap_min_matches', 1)))
-        snap_match_label.setToolTip("Require this many matching downbeats before aggressive tempo snap can trigger.")
-        snap_match_spin.setToolTip("Require this many matching downbeats before aggressive tempo snap can trigger.")
-        snap_match_spin.valueChanged.connect(self._on_aggressive_snap_min_matches_change)
-        snap_match_row.addWidget(snap_match_spin)
-        tempo_resp_layout.addLayout(snap_match_row)
-
-        reset_tempo_btn = QPushButton("Reset Tempo Response Defaults")
-        reset_tempo_btn.setToolTip("Restore default values for all tempo-response tuning controls")
-
-        def _reset_tempo_response_defaults():
-            acf_spin.setValue(250)
-            alpha_slow_slider.setValue(0.03)
-            alpha_fast_slider.setValue(0.22)
-            pll_window_slider.setValue(0.35)
-            pll_base_slider.setValue(0.09)
-            pll_conf_slider.setValue(0.08)
-            fusion_min_slider.setValue(0.20)
-            fusion_max_slider.setValue(0.95)
-            dedup_slider.setValue(0.22)
-            phase_accept_slider.setValue(85.0)
-            low_conf_mult_slider.setValue(2.0)
-            octave_target_bias_slider.setValue(0.35)
-            target_bps_lock_gate_cb.setChecked(True)
-            target_bps_lock_conf_slider.setValue(0.40)
-            target_bps_lock_match_spin.setValue(1)
-            aggressive_snap_cb.setChecked(False)
-            snap_conf_slider.setValue(0.55)
-            snap_phase_slider.setValue(35.0)
-            snap_jump_slider.setValue(0.12)
-            snap_match_spin.setValue(1)
-
-        reset_tempo_btn.clicked.connect(_reset_tempo_response_defaults)
-        tempo_resp_layout.addWidget(reset_tempo_btn)
-
-        scroll_layout.addWidget(tempo_resp_group)
 
         # ===== Amplitude Gate Controls =====
         gate_group = QGroupBox("Amplitude Gate (Stroke vs Creep)")
@@ -5272,6 +5107,32 @@ class BREadbeatsWindow(QMainWindow):
             )
         )
         flux_layout.addWidget(flux_thresh_slider)
+
+        flux_scaling_slider = SliderWithLabel(
+            "Flux Scaling (size)",
+            0.0,
+            2.0,
+            float(getattr(self.config.stroke, 'flux_scaling_weight', 1.0) or 1.0),
+            2,
+        )
+        self._advanced_flux_scaling_slider = flux_scaling_slider
+        flux_scaling_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'flux_scaling_weight', float(v))
+        )
+        flux_layout.addWidget(flux_scaling_slider)
+
+        phase_advance_slider = SliderWithLabel(
+            "Phase Advance (0=downbeats, 1=all)",
+            0.0,
+            1.0,
+            float(getattr(self.config.stroke, 'phase_advance', 0.25) or 0.25),
+            2,
+        )
+        self._advanced_phase_advance_slider = phase_advance_slider
+        phase_advance_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'phase_advance', float(v))
+        )
+        flux_layout.addWidget(phase_advance_slider)
 
         # Low-band drop ratio slider
         flux_drop_slider = SliderWithLabel(
@@ -6286,8 +6147,6 @@ Like the app?<br>
                 self.fill_gate_scale_spin,
                 self.stroke_range_slider,
                 self.fullness_slider,
-                self.flux_scaling_slider,
-                self.phase_advance_slider,
                 self.jitter_enabled,
                 self.jitter_amplitude_slider,
                 self.jitter_intensity_slider,
@@ -6343,8 +6202,12 @@ Like the app?<br>
                 advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
                 if advanced_flux_slider is not None:
                     advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
-                self.flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
-                self.phase_advance_slider.setValue(self.config.stroke.phase_advance)
+                advanced_flux_scaling_slider = getattr(self, '_advanced_flux_scaling_slider', None)
+                if advanced_flux_scaling_slider is not None:
+                    advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
+                advanced_phase_advance_slider = getattr(self, '_advanced_phase_advance_slider', None)
+                if advanced_phase_advance_slider is not None:
+                    advanced_phase_advance_slider.setValue(self.config.stroke.phase_advance)
 
                 # Jitter/Creep tab
                 self.jitter_enabled.setChecked(self.config.jitter.enabled)
@@ -6822,8 +6685,7 @@ Like the app?<br>
         # Sync the frequency bands to the newly visible visualizer
         if hasattr(self, 'freq_range_slider'):
             self._on_freq_band_change()
-        if hasattr(self, 'depth_freq_range_slider'):
-            self._on_depth_band_change()
+        self._on_depth_band_change()
         if hasattr(self, 'pulse_freq_range_slider'):
             self._on_p0_band_change()
 
@@ -7372,7 +7234,7 @@ Like the app?<br>
         tabs.addTab(self._create_beat_detection_tab(), "Beat Detection")
         tabs.addTab(self._create_stroke_settings_tab(), "Stroke Settings")
         tabs.addTab(self._create_jitter_creep_tab(), "Effects / Axis")
-        tabs.addTab(self._create_tempo_tracking_tab(), "Tempo Tracking")
+        self._tempo_tracking_popout_content = self._create_tempo_tracking_tab(include_advanced_controls=True, advanced_locked=True)
         tabs.addTab(self._create_tcode_freq_tab(), "Pulse")
         return tabs
     
@@ -7564,8 +7426,8 @@ Like the app?<br>
             'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
             'overall_amp_fill_required_scale': float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0),
             'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
-            'flux_scaling_weight': self.flux_scaling_slider.value(),
-            'phase_advance': self.phase_advance_slider.value(),
+            'flux_scaling_weight': float(getattr(self.config.stroke, 'flux_scaling_weight', 1.0) or 1.0),
+            'phase_advance': float(getattr(self.config.stroke, 'phase_advance', 0.25) or 0.25),
 
             # Jitter / Creep Tab
             'jitter_enabled': self.jitter_enabled.isChecked(),
@@ -7686,8 +7548,14 @@ Like the app?<br>
         advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
         if advanced_flux_slider is not None:
             advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
-        self.flux_scaling_slider.setValue(preset_data['flux_scaling_weight'])
-        self.phase_advance_slider.setValue(preset_data['phase_advance'])
+        self.config.stroke.flux_scaling_weight = float(preset_data['flux_scaling_weight'])
+        advanced_flux_scaling_slider = getattr(self, '_advanced_flux_scaling_slider', None)
+        if advanced_flux_scaling_slider is not None:
+            advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
+        self.config.stroke.phase_advance = float(preset_data['phase_advance'])
+        advanced_phase_advance_slider = getattr(self, '_advanced_phase_advance_slider', None)
+        if advanced_phase_advance_slider is not None:
+            advanced_phase_advance_slider.setValue(self.config.stroke.phase_advance)
         
         # Jitter / Creep Tab
         self.jitter_enabled.setChecked(preset_data['jitter_enabled'])
@@ -8399,8 +8267,8 @@ Like the app?<br>
     def _on_depth_band_change(self, low=None, high=None):
         """Update stroke depth frequency band in config and spectrum overlay"""
         if low is None:
-            low = self.depth_freq_range_slider.low() or 0.0
-            high = self.depth_freq_range_slider.high() or 22050.0
+            low = float(getattr(self.config.stroke, 'depth_freq_low', 0.0) or 0.0)
+            high = float(getattr(self.config.stroke, 'depth_freq_high', self.config.audio.sample_rate / 2) or (self.config.audio.sample_rate / 2))
         low = float(low)  # type: ignore
         high = float(high)  # type: ignore
         
@@ -8921,7 +8789,243 @@ Like the app?<br>
         self.alpha_weight_slider.setToolTip(tip)
         self.beta_weight_slider.setToolTip(tip)
     
-    def _create_tempo_tracking_tab(self) -> QWidget:
+    def _create_tempo_response_group(self, lock_default: bool = True) -> QGroupBox:
+        """Advanced tempo-response controls group used in Tempo Tracking popout."""
+        tempo_resp_group = QGroupBox("Advanced Tempo Controls")
+        tempo_resp_layout = QVBoxLayout(tempo_resp_group)
+
+        lock_cb = QCheckBox("Lock advanced tempo controls")
+        lock_cb.setChecked(bool(lock_default))
+        lock_cb.setToolTip("Lock/unlock advanced tempo tracking tuning controls in this group")
+        tempo_resp_layout.addWidget(lock_cb)
+
+        tempo_resp_info = QLabel("Tune lock/relock speed and phase correction behavior.\nLower smoothing = faster response, higher can be steadier.")
+        tempo_resp_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        tempo_resp_layout.addWidget(tempo_resp_info)
+
+        def _set_slider_row_tooltip(widget: SliderWithLabel, text: str):
+            widget.setToolTip(text)
+            widget.label.setToolTip(text)
+            widget.slider.setToolTip(text)
+            widget.value_label.setToolTip(text)
+
+        acf_row = QHBoxLayout()
+        acf_label = QLabel("ACF interval (ms):")
+        acf_label.setStyleSheet("color: #ccc;")
+        acf_row.addWidget(acf_label)
+        acf_spin = QSpinBox()
+        acf_spin.setMinimum(150)
+        acf_spin.setMaximum(800)
+        acf_spin.setSingleStep(10)
+        acf_spin.setValue(int(getattr(self.config.beat, 'acf_interval_ms', 250)))
+        acf_spin.setToolTip("How often to run ACF tempo estimation")
+        acf_label.setToolTip("How often to run ACF tempo estimation. Lower = faster tempo updates, higher = steadier updates.")
+        acf_spin.valueChanged.connect(self._on_acf_interval_change)
+        acf_row.addWidget(acf_spin)
+        tempo_resp_layout.addLayout(acf_row)
+
+        alpha_slow_slider = SliderWithLabel("BPM alpha (slow)", 0.01, 0.20, getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03), 3)
+        alpha_slow_slider.valueChanged.connect(self._on_metronome_bpm_alpha_slow_change)
+        _set_slider_row_tooltip(alpha_slow_slider, "Smoothing used when confidence is low. Lower = steadier but slower relock; higher = faster catch-up.")
+        tempo_resp_layout.addWidget(alpha_slow_slider)
+
+        alpha_fast_slider = SliderWithLabel("BPM alpha (fast)", 0.05, 0.40, getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22), 3)
+        alpha_fast_slider.valueChanged.connect(self._on_metronome_bpm_alpha_fast_change)
+        _set_slider_row_tooltip(alpha_fast_slider, "Smoothing used when confidence is high. Higher values react faster to tempo changes.")
+        tempo_resp_layout.addWidget(alpha_fast_slider)
+
+        pll_window_slider = SliderWithLabel("PLL window", 0.10, 0.50, getattr(self.config.beat, 'metronome_pll_window', 0.35), 2)
+        pll_window_slider.valueChanged.connect(self._on_metronome_pll_window_change)
+        _set_slider_row_tooltip(pll_window_slider, "How far from expected phase an onset can be and still correct metronome timing.")
+        tempo_resp_layout.addWidget(pll_window_slider)
+
+        pll_base_slider = SliderWithLabel("PLL gain (base)", 0.01, 0.20, getattr(self.config.beat, 'metronome_pll_base_gain', 0.09), 3)
+        pll_base_slider.valueChanged.connect(self._on_metronome_pll_base_gain_change)
+        _set_slider_row_tooltip(pll_base_slider, "Base strength of phase correction on each accepted onset.")
+        tempo_resp_layout.addWidget(pll_base_slider)
+
+        pll_conf_slider = SliderWithLabel("PLL gain (conf)", 0.00, 0.20, getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08), 3)
+        pll_conf_slider.valueChanged.connect(self._on_metronome_pll_conf_gain_change)
+        _set_slider_row_tooltip(pll_conf_slider, "Extra phase-correction gain added as confidence rises.")
+        tempo_resp_layout.addWidget(pll_conf_slider)
+
+        fusion_min_slider = SliderWithLabel("Fusion min ACF wt", 0.00, 0.80, getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20), 2)
+        fusion_min_slider.valueChanged.connect(self._on_tempo_fusion_min_acf_weight_change)
+        _set_slider_row_tooltip(fusion_min_slider, "Minimum ACF contribution when blending ACF BPM with onset BPM.")
+        tempo_resp_layout.addWidget(fusion_min_slider)
+
+        fusion_max_slider = SliderWithLabel("Fusion max ACF wt", 0.20, 1.00, getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95), 2)
+        fusion_max_slider.valueChanged.connect(self._on_tempo_fusion_max_acf_weight_change)
+        _set_slider_row_tooltip(fusion_max_slider, "Maximum ACF contribution when confidence is high.")
+        tempo_resp_layout.addWidget(fusion_max_slider)
+
+        dedup_slider = SliderWithLabel("Beat de-dup frac", 0.10, 0.35, getattr(self.config.beat, 'beat_dedup_fraction', 0.22), 2)
+        dedup_slider.valueChanged.connect(self._on_beat_dedup_fraction_change)
+        _set_slider_row_tooltip(dedup_slider, "Reject a second raw onset if it arrives within this fraction of the current beat period. Reduces double-beat chatter.")
+        tempo_resp_layout.addWidget(dedup_slider)
+
+        phase_accept_slider = SliderWithLabel("Phase accept win ms", 20.0, 220.0, getattr(self.config.beat, 'phase_accept_window_ms', 85.0), 0)
+        phase_accept_slider.valueChanged.connect(
+            lambda v: self._on_phase_accept_window_ms_change(v)
+        )
+        _set_slider_row_tooltip(phase_accept_slider, "Accept raw onsets only when they are this close (ms) to expected beat phase.")
+        tempo_resp_layout.addWidget(phase_accept_slider)
+
+        low_conf_mult_slider = SliderWithLabel("Low-conf win x", 1.00, 3.50, getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0), 2)
+        low_conf_mult_slider.valueChanged.connect(self._on_phase_accept_low_conf_mult_change)
+        _set_slider_row_tooltip(low_conf_mult_slider, "Multiplies phase-accept window when confidence is low, so relock stays flexible.")
+        tempo_resp_layout.addWidget(low_conf_mult_slider)
+
+        octave_target_bias_slider = SliderWithLabel(
+            "Target-hint max conf",
+            0.05,
+            0.80,
+            getattr(self.config.beat, 'octave_target_bias_confidence_max', 0.35),
+            2,
+        )
+        octave_target_bias_slider.valueChanged.connect(self._on_octave_target_bias_confidence_max_change)
+        _set_slider_row_tooltip(
+            octave_target_bias_slider,
+            "Only use target BPM to guide octave disambiguation below this ACF confidence."
+        )
+        tempo_resp_layout.addWidget(octave_target_bias_slider)
+
+        target_bps_lock_gate_cb = QCheckBox("Gate Target BPM metric when metronome lock is confident")
+        target_bps_lock_gate_cb.setChecked(getattr(self.config.beat, 'target_bps_lock_gate_enabled', True))
+        target_bps_lock_gate_cb.setToolTip("When enabled, target-BPM metric stops nudging peak_floor while metronome lock is strong.")
+        target_bps_lock_gate_cb.stateChanged.connect(lambda state: self._on_target_bps_lock_gate_toggle(state == 2))
+        tempo_resp_layout.addWidget(target_bps_lock_gate_cb)
+
+        target_bps_lock_conf_slider = SliderWithLabel(
+            "Target-BPS lock conf",
+            0.10,
+            0.90,
+            getattr(self.config.beat, 'target_bps_lock_gate_acf_conf', 0.40),
+            2,
+        )
+        target_bps_lock_conf_slider.valueChanged.connect(self._on_target_bps_lock_gate_acf_conf_change)
+        _set_slider_row_tooltip(
+            target_bps_lock_conf_slider,
+            "Minimum ACF confidence required before Target-BPS metric gating is applied."
+        )
+        tempo_resp_layout.addWidget(target_bps_lock_conf_slider)
+
+        target_bps_lock_match_row = QHBoxLayout()
+        target_bps_lock_match_label = QLabel("Target-BPS lock min downbeat matches:")
+        target_bps_lock_match_label.setStyleSheet("color: #ccc;")
+        target_bps_lock_match_row.addWidget(target_bps_lock_match_label)
+        target_bps_lock_match_spin = QSpinBox()
+        target_bps_lock_match_spin.setMinimum(0)
+        target_bps_lock_match_spin.setMaximum(4)
+        target_bps_lock_match_spin.setValue(int(getattr(self.config.beat, 'target_bps_lock_gate_downbeats', 1)))
+        target_bps_lock_match_label.setToolTip("Minimum consecutive matching downbeats required before Target-BPS metric gating applies.")
+        target_bps_lock_match_spin.setToolTip("Minimum consecutive matching downbeats required before Target-BPS metric gating applies.")
+        target_bps_lock_match_spin.valueChanged.connect(self._on_target_bps_lock_gate_downbeats_change)
+        target_bps_lock_match_row.addWidget(target_bps_lock_match_spin)
+        tempo_resp_layout.addLayout(target_bps_lock_match_row)
+
+        aggressive_snap_cb = QCheckBox("Aggressive tempo snap when lock is confident")
+        aggressive_snap_cb.setChecked(getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False))
+        aggressive_snap_cb.setToolTip("When enabled, metronome BPM can hard-snap to target under strict confidence/phase safeguards.")
+        aggressive_snap_cb.stateChanged.connect(lambda state: self._on_aggressive_tempo_snap_toggle(state == 2))
+        tempo_resp_layout.addWidget(aggressive_snap_cb)
+
+        snap_conf_slider = SliderWithLabel("Snap min confidence", 0.20, 0.90, getattr(self.config.beat, 'aggressive_snap_confidence', 0.55), 2)
+        snap_conf_slider.valueChanged.connect(self._on_aggressive_snap_confidence_change)
+        _set_slider_row_tooltip(snap_conf_slider, "Minimum ACF confidence required before aggressive snap is allowed.")
+        tempo_resp_layout.addWidget(snap_conf_slider)
+
+        snap_phase_slider = SliderWithLabel("Snap max phase err ms", 10.0, 120.0, getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0), 0)
+        snap_phase_slider.valueChanged.connect(
+            lambda v: self._on_aggressive_snap_phase_error_ms_change(v)
+        )
+        _set_slider_row_tooltip(snap_phase_slider, "Only snap if beat phase error is below this many milliseconds.")
+        tempo_resp_layout.addWidget(snap_phase_slider)
+
+        snap_jump_slider = SliderWithLabel("Snap max BPM jump", 0.03, 0.30, getattr(self.config.beat, 'aggressive_snap_max_bpm_jump_ratio', 0.12), 2)
+        snap_jump_slider.valueChanged.connect(self._on_aggressive_snap_max_jump_change)
+        _set_slider_row_tooltip(snap_jump_slider, "Maximum one-step relative BPM change allowed during aggressive snap.")
+        tempo_resp_layout.addWidget(snap_jump_slider)
+
+        snap_match_row = QHBoxLayout()
+        snap_match_label = QLabel("Snap min downbeat matches:")
+        snap_match_label.setStyleSheet("color: #ccc;")
+        snap_match_row.addWidget(snap_match_label)
+        snap_match_spin = QSpinBox()
+        snap_match_spin.setMinimum(0)
+        snap_match_spin.setMaximum(4)
+        snap_match_spin.setValue(int(getattr(self.config.beat, 'aggressive_snap_min_matches', 1)))
+        snap_match_label.setToolTip("Require this many matching downbeats before aggressive tempo snap can trigger.")
+        snap_match_spin.setToolTip("Require this many matching downbeats before aggressive tempo snap can trigger.")
+        snap_match_spin.valueChanged.connect(self._on_aggressive_snap_min_matches_change)
+        snap_match_row.addWidget(snap_match_spin)
+        tempo_resp_layout.addLayout(snap_match_row)
+
+        reset_tempo_btn = QPushButton("Reset Tempo Response Defaults")
+        reset_tempo_btn.setToolTip("Restore default values for all tempo-response tuning controls")
+
+        def _reset_tempo_response_defaults():
+            acf_spin.setValue(250)
+            alpha_slow_slider.setValue(0.03)
+            alpha_fast_slider.setValue(0.22)
+            pll_window_slider.setValue(0.35)
+            pll_base_slider.setValue(0.09)
+            pll_conf_slider.setValue(0.08)
+            fusion_min_slider.setValue(0.20)
+            fusion_max_slider.setValue(0.95)
+            dedup_slider.setValue(0.22)
+            phase_accept_slider.setValue(85.0)
+            low_conf_mult_slider.setValue(2.0)
+            octave_target_bias_slider.setValue(0.35)
+            target_bps_lock_gate_cb.setChecked(True)
+            target_bps_lock_conf_slider.setValue(0.40)
+            target_bps_lock_match_spin.setValue(1)
+            aggressive_snap_cb.setChecked(False)
+            snap_conf_slider.setValue(0.55)
+            snap_phase_slider.setValue(35.0)
+            snap_jump_slider.setValue(0.12)
+            snap_match_spin.setValue(1)
+
+        reset_tempo_btn.clicked.connect(_reset_tempo_response_defaults)
+        tempo_resp_layout.addWidget(reset_tempo_btn)
+
+        advanced_targets = [
+            acf_label,
+            acf_spin,
+            alpha_slow_slider,
+            alpha_fast_slider,
+            pll_window_slider,
+            pll_base_slider,
+            pll_conf_slider,
+            fusion_min_slider,
+            fusion_max_slider,
+            dedup_slider,
+            phase_accept_slider,
+            low_conf_mult_slider,
+            octave_target_bias_slider,
+            target_bps_lock_gate_cb,
+            target_bps_lock_conf_slider,
+            target_bps_lock_match_label,
+            target_bps_lock_match_spin,
+            aggressive_snap_cb,
+            snap_conf_slider,
+            snap_phase_slider,
+            snap_jump_slider,
+            snap_match_label,
+            snap_match_spin,
+            reset_tempo_btn,
+        ]
+
+        def _apply_advanced_lock_state() -> None:
+            locked = bool(lock_cb.isChecked())
+            for widget in advanced_targets:
+                widget.setEnabled(not locked)
+
+        lock_cb.stateChanged.connect(lambda _: _apply_advanced_lock_state())
+        _apply_advanced_lock_state()
+        return tempo_resp_group
+
+    def _create_tempo_tracking_tab(self, include_advanced_controls: bool = False, advanced_locked: bool = True) -> QWidget:
         """Tempo tracking and rhythm settings"""
         scroll_area = NoWheelScrollArea()
         scroll_area.setWidgetResizable(True)
@@ -8989,22 +9093,10 @@ Like the app?<br>
         self._apply_tempo_settings_enabled_state(self.tempo_tracking_checkbox.isChecked())
         
         layout.addWidget(tempo_group)
-        
-        # Spectral flux control group
-        flux_group = CollapsibleGroupBox("Spectral Flux Control", collapsed=True)
-        flux_layout = QVBoxLayout(flux_group)
-        flux_layout.addWidget(QLabel("Low flux→downbeats only, High flux→every beat"))
-        
-        self.flux_scaling_slider = SliderWithLabel("Flux Scaling (size)", 0.0, 2.0, 1.0, 2)
-        self.flux_scaling_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'flux_scaling_weight', v))
-        flux_layout.addWidget(self.flux_scaling_slider)
-        
-        self.phase_advance_slider = SliderWithLabel("Phase Advance (0=downbeats, 1=all)", 0.0, 1.0, self.config.stroke.phase_advance, 2)
-        self.phase_advance_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'phase_advance', v))
-        flux_layout.addWidget(self.phase_advance_slider)
-        
-        layout.addWidget(flux_group)
 
+        if include_advanced_controls:
+            layout.addWidget(self._create_tempo_response_group(lock_default=advanced_locked))
+        
         layout.addStretch()
         scroll_area.setWidget(widget)
         return scroll_area
