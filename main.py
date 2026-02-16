@@ -7094,6 +7094,7 @@ Like the app?<br>
         layout.setContentsMargins(5, 5, 5, 5)
         
         self.custom_beat_presets = {}
+        self.learned_profile_slots: dict[str, dict] = {}
         self._revert_settings = None  # Stores settings before preset load for revert
         self.preset_buttons = []
         for i in range(5):
@@ -8338,14 +8339,142 @@ Like the app?<br>
     def _load_beat_preset(self, idx: int):
         """Preset slots are currently fixed and not user-configurable."""
         self._load_freq_preset(idx)
+
+    def _capture_learned_slot_payload(self) -> dict:
+        """Capture current learning + key calibration state for hidden learned-slot storage."""
+        return {
+            'learning': {
+                'teaching_learning_enabled': bool(getattr(self.config.beat, 'teaching_learning_enabled', True)),
+                'teaching_use_fitted_rules': bool(getattr(self.config.beat, 'teaching_use_fitted_rules', True)),
+                'teaching_apply_in_circle_mode': bool(getattr(self.config.beat, 'teaching_apply_in_circle_mode', False)),
+                'teaching_isolation_mode': bool(getattr(self.config.beat, 'teaching_isolation_mode', True)),
+                'teaching_learning_strength': float(getattr(self.config.beat, 'teaching_learning_strength', 0.55) or 0.55),
+                'teaching_min_confidence': float(getattr(self.config.beat, 'teaching_min_confidence', 0.12) or 0.12),
+                'teaching_no_motion_bias': float(getattr(self.config.beat, 'teaching_no_motion_bias', 1.0) or 1.0),
+                'teaching_rule_fit_path': str(getattr(self.config.beat, 'teaching_rule_fit_path', '') or ''),
+                'teaching_profile_path': str(getattr(self.config.beat, 'teaching_profile_path', '') or ''),
+            },
+            'calibration': {
+                'freq_low': float(self.freq_range_slider.low() or 0.0),
+                'freq_high': float(self.freq_range_slider.high() or 22050.0),
+                'audio_gain': float(self.audio_gain_slider.value()),
+                'sensitivity': float(self.sensitivity_slider.value()),
+                'zscore_threshold': float(self.zscore_threshold_slider.value()),
+                'flux_multiplier': float(self.flux_mult_slider.value()),
+                'peak_floor': float(self.peak_floor_slider.value()),
+                'peak_decay': float(self.peak_decay_slider.value()),
+                'rise_sensitivity': float(self.rise_sens_slider.value()),
+            },
+            'saved_at': datetime.now().isoformat(timespec='seconds'),
+        }
+
+    def _apply_learned_slot_payload(self, payload: dict) -> None:
+        """Apply a learned-slot payload to runtime config and sliders."""
+        if not isinstance(payload, dict):
+            return
+
+        learning = payload.get('learning', {})
+        if isinstance(learning, dict):
+            bool_keys = (
+                'teaching_learning_enabled',
+                'teaching_use_fitted_rules',
+                'teaching_apply_in_circle_mode',
+                'teaching_isolation_mode',
+            )
+            float_keys = (
+                'teaching_learning_strength',
+                'teaching_min_confidence',
+                'teaching_no_motion_bias',
+            )
+            str_keys = (
+                'teaching_rule_fit_path',
+                'teaching_profile_path',
+            )
+            for key in bool_keys:
+                if key in learning:
+                    setattr(self.config.beat, key, bool(learning.get(key)))
+            for key in float_keys:
+                if key in learning:
+                    try:
+                        setattr(self.config.beat, key, float(learning.get(key)))
+                    except Exception:
+                        pass
+            for key in str_keys:
+                if key in learning:
+                    setattr(self.config.beat, key, str(learning.get(key) or '').strip())
+
+        calibration = payload.get('calibration', {})
+        if isinstance(calibration, dict):
+            try:
+                low = float(calibration.get('freq_low', self.freq_range_slider.low() or 0.0))
+                high = float(calibration.get('freq_high', self.freq_range_slider.high() or 22050.0))
+                self.freq_range_slider.setLow(low)
+                self.freq_range_slider.setHigh(high)
+            except Exception:
+                pass
+            try:
+                if 'audio_gain' in calibration:
+                    self.audio_gain_slider.setValue(float(calibration.get('audio_gain')))
+                if 'sensitivity' in calibration:
+                    self.sensitivity_slider.setValue(float(calibration.get('sensitivity')))
+                if 'zscore_threshold' in calibration:
+                    self.zscore_threshold_slider.setValue(float(calibration.get('zscore_threshold')))
+                if 'flux_multiplier' in calibration:
+                    self.flux_mult_slider.setValue(float(calibration.get('flux_multiplier')))
+                if 'peak_floor' in calibration:
+                    self.peak_floor_slider.setValue(float(calibration.get('peak_floor')))
+                if 'peak_decay' in calibration:
+                    self.peak_decay_slider.setValue(float(calibration.get('peak_decay')))
+                if 'rise_sensitivity' in calibration:
+                    self.rise_sens_slider.setValue(float(calibration.get('rise_sensitivity')))
+            except Exception:
+                pass
+
+        self._apply_learning_config_to_mapper()
+
+    def _set_learned_profile_slot(self, idx: int) -> None:
+        """Programmatically save current learning/calibration state into a hidden slot."""
+        key = str(int(max(0, min(4, idx))))
+        self.learned_profile_slots[key] = self._capture_learned_slot_payload()
+        self._save_presets_to_disk()
+
+    def _apply_learned_profile_slot(self, idx: int) -> None:
+        """Programmatically apply a hidden learned slot to runtime state."""
+        key = str(int(max(0, min(4, idx))))
+        payload = self.learned_profile_slots.get(key)
+        if isinstance(payload, dict) and payload:
+            self._apply_learned_slot_payload(payload)
     
     def _save_presets_to_disk(self):
-        """Preset slots are fixed; no disk persistence for slot edits."""
-        return
+        """Persist hidden learned-slot payloads (UI remains fixed empty/disabled)."""
+        try:
+            out = {
+                'version': 1,
+                'slots': self.learned_profile_slots,
+            }
+            path = get_config_dir() / 'learned_profile_slots.json'
+            path.write_text(json.dumps(out, indent=2), encoding='utf-8')
+        except Exception as e:
+            print(f"[Presets] Error saving learned slots: {e}")
     
     def _load_presets_from_disk(self):
-        """Initialize reserved preset slots as fixed empty placeholders."""
+        """Load hidden learned-slot payloads and initialize reserved empty slot buttons."""
         self.custom_beat_presets = {}
+        self.learned_profile_slots = {}
+        try:
+            path = get_config_dir() / 'learned_profile_slots.json'
+            if path.exists():
+                payload = json.loads(path.read_text(encoding='utf-8'))
+                slots = payload.get('slots', {}) if isinstance(payload, dict) else {}
+                if isinstance(slots, dict):
+                    for key, value in slots.items():
+                        if str(key).isdigit() and isinstance(value, dict):
+                            idx = int(str(key))
+                            if 0 <= idx < 5:
+                                self.learned_profile_slots[str(idx)] = value
+        except Exception as e:
+            print(f"[Presets] Error loading learned slots: {e}")
+
         for btn in getattr(self, 'preset_buttons', []):
             btn.setText("empty")
             btn.set_has_preset(False)
