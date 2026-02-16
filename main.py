@@ -2348,11 +2348,12 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
                 box.setRect(rect)
 
             pen = QPen(color)
-            pen.setWidth(1)
+            pen.setWidthF(0.6)
+            pen.setCosmetic(True)
             pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
             box.setPen(pen)
             if hz_range_box:
-                box.setBrush(Qt.BrushStyle.NoBrush)
+                box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
             else:
                 fill = QColor(overlay['color'])
                 fill.setAlpha(max(0, int(alpha * 0.22)))
@@ -2795,11 +2796,12 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
                 box.setRect(rect)
 
             pen = QPen(color)
-            pen.setWidth(1)
+            pen.setWidthF(0.6)
+            pen.setCosmetic(True)
             pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
             box.setPen(pen)
             if hz_range_box:
-                box.setBrush(Qt.BrushStyle.NoBrush)
+                box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
             else:
                 fill = QColor(overlay['color'])
                 fill.setAlpha(max(0, int(alpha * 0.22)))
@@ -4222,13 +4224,19 @@ class BREadbeatsWindow(QMainWindow):
         
         # Prevent multiple instances — reuse existing dialog if open
         if hasattr(self, '_advanced_controls_dialog') and self._advanced_controls_dialog is not None:
-            self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            self._advanced_controls_dialog.show()
-            self._advanced_controls_dialog.raise_()
-            self._advanced_controls_dialog.activateWindow()
-            if scroll_to_flux:
-                self._scroll_advanced_controls_to_flux()
-            return
+            try:
+                self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                self._advanced_controls_dialog.show()
+                self._advanced_controls_dialog.raise_()
+                self._advanced_controls_dialog.activateWindow()
+                if scroll_to_flux:
+                    self._scroll_advanced_controls_to_flux()
+                return
+            except RuntimeError:
+                self._advanced_controls_dialog = None
+                self._advanced_controls_scroll = None
+                self._advanced_flux_group = None
+                self._advanced_flux_threshold_slider = None
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Advanced Controls")
@@ -4576,7 +4584,13 @@ class BREadbeatsWindow(QMainWindow):
         gate_layout.addWidget(gate_info)
 
         # Gate high slider (threshold to enter FULL_STROKE)
-        gate_high_slider = SliderWithLabel("Full stroke threshold (enter)", 0.01, 1.00, self.config.stroke.amplitude_gate_high, 3)
+        gate_high_slider = SliderWithLabel(
+            "Full stroke threshold (enter)",
+            0.01,
+            1.00,
+            float(getattr(self.config.stroke, 'amplitude_gate_high', 0.055) or 0.055),
+            3,
+        )
         def _show_waveform_amp_ref(key: str, value: float, label: str, color: str = '#FF66AA', dashed: bool = False):
             canvas = None
             if self.calibration_popout is not None and self.calibration_popout.isVisible():
@@ -4636,7 +4650,13 @@ class BREadbeatsWindow(QMainWindow):
         gate_layout.addWidget(gate_high_slider)
 
         # Gate low slider (threshold to drop to CREEP_MICRO)
-        gate_low_slider = SliderWithLabel("Creep threshold (exit)", 0.005, 1.00, self.config.stroke.amplitude_gate_low, 3)
+        gate_low_slider = SliderWithLabel(
+            "Creep threshold (exit)",
+            0.005,
+            1.00,
+            float(getattr(self.config.stroke, 'amplitude_gate_low', 0.035) or 0.035),
+            3,
+        )
         gate_low_slider.valueChanged.connect(
             lambda v: (setattr(self.config.stroke, 'amplitude_gate_low', v), _show_waveform_amp_ref('creep_exit', float(v), 'Creep exit', '#FF8866', dashed=True))
         )
@@ -4947,21 +4967,33 @@ class BREadbeatsWindow(QMainWindow):
 
         # On/Off checkbox
         burst_enabled_cb = QCheckBox("Enable noise burst arcs")
-        burst_enabled_cb.setChecked(self.config.stroke.noise_burst_enabled)
+        burst_enabled_cb.setChecked(bool(getattr(self.config.stroke, 'noise_burst_enabled', False)))
         burst_enabled_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'noise_burst_enabled', state == 2)
         )
         burst_layout.addWidget(burst_enabled_cb)
 
         # Flux multiplier slider
-        burst_flux_slider = SliderWithLabel("Burst sensitivity (flux multiplier)", 0.05, 10.0, self.config.stroke.noise_burst_flux_multiplier, 2)
+        burst_flux_slider = SliderWithLabel(
+            "Burst sensitivity (flux multiplier)",
+            0.05,
+            10.0,
+            float(getattr(self.config.stroke, 'noise_burst_flux_multiplier', 2.0) or 2.0),
+            2,
+        )
         burst_flux_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'noise_burst_flux_multiplier', v)
         )
         burst_layout.addWidget(burst_flux_slider)
 
         # Magnitude slider — scale the size of noise burst patterns
-        burst_mag_slider = SliderWithLabel("Burst magnitude (pattern size)", 0.05, 10.0, self.config.stroke.noise_burst_magnitude, 2)
+        burst_mag_slider = SliderWithLabel(
+            "Burst magnitude (pattern size)",
+            0.05,
+            10.0,
+            float(getattr(self.config.stroke, 'noise_burst_magnitude', 1.0) or 1.0),
+            2,
+        )
         burst_mag_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'noise_burst_magnitude', v)
         )
@@ -5151,7 +5183,7 @@ class BREadbeatsWindow(QMainWindow):
         noise_mode_layout.addWidget(noise_mode_info)
 
         noise_primary_cb = QCheckBox("Noise-primary mode (reversed)")
-        noise_primary_cb.setChecked(self.config.stroke.noise_primary_mode)
+        noise_primary_cb.setChecked(bool(getattr(self.config.stroke, 'noise_primary_mode', False)))
         noise_primary_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'noise_primary_mode', state == 2)
         )
@@ -5168,14 +5200,26 @@ class BREadbeatsWindow(QMainWindow):
         silence_ramp_layout.addWidget(silence_ramp_info)
 
         # Volume reduction slider (0% - 50%)
-        vol_reduction_slider = SliderWithLabel("Volume reduction (%)", 0.0, 0.50, self.config.stroke.post_silence_vol_reduction, 2)
+        vol_reduction_slider = SliderWithLabel(
+            "Volume reduction (%)",
+            0.0,
+            0.50,
+            float(getattr(self.config.stroke, 'post_silence_vol_reduction', 0.15) or 0.15),
+            2,
+        )
         vol_reduction_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'post_silence_vol_reduction', v)
         )
         silence_ramp_layout.addWidget(vol_reduction_slider)
 
         # Ramp duration slider (1.0 - 8.0 seconds)
-        ramp_dur_slider = SliderWithLabel("Ramp duration (seconds)", 1.0, 8.0, self.config.stroke.post_silence_ramp_seconds, 1)
+        ramp_dur_slider = SliderWithLabel(
+            "Ramp duration (seconds)",
+            1.0,
+            8.0,
+            float(getattr(self.config.stroke, 'post_silence_ramp_seconds', 4.0) or 4.0),
+            1,
+        )
         ramp_dur_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'post_silence_ramp_seconds', v)
         )
@@ -5233,7 +5277,13 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(flux_info)
 
         # Flux threshold slider
-        flux_thresh_slider = SliderWithLabel("Flux threshold", 0.005, 0.20, self.config.stroke.flux_threshold, 3)
+        flux_thresh_slider = SliderWithLabel(
+            "Flux threshold",
+            0.005,
+            0.20,
+            float(getattr(self.config.stroke, 'flux_threshold', 0.05) or 0.05),
+            3,
+        )
         self._advanced_flux_threshold_slider = flux_thresh_slider
         flux_thresh_slider.valueChanged.connect(
             lambda v: (
@@ -5244,7 +5294,13 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(flux_thresh_slider)
 
         # Low-band drop ratio slider
-        flux_drop_slider = SliderWithLabel("Low-band drop ratio (creep fallback)", 0.05, 0.50, self.config.stroke.flux_drop_ratio, 2)
+        flux_drop_slider = SliderWithLabel(
+            "Low-band drop ratio (creep fallback)",
+            0.05,
+            0.50,
+            float(getattr(self.config.stroke, 'flux_drop_ratio', 0.20) or 0.20),
+            2,
+        )
         flux_drop_slider.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'flux_drop_ratio', v)
         )
@@ -6826,26 +6882,35 @@ Like the app?<br>
 
     def _on_popout_calibration_visualizer(self):
         """Open or focus a pop-out calibration visualizer window."""
+        def _open_advanced_controls_from_popout() -> None:
+            try:
+                self._on_advanced_controls(scroll_to_flux=True)
+            except Exception as exc:
+                print(f"[UI] Advanced Controls open failed from popout: {exc}")
+            dialog = getattr(self, '_advanced_controls_dialog', None)
+            if dialog is None:
+                return
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+            except RuntimeError:
+                self._advanced_controls_dialog = None
+                self._advanced_controls_scroll = None
+                self._advanced_flux_group = None
+                self._advanced_flux_threshold_slider = None
+
         if self.calibration_popout is not None and self.calibration_popout.isVisible():
             self.calibration_popout.raise_()
             self.calibration_popout.activateWindow()
-            self._on_advanced_controls(scroll_to_flux=True)
-            if self._advanced_controls_dialog is not None:
-                self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-                self._advanced_controls_dialog.show()
-                self._advanced_controls_dialog.raise_()
-                self._advanced_controls_dialog.activateWindow()
+            _open_advanced_controls_from_popout()
             return
 
         self.calibration_popout = CalibrationPopoutWindow(self, on_closed=self._on_calibration_popout_closed)
         self.calibration_popout.show()
         self._set_main_visualizers_hidden_for_popout(True)
-        self._on_advanced_controls(scroll_to_flux=True)
-        if self._advanced_controls_dialog is not None:
-            self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            self._advanced_controls_dialog.show()
-            self._advanced_controls_dialog.raise_()
-            self._advanced_controls_dialog.activateWindow()
+        _open_advanced_controls_from_popout()
 
     def _on_calibration_popout_closed(self):
         self.calibration_popout = None
