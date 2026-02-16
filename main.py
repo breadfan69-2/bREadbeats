@@ -4910,6 +4910,108 @@ class BREadbeatsWindow(QMainWindow):
         dual_high_db_slider.setToolTip("Minimum high-band dB required by dual-band gate; shown as a horizontal dB line")
         gate_layout.addWidget(dual_high_db_slider)
 
+        high_tip_gate_cb = QCheckBox("Enable high-tip fullness gate")
+        high_tip_gate_cb.setChecked(bool(getattr(self.config.stroke, 'high_tip_fullness_enabled', True)))
+        high_tip_gate_cb.setToolTip("Require high-tip presence (frequency range + dB floor + occupancy) after dual-band dB gate")
+        high_tip_gate_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'high_tip_fullness_enabled', state == 2)
+        )
+        gate_layout.addWidget(high_tip_gate_cb)
+
+        high_tip_range_row = QHBoxLayout()
+        high_tip_range_row.addWidget(QLabel("High-tip range (Hz):"))
+
+        high_tip_low_spin = QSpinBox()
+        high_tip_low_spin.setRange(100, 22000)
+        high_tip_low_spin.setSingleStep(50)
+        high_tip_low_spin.setValue(int(float(getattr(self.config.stroke, 'high_tip_freq_low_hz', getattr(self.config.stroke, 'high_tip_freq_hz', 3500.0) or 3500.0) or 3500.0)))
+        high_tip_low_spin.setPrefix("low ")
+        high_tip_low_spin.setSuffix(" Hz")
+        high_tip_range_row.addWidget(high_tip_low_spin)
+
+        high_tip_high_spin = QSpinBox()
+        high_tip_high_spin.setRange(100, 22050)
+        high_tip_high_spin.setSingleStep(50)
+        high_tip_high_spin.setValue(int(float(getattr(self.config.stroke, 'high_tip_freq_high_hz', 16000.0) or 16000.0)))
+        high_tip_high_spin.setPrefix("high ")
+        high_tip_high_spin.setSuffix(" Hz")
+        high_tip_range_row.addWidget(high_tip_high_spin)
+        high_tip_range_row.addStretch()
+
+        def _emit_high_tip_range_ghost() -> None:
+            low_hz = float(min(high_tip_low_spin.value(), high_tip_high_spin.value()))
+            high_hz = float(max(high_tip_low_spin.value(), high_tip_high_spin.value()))
+            _show_freqdb_ghost_ref(
+                'high_tip_freq_range',
+                low_hz,
+                'High-tip range',
+                color='#FFB3F0',
+                dashed=False,
+                mode='hz_line',
+                range_box=True,
+                hz_max=high_hz,
+            )
+
+        def _on_high_tip_low_change(v: int) -> None:
+            low_val = int(v)
+            high_val = int(high_tip_high_spin.value())
+            if high_val <= low_val:
+                high_val = min(22050, low_val + 50)
+                high_tip_high_spin.setValue(high_val)
+            self.config.stroke.high_tip_freq_low_hz = float(low_val)
+            self.config.stroke.high_tip_freq_high_hz = float(high_val)
+            self.config.stroke.high_tip_freq_hz = float(low_val)
+            _emit_high_tip_range_ghost()
+
+        def _on_high_tip_high_change(v: int) -> None:
+            high_val = int(v)
+            low_val = int(high_tip_low_spin.value())
+            if high_val <= low_val:
+                low_val = max(100, high_val - 50)
+                high_tip_low_spin.setValue(low_val)
+            self.config.stroke.high_tip_freq_low_hz = float(low_val)
+            self.config.stroke.high_tip_freq_high_hz = float(high_val)
+            self.config.stroke.high_tip_freq_hz = float(low_val)
+            _emit_high_tip_range_ghost()
+
+        high_tip_low_spin.valueChanged.connect(_on_high_tip_low_change)
+        high_tip_high_spin.valueChanged.connect(_on_high_tip_high_change)
+        gate_layout.addLayout(high_tip_range_row)
+        _emit_high_tip_range_ghost()
+
+        high_tip_db_slider = SliderWithLabel(
+            "High-tip dB min",
+            -80.0,
+            0.0,
+            float(getattr(self.config.stroke, 'high_tip_db_min', -28.0) or -28.0),
+            1,
+        )
+        high_tip_db_slider.valueChanged.connect(
+            lambda v: (
+                setattr(self.config.stroke, 'high_tip_db_min', float(v)),
+                _show_freqdb_ghost_ref('high_tip_db_min', float(v), 'High-tip dB', '#FFB3F0', dashed=True, band='high', mode='db_line')
+            )
+        )
+        high_tip_db_slider.setToolTip("Minimum dB floor for high-tip occupancy gate")
+        gate_layout.addWidget(high_tip_db_slider)
+
+        high_tip_occ_slider = SliderWithLabel(
+            "High-tip occupancy",
+            0.0,
+            1.0,
+            float(getattr(self.config.stroke, 'high_tip_occupancy_threshold', 0.50) or 0.50),
+            3,
+            step=0.001,
+        )
+        high_tip_occ_slider.valueChanged.connect(
+            lambda v: (
+                setattr(self.config.stroke, 'high_tip_occupancy_threshold', float(v)),
+                _show_freqdb_ghost_ref('high_tip_occ', float(v), 'High-tip occ', '#FFC8F4', dashed=True, band='high', range_box=True, mode='occupancy')
+            )
+        )
+        high_tip_occ_slider.setToolTip("Required occupancy in the high-tip gate window")
+        gate_layout.addWidget(high_tip_occ_slider)
+
         mid_block_cb = QCheckBox("Block beat/downbeat triggers in mid-frequency range")
         mid_block_cb.setChecked(bool(getattr(self.config.stroke, 'block_mid_trigger_range_enabled', False)))
         mid_block_cb.stateChanged.connect(
@@ -5492,6 +5594,155 @@ class BREadbeatsWindow(QMainWindow):
         low_band_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_variance_threshold', 'low_band_var', 'Low var', '#77FFAA', ghost_band='low', ghost_range=True))
         _style_ref_slider(low_band_var_slider, '#77FFAA', 'Low var')
         flux_layout.addWidget(low_band_var_slider)
+
+        low_band_occ_slider = SliderWithLabel(
+            "Low-band fullness occupancy",
+            0.00,
+            1.00,
+            float(getattr(self.config.stroke, 'low_band_fullness_occupancy_threshold', 0.62) or 0.62),
+            3,
+            step=0.001,
+        )
+        low_band_occ_slider.valueChanged.connect(_set_stroke_attr_with_ref(
+            'low_band_fullness_occupancy_threshold',
+            'low_band_fullness_occ',
+            'Low fullness occ',
+            '#66FFAA',
+            dashed=True,
+            ghost_band='low',
+            ghost_range=True,
+            ghost_mode='occupancy',
+        ))
+        _style_ref_slider(low_band_occ_slider, '#66FFAA', 'Low fullness occ')
+        flux_layout.addWidget(low_band_occ_slider)
+
+        low_high_ratio_slider = SliderWithLabel(
+            "Low:high mean ratio min",
+            0.10,
+            3.00,
+            float(getattr(self.config.stroke, 'low_band_to_high_ratio_min', 0.58) or 0.58),
+            3,
+            step=0.001,
+        )
+        low_high_ratio_slider.valueChanged.connect(_set_stroke_attr_with_ref(
+            'low_band_to_high_ratio_min',
+            'low_high_ratio_min',
+            'Low:high ratio',
+            '#99FFCC',
+            dashed=True,
+            ghost_band='full',
+            ghost_range=False,
+            ghost_mode='threshold',
+        ))
+        _style_ref_slider(low_high_ratio_slider, '#99FFCC', 'Low:high ratio')
+        flux_layout.addWidget(low_high_ratio_slider)
+
+        mid_bass_support_cb = QCheckBox("Enable mid-bass support fallback")
+        mid_bass_support_cb.setChecked(bool(getattr(self.config.stroke, 'mid_bass_support_enabled', True)))
+        mid_bass_support_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'mid_bass_support_enabled', state == 2)
+        )
+        flux_layout.addWidget(mid_bass_support_cb)
+
+        mid_bass_range_row = QHBoxLayout()
+        mid_bass_range_row.addWidget(QLabel("Mid-bass support range (Hz):"))
+        mid_bass_low_spin = QSpinBox()
+        mid_bass_low_spin.setRange(20, 2000)
+        mid_bass_low_spin.setSingleStep(10)
+        mid_bass_low_spin.setValue(int(float(getattr(self.config.stroke, 'mid_bass_freq_low_hz', 200.0) or 200.0)))
+        mid_bass_low_spin.setPrefix("low ")
+        mid_bass_low_spin.setSuffix(" Hz")
+        mid_bass_range_row.addWidget(mid_bass_low_spin)
+
+        mid_bass_high_spin = QSpinBox()
+        mid_bass_high_spin.setRange(30, 3000)
+        mid_bass_high_spin.setSingleStep(10)
+        mid_bass_high_spin.setValue(int(float(getattr(self.config.stroke, 'mid_bass_freq_high_hz', 400.0) or 400.0)))
+        mid_bass_high_spin.setPrefix("high ")
+        mid_bass_high_spin.setSuffix(" Hz")
+        mid_bass_range_row.addWidget(mid_bass_high_spin)
+        mid_bass_range_row.addStretch()
+
+        def _emit_mid_bass_range_ghost() -> None:
+            low_hz = float(min(mid_bass_low_spin.value(), mid_bass_high_spin.value()))
+            high_hz = float(max(mid_bass_low_spin.value(), mid_bass_high_spin.value()))
+            _show_freqdb_ghost_ref(
+                'mid_bass_range',
+                low_hz,
+                'Mid-bass range',
+                color='#8BFFB6',
+                dashed=False,
+                mode='hz_line',
+                range_box=True,
+                hz_max=high_hz,
+            )
+
+        def _on_mid_bass_low_change(v: int) -> None:
+            low_val = int(v)
+            high_val = int(mid_bass_high_spin.value())
+            if high_val <= low_val:
+                high_val = min(3000, low_val + 10)
+                mid_bass_high_spin.setValue(high_val)
+            self.config.stroke.mid_bass_freq_low_hz = float(low_val)
+            self.config.stroke.mid_bass_freq_high_hz = float(high_val)
+            _emit_mid_bass_range_ghost()
+
+        def _on_mid_bass_high_change(v: int) -> None:
+            high_val = int(v)
+            low_val = int(mid_bass_low_spin.value())
+            if high_val <= low_val:
+                low_val = max(20, high_val - 10)
+                mid_bass_low_spin.setValue(low_val)
+            self.config.stroke.mid_bass_freq_low_hz = float(low_val)
+            self.config.stroke.mid_bass_freq_high_hz = float(high_val)
+            _emit_mid_bass_range_ghost()
+
+        mid_bass_low_spin.valueChanged.connect(_on_mid_bass_low_change)
+        mid_bass_high_spin.valueChanged.connect(_on_mid_bass_high_change)
+        flux_layout.addLayout(mid_bass_range_row)
+        _emit_mid_bass_range_ghost()
+
+        mid_bass_activity_slider = SliderWithLabel(
+            "Mid-bass activity min",
+            0.0005,
+            1.00,
+            float(getattr(self.config.stroke, 'mid_bass_activity_threshold', 0.035) or 0.035),
+            3,
+            step=0.001,
+        )
+        mid_bass_activity_slider.valueChanged.connect(_set_stroke_attr_with_ref(
+            'mid_bass_activity_threshold',
+            'mid_bass_activity_min',
+            'Mid-bass activity',
+            '#7DFFB0',
+            dashed=False,
+            ghost_band='low',
+            ghost_range=False,
+            ghost_mode='threshold',
+        ))
+        _style_ref_slider(mid_bass_activity_slider, '#7DFFB0', 'Mid-bass activity')
+        flux_layout.addWidget(mid_bass_activity_slider)
+
+        mid_bass_occ_slider = SliderWithLabel(
+            "Mid-bass occupancy",
+            0.00,
+            1.00,
+            float(getattr(self.config.stroke, 'mid_bass_occupancy_threshold', 0.45) or 0.45),
+            3,
+            step=0.001,
+        )
+        mid_bass_occ_slider.valueChanged.connect(_set_stroke_attr_with_ref(
+            'mid_bass_occupancy_threshold',
+            'mid_bass_occ',
+            'Mid-bass occ',
+            '#A2FFC8',
+            dashed=True,
+            ghost_band='low',
+            ghost_range=True,
+            ghost_mode='occupancy',
+        ))
+        _style_ref_slider(mid_bass_occ_slider, '#A2FFC8', 'Mid-bass occ')
+        flux_layout.addWidget(mid_bass_occ_slider)
 
         downbeat_relax_slider = SliderWithLabel(
             "Downbeat gate relax",

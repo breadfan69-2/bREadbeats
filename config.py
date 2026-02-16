@@ -197,6 +197,8 @@ class StrokeConfig:
     dual_band_high_db_min: float = -30.0
     high_tip_fullness_enabled: bool = True
     high_tip_freq_hz: float = 3500.0
+    high_tip_freq_low_hz: float = 3500.0
+    high_tip_freq_high_hz: float = 16000.0
     high_tip_db_min: float = -28.0
     high_tip_occupancy_threshold: float = 0.50
     block_mid_trigger_range_enabled: bool = True
@@ -501,6 +503,22 @@ def migrate_config(config: Config, loaded_version) -> None:
     except Exception:
         burst_scale = 0.35
     config.stroke.noise_burst_scale = max(0.0, min(0.5, burst_scale))
+
+    try:
+        tip_low = float(getattr(config.stroke, 'high_tip_freq_low_hz', getattr(config.stroke, 'high_tip_freq_hz', 3500.0) or 3500.0))
+    except Exception:
+        tip_low = 3500.0
+    try:
+        tip_high = float(getattr(config.stroke, 'high_tip_freq_high_hz', 16000.0) or 16000.0)
+    except Exception:
+        tip_high = 16000.0
+    tip_low = max(100.0, min(22000.0, tip_low))
+    tip_high = max(100.0, min(22000.0, tip_high))
+    if tip_high <= tip_low:
+        tip_high = min(22000.0, tip_low + 1000.0)
+    config.stroke.high_tip_freq_low_hz = tip_low
+    config.stroke.high_tip_freq_high_hz = tip_high
+    config.stroke.high_tip_freq_hz = tip_low
 
     config.version = CURRENT_CONFIG_VERSION
 

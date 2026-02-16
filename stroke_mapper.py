@@ -1398,7 +1398,17 @@ class StrokeMapper:
         if not bool(getattr(cfg, 'high_tip_fullness_enabled', True)):
             return True
 
-        tip_freq_hz = float(getattr(cfg, 'high_tip_freq_hz', 3500.0) or 3500.0)
+        tip_freq_low_hz = float(
+            getattr(
+                cfg,
+                'high_tip_freq_low_hz',
+                getattr(cfg, 'high_tip_freq_hz', 3500.0) or 3500.0,
+            )
+            or 3500.0
+        )
+        tip_freq_high_hz = float(getattr(cfg, 'high_tip_freq_high_hz', 16000.0) or 16000.0)
+        if tip_freq_high_hz <= tip_freq_low_hz:
+            tip_freq_high_hz = tip_freq_low_hz + 1000.0
         tip_db_min = float(getattr(cfg, 'high_tip_db_min', -28.0) or -28.0)
         tip_occ_thresh = float(getattr(cfg, 'high_tip_occupancy_threshold', 0.50) or 0.50)
         tip_occ_thresh = float(np.clip(tip_occ_thresh, 0.10, 0.95))
@@ -1416,7 +1426,7 @@ class StrokeMapper:
         if event is not None:
             freq = float(getattr(event, 'frequency', 0.0) or 0.0)
             peak = float(getattr(event, 'peak_energy', 0.0) or 0.0)
-            dominant_tip = bool(freq >= tip_freq_hz and peak >= (tip_lin * 0.8))
+            dominant_tip = bool((tip_freq_low_hz <= freq <= tip_freq_high_hz) and peak >= (tip_lin * 0.8))
 
         return bool(dominant_tip or ((mean_high >= (tip_lin * 0.85)) and (occupancy >= tip_occ_thresh)))
 
