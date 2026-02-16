@@ -10,9 +10,15 @@ def _require_window_attr(window, attr_name: str):
         ) from exc
 
 
+def _optional_window_attr(window, attr_name: str):
+    return getattr(window, attr_name, None)
+
+
 def persist_runtime_ui_to_config(window, config: Config) -> None:
     """Copy selected runtime UI control values into config on shutdown."""
-    phase_advance_slider = _require_window_attr(window, "phase_advance_slider")
+    phase_advance_slider = _optional_window_attr(window, "phase_advance_slider")
+    if phase_advance_slider is None:
+        phase_advance_slider = _optional_window_attr(window, "_advanced_phase_advance_slider")
     pulse_freq_range_slider = _require_window_attr(window, "pulse_freq_range_slider")
     tcode_freq_range_slider = _require_window_attr(window, "tcode_freq_range_slider")
     freq_weight_slider = _require_window_attr(window, "freq_weight_slider")
@@ -29,7 +35,8 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
     phase_snap_slider = _require_window_attr(window, "phase_snap_slider")
     metrics_global_cb = _require_window_attr(window, "metrics_global_cb")
 
-    config.stroke.phase_advance = phase_advance_slider.value()
+    if phase_advance_slider is not None and hasattr(phase_advance_slider, "value"):
+        config.stroke.phase_advance = phase_advance_slider.value()
 
     config.pulse_freq.monitor_freq_min = pulse_freq_range_slider.low()
     config.pulse_freq.monitor_freq_max = pulse_freq_range_slider.high()

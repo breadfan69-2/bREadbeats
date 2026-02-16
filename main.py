@@ -1528,6 +1528,7 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         self._high_band_history: deque[float] = deque(maxlen=240)
         self._gate_snapshot: dict[str, object] = {}
         self._reference_overlays: dict[str, dict] = {}
+        self._fill_ratio_overlays: dict[str, dict] = {}
         self._time_window_overlays: dict[str, dict] = {}
         self._reference_fade_timer = QTimer(self)
         self._reference_fade_timer.setInterval(80)
@@ -1733,6 +1734,60 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         if not self._reference_fade_timer.isActive():
             self._reference_fade_timer.start()
 
+    def show_fill_ratio_ghost(self, key: str, ratio: float, label: str, color: str = '#FFFFFF', duration_s: float = 15.0, dashed: bool = False) -> None:
+        """Show or refresh a temporary symmetric fill-ratio band around zero.
+
+        Ratio is projected onto waveform amplitude using current visible peak, so
+        fill thresholds can be compared directly against on-screen waveform height.
+        """
+        ratio_clamped = float(np.clip(ratio, 0.0, 1.0))
+        visible_peak = float(np.clip(self._latest_peak, 0.0, 1.0))
+        amp = float(np.clip(ratio_clamped * visible_peak, 0.0, 1.0))
+        now = time.monotonic()
+
+        overlay = self._fill_ratio_overlays.get(key)
+        if overlay is None:
+            qcolor = QColor(color)
+            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
+            line_pos = pg.InfiniteLine(pos=amp, angle=0, movable=False, pen=pen)
+            line_neg = pg.InfiniteLine(pos=-amp, angle=0, movable=False, pen=pen)
+            line_pos.setZValue(15)
+            line_neg.setZValue(15)
+            self.addItem(line_pos)
+            self.addItem(line_neg)
+
+            text = pg.TextItem("", color=qcolor, anchor=(1.0, 0.0))
+            text.setZValue(16)
+            self.addItem(text)
+
+            overlay = {
+                'line_pos': line_pos,
+                'line_neg': line_neg,
+                'text': text,
+                'color': qcolor,
+                'dashed': bool(dashed),
+                'started_at': now,
+                'duration_s': float(max(0.5, duration_s)),
+            }
+            self._fill_ratio_overlays[key] = overlay
+
+        overlay['started_at'] = now
+        overlay['duration_s'] = float(max(0.5, duration_s))
+        overlay['line_pos'].setPos(amp)
+        overlay['line_neg'].setPos(-amp)
+        overlay['text'].setPos(self._x_max_ms - 0.2, min(1.0, amp + 0.03))
+        overlay['text'].setText(f"{label}: {ratio_clamped * 100.0:.0f}%")
+
+        full_color = QColor(overlay['color'])
+        full_color.setAlpha(210)
+        pen = pg.mkPen(full_color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
+        overlay['line_pos'].setPen(pen)
+        overlay['line_neg'].setPen(pen)
+        overlay['text'].setColor(full_color)
+
+        if not self._reference_fade_timer.isActive():
+            self._reference_fade_timer.start()
+
     def show_time_window_ghost(self, key: str, duration_ms: float, label: str, color: str = '#66ccff', duration_s: float = 12.0, dashed: bool = True) -> None:
         """Show or refresh a temporary time-window ghost on waveform view."""
         span_ms = float(np.clip(duration_ms, 0.0, max(1.0, self._x_max_ms)))
@@ -1794,7 +1849,7 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
 
     def _tick_reference_overlays(self) -> None:
         """Fade and remove expired amplitude reference overlays."""
-        if not self._reference_overlays and not self._time_window_overlays:
+        if not self._reference_overlays and not self._fill_ratio_overlays and not self._time_window_overlays:
             self._reference_fade_timer.stop()
             return
 
@@ -1821,6 +1876,29 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
 
         for key in expired:
             self._reference_overlays.pop(key, None)
+
+        expired_ratio: list[str] = []
+        for key, overlay in self._fill_ratio_overlays.items():
+            age = now - float(overlay['started_at'])
+            duration_s = float(overlay['duration_s'])
+            if age >= duration_s:
+                self.removeItem(overlay['line_pos'])
+                self.removeItem(overlay['line_neg'])
+                self.removeItem(overlay['text'])
+                expired_ratio.append(key)
+                continue
+
+            fade = max(0.0, 1.0 - (age / duration_s))
+            alpha = int(210 * fade)
+            qcolor = QColor(overlay['color'])
+            qcolor.setAlpha(alpha)
+            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
+            overlay['line_pos'].setPen(pen)
+            overlay['line_neg'].setPen(pen)
+            overlay['text'].setColor(qcolor)
+
+        for key in expired_ratio:
+            self._fill_ratio_overlays.pop(key, None)
 
         expired_time: list[str] = []
         for key, overlay in self._time_window_overlays.items():
@@ -1853,7 +1931,7 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         for key in expired_time:
             self._time_window_overlays.pop(key, None)
 
-        if not self._reference_overlays and not self._time_window_overlays:
+        if not self._reference_overlays and not self._fill_ratio_overlays and not self._time_window_overlays:
             self._reference_fade_timer.stop()
 
     def update_from_audio(self, waveform: np.ndarray, sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
@@ -1930,7 +2008,9 @@ class WaveformLiveCanvas(pg.PlotWidget):
 
         self._sample_rate = 44100
         self._x_max_ms = 25.0
+        self._latest_peak = 0.0
         self._reference_overlays: dict[str, dict] = {}
+        self._fill_ratio_overlays: dict[str, dict] = {}
         self._reference_fade_timer = QTimer(self)
         self._reference_fade_timer.setInterval(80)
         self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
@@ -1987,9 +2067,63 @@ class WaveformLiveCanvas(pg.PlotWidget):
         if not self._reference_fade_timer.isActive():
             self._reference_fade_timer.start()
 
+    def show_fill_ratio_ghost(self, key: str, ratio: float, label: str, color: str = '#FFFFFF', duration_s: float = 15.0, dashed: bool = False) -> None:
+        """Show or refresh a temporary symmetric fill-ratio band around zero.
+
+        Ratio is projected onto waveform amplitude using current visible peak, so
+        fill thresholds can be compared directly against on-screen waveform height.
+        """
+        ratio_clamped = float(np.clip(ratio, 0.0, 1.0))
+        visible_peak = float(np.clip(self._latest_peak, 0.0, 1.0))
+        amp = float(np.clip(ratio_clamped * visible_peak, 0.0, 1.0))
+        now = time.monotonic()
+
+        overlay = self._fill_ratio_overlays.get(key)
+        if overlay is None:
+            qcolor = QColor(color)
+            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
+            line_pos = pg.InfiniteLine(pos=amp, angle=0, movable=False, pen=pen)
+            line_neg = pg.InfiniteLine(pos=-amp, angle=0, movable=False, pen=pen)
+            line_pos.setZValue(15)
+            line_neg.setZValue(15)
+            self.addItem(line_pos)
+            self.addItem(line_neg)
+
+            text = pg.TextItem("", color=qcolor, anchor=(1.0, 0.0))
+            text.setZValue(16)
+            self.addItem(text)
+
+            overlay = {
+                'line_pos': line_pos,
+                'line_neg': line_neg,
+                'text': text,
+                'color': qcolor,
+                'dashed': bool(dashed),
+                'started_at': now,
+                'duration_s': float(max(0.5, duration_s)),
+            }
+            self._fill_ratio_overlays[key] = overlay
+
+        overlay['started_at'] = now
+        overlay['duration_s'] = float(max(0.5, duration_s))
+        overlay['line_pos'].setPos(amp)
+        overlay['line_neg'].setPos(-amp)
+        overlay['text'].setPos(self._x_max_ms - 0.2, min(1.0, amp + 0.03))
+        overlay['text'].setText(f"{label}: {ratio_clamped * 100.0:.0f}%")
+
+        full_color = QColor(overlay['color'])
+        full_color.setAlpha(210)
+        pen = pg.mkPen(full_color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
+        overlay['line_pos'].setPen(pen)
+        overlay['line_neg'].setPen(pen)
+        overlay['text'].setColor(full_color)
+
+        if not self._reference_fade_timer.isActive():
+            self._reference_fade_timer.start()
+
     def _tick_reference_overlays(self) -> None:
         """Fade and remove expired amplitude reference overlays."""
-        if not self._reference_overlays:
+        if not self._reference_overlays and not self._fill_ratio_overlays:
             self._reference_fade_timer.stop()
             return
 
@@ -2017,6 +2151,32 @@ class WaveformLiveCanvas(pg.PlotWidget):
         for key in expired:
             self._reference_overlays.pop(key, None)
 
+        expired_ratio: list[str] = []
+        for key, overlay in self._fill_ratio_overlays.items():
+            age = now - float(overlay['started_at'])
+            duration_s = float(overlay['duration_s'])
+            if age >= duration_s:
+                self.removeItem(overlay['line_pos'])
+                self.removeItem(overlay['line_neg'])
+                self.removeItem(overlay['text'])
+                expired_ratio.append(key)
+                continue
+
+            fade = max(0.0, 1.0 - (age / duration_s))
+            alpha = int(210 * fade)
+            qcolor = QColor(overlay['color'])
+            qcolor.setAlpha(alpha)
+            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
+            overlay['line_pos'].setPen(pen)
+            overlay['line_neg'].setPen(pen)
+            overlay['text'].setColor(qcolor)
+
+        for key in expired_ratio:
+            self._fill_ratio_overlays.pop(key, None)
+
+        if not self._reference_overlays and not self._fill_ratio_overlays:
+            self._reference_fade_timer.stop()
+
         if not self._reference_overlays:
             self._reference_fade_timer.stop()
 
@@ -2031,6 +2191,7 @@ class WaveformLiveCanvas(pg.PlotWidget):
         peak_abs = float(np.max(np.abs(arr)))
         if peak_abs > 1.0:
             arr = arr / peak_abs
+        self._latest_peak = float(np.max(np.abs(arr))) if arr.size > 0 else 0.0
 
         x_ms = (np.arange(arr.size, dtype=np.float32) / float(self._sample_rate)) * 1000.0
         x_end = float(x_ms[-1]) if x_ms.size > 0 else 25.0
@@ -8204,10 +8365,23 @@ Like the app?<br>
         return float(np.clip(base_required * scale, 0.0, 1.0))
 
     def _preview_fill_requirement_ghosts(self) -> None:
-        """Preview fill-gate requirements and bin windows on frequency-dB visualizers."""
+        """Preview fill-gate requirements on waveform and bin windows on frequency-dB visualizers."""
         down_val = self._effective_fill_requirement('downbeat')
         beat_val = self._effective_fill_requirement('beat')
         sync_val = self._effective_fill_requirement('syncopation')
+
+        waveform_targets = []
+        if hasattr(self, 'waveform_canvas') and hasattr(self.waveform_canvas, 'show_fill_ratio_ghost'):
+            waveform_targets.append(self.waveform_canvas)
+        popout = getattr(self, 'calibration_popout', None)
+        popout_waveform = getattr(popout, 'waveform_canvas', None) if popout is not None else None
+        if popout_waveform is not None and hasattr(popout_waveform, 'show_fill_ratio_ghost') and popout_waveform not in waveform_targets:
+            waveform_targets.append(popout_waveform)
+
+        for canvas in waveform_targets:
+            canvas.show_fill_ratio_ghost('fill_req_downbeat_ratio', down_val, '% fill for (downbeat)', color='#66E0FF', duration_s=15.0, dashed=True)
+            canvas.show_fill_ratio_ghost('fill_req_beat_ratio', beat_val, '% fill for (beat)', color='#55CCFF', duration_s=15.0, dashed=True)
+            canvas.show_fill_ratio_ghost('fill_req_sync_ratio', sync_val, '% fill for (synco)', color='#44B8FF', duration_s=15.0, dashed=True)
 
         fft_size = int(getattr(self.config.audio, 'fft_size', 1024) or 1024)
         max_bin = max(1, fft_size // 2)
@@ -8223,41 +8397,6 @@ Like the app?<br>
         popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
         if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in freqdb_targets:
             freqdb_targets.append(popout_freqdb)
-
-        for canvas in freqdb_targets:
-            canvas.show_flux_ghost(
-                'fill_req_downbeat_occ',
-                down_val,
-                'Fill req downbeat',
-                color='#66E0FF',
-                duration_s=15.0,
-                dashed=False,
-                band='full',
-                range_box=True,
-                mode='occupancy',
-            )
-            canvas.show_flux_ghost(
-                'fill_req_beat_occ',
-                beat_val,
-                'Fill req beat',
-                color='#55CCFF',
-                duration_s=15.0,
-                dashed=False,
-                band='full',
-                range_box=True,
-                mode='occupancy',
-            )
-            canvas.show_flux_ghost(
-                'fill_req_sync_occ',
-                sync_val,
-                'Fill req sync',
-                color='#44B8FF',
-                duration_s=15.0,
-                dashed=False,
-                band='full',
-                range_box=True,
-                mode='occupancy',
-            )
 
         for phase, key, label in (
             ('downbeat', 'fill_bin_downbeat_range', 'Downbeat fill bins'),
