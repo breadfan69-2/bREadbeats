@@ -59,6 +59,7 @@ class PlannedTrajectory:
     band_volume: float = 1.0
     start_time: float = 0.0
     is_micro: bool = False  # True for noise burst micro-patterns (skip return-to-bottom)
+    is_park_return: bool = False  # True when arc is explicitly returning to park anchor
     beat_target_time: float = 0.0  # Monotonic time when the dot should "land" on the beat
     original_bpm: float = 0.0  # BPM at arc creation, for mid-arc speed adjustment
 
@@ -428,6 +429,66 @@ class StrokeMapper:
         while landing_phase + turns <= current_phase:
             turns += 1.0
         return np.linspace(current_phase, landing_phase + turns, n_points, endpoint=False) % 1.0
+
+    def _build_arc_phases_to_target(self, current_phase: float, target_phase: float, n_points: int, min_turns: float = 0.0) -> np.ndarray:
+        """Build forward-only arc phases from current phase to explicit target phase."""
+        target = float(target_phase % 1.0)
+        turns = float(max(0.0, min_turns))
+        while target + turns <= current_phase:
+            turns += 1.0
+        return np.linspace(current_phase, target + turns, n_points, endpoint=True) % 1.0
+
+    def _generate_park_return_arc(self, duration_ms: int = 380) -> bool:
+        """Continue current rotational path and land exactly on park anchor."""
+        if self._trajectory is None:
+            return False
+
+        n_points = max(8, int(max(120, duration_ms) / 10))
+        current_a = float(self.state.alpha)
+        current_b = float(self.state.beta)
+        current_phase = float(np.arctan2(current_a, current_b))
+        if current_phase < 0:
+            current_phase += 2 * np.pi
+        current_phase /= (2 * np.pi)
+
+        target_phase = self._get_park_phase() / (2 * np.pi)
+        arc_phases = self._build_arc_phases_to_target(current_phase, target_phase, n_points, min_turns=0.0)
+
+        start_radius = float(np.hypot(current_a, current_b))
+        start_radius = float(np.clip(start_radius, 0.12, 1.0))
+        target_radius = float(np.clip(self._park_radius, self._park_radius_min, self._park_radius_max))
+
+        alpha_pts = np.zeros(n_points)
+        beta_pts = np.zeros(n_points)
+        alpha_weight = self.config.alpha_weight
+        beta_weight = self.config.beta_weight
+        for i, phase in enumerate(arc_phases):
+            t = i / max(1, n_points - 1)
+            radius = start_radius + ((target_radius - start_radius) * t)
+            angle = phase * 2 * np.pi
+            alpha_pts[i] = np.sin(angle) * radius * alpha_weight
+            beta_pts[i] = np.cos(angle) * radius * beta_weight
+
+        alpha_pts[-1] = self._park_alpha
+        beta_pts[-1] = self._park_beta
+
+        step_durations = self._make_landing_durations(int(max(120, duration_ms)), n_points)
+        band_volume = float(self._trajectory.band_volume if self._trajectory is not None else self.get_volume())
+        now = time.perf_counter()
+
+        self._trajectory = PlannedTrajectory(
+            alpha_points=alpha_pts,
+            beta_points=beta_pts,
+            step_durations=step_durations,
+            n_points=n_points,
+            current_index=0,
+            band_volume=band_volume,
+            start_time=now,
+            is_park_return=True,
+            original_bpm=0.0,
+            beat_target_time=0.0,
+        )
+        return True
 
     def _note_motion_block(self, reason: str, **details) -> None:
         """Emit throttled diagnostics when beat motion is suppressed by a gate."""
@@ -1632,7 +1693,8 @@ class StrokeMapper:
         # Track last confirmed beat (stroke_ready + bass gate + is_beat)
         if event.is_beat and self._stroke_ready and bass_motion_allowed:
             self._last_confirmed_beat_time = now
-        # If no confirmed beat for 2s, cancel trajectory and return to park+jitter
+        # If no confirmed beat for 2s, complete the current arc by landing at park
+        # instead of abruptly canceling motion.
         if (self._last_any_beat_time > 0
                 and (now - self._last_any_beat_time) > self._no_beat_timeout_s
                 and self._trajectory is not None):
@@ -1651,14 +1713,19 @@ class StrokeMapper:
                         )
 
             if not hold_center_reset:
-                self._trajectory = None
-                self._locked_anchor = None
                 self._pending_arc_event = None
-                # Start creep reset to park
-                if not self.state.creep_reset_active:
-                    self.state.creep_reset_active = True
-                    self.state.creep_reset_start_time = now
-                log_event("INFO", "StrokeMapper", "No-beat timeout → park+jitter")
+                if not getattr(self._trajectory, 'is_park_return', False):
+                    transitioned = self._generate_park_return_arc()
+                    if transitioned:
+                        self._locked_anchor = None
+                        log_event("INFO", "StrokeMapper", "No-beat timeout → arc-to-park")
+                    else:
+                        self._trajectory = None
+                        self._locked_anchor = None
+                        if not self.state.creep_reset_active:
+                            self.state.creep_reset_active = True
+                            self.state.creep_reset_start_time = now
+                        log_event("INFO", "StrokeMapper", "No-beat timeout → park+jitter")
 
         # ===== SILENCE FADE-OUT =====
         quiet_flux_thresh = cfg.flux_threshold * cfg.silence_flux_multiplier
@@ -2888,6 +2955,15 @@ class StrokeMapper:
                 self._update_lead_trim_from_landing(landing_error_ms)
             log_event("INFO", "StrokeMapper", "Arc complete", points=traj.n_points)
             self._sync_creep_angle_to_position()
+
+            if getattr(traj, 'is_park_return', False):
+                self.state.alpha = self._park_alpha
+                self.state.beta = self._park_beta
+                self.state.creep_reset_active = False
+                self._trajectory = None
+                self._post_arc_blend = 0.0
+                log_event("INFO", "StrokeMapper", "Park return complete")
+                return TCodeCommand(self.state.alpha, self.state.beta, 20, self.get_volume())
 
             if getattr(traj, 'is_micro', False):
                 # Micro patterns (noise jitter): resume creep
