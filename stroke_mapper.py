@@ -222,7 +222,17 @@ class StrokeMapper:
         # Grace period: short hold after conditions drop before returning to jitter
         self._stroke_ready: bool = False
         self._stroke_ready_lost_time: float = 0.0   # when conditions last dropped
-        self._stroke_grace_ms: float = 250.0         # grace period before disabling strokes
+        self._stroke_grace_ms: float = float(np.clip(
+            getattr(self.config.beat, 'teaching_stroke_ready_grace_ms', 450.0) or 450.0,
+            100.0,
+            1300.0,
+        ))
+        self._stroke_gate_block_streak: int = 0
+        self._stroke_finish_beats: int = int(np.clip(
+            getattr(self.config.beat, 'teaching_stroke_finish_beats', 1) or 1,
+            0,
+            4,
+        ))
         self._traffic_was_green: bool = False         # track if traffic was recently green
         self._traffic_left_green_time: float = 0.0    # when traffic left green
         self._metro_green_since: float = 0.0          # when metronome first became green
@@ -315,8 +325,13 @@ class StrokeMapper:
         # Ignore traffic-light (metric settledness) for stroke readiness.
         # Keep metronome confidence as the primary readiness signal.
         self._ignore_traffic_lights: bool = bool(
-            getattr(self.config.beat, 'teaching_ignore_traffic_lights', True)
+            getattr(self.config.beat, 'teaching_ignore_traffic_lights', False)
         )
+        self._metronome_relaxed_confidence: float = float(np.clip(
+            getattr(self.config.beat, 'teaching_metronome_relaxed_confidence', 0.14) or 0.14,
+            0.05,
+            0.40,
+        ))
 
         # ---------- Landing / park anchors ----------
         # Display-bottom phase is 0 in current alpha/beta orientation.
@@ -1041,9 +1056,10 @@ class StrokeMapper:
         
         metro_green = acf_conf >= 0.25 and metro_bpm > 0
         metro_yellow = acf_conf >= 0.05 and metro_bpm > 0
+        metro_relaxed = acf_conf >= self._metronome_relaxed_confidence and metro_bpm > 0
 
         if self._ignore_traffic_lights:
-            conditions_met = metro_yellow
+            conditions_met = metro_relaxed
             self._prev_had_any_light = metro_yellow or metro_green
             if conditions_met:
                 self._stroke_ready = True
@@ -1118,7 +1134,7 @@ class StrokeMapper:
             option_stable = metro_stable_2s
             # Metronome-first: if metronome is yellow/green, don't hard-block
             # on red traffic while metrics are still hunting.
-            option_metronome = metro_yellow
+            option_metronome = metro_relaxed
             
             conditions_met = (both_green or mixed_green_yellow
                               or both_yellow_ok or option_recovery
@@ -1133,6 +1149,7 @@ class StrokeMapper:
             # Conditions met — immediately ready, reset lost timer
             self._stroke_ready = True
             self._stroke_ready_lost_time = 0.0
+            self._stroke_gate_block_streak = 0
         else:
             # Conditions dropped — start or continue grace period
             if self._stroke_ready:
@@ -1977,9 +1994,22 @@ class StrokeMapper:
             # If metronome + traffic light conditions not met,
             # fall through to idle motion (creep/jitter) instead of strokes
             if not self._stroke_ready:
-                self._note_motion_block("stroke_ready", stroke_ready=False)
-                cmd = self._generate_idle_motion(event)
-                return self._apply_fade(cmd)
+                self._stroke_gate_block_streak += 1
+                if (self._stroke_finish_beats > 0
+                        and self._stroke_gate_block_streak <= self._stroke_finish_beats):
+                    log_event(
+                        "DEBUG",
+                        "StrokeMapper",
+                        "Stroke readiness grace beat",
+                        blocked_streak=self._stroke_gate_block_streak,
+                        finish_beats=self._stroke_finish_beats,
+                    )
+                else:
+                    self._note_motion_block("stroke_ready", stroke_ready=False)
+                    cmd = self._generate_idle_motion(event)
+                    return self._apply_fade(cmd)
+            else:
+                self._stroke_gate_block_streak = 0
 
             is_downbeat = getattr(event, 'is_downbeat', False)
             if is_downbeat:
@@ -2743,8 +2773,9 @@ class StrokeMapper:
         min_radius = 0.15
         arc_radius = min_radius + (stroke_len * depth - min_radius) * curved_intensity * 0.7
         arc_radius = max(min_radius, min(1.0, arc_radius))
-        if cfg.mode == StrokeMode.SIMPLE_CIRCLE:
-            arc_radius = float(np.clip(max(arc_radius, self._edge_follow_radius, 0.82), 0.82, 1.0))
+        if cfg.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.TEARDROP):
+            follow_floor = 0.85 if cfg.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
+            arc_radius = float(np.clip(max(arc_radius, self._edge_follow_radius, follow_floor), follow_floor, 1.0))
         for i, phase in enumerate(arc_phases):
             alpha_arc[i], beta_arc[i] = self._compute_arc_point(
                 phase=phase,
@@ -2771,6 +2802,9 @@ class StrokeMapper:
         if n_points > 0:
             landing_radius = float(np.hypot(alpha_arc[-1], beta_arc[-1]))
             self._update_park_anchor_from_radius(landing_radius)
+        if cfg.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.TEARDROP):
+            follow_floor = 0.85 if cfg.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
+            self._edge_follow_radius = float(np.clip(max(self._edge_follow_radius, arc_radius), follow_floor, 1.00))
 
         self.state.last_stroke_time = now
         log_event("INFO", "StrokeMapper", "Syncopated arc",
@@ -3034,8 +3068,9 @@ class StrokeMapper:
         # Recover radius from the last arc's endpoint
         last_r = np.sqrt(self.state.alpha**2 + self.state.beta**2)
         radius = max(0.2, min(1.0, last_r)) if last_r > 0.05 else 0.5
-        if cfg.mode == StrokeMode.SIMPLE_CIRCLE:
-            radius = float(np.clip(max(self._edge_follow_radius, 0.85), 0.85, 1.0))
+        if cfg.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL, StrokeMode.TEARDROP):
+            follow_floor = 0.85 if cfg.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
+            radius = float(np.clip(max(radius, self._edge_follow_radius, follow_floor), follow_floor, 1.0))
 
         alpha_weight = self.config.alpha_weight
         beta_weight = self.config.beta_weight
@@ -3283,8 +3318,10 @@ class StrokeMapper:
                 else:
                     creep_radius = 0.50
 
-                if self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE:
-                    creep_radius = float(np.clip(self._edge_follow_radius, 0.80, 1.00))
+                if (self._motion_mode == MotionMode.FULL_STROKE
+                        and self.config.stroke.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL, StrokeMode.TEARDROP)):
+                    follow_floor = 0.85 if self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
+                    creep_radius = float(np.clip(max(creep_radius, self._edge_follow_radius, follow_floor), follow_floor, 1.00))
 
                 target_alpha = np.sin(self.state.creep_angle) * creep_radius
                 target_beta = np.cos(self.state.creep_angle) * creep_radius

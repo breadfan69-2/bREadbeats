@@ -1,4 +1,5 @@
 import inspect
+import time
 import unittest
 
 from config import Config, StrokeMode
@@ -28,6 +29,14 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         self.assertAlmostEqual(simple_anchor, park_phase, places=6)
         self.assertAlmostEqual(spiral_anchor, park_phase, places=6)
+
+    def test_tempo_reset_hold_marks_recent_beats(self):
+        mapper = StrokeMapper(Config())
+        now = time.perf_counter()
+        mapper._arm_tempo_reset_motion_hold(now)
+
+        self.assertTrue(mapper._has_recent_beats(now=now + 1.0, window_s=0.1))
+        self.assertFalse(mapper._has_recent_beats(now=now + 3.0, window_s=0.1))
 
 
 if __name__ == "__main__":
