@@ -3986,7 +3986,10 @@ class BREadbeatsWindow(QMainWindow):
         assert learning_controls_action is not None
         learning_controls_action.triggered.connect(self._on_learning_controls)
 
-        tempo_tracking_action = options_menu.addAction("Tempo Tracking...")
+        developer_controls_menu = options_menu.addMenu("Developer Controls")
+        assert developer_controls_menu is not None
+
+        tempo_tracking_action = developer_controls_menu.addAction("Tempo Tracking...")
         assert tempo_tracking_action is not None
         tempo_tracking_action.triggered.connect(self._on_options_tempo_tracking)
 
@@ -4014,10 +4017,8 @@ class BREadbeatsWindow(QMainWindow):
             self._log_level_actions.append(action)
         self._sync_log_level_menu(getattr(self.config, 'log_level', 'INFO'))
         
-        options_menu.addSeparator()
-        
-        # Advanced Controls dialog
-        advanced_action = options_menu.addAction("Advanced Controls...")
+        # Trigger Settings dialog
+        advanced_action = developer_controls_menu.addAction("Trigger Settings...")
         assert advanced_action is not None
         advanced_action.triggered.connect(self._on_advanced_controls)
 
@@ -4431,7 +4432,7 @@ class BREadbeatsWindow(QMainWindow):
                 self._advanced_phase_advance_slider = None
         
         dialog = QDialog(self)
-        dialog.setWindowTitle("Advanced Controls")
+        dialog.setWindowTitle("Trigger Settings")
         dialog.setMinimumWidth(450)
         dialog.setMinimumHeight(400)
         dialog.setModal(False)
