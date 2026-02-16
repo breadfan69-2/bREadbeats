@@ -1430,7 +1430,7 @@ class StrokeMapper:
             required = 0.10
         return float(np.clip(required * global_scale, 0.0, 1.0))
 
-    def _get_spectrum_fill_ratio(self, target: float) -> float:
+    def _get_spectrum_fill_ratio(self, target: float, phase: str = 'beat') -> float:
         """Return fraction of active spectrum bins above target-normalized amplitude."""
         if not self.audio_engine or not hasattr(self.audio_engine, 'get_spectrum'):
             return 0.0
@@ -1442,6 +1442,21 @@ class StrokeMapper:
         magnitudes = np.abs(np.asarray(spectrum, dtype=float))
         peak = float(np.max(magnitudes)) if magnitudes.size > 0 else 0.0
         if peak <= 1e-9:
+            return 0.0
+
+        n_bins = int(magnitudes.size)
+        low_attr = f"{phase}_fill_bin_low"
+        high_attr = f"{phase}_fill_bin_high"
+        low_bin = int(float(getattr(self.config.stroke, low_attr, 0) or 0))
+        high_default = max(0, n_bins - 1)
+        high_bin = int(float(getattr(self.config.stroke, high_attr, high_default) or high_default))
+        low_bin = int(np.clip(low_bin, 0, max(0, n_bins - 1)))
+        high_bin = int(np.clip(high_bin, 0, max(0, n_bins - 1)))
+        if high_bin < low_bin:
+            high_bin = low_bin
+
+        magnitudes = magnitudes[low_bin:high_bin + 1]
+        if magnitudes.size == 0:
             return 0.0
 
         norm = magnitudes / peak
@@ -1467,7 +1482,7 @@ class StrokeMapper:
         amp_pass = overall_amp >= min_amp
 
         fill_required = self._get_overall_amp_fill_required(phase)
-        fill_ratio = self._get_spectrum_fill_ratio(target)
+        fill_ratio = self._get_spectrum_fill_ratio(target, phase)
         fill_pass = fill_ratio >= fill_required
 
         return bool(amp_pass and fill_pass), overall_amp, fill_ratio, min_amp, fill_required

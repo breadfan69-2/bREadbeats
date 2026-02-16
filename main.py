@@ -2206,6 +2206,7 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
         band: str = 'full',
         range_box: bool = False,
         mode: str = 'threshold',
+        hz_max: float | None = None,
     ) -> None:
         now = time.monotonic()
         numeric_value = float(value)
@@ -2269,15 +2270,30 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
             x_hz = self._hz_to_log_khz(numeric_value)
             overlay['line'].show()
             overlay['line'].setPos(x_hz)
-            overlay['text'].setText(f"{label}: {numeric_value:.0f} Hz")
+            if hz_max is not None:
+                hz_hi = float(max(numeric_value, float(hz_max)))
+                hz_lo = float(min(numeric_value, float(hz_max)))
+                overlay['text'].setText(f"{label}: {hz_lo:.0f}-{hz_hi:.0f} Hz")
+            else:
+                overlay['text'].setText(f"{label}: {numeric_value:.0f} Hz")
             overlay['text'].setPos(x_hz, 5.2)
             if range_box:
-                overlay['base_rect'] = QRectF(
-                    x_hz - 0.002,
-                    -120.0,
-                    0.004,
-                    126.0,
-                )
+                if hz_max is not None:
+                    x_lo = self._hz_to_log_khz(float(min(numeric_value, float(hz_max))))
+                    x_hi = self._hz_to_log_khz(float(max(numeric_value, float(hz_max))))
+                    overlay['base_rect'] = QRectF(
+                        min(x_lo, x_hi),
+                        -120.0,
+                        max(0.001, abs(x_hi - x_lo)),
+                        126.0,
+                    )
+                else:
+                    overlay['base_rect'] = QRectF(
+                        x_hz - 0.002,
+                        -120.0,
+                        0.004,
+                        126.0,
+                    )
                 overlay['box'].show()
             else:
                 overlay['base_rect'] = None
@@ -2628,6 +2644,7 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
         band: str = 'full',
         range_box: bool = False,
         mode: str = 'threshold',
+        hz_max: float | None = None,
     ) -> None:
         now = time.monotonic()
         numeric_value = float(value)
@@ -2691,15 +2708,30 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
             x_hz = self._hz_to_log_khz(numeric_value)
             overlay['line'].show()
             overlay['line'].setPos(x_hz)
-            overlay['text'].setText(f"{label}: {numeric_value:.0f} Hz")
+            if hz_max is not None:
+                hz_hi = float(max(numeric_value, float(hz_max)))
+                hz_lo = float(min(numeric_value, float(hz_max)))
+                overlay['text'].setText(f"{label}: {hz_lo:.0f}-{hz_hi:.0f} Hz")
+            else:
+                overlay['text'].setText(f"{label}: {numeric_value:.0f} Hz")
             overlay['text'].setPos(x_hz, 5.2)
             if range_box:
-                overlay['base_rect'] = QRectF(
-                    x_hz - 0.002,
-                    -120.0,
-                    0.004,
-                    126.0,
-                )
+                if hz_max is not None:
+                    x_lo = self._hz_to_log_khz(float(min(numeric_value, float(hz_max))))
+                    x_hi = self._hz_to_log_khz(float(max(numeric_value, float(hz_max))))
+                    overlay['base_rect'] = QRectF(
+                        min(x_lo, x_hi),
+                        -120.0,
+                        max(0.001, abs(x_hi - x_lo)),
+                        126.0,
+                    )
+                else:
+                    overlay['base_rect'] = QRectF(
+                        x_hz - 0.002,
+                        -120.0,
+                        0.004,
+                        126.0,
+                    )
                 overlay['box'].show()
             else:
                 overlay['base_rect'] = None
@@ -4520,6 +4552,7 @@ class BREadbeatsWindow(QMainWindow):
             band: str = 'full',
             range_box: bool = False,
             mode: str = 'threshold',
+            hz_max: float | None = None,
         ) -> None:
             ghost_targets = []
             if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
@@ -4540,6 +4573,7 @@ class BREadbeatsWindow(QMainWindow):
                     band=band,
                     range_box=range_box,
                     mode=mode,
+                    hz_max=hz_max,
                 )
 
         def _update_overall_amp_fill_refs():
@@ -4693,6 +4727,81 @@ class BREadbeatsWindow(QMainWindow):
             lambda v: (setattr(self.config.stroke, 'syncopation_overall_amp_fill_required', float(v)), _update_fill_requirement_refs())
         )
         gate_layout.addWidget(sync_fill_slider)
+
+        fill_bin_info = QLabel("Fill gate FFT-bin windows (tight range control per phase)")
+        fill_bin_info.setStyleSheet("color: #999; font-size: 10px;")
+        gate_layout.addWidget(fill_bin_info)
+
+        fft_size = int(getattr(self.config.audio, 'fft_size', 1024) or 1024)
+        max_bin = max(1, fft_size // 2)
+
+        def _bin_to_hz(bin_value: int) -> float:
+            sample_rate = float(getattr(self.config.audio, 'sample_rate', 44100) or 44100)
+            return float(np.clip(bin_value, 0, max_bin) * (sample_rate / max(1, fft_size)))
+
+        def _add_fill_bin_range_row(title: str, low_attr: str, high_attr: str, ghost_key: str) -> None:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(title))
+
+            low_spin = QSpinBox()
+            low_spin.setRange(0, max_bin)
+            low_spin.setSingleStep(1)
+            low_spin.setValue(int(np.clip(int(getattr(self.config.stroke, low_attr, 0) or 0), 0, max_bin)))
+            low_spin.setPrefix("low ")
+            row.addWidget(low_spin)
+
+            high_spin = QSpinBox()
+            high_spin.setRange(0, max_bin)
+            high_spin.setSingleStep(1)
+            high_spin.setValue(int(np.clip(int(getattr(self.config.stroke, high_attr, max_bin) or max_bin), 0, max_bin)))
+            high_spin.setPrefix("high ")
+            row.addWidget(high_spin)
+            row.addStretch()
+
+            def _emit_ghost() -> None:
+                low_bin = int(low_spin.value())
+                high_bin = int(high_spin.value())
+                low_hz = _bin_to_hz(min(low_bin, high_bin))
+                high_hz = _bin_to_hz(max(low_bin, high_bin))
+                _show_freqdb_ghost_ref(
+                    ghost_key,
+                    low_hz,
+                    f"{title} range",
+                    color='#FFFFFF',
+                    dashed=False,
+                    mode='hz_line',
+                    range_box=True,
+                    hz_max=high_hz,
+                )
+
+            def _on_low_change(v: int) -> None:
+                low_val = int(v)
+                high_val = int(high_spin.value())
+                if high_val < low_val:
+                    high_spin.setValue(low_val)
+                    high_val = low_val
+                setattr(self.config.stroke, low_attr, int(low_val))
+                setattr(self.config.stroke, high_attr, int(high_val))
+                _emit_ghost()
+
+            def _on_high_change(v: int) -> None:
+                high_val = int(v)
+                low_val = int(low_spin.value())
+                if high_val < low_val:
+                    low_spin.setValue(high_val)
+                    low_val = high_val
+                setattr(self.config.stroke, low_attr, int(low_val))
+                setattr(self.config.stroke, high_attr, int(high_val))
+                _emit_ghost()
+
+            low_spin.valueChanged.connect(_on_low_change)
+            high_spin.valueChanged.connect(_on_high_change)
+            gate_layout.addLayout(row)
+            _emit_ghost()
+
+        _add_fill_bin_range_row("Downbeat fill bins", 'downbeat_fill_bin_low', 'downbeat_fill_bin_high', 'downbeat_fill_bin_range')
+        _add_fill_bin_range_row("Beat fill bins", 'beat_fill_bin_low', 'beat_fill_bin_high', 'beat_fill_bin_range')
+        _add_fill_bin_range_row("Sync fill bins", 'syncopation_fill_bin_low', 'syncopation_fill_bin_high', 'sync_fill_bin_range')
 
         dual_band_gate_cb = QCheckBox("Enable dual-band dB gate (sub-bass + high)")
         dual_band_gate_cb.setChecked(bool(getattr(self.config.stroke, 'dual_band_db_gate_enabled', True)))
@@ -8148,6 +8257,44 @@ Like the app?<br>
             canvas.show_reference_line('fill_req_downbeat', down_val, 'Fill req downbeat', color='#66E0FF', duration_s=15.0, dashed=True)
             canvas.show_reference_line('fill_req_beat', beat_val, 'Fill req beat', color='#55CCFF', duration_s=15.0, dashed=True)
             canvas.show_reference_line('fill_req_sync', sync_val, 'Fill req sync', color='#44B8FF', duration_s=15.0, dashed=True)
+
+        fft_size = int(getattr(self.config.audio, 'fft_size', 1024) or 1024)
+        max_bin = max(1, fft_size // 2)
+        sample_rate = float(getattr(self.config.audio, 'sample_rate', 44100) or 44100)
+
+        def _bin_to_hz(bin_value: int) -> float:
+            return float(np.clip(bin_value, 0, max_bin) * (sample_rate / max(1, fft_size)))
+
+        freqdb_targets = []
+        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
+            freqdb_targets.append(self.freqdb_canvas)
+        popout = getattr(self, 'calibration_popout', None)
+        popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
+        if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in freqdb_targets:
+            freqdb_targets.append(popout_freqdb)
+
+        for phase, key, label in (
+            ('downbeat', 'fill_bin_downbeat_range', 'Downbeat fill bins'),
+            ('beat', 'fill_bin_beat_range', 'Beat fill bins'),
+            ('syncopation', 'fill_bin_sync_range', 'Sync fill bins'),
+        ):
+            low = int(getattr(self.config.stroke, f'{phase}_fill_bin_low', 0) or 0)
+            high = int(getattr(self.config.stroke, f'{phase}_fill_bin_high', max_bin) or max_bin)
+            low_hz = _bin_to_hz(min(low, high))
+            high_hz = _bin_to_hz(max(low, high))
+            for canvas in freqdb_targets:
+                canvas.show_flux_ghost(
+                    key,
+                    low_hz,
+                    label,
+                    color='#FFFFFF',
+                    duration_s=15.0,
+                    dashed=False,
+                    band='full',
+                    range_box=True,
+                    mode='hz_line',
+                    hz_max=high_hz,
+                )
     
     def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""
