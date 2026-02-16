@@ -621,6 +621,9 @@ class StrokeMapper:
         return self._band_speed_scale.get(band, 1.0)
 
     def _get_anchor_phase_for_mode(self, mode: StrokeMode, fallback_phase: float, direction_override: Optional[int] = None) -> float:
+        if mode != StrokeMode.TEARDROP:
+            return self._get_park_phase()
+
         current_radius = float(np.hypot(self.state.alpha, self.state.beta))
         recent_beats_active = (
             self._last_any_beat_time > 0
@@ -637,18 +640,16 @@ class StrokeMapper:
         if edge_creep_continuation:
             return fallback_phase
 
-        if mode in self._single_anchor_enabled_modes:
-            if direction_override in (-1, 1):
-                direction = int(direction_override)
-            elif mode == StrokeMode.SPIRAL:
-                direction = 1 if self._spiral_direction >= 0 else -1
-            else:
-                direction = 1
+        if direction_override in (-1, 1):
+            direction = int(direction_override)
+        elif mode == StrokeMode.SPIRAL:
+            direction = 1 if self._spiral_direction >= 0 else -1
+        else:
+            direction = 1
 
-            offset = float(np.clip(self._single_anchor_prebottom_offset, 0.05, 0.6))
-            base = float(self._single_anchor_bottom_phase)
-            return (base - offset) if direction >= 0 else (base + offset)
-        return fallback_phase
+        offset = float(np.clip(self._single_anchor_prebottom_offset, 0.05, 0.6))
+        base = float(self._single_anchor_bottom_phase)
+        return (base - offset) if direction >= 0 else (base + offset)
 
     def _get_arc_launch_phase(self, mode: StrokeMode) -> float:
         current_radius = float(np.hypot(self.state.alpha, self.state.beta))
@@ -988,9 +989,20 @@ class StrokeMapper:
             return beats_in_measure
 
         divisor = self._get_adaptive_beat_divisor(event)
-        if mode == StrokeMode.TEARDROP:
-            divisor *= 2
+        divisor *= self._get_mode_beats_per_stroke_multiplier(mode)
         return max(beats_in_measure, int(max(1, divisor)))
+
+    def _get_mode_beats_per_stroke_multiplier(self, mode: Optional[StrokeMode] = None) -> int:
+        """Return per-mode cadence multiplier for beats-per-stroke.
+
+        Mode 1 (SIMPLE_CIRCLE): 1x
+        Mode 2 (SPIRAL): 2x
+        Mode 3 (TEARDROP): 2x
+        """
+        mode_to_use = mode if mode is not None else self.config.stroke.mode
+        if mode_to_use in (StrokeMode.SPIRAL, StrokeMode.TEARDROP):
+            return 2
+        return 1
 
     def _freq_to_factor(self, freq: float) -> float:
         """Convert frequency -> 0-1 factor.  Lower (bass) -> 0 -> deeper strokes."""
@@ -1838,7 +1850,6 @@ class StrokeMapper:
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         if (is_syncopated and bass_motion_allowed
             and self._motion_mode == MotionMode.FULL_STROKE
-            and cfg.mode != StrokeMode.TEARDROP
             and self._is_low_band_full_enough(event)
             and self._passes_dual_band_db_gate(event)):
             # BPM limit from config
@@ -1996,8 +2007,7 @@ class StrokeMapper:
                 self.state.beat_counter += 1
 
             effective_divisor = self._get_adaptive_beat_divisor(event)
-            if cfg.mode == StrokeMode.TEARDROP:
-                effective_divisor *= 2
+            effective_divisor *= self._get_mode_beats_per_stroke_multiplier(cfg.mode)
 
             if self._motion_mode == MotionMode.FULL_STROKE:
                 # High amplitude -> fire arc immediately from current position.
@@ -2722,6 +2732,7 @@ class StrokeMapper:
         # Duration is configurable fraction of beat interval
         speed_frac = getattr(beat_cfg, 'syncopation_speed', 0.5) * self._learned_sync_speed_mult
         speed_frac = float(np.clip(speed_frac, 0.10, 1.25))
+        mode_multiplier = self._get_mode_beats_per_stroke_multiplier(cfg.mode)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
         if metro_bpm > 0:
             beat_ms = 60000.0 / metro_bpm
@@ -2729,7 +2740,7 @@ class StrokeMapper:
             beat_ms = (now - self.state.last_beat_time) * 1000
         else:
             beat_ms = cfg.min_interval_ms * 2
-        duration_ms = max(cfg.min_interval_ms * 0.4, min(1000, beat_ms * speed_frac))
+        duration_ms = max(cfg.min_interval_ms * 0.4, min(1000, beat_ms * speed_frac * mode_multiplier))
         duration_ms = int(duration_ms)
 
         # Pre-fire: if metronome predicts next beat, adjust duration so
