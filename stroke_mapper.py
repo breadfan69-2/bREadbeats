@@ -2047,7 +2047,7 @@ class StrokeMapper:
                         if cfg.mode == StrokeMode.SIMPLE_CIRCLE and is_high_flux:
                             cmd = self._generate_beat_stroke(event)
                         else:
-                            cmd = self._generate_downbeat_stroke(event)
+                            cmd = self._generate_downbeat_stroke(event, duration_mult=2.0)
                         self._note_motion_resumed("downbeat_fallback")
                         return self._apply_fade(cmd)
                     self._note_motion_block(
@@ -2111,7 +2111,7 @@ class StrokeMapper:
                             )
                             cmd = self._generate_idle_motion(event)
                             return self._apply_fade(cmd)
-                        cmd = self._generate_downbeat_stroke(event)
+                        cmd = self._generate_downbeat_stroke(event, duration_mult=2.0)
                         self._note_motion_resumed("downbeat_fallback")
                         return self._apply_fade(cmd)
 
@@ -2391,7 +2391,7 @@ class StrokeMapper:
             beta *= scale
         return alpha, beta
 
-    def _generate_downbeat_stroke(self, event: BeatEvent) -> Optional[TCodeCommand]:
+    def _generate_downbeat_stroke(self, event: BeatEvent, duration_mult: float = 1.0) -> Optional[TCodeCommand]:
         """Full measure-length arc on downbeat.  When tempo LOCKED -> 25% boost.
         Stores a PlannedTrajectory; idle motion reads it frame-by-frame."""
         cfg = self.config.stroke
@@ -2443,6 +2443,11 @@ class StrokeMapper:
         event_age_ms = (now - event_time) * 1000
         if beat_target_time == 0.0 and 0 < event_age_ms < measure_duration_ms * 0.3:
             measure_duration_ms = max(cfg.min_interval_ms, int(measure_duration_ms - event_age_ms))
+
+        duration_mult = float(max(1.0, duration_mult))
+        if duration_mult > 1.0:
+            measure_duration_ms = int(measure_duration_ms * duration_mult)
+            measure_duration_ms = max(cfg.min_interval_ms, min(8000, measure_duration_ms))
 
         if self._is_learning_isolation_active():
             flux_factor = self._learned_radius_mult

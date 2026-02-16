@@ -2009,15 +2009,30 @@ class WaveformLiveCanvas(pg.PlotWidget):
         self._sample_rate = 44100
         self._x_max_ms = 25.0
         self._latest_peak = 0.0
-        self._freeze_until_monotonic = 0.0
+        self._peak_history: deque[tuple[float, float]] = deque()
+        self._peak_avg_window_s = 0.100
         self._reference_overlays: dict[str, dict] = {}
         self._fill_ratio_overlays: dict[str, dict] = {}
         self._reference_fade_timer = QTimer(self)
         self._reference_fade_timer.setInterval(80)
         self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
 
-    def freeze_frame(self, duration_s: float = 4.0) -> None:
-        self._freeze_until_monotonic = max(self._freeze_until_monotonic, time.monotonic() + max(0.0, float(duration_s)))
+    def _record_peak_sample(self, peak: float) -> None:
+        now = time.monotonic()
+        peak_clamped = float(np.clip(peak, 0.0, 1.0))
+        self._peak_history.append((now, peak_clamped))
+        cutoff = now - float(self._peak_avg_window_s)
+        while self._peak_history and self._peak_history[0][0] < cutoff:
+            self._peak_history.popleft()
+
+    def _get_recent_peak_average(self) -> float:
+        now = time.monotonic()
+        cutoff = now - float(self._peak_avg_window_s)
+        while self._peak_history and self._peak_history[0][0] < cutoff:
+            self._peak_history.popleft()
+        if not self._peak_history:
+            return float(np.clip(self._latest_peak, 0.0, 1.0))
+        return float(np.mean([peak for _, peak in self._peak_history]))
 
     def show_reference_line(self, key: str, value: float, label: str, color: str = '#FF66AA', duration_s: float = 15.0, dashed: bool = False) -> None:
         """Show or refresh a temporary symmetric +/- amplitude guide that fades out."""
@@ -2078,7 +2093,7 @@ class WaveformLiveCanvas(pg.PlotWidget):
         fill thresholds can be compared directly against on-screen waveform height.
         """
         ratio_clamped = float(np.clip(ratio, 0.0, 1.0))
-        visible_peak = float(np.clip(self._latest_peak, 0.0, 1.0))
+        visible_peak = self._get_recent_peak_average()
         amp = float(np.clip(ratio_clamped * visible_peak, 0.0, 1.0))
         now = time.monotonic()
 
@@ -2182,8 +2197,6 @@ class WaveformLiveCanvas(pg.PlotWidget):
             self._reference_fade_timer.stop()
 
     def update_from_audio(self, waveform: Optional[np.ndarray], sample_rate: int) -> None:
-        if time.monotonic() < float(self._freeze_until_monotonic):
-            return
         if waveform is None:
             return
         arr = np.asarray(waveform, dtype=np.float32)
@@ -2195,6 +2208,7 @@ class WaveformLiveCanvas(pg.PlotWidget):
         if peak_abs > 1.0:
             arr = arr / peak_abs
         self._latest_peak = float(np.max(np.abs(arr))) if arr.size > 0 else 0.0
+        self._record_peak_sample(self._latest_peak)
 
         x_ms = (np.arange(arr.size, dtype=np.float32) / float(self._sample_rate)) * 1000.0
         x_end = float(x_ms[-1]) if x_ms.size > 0 else 25.0
@@ -3301,6 +3315,7 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
+        self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
         self._teaching_capture = TeachingCapture(get_config_dir())
         self._teaching_capture_enabled: bool = False
         self._teaching_last_metric_log_time: float = 0.0
@@ -6276,6 +6291,7 @@ Like the app?<br>
     def _apply_config_to_ui(self):
         """Apply loaded config values to UI sliders"""
         try:
+            self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
             beats_to_index = {4: 0, 3: 1, 6: 2}
             with self._signals_blocked(
                 self.detection_type_combo,
@@ -6340,7 +6356,7 @@ Like the app?<br>
                 self.stability_threshold_slider.setValue(self.config.beat.stability_threshold)
                 self.tempo_timeout_slider.setValue(self.config.beat.tempo_timeout_ms)
                 self.phase_snap_slider.setValue(self.config.beat.phase_snap_weight)
-                self.mode_combo.setCurrentIndex(self.config.stroke.mode - 1)
+                self.mode_combo.setCurrentIndex(0)
                 self.stroke_range_slider.setLow(self.config.stroke.stroke_min)
                 self.stroke_range_slider.setHigh(self.config.stroke.stroke_max)
                 self.config.stroke.min_interval_ms = 150
@@ -6411,7 +6427,7 @@ Like the app?<br>
             self._on_freq_band_change()  # Update beat detection band (red)
             
             # Apply mode-dependent limits after sliders are set
-            self._on_mode_change(self.config.stroke.mode - 1)  # Apply axis weight limits for this mode
+            self._on_mode_change(0)  # Mode temporarily pinned to circle
             self._on_depth_band_change()  # Update stroke depth band (green)
             self._on_p0_band_change()  # Update P0 TCode band (blue)
             self._on_f0_band_change()  # Update F0 TCode band (cyan)
@@ -7431,12 +7447,12 @@ Like the app?<br>
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(8)
 
-        layout.addWidget(QLabel("Stroke Mode:"))
+        # Temporary pin: stroke mode selector hidden during main development.
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["1: Circle", "2: Spiral", "3: Teardrop", "4: User (Flux/Peak)"])
+        self.mode_combo.addItems(["1: Circle"])
         self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
-        self.mode_combo.setMinimumWidth(200)
-        layout.addWidget(self.mode_combo)
+        self.mode_combo.setCurrentIndex(0)
+        self.mode_combo.hide()
 
         def _add_combo_spinbox(title: str, value: float, min_val: float, max_val: float, step: float, handler):
             layout.addWidget(QLabel(f"{title}:"))
@@ -7528,8 +7544,6 @@ Like the app?<br>
             self._fill_gate_percent_to_scale(float(pct)),
         )
         self._preview_fill_requirement_ghosts()
-        if hasattr(self, 'waveform_canvas') and hasattr(self.waveform_canvas, 'freeze_frame'):
-            self.waveform_canvas.freeze_frame(4.0)
 
     def _capture_current_settings(self) -> dict:
         """Capture all current UI settings for revert functionality"""
@@ -7578,7 +7592,7 @@ Like the app?<br>
             'metric_response_speed': getattr(self.config.auto_adjust, 'metric_response_speed', 1.0),
 
             # Stroke Settings Tab
-            'stroke_mode': self.mode_combo.currentIndex(),
+            'stroke_mode': 0,
             'stroke_min': self.stroke_range_slider.low(),
             'stroke_max': self.stroke_range_slider.high(),
             'min_interval_ms': 150,
@@ -7626,7 +7640,6 @@ Like the app?<br>
         
         # Restore all settings from _revert_settings (same logic as _load_freq_preset)
         preset_data = self._revert_settings
-        from config import StrokeMode
         
         # Beat Detection Tab
         self.freq_range_slider.setLow(preset_data['freq_low'])
@@ -7702,8 +7715,8 @@ Like the app?<br>
             self._on_metric_response_speed_change(preset_data['metric_response_speed'])
         
         # Stroke Settings Tab
-        self.mode_combo.setCurrentIndex(preset_data['stroke_mode'])
-        self._on_mode_change(preset_data['stroke_mode'])
+        self.mode_combo.setCurrentIndex(0)
+        self._on_mode_change(0)
         self.stroke_range_slider.setLow(preset_data['stroke_min'])
         self.stroke_range_slider.setHigh(preset_data['stroke_max'])
         self.config.stroke.min_interval_ms = 150
@@ -7759,7 +7772,7 @@ Like the app?<br>
         self.freq_weight_slider.setValue(preset_data['freq_weight'])
         
         # Sync config
-        self.config.stroke.mode = StrokeMode(self.mode_combo.currentIndex() + 1)
+        self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
         
         # Deactivate all preset buttons
         for btn in self.preset_buttons:
@@ -8925,16 +8938,8 @@ Like the app?<br>
         return scroll_area
 
     def _update_axis_weight_tooltips(self):
-        """Update axis weight slider tooltips based on current stroke mode"""
-        mode = getattr(self.config.stroke, 'mode', None)
-        if mode and hasattr(mode, 'value'):
-            mode_val = mode.value
-        else:
-            mode_val = 1
-        if mode_val <= 3:
-            tip = "Modes 1-3: Scales axis amplitude (0=off, 1=normal, max 1.25)"
-        else:
-            tip = "Mode 4 (User): Controls flux/peak response (0=flux, 1=balanced, 2=peak)"
+        """Update axis weight slider tooltips (mode temporarily pinned to circle)."""
+        tip = "Circle mode only (temporary): scales axis amplitude (0=off, 1=normal, max 1.25)."
         self.alpha_weight_slider.setToolTip(tip)
         self.beta_weight_slider.setToolTip(tip)
     
@@ -9467,29 +9472,21 @@ Like the app?<br>
         self.config.beat.detection_type = BeatDetectionType(index + 1)
     
     def _on_mode_change(self, index: int):
-        """Change stroke mode and adjust axis weight slider limits"""
-        self.config.stroke.mode = StrokeMode(index + 1)
-        
-        # Modes 1-3: limit axis weights to 1.25 max
-        # Mode 4 (USER): keep full 0-2 range for peak/flux balance control
-        if index < 3:  # Modes 1, 2, 3 (Circle, Spiral, Teardrop)
-            new_max = 1.25
-            # Clamp current values if they exceed new max
-            if self.alpha_weight_slider.value() > new_max:
-                self.alpha_weight_slider.setValue(new_max)
-            if self.beta_weight_slider.value() > new_max:
-                self.beta_weight_slider.setValue(new_max)
-            # Update slider max (need to update the internal slider)
-            self.alpha_weight_slider.slider.setMaximum(int(new_max * self.alpha_weight_slider.multiplier))
-            self.beta_weight_slider.slider.setMaximum(int(new_max * self.beta_weight_slider.multiplier))
-            self.alpha_weight_slider.max_val = new_max
-            self.beta_weight_slider.max_val = new_max
-        else:  # Mode 4 (USER)
-            new_max = 2.0
-            self.alpha_weight_slider.slider.setMaximum(int(new_max * self.alpha_weight_slider.multiplier))
-            self.beta_weight_slider.slider.setMaximum(int(new_max * self.beta_weight_slider.multiplier))
-            self.alpha_weight_slider.max_val = new_max
-            self.beta_weight_slider.max_val = new_max
+        """Mode is temporarily pinned to Circle and selector is hidden."""
+        self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
+        if hasattr(self, 'mode_combo') and self.mode_combo.currentIndex() != 0:
+            with self._signals_blocked(self.mode_combo):
+                self.mode_combo.setCurrentIndex(0)
+
+        new_max = 1.25
+        if self.alpha_weight_slider.value() > new_max:
+            self.alpha_weight_slider.setValue(new_max)
+        if self.beta_weight_slider.value() > new_max:
+            self.beta_weight_slider.setValue(new_max)
+        self.alpha_weight_slider.slider.setMaximum(int(new_max * self.alpha_weight_slider.multiplier))
+        self.beta_weight_slider.slider.setMaximum(int(new_max * self.beta_weight_slider.multiplier))
+        self.alpha_weight_slider.max_val = new_max
+        self.beta_weight_slider.max_val = new_max
 
         # Update axis weight tooltips for the current mode
         self._update_axis_weight_tooltips()
