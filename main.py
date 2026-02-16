@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QCheckBox,
     QSpinBox, QDoubleSpinBox, QLineEdit, QTabWidget, QFrame,
     QGridLayout, QMenuBar, QMenu, QMessageBox, QFileDialog,
-    QSplashScreen, QScrollArea, QSplitter
+    QSplashScreen, QScrollArea, QSplitter, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QPixmap
@@ -3722,6 +3722,10 @@ class BREadbeatsWindow(QMainWindow):
             if value == current_skip:
                 action.setCheckable(True)
                 action.setChecked(True)
+
+        fft_diag_action = nerds_menu.addAction("FFT Bin Diagnostics...")
+        assert fft_diag_action is not None
+        fft_diag_action.triggered.connect(self._on_fft_bin_diagnostics)
         
         # Separator
         main_menu.addSeparator()
@@ -5710,6 +5714,59 @@ class BREadbeatsWindow(QMainWindow):
     def _on_menu_spectrum_change(self, index: int):
         """Handle spectrum update rate change from menu"""
         self._on_spectrum_skip_change(index)
+
+    def _on_fft_bin_diagnostics(self):
+        """Show FFT bin resolution details and nearest-bin mapping for a target frequency."""
+        sample_rate = int(getattr(self.config.audio, 'sample_rate', 44100) or 44100)
+        fft_size = int(getattr(self.config.audio, 'fft_size', 1024) or 1024)
+        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+            try:
+                sample_rate = int(getattr(self.audio_engine.config.audio, 'sample_rate', sample_rate) or sample_rate)
+                fft_size = int(getattr(self.audio_engine, 'fft_size', fft_size) or fft_size)
+            except Exception:
+                pass
+
+        fft_size = max(16, fft_size)
+        nyquist = sample_rate / 2.0
+        hz_per_bin = sample_rate / float(fft_size)
+        max_bin = (fft_size // 2)
+
+        target_hz, ok = QInputDialog.getDouble(
+            self,
+            "FFT Bin Diagnostics",
+            "Frequency to inspect (Hz):",
+            1000.0,
+            0.0,
+            nyquist,
+            3,
+        )
+        if not ok:
+            return
+
+        bin_float = target_hz / hz_per_bin if hz_per_bin > 0 else 0.0
+        nearest_bin = int(np.clip(round(bin_float), 0, max_bin))
+        nearest_hz = nearest_bin * hz_per_bin
+        offset_hz = target_hz - nearest_hz
+        bin_offset = bin_float - nearest_bin
+        centered_bin_tol = 0.01
+        centered_hz_tol = centered_bin_tol * hz_per_bin
+        is_centered = abs(bin_offset) <= centered_bin_tol
+
+        QMessageBox.information(
+            self,
+            "FFT Bin Diagnostics",
+            (
+                f"Sample rate: {sample_rate} Hz\n"
+                f"FFT size: {fft_size}\n"
+                f"Nyquist: {nyquist:.3f} Hz\n"
+                f"Resolution: {hz_per_bin:.6f} Hz/bin\n\n"
+                f"Target frequency: {target_hz:.3f} Hz\n"
+                f"Nearest bin: {nearest_bin} (center {nearest_hz:.3f} Hz)\n"
+                f"Offset from bin center: {bin_offset:+.6f} bins\n"
+                f"Offset from bin center: {offset_hz:+.6f} Hz\n"
+                f"Bin-centered (±{centered_bin_tol:.2f} bins, ≈ ±{centered_hz_tol:.6f} Hz): {'yes' if is_centered else 'no'}"
+            ),
+        )
 
     def _on_log_level_change(self, level: str):
         """Set global log level and persist selection."""

@@ -208,7 +208,7 @@ class StrokeMapper:
         self._pending_arc_target: float = 0.0       # phase target for deferred arc fire
         self._pending_arc_is_downbeat: bool = False
         self._arc_anchor_threshold: float = 0.35     # radians (~20°) — close enough to fire
-        self._single_anchor_bottom_phase: float = np.pi
+        self._single_anchor_bottom_phase: float = 0.0
         self._single_anchor_prebottom_offset: float = 0.22
         self._single_anchor_enabled_modes = {StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL}
         self._spiral_direction: int = 1
@@ -309,12 +309,26 @@ class StrokeMapper:
         self._learning_feature_columns: list[str] = []
         self._try_load_learning_model()
 
+        # ---------- Learning-first gate simplification ----------
+        # When enabled, relax selected legacy hard gates because runtime
+        # learning + metronome timing now carries most adaptation.
+        self._learning_relax_phase1_gates: bool = bool(
+            getattr(self.config.beat, 'teaching_relax_phase1_gates', True)
+        )
+        # Ignore traffic-light (metric settledness) for stroke readiness.
+        # Keep metronome confidence as the primary readiness signal.
+        self._ignore_traffic_lights: bool = bool(
+            getattr(self.config.beat, 'teaching_ignore_traffic_lights', True)
+        )
+
         # ---------- Landing / park anchors ----------
         # Display-bottom phase is 0.0 in current alpha/beta orientation.
         self._landing_offset_degrees: float = 7.5
         self._park_radius_min: float = 0.20
-        self._park_radius_max: float = 0.85
-        self._park_radius: float = 0.45
+        self._park_radius_max: float = 0.95
+        self._park_radius: float = 0.80
+        self._park_bottom_phase: float = 0.0
+        self._park_freq_bias: float = 0.0
 
         # ---------- Park / wait target ----------
         self._park_alpha: float = 0.0
@@ -342,7 +356,7 @@ class StrokeMapper:
         span = max(1e-6, self._park_radius_max - self._park_radius_min)
         radius_norm = float(np.clip((radius - self._park_radius_min) / span, 0.0, 1.0))
         self._landing_offset_degrees = 5.0 + (5.0 * radius_norm)
-        bottom_phase = float(self._single_anchor_bottom_phase)
+        bottom_phase = float(self._park_bottom_phase)
         self._park_radius = radius
         self._park_alpha = float(np.sin(bottom_phase) * radius)
         self._park_beta = float(np.cos(bottom_phase) * radius)
@@ -367,11 +381,27 @@ class StrokeMapper:
     def _update_anchor_from_bass_state(self, event: Optional[BeatEvent]) -> float:
         """Drive park/anchor radius from low-bass activity.
 
-        Lower bass -> anchor closer to center. Higher bass -> farther from center,
-        while remaining in the bottom half.
+        Parking prefers ~0.80 on the horizontal axis. Lower bass frequencies
+        nudge it farther out (toward edge), capped at 0.95.
         """
         bass_norm = self._get_anchor_bass_norm(event)
-        target_radius = self._park_radius_min + ((self._park_radius_max - self._park_radius_min) * bass_norm)
+        freq_bias_target = 0.0
+        if event is not None:
+            freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+            if freq > 0.0:
+                low = 70.0
+                high = 220.0
+                freq_bias_target = float(np.clip((high - freq) / max(1e-6, high - low), 0.0, 1.0))
+
+        freq_smooth = 0.30 if freq_bias_target >= self._park_freq_bias else 0.10
+        self._park_freq_bias = float(np.clip(
+            self._park_freq_bias + ((freq_bias_target - self._park_freq_bias) * freq_smooth),
+            0.0,
+            1.0,
+        ))
+
+        target_radius = 0.80 + (0.15 * self._park_freq_bias) + (0.02 * bass_norm)
+        target_radius = float(np.clip(target_radius, 0.75, 0.95))
         smooth = 0.28 if target_radius >= self._park_radius else 0.12
         radius = self._park_radius + ((target_radius - self._park_radius) * smooth)
         self._update_park_anchor_from_radius(radius)
@@ -521,6 +551,28 @@ class StrokeMapper:
             base = float(self._single_anchor_bottom_phase)
             return (base - offset) if direction >= 0 else (base + offset)
         return fallback_phase
+
+    def _get_arc_launch_phase(self, mode: StrokeMode) -> float:
+        current_radius = float(np.hypot(self.state.alpha, self.state.beta))
+        if current_radius > 0.05:
+            fallback_phase = float(np.arctan2(self.state.alpha, self.state.beta))
+            if fallback_phase < 0:
+                fallback_phase += 2 * np.pi
+        else:
+            fallback_phase = self._get_park_phase()
+
+        parked = (
+            abs(self.state.alpha - self._park_alpha) < 0.02
+            and abs(self.state.beta - self._park_beta) < 0.02
+        )
+        recent_beats_active = (
+            self._last_any_beat_time > 0
+            and (time.time() - self._last_any_beat_time) <= 0.9
+        )
+        if parked or self.state.creep_reset_active or not recent_beats_active:
+            return self._get_park_phase()
+
+        return self._get_anchor_phase_for_mode(mode, fallback_phase)
 
     def _get_adaptive_beat_divisor(self, event: BeatEvent) -> int:
         """Return beats-per-stroke divisor from tempo.
@@ -898,6 +950,22 @@ class StrokeMapper:
         
         metro_green = acf_conf >= 0.25 and metro_bpm > 0
         metro_yellow = acf_conf >= 0.05 and metro_bpm > 0
+
+        if self._ignore_traffic_lights:
+            conditions_met = metro_yellow
+            self._prev_had_any_light = metro_yellow or metro_green
+            if conditions_met:
+                self._stroke_ready = True
+                self._stroke_ready_lost_time = 0.0
+            else:
+                if self._stroke_ready:
+                    if self._stroke_ready_lost_time == 0.0:
+                        self._stroke_ready_lost_time = now
+                    elapsed_ms = (now - self._stroke_ready_lost_time) * 1000.0
+                    if elapsed_ms >= self._stroke_grace_ms:
+                        self._stroke_ready = False
+                        self._stroke_ready_lost_time = 0.0
+            return
         
         # Get traffic light state from audio_engine
         traffic_green = False
@@ -1179,6 +1247,8 @@ class StrokeMapper:
 
     def _passes_dual_band_db_gate(self, event: Optional[BeatEvent] = None) -> bool:
         """Require both sub-bass and high-band activity in dB before firing strokes."""
+        if self._learning_enabled and self._learning_relax_phase1_gates:
+            return True
         cfg = self.config.stroke
         if not bool(getattr(cfg, 'dual_band_db_gate_enabled', False)):
             return True
@@ -1230,6 +1300,8 @@ class StrokeMapper:
 
     def _is_mid_trigger_blocked(self, event: BeatEvent) -> bool:
         """Return True when beat/downbeat trigger lies in blocked mid range."""
+        if self._learning_enabled and self._learning_relax_phase1_gates:
+            return False
         cfg = self.config.stroke
         if not bool(getattr(cfg, 'block_mid_trigger_range_enabled', False)):
             return False
@@ -1740,7 +1812,9 @@ class StrokeMapper:
                 getattr(cfg, 'new_gate_priority_enabled', True)
                 and getattr(cfg, 'overall_amp_fill_gate_enabled', True)
             )
-            if bool(getattr(cfg, 'overall_activity_guard_enabled', True)) and not use_new_gate_priority:
+            if (bool(getattr(cfg, 'overall_activity_guard_enabled', True))
+                    and not use_new_gate_priority
+                    and not (self._learning_enabled and self._learning_relax_phase1_gates)):
                 low_flux = float(getattr(cfg, 'overall_low_flux_threshold', 0.06) or 0.06)
                 low_energy = float(getattr(cfg, 'overall_low_energy_threshold', 0.14) or 0.14)
                 if (event.spectral_flux < low_flux) and (event.peak_energy < low_energy):
@@ -2260,7 +2334,8 @@ class StrokeMapper:
             if random.random() < (0.40 + 0.20 * spiral_drive):
                 self._spiral_direction *= -1
             direction = self._spiral_direction
-            base_angle = self._get_anchor_phase_for_mode(cfg.mode, self.state.creep_angle, direction_override=direction)
+            launch_phase = self._get_arc_launch_phase(cfg.mode)
+            base_angle = self._get_anchor_phase_for_mode(cfg.mode, launch_phase, direction_override=direction)
             spiral_inner = 0.24
             spiral_outer = float(np.clip(max(self._edge_follow_radius * 0.95, 0.78 + 0.18 * spiral_drive), 0.78, 1.0))
             r_start, r_end = (spiral_inner, spiral_outer) if direction > 0 else (spiral_outer, spiral_inner)
@@ -2286,7 +2361,7 @@ class StrokeMapper:
             arc_radius = float(np.clip(max(self._edge_follow_radius, spiral_outer), 0.82, 1.0))
         else:
             # Arc starts from current creep angle; anchored for selected modes.
-            anchor_phase = self._get_anchor_phase_for_mode(cfg.mode, self.state.creep_angle)
+            anchor_phase = self._get_arc_launch_phase(cfg.mode)
             current_phase = anchor_phase / (2 * np.pi)
             if cfg.mode == StrokeMode.SPIRAL:
                 arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
@@ -2433,7 +2508,8 @@ class StrokeMapper:
             else:
                 r_start, r_end = spiral_outer, spiral_inner
 
-            base_angle = self._get_anchor_phase_for_mode(cfg.mode, self.state.creep_angle, direction_override=direction)
+            launch_phase = self._get_arc_launch_phase(cfg.mode)
+            base_angle = self._get_anchor_phase_for_mode(cfg.mode, launch_phase, direction_override=direction)
             turns = 1.0
             spiral_cap = self._radius_cap_from_depth(depth, 1.0)
             for i in range(n_points):
@@ -2456,7 +2532,7 @@ class StrokeMapper:
         else:
             n_points = max(8, int(beat_interval_ms / 10))
             # Arc starts from current creep angle, sweeps exactly 360°.
-            anchor_phase = self._get_anchor_phase_for_mode(cfg.mode, self.state.creep_angle)
+            anchor_phase = self._get_arc_launch_phase(cfg.mode)
             current_phase = anchor_phase / (2 * np.pi)
             if cfg.mode == StrokeMode.SPIRAL:
                 arc_phases = np.linspace(current_phase, current_phase + 1.0, n_points, endpoint=False) % 1.0
@@ -2571,7 +2647,7 @@ class StrokeMapper:
         arc_size = getattr(beat_cfg, 'syncopation_arc_size', 0.5) * self._learned_sync_size_mult
         arc_size = float(np.clip(arc_size, 0.10, 1.0))
         n_points = max(6, int(duration_ms / 12))
-        anchor_phase = self._get_anchor_phase_for_mode(cfg.mode, self.state.creep_angle)
+        anchor_phase = self._get_arc_launch_phase(cfg.mode)
         current_phase = anchor_phase / (2 * np.pi)
         if cfg.mode == StrokeMode.SPIRAL:
             arc_phases = np.linspace(current_phase, current_phase + arc_size, n_points, endpoint=False) % 1.0
@@ -2892,7 +2968,7 @@ class StrokeMapper:
         beta_weight = self.config.beta_weight
 
         n_points = max(8, int(beat_interval_ms / 10))
-        anchor_phase = self._get_anchor_phase_for_mode(cfg.mode, self.state.creep_angle)
+        anchor_phase = self._get_arc_launch_phase(cfg.mode)
         current_phase = anchor_phase / (2 * np.pi)
         arc_phases = self._build_landing_arc_phases(current_phase, n_points, min_turns=1.0)
         alpha_arc = np.zeros(n_points)

@@ -211,11 +211,13 @@ class AudioEngine:
         self.waveform_lock = threading.Lock()
         
         # FFT settings (from config with fallback)
-        self.fft_size = getattr(config.audio, 'fft_size', 1024)
-        self.hop_size = self.fft_size // 4  # Typical hop = 25% of FFT size
+        self.fft_size = int(getattr(config.audio, 'fft_size', 1024) or 1024)
+        self.hop_size = max(1, self.fft_size // 4)  # Typical hop = 25% of FFT size
         
         # Pre-allocated arrays for FFT optimization
-        self._hanning_window: Optional[np.ndarray] = None  # Will be created on first use
+        self._hanning_window: Optional[np.ndarray] = None  # FFT-size window (created on first use)
+        self._fft_input_buffer = np.array([], dtype=np.float32)
+        self._beat_fft_input_buffer = np.array([], dtype=np.float32)
         self._frame_counter = 0  # For spectrum skip optimization
         self._spectrum_skip_frames = getattr(config.audio, 'spectrum_skip_frames', 2)
         
@@ -874,43 +876,59 @@ class AudioEngine:
         self._frame_counter += 1
         update_spectrum_viz = (self._frame_counter % self._spectrum_skip_frames == 0) and self._visualizer_enabled
         
-        # Pre-allocate Hanning window on first use (or if size changed)
-        if self._hanning_window is None or len(self._hanning_window) != len(mono):
-            self._hanning_window = np.hanning(len(mono)).astype(np.float32)
-        
-        # Always compute FFT for frequency estimation (needed for dominant freq detection)
-        windowed = mono * self._hanning_window
-        spectrum = np.abs(np.fft.rfft(windowed))
+        fft_size = max(16, int(self.fft_size))
+        hop_size = max(1, int(self.hop_size))
 
-        # Visualizer normalization: normalize by frame size to keep FFT magnitude scale
-        # consistent with input amplitude (0..1-ish input should stay in a stable range).
-        # Keep a small display gain so existing visual intensity remains close to prior behavior.
-        frame_len = max(1, len(windowed))
-        viz_gain = (2.0 * frame_len) / max(1, len(spectrum))
-        spectrum_viz = (spectrum / frame_len) * viz_gain
+        # Pre-allocate FFT window for configured FFT size
+        if self._hanning_window is None or len(self._hanning_window) != fft_size:
+            self._hanning_window = np.hanning(fft_size).astype(np.float32)
+
+        mono = np.asarray(mono, dtype=np.float32)
+        beat_mono = np.asarray(beat_mono, dtype=np.float32)
+        self._fft_input_buffer = np.concatenate((self._fft_input_buffer, mono))
+        self._beat_fft_input_buffer = np.concatenate((self._beat_fft_input_buffer, beat_mono))
+
+        fft_scale = 1.0 / max(1e-12, (float(np.sum(self._hanning_window)) / 2.0))
+        latest_spectrum: Optional[np.ndarray] = None
+        latest_band_energy = 0.0
+        latest_spectral_flux = 0.0
+
+        while len(self._fft_input_buffer) >= fft_size and len(self._beat_fft_input_buffer) >= fft_size:
+            frame = self._fft_input_buffer[:fft_size]
+            beat_frame = self._beat_fft_input_buffer[:fft_size]
+
+            windowed = frame * self._hanning_window
+            spectrum = np.abs(np.fft.rfft(windowed)) * fft_scale
+            latest_spectrum = spectrum
+
+            if self._butter_sos is not None:
+                latest_band_energy = float(np.sqrt(np.mean(beat_frame ** 2))) * self.config.audio.gain
+                beat_windowed = beat_frame * self._hanning_window
+                beat_spectrum = np.abs(np.fft.rfft(beat_windowed)) * fft_scale
+                beat_spectrum = beat_spectrum * self.config.audio.gain
+                latest_spectral_flux = self._compute_spectral_flux(beat_spectrum)
+            else:
+                band_spectrum = self._filter_frequency_band(spectrum)
+                band_spectrum = band_spectrum * self.config.audio.gain
+                latest_band_energy = float(np.sqrt(np.mean(band_spectrum ** 2))) if len(band_spectrum) > 0 else 0.0
+                latest_spectral_flux = self._compute_spectral_flux(band_spectrum)
+
+            self._fft_input_buffer = self._fft_input_buffer[hop_size:]
+            self._beat_fft_input_buffer = self._beat_fft_input_buffer[hop_size:]
+
+        if latest_spectrum is None:
+            return (in_data, pyaudio.paContinue)
+
+        spectrum = latest_spectrum
+        band_energy = latest_band_energy
+        spectral_flux = latest_spectral_flux
         
         # Store full spectrum for visualization (only on scheduled frames, if enabled)
         if update_spectrum_viz:
             with self.spectrum_lock:
-                self.spectrum_data = spectrum_viz.copy()
+                self.spectrum_data = spectrum.copy()
             with self.waveform_lock:
                 self.waveform_data = mono.astype(np.float32, copy=True)
-        
-        # For beat detection: use Butterworth filtered signal if available, else FFT band filter
-        if self._butter_sos is not None:
-            # Use time-domain energy from Butterworth filtered signal
-            band_energy = np.sqrt(np.mean(beat_mono ** 2))
-            band_energy = band_energy * self.config.audio.gain  # Apply audio gain
-            # Still compute spectral flux from filtered signal's spectrum
-            beat_windowed = beat_mono * self._hanning_window
-            beat_spectrum = np.abs(np.fft.rfft(beat_windowed)) * self.config.audio.gain
-            spectral_flux = self._compute_spectral_flux(beat_spectrum)
-        else:
-            # Fallback: FFT-based frequency band filtering (spectrum already computed above)
-            band_spectrum = self._filter_frequency_band(spectrum)
-            band_spectrum = band_spectrum * self.config.audio.gain
-            band_energy = np.sqrt(np.mean(band_spectrum ** 2)) if len(band_spectrum) > 0 else 0
-            spectral_flux = self._compute_spectral_flux(band_spectrum)
 
         raw_rms = np.sqrt(np.mean(mono ** 2))
         
