@@ -167,6 +167,7 @@ class StrokeMapper:
         self._fade_intensity: float = 1.0
         self._last_quiet_time: float = 0.0
         self._consecutive_silent_count: int = 0
+        self._silence_reset_armed: bool = True
 
         # ---------- Creep volume fade ----------
         self._creep_sustained_start: float = 0.0
@@ -1754,11 +1755,26 @@ class StrokeMapper:
         overall_amp = float(np.clip(getattr(event, 'intensity', 0.0) or 0.0, 0.0, 1.0))
         amp_pass = overall_amp >= min_amp
 
+        beat_cfg = self.config.beat
+        quiet_flux_thresh = float(cfg.flux_threshold) * float(cfg.silence_flux_multiplier)
+        quiet_energy_thresh = float(beat_cfg.peak_floor) * float(cfg.silence_energy_multiplier)
+        near_silence_flux_thresh = quiet_flux_thresh * 1.35
+        near_silence_energy_thresh = quiet_energy_thresh * 1.35
+        has_silence_metrics = hasattr(event, 'spectral_flux') and hasattr(event, 'peak_energy')
+        is_near_silence = bool(
+            has_silence_metrics
+            and float(getattr(event, 'spectral_flux', 0.0) or 0.0) < near_silence_flux_thresh
+            and float(getattr(event, 'peak_energy', 0.0) or 0.0) < near_silence_energy_thresh
+        )
+
         fill_required = self._get_overall_amp_fill_required(phase)
+        if is_near_silence:
+            fill_required = max(fill_required, self._get_overall_amp_fill_required_base(phase))
         fill_ratio = self._get_spectrum_fill_ratio(target, phase)
         fill_pass = fill_ratio >= fill_required
-        self._update_auto_fill_required(phase, fill_pass)
-        self._maybe_log_auto_fill_status(phase, fill_ratio, self._get_overall_amp_fill_required(phase), fill_pass)
+        if not is_near_silence:
+            self._update_auto_fill_required(phase, fill_pass)
+        self._maybe_log_auto_fill_status(phase, fill_ratio, fill_required, fill_pass)
 
         return bool(amp_pass and fill_pass), overall_amp, fill_ratio, min_amp, fill_required
 
@@ -2098,14 +2114,16 @@ class StrokeMapper:
                         self._last_quiet_time = now
                     elapsed = now - self._last_quiet_time
                     self._fade_intensity = max(0.0, 1.0 - (elapsed / fade_duration))
-                    if self.audio_engine and elapsed > silence_reset_threshold:
+                    if self.audio_engine and elapsed > silence_reset_threshold and self._silence_reset_armed:
                         self.audio_engine.reset_tempo_tracking()
                         self._locked_anchor = None  # unlock anchor for next song/section
+                        self._silence_reset_armed = False
                 else:
                     self._fade_intensity = 0.0
                     self._was_silent = True
         else:
             self._consecutive_silent_count = 0
+            self._silence_reset_armed = True
             # Detect transition from silence → sound: trigger post-silence volume ramp
             if self._was_silent and self._fade_intensity < 0.5:
                 self._post_silence_ramp_active = True
@@ -2344,7 +2362,8 @@ class StrokeMapper:
                         mode=str(cfg.mode.name if hasattr(cfg.mode, 'name') else cfg.mode),
                         beat_counter=self.state.beat_counter,
                     )
-                    return None
+                    cmd = self._generate_idle_motion(event)
+                    return self._apply_fade(cmd)
 
                 beat_gate_pass, beat_mean, beat_delta, beat_var = self._get_low_band_gate_status(event, is_downbeat=False)
                 fired_bands = set(getattr(event, 'fired_bands', None) or [])
@@ -2452,6 +2471,10 @@ class StrokeMapper:
                 cmd = self._generate_idle_motion(event)
                 return self._apply_fade(cmd)
             return None
+
+        if self._trajectory is not None and self._trajectory.active:
+            cmd = self._generate_idle_motion(event)
+            return self._apply_fade(cmd)
 
         return None
 
