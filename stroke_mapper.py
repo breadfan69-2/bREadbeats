@@ -523,12 +523,13 @@ class StrokeMapper:
         return self._get_park_phase() + np.deg2rad(self._landing_offset_degrees)
 
     def _build_landing_arc_phases(self, current_phase: float, n_points: int, min_turns: float = 1.0) -> np.ndarray:
-        """Build arc phases from current phase to landing phase with at least min_turns travel."""
-        landing_phase = self._get_landing_phase() / (2 * np.pi)
-        turns = float(min_turns)
-        while landing_phase + turns <= current_phase:
-            turns += 1.0
-        return np.linspace(current_phase, landing_phase + turns, n_points, endpoint=False) % 1.0
+        """Build forward phases with deterministic travel from current phase.
+
+        For circle-style motion, geometry should remain a continuous parametric
+        sweep independent of park-anchor targeting.
+        """
+        turns = max(float(min_turns), 1e-6)
+        return np.linspace(current_phase, current_phase + turns, n_points, endpoint=False) % 1.0
 
     def _build_arc_phases_to_target(self, current_phase: float, target_phase: float, n_points: int, min_turns: float = 0.0) -> np.ndarray:
         """Build forward-only arc phases from current phase to explicit target phase."""
@@ -2662,6 +2663,11 @@ class StrokeMapper:
         angle = phase * 2 * np.pi
         radius_cap = max(0.05, min(1.0, radius))
 
+        if mode == StrokeMode.SIMPLE_CIRCLE:
+            alpha = np.sin(angle) * radius_cap
+            beta = np.cos(angle) * radius_cap
+            return float(alpha), float(beta)
+
         if mode == StrokeMode.TEARDROP:
             # Trace full piriform each arc so it descends one side and
             # mirrors back up the other side.
@@ -3033,7 +3039,11 @@ class StrokeMapper:
             arc_radius = max(min_radius, min(1.0, arc_radius))
             if cfg.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.TEARDROP):
                 arc_floor = 0.85 if cfg.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
-                arc_radius = float(np.clip(max(arc_radius, self._edge_follow_radius, arc_floor), arc_floor, 1.0))
+                if cfg.mode == StrokeMode.SIMPLE_CIRCLE:
+                    current_radius = float(np.hypot(self.state.alpha, self.state.beta))
+                    arc_radius = float(np.clip(max(current_radius, self._edge_follow_radius, arc_floor), arc_floor, 1.0))
+                else:
+                    arc_radius = float(np.clip(max(arc_radius, self._edge_follow_radius, arc_floor), arc_floor, 1.0))
             for i, phase in enumerate(arc_phases):
                 alpha_arc[i], beta_arc[i] = self._compute_arc_point(
                     phase=phase,
@@ -3142,6 +3152,8 @@ class StrokeMapper:
         # Arc size: configurable fraction of circle (0.5 = 180°)
         arc_size = getattr(beat_cfg, 'syncopation_arc_size', 0.5) * self._learned_sync_size_mult
         arc_size = float(np.clip(arc_size, 0.10, 1.0))
+        if cfg.mode == StrokeMode.SIMPLE_CIRCLE:
+            arc_size = 1.0
         n_points = max(6, int(duration_ms / 12))
         anchor_phase = self._get_arc_launch_phase(cfg.mode)
         current_phase = anchor_phase / (2 * np.pi)
@@ -3157,7 +3169,11 @@ class StrokeMapper:
         arc_radius = max(min_radius, min(1.0, arc_radius))
         if cfg.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.TEARDROP):
             follow_floor = 0.85 if cfg.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
-            arc_radius = float(np.clip(max(arc_radius, self._edge_follow_radius, follow_floor), follow_floor, 1.0))
+            if cfg.mode == StrokeMode.SIMPLE_CIRCLE:
+                current_radius = float(np.hypot(self.state.alpha, self.state.beta))
+                arc_radius = float(np.clip(max(current_radius, self._edge_follow_radius, follow_floor), follow_floor, 1.0))
+            else:
+                arc_radius = float(np.clip(max(arc_radius, self._edge_follow_radius, follow_floor), follow_floor, 1.0))
         for i, phase in enumerate(arc_phases):
             alpha_arc[i], beta_arc[i] = self._compute_arc_point(
                 phase=phase,
@@ -3467,9 +3483,6 @@ class StrokeMapper:
             follow_floor = 0.85 if cfg.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
             radius = float(np.clip(max(radius, self._edge_follow_radius, follow_floor), follow_floor, 1.0))
 
-        alpha_weight = self.config.alpha_weight
-        beta_weight = self.config.beta_weight
-
         n_points = max(8, int(beat_interval_ms / 10))
         anchor_phase = self._get_arc_launch_phase(cfg.mode)
         current_phase = anchor_phase / (2 * np.pi)
@@ -3478,8 +3491,12 @@ class StrokeMapper:
         beta_arc = np.zeros(n_points)
         for i, phase in enumerate(arc_phases):
             angle = phase * 2 * np.pi
-            alpha_arc[i] = np.sin(angle) * radius * alpha_weight
-            beta_arc[i] = np.cos(angle) * radius * beta_weight
+            if cfg.mode == StrokeMode.SIMPLE_CIRCLE:
+                alpha_arc[i] = np.sin(angle) * radius
+                beta_arc[i] = np.cos(angle) * radius
+            else:
+                alpha_arc[i] = np.sin(angle) * radius * self.config.alpha_weight
+                beta_arc[i] = np.cos(angle) * radius * self.config.beta_weight
 
         # Apply timing shape: thump or landing (tap feel)
         if cfg.thump_enabled:
