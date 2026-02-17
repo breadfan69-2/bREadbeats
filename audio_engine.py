@@ -832,9 +832,23 @@ class AudioEngine:
                     process_id=target_pid,
                     include_children=include_children,
                 )
+                if target_pid is None:
+                    target_reason = "process name not found" if target_source == 'name_not_found' else "missing process target"
+                    log_event(
+                        "WARN",
+                        "AudioEngine",
+                        "App capture target unavailable, falling back to endpoint loopback",
+                        reason=target_reason,
+                    )
+                    self.config.audio.capture_mode = 'endpoint_loopback'
+                    self._start_loopback_capture(device_index)
+                    self.config.audio.is_loopback = True
+                    self._init_butterworth_filter()
+                    return
                 supported, reason = self.probe_app_capture_capability()
                 if not supported:
                     log_event("WARN", "AudioEngine", "App capture unavailable, falling back to endpoint loopback", reason=reason)
+                    self.config.audio.capture_mode = 'endpoint_loopback'
                     self._start_loopback_capture(device_index)
                     self.config.audio.is_loopback = True
                 else:
