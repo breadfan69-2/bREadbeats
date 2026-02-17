@@ -22,6 +22,7 @@ class TestConfigMigration(unittest.TestCase):
         data = {
             # version intentionally omitted to simulate legacy file
             "stroke": {},
+            "audio": {},
             "device_limits": {},
         }
 
@@ -30,6 +31,11 @@ class TestConfigMigration(unittest.TestCase):
 
         self.assertEqual(cfg.version, CURRENT_CONFIG_VERSION)
         self.assertEqual(cfg.stroke.noise_burst_magnitude, 1.0)
+        self.assertEqual(cfg.audio.capture_mode, "endpoint_loopback")
+        self.assertTrue(cfg.audio.is_loopback)
+        self.assertEqual(cfg.audio.app_capture_process_name, "")
+        self.assertIsNone(cfg.audio.app_capture_process_id)
+        self.assertTrue(cfg.audio.app_capture_include_children)
         self.assertTrue(cfg.device_limits.p0_c0_sending_enabled)
         self.assertFalse(cfg.device_limits.dont_show_on_startup)
         self.assertFalse(cfg.device_limits.dry_run)
@@ -39,6 +45,12 @@ class TestConfigMigration(unittest.TestCase):
         data = {
             "version": 0,
             "stroke": {"noise_burst_magnitude": None},
+            "audio": {
+                "capture_mode": None,
+                "app_capture_process_name": None,
+                "app_capture_process_id": -1,
+                "app_capture_include_children": None,
+            },
             "device_limits": {
                 "p0_c0_sending_enabled": None,
                 "dont_show_on_startup": None,
@@ -51,6 +63,11 @@ class TestConfigMigration(unittest.TestCase):
 
         self.assertEqual(cfg.version, CURRENT_CONFIG_VERSION)
         self.assertEqual(cfg.stroke.noise_burst_magnitude, 1.0)
+        self.assertEqual(cfg.audio.capture_mode, "endpoint_loopback")
+        self.assertTrue(cfg.audio.is_loopback)
+        self.assertEqual(cfg.audio.app_capture_process_name, "")
+        self.assertIsNone(cfg.audio.app_capture_process_id)
+        self.assertTrue(cfg.audio.app_capture_include_children)
         self.assertTrue(cfg.device_limits.p0_c0_sending_enabled)
         self.assertFalse(cfg.device_limits.dont_show_on_startup)
         self.assertFalse(cfg.device_limits.prompted)
