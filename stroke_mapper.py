@@ -552,7 +552,11 @@ class StrokeMapper:
             current_phase += 2 * np.pi
         current_phase /= (2 * np.pi)
 
-        landing_phase = self._get_landing_phase()
+        mode = self.config.stroke.mode
+        if mode == StrokeMode.SIMPLE_CIRCLE:
+            landing_phase = self._get_park_phase()
+        else:
+            landing_phase = self._get_landing_phase()
         target_phase = landing_phase / (2 * np.pi)
         arc_phases = self._build_arc_phases_to_target(current_phase, target_phase, n_points, min_turns=0.0)
 
@@ -566,13 +570,24 @@ class StrokeMapper:
         beta_weight = self.config.beta_weight
         for i, phase in enumerate(arc_phases):
             t = i / max(1, n_points - 1)
-            radius = start_radius + ((target_radius - start_radius) * t)
+            if mode == StrokeMode.SIMPLE_CIRCLE:
+                radius = target_radius
+            else:
+                radius = start_radius + ((target_radius - start_radius) * t)
             angle = phase * 2 * np.pi
-            alpha_pts[i] = np.sin(angle) * radius * alpha_weight
-            beta_pts[i] = np.cos(angle) * radius * beta_weight
+            if mode == StrokeMode.SIMPLE_CIRCLE:
+                alpha_pts[i] = np.sin(angle) * radius
+                beta_pts[i] = np.cos(angle) * radius
+            else:
+                alpha_pts[i] = np.sin(angle) * radius * alpha_weight
+                beta_pts[i] = np.cos(angle) * radius * beta_weight
 
-        alpha_pts[-1] = float(np.sin(landing_phase) * target_radius)
-        beta_pts[-1] = float(np.cos(landing_phase) * target_radius)
+        if mode == StrokeMode.SIMPLE_CIRCLE:
+            alpha_pts[-1] = float(np.sin(landing_phase) * target_radius)
+            beta_pts[-1] = float(np.cos(landing_phase) * target_radius)
+        else:
+            alpha_pts[-1] = float(np.sin(landing_phase) * target_radius * alpha_weight)
+            beta_pts[-1] = float(np.cos(landing_phase) * target_radius * beta_weight)
 
         step_durations = self._make_landing_durations(int(max(120, duration_ms)), n_points)
         band_volume = float(self._trajectory.band_volume if self._trajectory is not None else self.get_volume())
