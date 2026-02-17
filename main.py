@@ -4030,7 +4030,7 @@ class BREadbeatsWindow(QMainWindow):
     
     def _on_options_audio_device(self):
         """Show Audio Device selection dialog"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QHBoxLayout
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QHBoxLayout, QLineEdit, QSpinBox
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Audio Device")
@@ -4073,6 +4073,36 @@ class BREadbeatsWindow(QMainWindow):
 
         mode_combo.currentIndexChanged.connect(lambda _idx: _refresh_mode_hint())
         _refresh_mode_hint()
+
+        app_target_row = QHBoxLayout()
+        app_target_row.addWidget(QLabel("Process Name:"))
+        app_name_edit = QLineEdit(str(getattr(self.config.audio, 'app_capture_process_name', '') or ''))
+        app_name_edit.setPlaceholderText("e.g. spotify.exe")
+        app_target_row.addWidget(app_name_edit)
+        layout.addLayout(app_target_row)
+
+        app_pid_row = QHBoxLayout()
+        app_pid_row.addWidget(QLabel("Process ID (optional):"))
+        app_pid_spin = QSpinBox()
+        app_pid_spin.setRange(0, 2_147_483_647)
+        current_pid = getattr(self.config.audio, 'app_capture_process_id', None)
+        app_pid_spin.setValue(int(current_pid) if current_pid else 0)
+        app_pid_row.addWidget(app_pid_spin)
+        layout.addLayout(app_pid_row)
+
+        include_children_btn = QPushButton("Include Child Processes")
+        include_children_btn.setCheckable(True)
+        include_children_btn.setChecked(bool(getattr(self.config.audio, 'app_capture_include_children', True)))
+        layout.addWidget(include_children_btn)
+
+        def _refresh_app_fields_enabled():
+            enabled = mode_combo.currentData() == "app_loopback"
+            app_name_edit.setEnabled(enabled)
+            app_pid_spin.setEnabled(enabled)
+            include_children_btn.setEnabled(enabled)
+
+        mode_combo.currentIndexChanged.connect(lambda _idx: _refresh_app_fields_enabled())
+        _refresh_app_fields_enabled()
         
         layout.addWidget(QLabel("Select Audio Device:"))
         
@@ -4113,6 +4143,9 @@ class BREadbeatsWindow(QMainWindow):
             selected_mode = str(mode_combo.currentData() or "endpoint_loopback")
             self.config.audio.capture_mode = selected_mode
             self.config.audio.is_loopback = selected_mode in {"endpoint_loopback", "app_loopback"}
+            self.config.audio.app_capture_process_name = app_name_edit.text().strip()
+            self.config.audio.app_capture_process_id = int(app_pid_spin.value()) or None
+            self.config.audio.app_capture_include_children = include_children_btn.isChecked()
             # Apply the selected device
             self.device_combo.setCurrentIndex(device_combo.currentIndex())
     

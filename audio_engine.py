@@ -9,6 +9,7 @@ import pyaudiowpatch as pyaudio
 import threading
 import importlib.util
 import sys
+import subprocess
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -147,6 +148,60 @@ class AudioEngine:
         if importlib.util.find_spec('winsdk') is None and importlib.util.find_spec('winrt') is None:
             return False, "winsdk/winrt backend not installed"
         return False, "phase-1 only: backend wiring not implemented yet"
+
+    @staticmethod
+    def _resolve_process_pid_by_name(process_name: str) -> Optional[int]:
+        """Best-effort process-name to PID resolution on Windows."""
+        name = str(process_name or '').strip()
+        if not name:
+            return None
+        if not name.lower().endswith('.exe'):
+            name = f"{name}.exe"
+        try:
+            result = subprocess.run(
+                ['tasklist', '/FO', 'CSV', '/NH', '/FI', f'IMAGENAME eq {name}'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line or 'No tasks are running' in line:
+                    continue
+                if line.startswith('"') and line.count('","') >= 2:
+                    parts = [part.strip().strip('"') for part in line.split('","')]
+                    if len(parts) >= 2:
+                        try:
+                            pid = int(parts[1])
+                            if pid > 0:
+                                return pid
+                        except Exception:
+                            continue
+        except Exception:
+            return None
+        return None
+
+    def _resolve_app_capture_target(self) -> tuple[Optional[int], str]:
+        """Resolve configured app-capture target PID from explicit PID or process name."""
+        configured_pid = getattr(self.config.audio, 'app_capture_process_id', None)
+        try:
+            configured_pid = int(configured_pid) if configured_pid is not None else None
+        except Exception:
+            configured_pid = None
+        if configured_pid and configured_pid > 0:
+            return configured_pid, 'pid'
+
+        process_name = str(getattr(self.config.audio, 'app_capture_process_name', '') or '').strip()
+        if process_name:
+            resolved_pid = self._resolve_process_pid_by_name(process_name)
+            if resolved_pid:
+                self.config.audio.app_capture_process_id = resolved_pid
+                return resolved_pid, 'name'
+            return None, 'name_not_found'
+
+        return None, 'unset'
 
     def reset_tempo_tracking(self) -> None:
         """Public method to reset tempo and downbeat tracking immediately."""
@@ -766,6 +821,17 @@ class AudioEngine:
 
         try:
             if capture_mode == 'app_loopback':
+                target_pid, target_source = self._resolve_app_capture_target()
+                include_children = bool(getattr(self.config.audio, 'app_capture_include_children', True))
+                log_event(
+                    "INFO",
+                    "AudioEngine",
+                    "App capture target",
+                    source=target_source,
+                    process_name=str(getattr(self.config.audio, 'app_capture_process_name', '') or ''),
+                    process_id=target_pid,
+                    include_children=include_children,
+                )
                 supported, reason = self.probe_app_capture_capability()
                 if not supported:
                     log_event("WARN", "AudioEngine", "App capture unavailable, falling back to endpoint loopback", reason=reason)
