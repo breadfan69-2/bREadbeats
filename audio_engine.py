@@ -135,6 +135,12 @@ class BeatEvent:
 
 
 class AudioEngine:
+    def get_capture_backend_status(self) -> dict:
+        return {
+            'backend': str(getattr(self, '_capture_backend_status', 'unknown')),
+            'reason': str(getattr(self, '_capture_backend_reason', '') or ''),
+        }
+
     def _default_app_capture_helper_path(self) -> Path:
         return Path(__file__).parent / 'tools' / 'app_capture_helper_stub.py'
 
@@ -491,6 +497,8 @@ class AudioEngine:
         self._app_capture_process = None
         self._app_capture_frame_count = 0
         self._app_capture_channels = 0
+        self._capture_backend_status = 'idle'
+        self._capture_backend_reason = ''
         
         # Beat detection state
         self.prev_spectrum: Optional[np.ndarray] = None
@@ -1030,6 +1038,8 @@ class AudioEngine:
             
         self._reset_session_stats()
         self.running = True
+        self._capture_backend_status = 'starting'
+        self._capture_backend_reason = ''
         
         # Initialize PyAudio
         self.pyaudio = pyaudio.PyAudio()
@@ -1064,6 +1074,8 @@ class AudioEngine:
                     self.config.audio.capture_mode = 'endpoint_loopback'
                     self._start_loopback_capture(device_index)
                     self.config.audio.is_loopback = True
+                    self._capture_backend_status = 'endpoint-fallback'
+                    self._capture_backend_reason = target_reason
                     self._init_butterworth_filter()
                     return
                 supported, reason = self.probe_app_capture_capability()
@@ -1072,6 +1084,8 @@ class AudioEngine:
                     self.config.audio.capture_mode = 'endpoint_loopback'
                     self._start_loopback_capture(device_index)
                     self.config.audio.is_loopback = True
+                    self._capture_backend_status = 'endpoint-fallback'
+                    self._capture_backend_reason = reason
                 else:
                     helper_supported, helper_stream_enabled, helper_reason = self._probe_external_app_capture_backend_details(target_pid, include_children)
                     if not helper_supported:
@@ -1079,23 +1093,33 @@ class AudioEngine:
                         self.config.audio.capture_mode = 'endpoint_loopback'
                         self._start_loopback_capture(device_index)
                         self.config.audio.is_loopback = True
+                        self._capture_backend_status = 'endpoint-fallback'
+                        self._capture_backend_reason = helper_reason
                     elif helper_stream_enabled:
                         self._start_app_capture_stream(target_pid, include_children)
                         self.config.audio.is_loopback = True
                         self.config.audio.capture_mode = 'app_loopback'
+                        self._capture_backend_status = 'helper-stream'
+                        self._capture_backend_reason = helper_reason
                     else:
                         log_event("WARN", "AudioEngine", "App capture helper probe succeeded but stream bridge is not enabled yet; falling back", reason=helper_reason)
                         self.config.audio.capture_mode = 'endpoint_loopback'
                         self._start_loopback_capture(device_index)
                         self.config.audio.is_loopback = True
+                        self._capture_backend_status = 'endpoint-fallback'
+                        self._capture_backend_reason = helper_reason
             elif capture_mode == 'endpoint_loopback':
                 # WASAPI loopback mode (system audio capture)
                 self._start_loopback_capture(device_index)
                 self.config.audio.is_loopback = True
+                self._capture_backend_status = 'endpoint-loopback'
+                self._capture_backend_reason = ''
             else:
                 # Regular input mode (microphone)
                 self._start_input_capture(device_index)
                 self.config.audio.is_loopback = False
+                self._capture_backend_status = 'input-device'
+                self._capture_backend_reason = ''
             
             # Initialize Butterworth filter now that sample rate is known
             self._init_butterworth_filter()
@@ -1103,6 +1127,8 @@ class AudioEngine:
         except Exception as e:
             log_event("ERROR", "AudioEngine", "Failed to start", error=e)
             self.running = False
+            self._capture_backend_status = 'error'
+            self._capture_backend_reason = str(e)
             if self.pyaudio:
                 self.pyaudio.terminate()
                 self.pyaudio = None
@@ -1193,6 +1219,8 @@ class AudioEngine:
         if self.pyaudio:
             self.pyaudio.terminate()
             self.pyaudio = None
+        self._capture_backend_status = 'stopped'
+        self._capture_backend_reason = ''
         log_event("INFO", "AudioEngine", "Stopped")
     
     def _audio_callback_pyaudio(self, in_data, frame_count, time_info, status):
