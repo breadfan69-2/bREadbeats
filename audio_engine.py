@@ -139,6 +139,7 @@ class AudioEngine:
         return {
             'backend': str(getattr(self, '_capture_backend_status', 'unknown')),
             'reason': str(getattr(self, '_capture_backend_reason', '') or ''),
+            'helper_stderr_tail': list(getattr(self, '_app_capture_stderr_tail', [])),
         }
 
     def _default_app_capture_helper_path(self) -> Path:
@@ -294,6 +295,8 @@ class AudioEngine:
         finally:
             if self.running:
                 log_event("WARN", "AudioEngine", "App capture helper stream ended")
+                self._capture_backend_status = 'endpoint-fallback'
+                self._capture_backend_reason = 'helper stream ended unexpectedly'
 
     def _start_app_capture_stream(self, process_id: int, include_children: bool) -> None:
         helper_path = self._resolve_app_capture_helper_path()
@@ -334,7 +337,13 @@ class AudioEngine:
             args=(process, frame_count, channels),
             daemon=True,
         )
+        self._app_capture_stderr_thread = threading_mod.Thread(
+            target=self._app_capture_stderr_loop,
+            args=(process,),
+            daemon=True,
+        )
         self._app_capture_thread.start()
+        self._app_capture_stderr_thread.start()
         log_event(
             "INFO",
             "AudioEngine",
@@ -346,8 +355,25 @@ class AudioEngine:
             helper=str(helper_path),
         )
 
+    def _app_capture_stderr_loop(self, process: subprocess.Popen) -> None:
+        stderr = process.stderr
+        if stderr is None:
+            return
+        try:
+            while self.running:
+                line = stderr.readline()
+                if not line:
+                    break
+                text = line.decode('utf-8', errors='replace').strip() if isinstance(line, bytes) else str(line).strip()
+                if not text:
+                    continue
+                self._app_capture_stderr_tail.append(text)
+        except Exception:
+            return
+
     def _stop_app_capture_stream(self) -> None:
         thread = getattr(self, '_app_capture_thread', None)
+        stderr_thread = getattr(self, '_app_capture_stderr_thread', None)
         process = getattr(self, '_app_capture_process', None)
 
         if process is not None:
@@ -369,7 +395,14 @@ class AudioEngine:
             except Exception:
                 pass
 
+        if stderr_thread is not None:
+            try:
+                stderr_thread.join(timeout=1.0)
+            except Exception:
+                pass
+
         self._app_capture_thread = None
+        self._app_capture_stderr_thread = None
         self._app_capture_process = None
 
     @staticmethod
@@ -494,9 +527,11 @@ class AudioEngine:
         self.stream = None
         self.running = False
         self._app_capture_thread = None
+        self._app_capture_stderr_thread = None
         self._app_capture_process = None
         self._app_capture_frame_count = 0
         self._app_capture_channels = 0
+        self._app_capture_stderr_tail = deque(maxlen=12)
         self._capture_backend_status = 'idle'
         self._capture_backend_reason = ''
         
