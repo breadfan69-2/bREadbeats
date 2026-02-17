@@ -10,6 +10,7 @@ import threading
 import importlib.util
 import sys
 import subprocess
+import json
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -133,6 +134,15 @@ class BeatEvent:
 
 
 class AudioEngine:
+    def _default_app_capture_helper_path(self) -> Path:
+        return Path(__file__).parent / 'tools' / 'app_capture_helper_stub.py'
+
+    def _resolve_app_capture_helper_path(self) -> Path:
+        configured = str(getattr(self.config.audio, 'app_capture_helper_path', '') or '').strip()
+        if configured:
+            return Path(configured)
+        return self._default_app_capture_helper_path()
+
     @staticmethod
     def probe_app_capture_capability() -> tuple[bool, str]:
         """Report whether per-application loopback capture backend is available."""
@@ -147,7 +157,55 @@ class AudioEngine:
             return False, f"Windows build {build} is below required 20348"
         if importlib.util.find_spec('winsdk') is None and importlib.util.find_spec('winrt') is None:
             return False, "winsdk/winrt backend not installed"
-        return False, "phase-1 only: backend wiring not implemented yet"
+        return False, "app capture backend probe required"
+
+    def _probe_external_app_capture_backend(self, process_id: int, include_children: bool) -> tuple[bool, str]:
+        helper_path = self._resolve_app_capture_helper_path()
+        if not helper_path.exists():
+            return False, f"helper not found: {helper_path}"
+
+        if helper_path.suffix.lower() == '.py':
+            command = [sys.executable, str(helper_path)]
+        else:
+            command = [str(helper_path)]
+
+        command.extend([
+            '--probe',
+            '--pid',
+            str(process_id),
+            '--include-children',
+            '1' if include_children else '0',
+        ])
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=6,
+                check=False,
+            )
+        except Exception as exc:
+            return False, f"helper launch failed: {exc}"
+
+        stdout = (result.stdout or '').strip()
+        stderr = (result.stderr or '').strip()
+        if result.returncode != 0:
+            return False, f"helper returned {result.returncode}: {stderr or stdout or 'no output'}"
+
+        if not stdout:
+            return False, "helper returned no probe payload"
+
+        try:
+            payload = json.loads(stdout)
+        except Exception:
+            return False, f"invalid helper payload: {stdout[:180]}"
+
+        supported = bool(payload.get('supported', False))
+        reason = str(payload.get('reason', '') or '').strip()
+        if not supported:
+            return False, reason or 'helper reports unsupported'
+        return True, reason or 'helper backend available'
 
     @staticmethod
     def _resolve_process_pid_by_name(process_name: str) -> Optional[int]:
@@ -847,13 +905,22 @@ class AudioEngine:
                     return
                 supported, reason = self.probe_app_capture_capability()
                 if not supported:
-                    log_event("WARN", "AudioEngine", "App capture unavailable, falling back to endpoint loopback", reason=reason)
+                    log_event("WARN", "AudioEngine", "App capture prerequisites unmet, falling back to endpoint loopback", reason=reason)
                     self.config.audio.capture_mode = 'endpoint_loopback'
                     self._start_loopback_capture(device_index)
                     self.config.audio.is_loopback = True
                 else:
-                    self._start_loopback_capture(device_index)
-                    self.config.audio.is_loopback = True
+                    helper_supported, helper_reason = self._probe_external_app_capture_backend(target_pid, include_children)
+                    if not helper_supported:
+                        log_event("WARN", "AudioEngine", "App capture helper unavailable, falling back to endpoint loopback", reason=helper_reason)
+                        self.config.audio.capture_mode = 'endpoint_loopback'
+                        self._start_loopback_capture(device_index)
+                        self.config.audio.is_loopback = True
+                    else:
+                        log_event("WARN", "AudioEngine", "App capture helper probe succeeded but stream bridge is not enabled yet; falling back", reason=helper_reason)
+                        self.config.audio.capture_mode = 'endpoint_loopback'
+                        self._start_loopback_capture(device_index)
+                        self.config.audio.is_loopback = True
             elif capture_mode == 'endpoint_loopback':
                 # WASAPI loopback mode (system audio capture)
                 self._start_loopback_capture(device_index)

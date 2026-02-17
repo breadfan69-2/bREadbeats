@@ -36,6 +36,7 @@ class TestConfigMigration(unittest.TestCase):
         self.assertEqual(cfg.audio.app_capture_process_name, "")
         self.assertIsNone(cfg.audio.app_capture_process_id)
         self.assertTrue(cfg.audio.app_capture_include_children)
+        self.assertEqual(cfg.audio.app_capture_helper_path, "")
         self.assertTrue(cfg.device_limits.p0_c0_sending_enabled)
         self.assertFalse(cfg.device_limits.dont_show_on_startup)
         self.assertFalse(cfg.device_limits.dry_run)
@@ -50,6 +51,7 @@ class TestConfigMigration(unittest.TestCase):
                 "app_capture_process_name": None,
                 "app_capture_process_id": -1,
                 "app_capture_include_children": None,
+                "app_capture_helper_path": None,
             },
             "device_limits": {
                 "p0_c0_sending_enabled": None,
@@ -68,6 +70,7 @@ class TestConfigMigration(unittest.TestCase):
         self.assertEqual(cfg.audio.app_capture_process_name, "")
         self.assertIsNone(cfg.audio.app_capture_process_id)
         self.assertTrue(cfg.audio.app_capture_include_children)
+        self.assertEqual(cfg.audio.app_capture_helper_path, "")
         self.assertTrue(cfg.device_limits.p0_c0_sending_enabled)
         self.assertFalse(cfg.device_limits.dont_show_on_startup)
         self.assertFalse(cfg.device_limits.prompted)
@@ -83,6 +86,7 @@ class TestConfigMigration(unittest.TestCase):
                 "app_capture_process_name": "vlc.exe",
                 "app_capture_process_id": 1234,
                 "app_capture_include_children": False,
+                "app_capture_helper_path": "C:/tmp/helper.exe",
             },
             "device_limits": {
                 "p0_c0_sending_enabled": False,
@@ -101,6 +105,7 @@ class TestConfigMigration(unittest.TestCase):
         self.assertEqual(cfg.audio.app_capture_process_name, "vlc.exe")
         self.assertEqual(cfg.audio.app_capture_process_id, 1234)
         self.assertFalse(cfg.audio.app_capture_include_children)
+        self.assertEqual(cfg.audio.app_capture_helper_path, "C:/tmp/helper.exe")
         self.assertTrue(cfg.audio.is_loopback)
         self.assertFalse(cfg.device_limits.p0_c0_sending_enabled)
         self.assertTrue(cfg.device_limits.dont_show_on_startup)
@@ -117,6 +122,7 @@ class TestConfigMigration(unittest.TestCase):
                 "app_capture_process_name": None,
                 "app_capture_process_id": 0,
                 "app_capture_include_children": None,
+                "app_capture_helper_path": "",
             },
         }
 
@@ -128,6 +134,7 @@ class TestConfigMigration(unittest.TestCase):
         self.assertEqual(cfg.audio.app_capture_process_name, "")
         self.assertIsNone(cfg.audio.app_capture_process_id)
         self.assertTrue(cfg.audio.app_capture_include_children)
+        self.assertEqual(cfg.audio.app_capture_helper_path, "")
 
     def test_load_config_auto_saves_bumped_version(self):
         # Set up a temp config file with an old version

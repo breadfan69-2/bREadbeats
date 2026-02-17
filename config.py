@@ -379,6 +379,7 @@ class AudioConfig:
     app_capture_process_name: str = ""
     app_capture_process_id: int | None = None
     app_capture_include_children: bool = True
+    app_capture_helper_path: str = ""
     # FFT optimization settings
     fft_size: int = 1024              # FFT size (512, 1024, 2048) - smaller = faster, less resolution
     spectrum_skip_frames: int = 2     # Skip N frames between spectrum updates (1=no skip, 2=every other)
@@ -485,6 +486,8 @@ def migrate_config(config: Config, loaded_version) -> None:
             config.audio.app_capture_process_id = None
         if getattr(config.audio, 'app_capture_include_children', None) is None:
             config.audio.app_capture_include_children = True
+        if getattr(config.audio, 'app_capture_helper_path', None) is None:
+            config.audio.app_capture_helper_path = ''
 
     if getattr(config, 'report_generation_enabled', True) is None:
         config.report_generation_enabled = True
@@ -554,6 +557,8 @@ def migrate_config(config: Config, loaded_version) -> None:
         app_pid = None
     config.audio.app_capture_process_id = app_pid if app_pid and app_pid > 0 else None
     config.audio.app_capture_include_children = bool(getattr(config.audio, 'app_capture_include_children', True))
+    helper_path = getattr(config.audio, 'app_capture_helper_path', '')
+    config.audio.app_capture_helper_path = str(helper_path or '').strip()
 
     config.version = CURRENT_CONFIG_VERSION
 
