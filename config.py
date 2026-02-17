@@ -149,6 +149,8 @@ class StrokeConfig:
     amplitude_gate_high: float = 0.08  # RMS above this -> FULL_STROKE
     amplitude_gate_low: float = 0.04   # RMS below this -> CREEP_MICRO
     full_stroke_dwell_bias: float = 0.0  # +/- RMS hysteresis bias (0 = disabled)
+    geometry_y_offset: float = 0.50  # Below-center rest Y offset used when intensity is near 0
+    geometry_sink_start_intensity: float = 0.25  # Intensity where sink-to-rest lerp begins
 
     # Stroke timing cadence:
     # - 1 beat/stroke only allowed at very slow tempo (< single_stroke_bpm_cutoff)

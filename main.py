@@ -3974,6 +3974,9 @@ class BREadbeatsWindow(QMainWindow):
         popout_calibration_action = options_menu.addAction("Pop-out Calibration Visualizer")
         assert popout_calibration_action is not None
         popout_calibration_action.triggered.connect(self._on_popout_calibration_visualizer)
+        geometry_rest_action = options_menu.addAction("Geometry Rest State...")
+        assert geometry_rest_action is not None
+        geometry_rest_action.triggered.connect(self._on_options_geometry_rest_state)
 
         developer_controls_menu = options_menu.addMenu("Developer Controls")
         assert developer_controls_menu is not None
@@ -4186,6 +4189,91 @@ class BREadbeatsWindow(QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _on_options_geometry_rest_state(self):
+        """Show Geometry Rest State controls (below-center sink behavior)."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel
+
+        dialog = getattr(self, '_geometry_rest_dialog', None)
+        if dialog is not None:
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._geometry_rest_dialog = None
+                dialog = None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Geometry Rest State")
+        dialog.setMinimumWidth(460)
+        dialog.setMinimumHeight(220)
+        dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def _on_geometry_rest_dialog_destroyed() -> None:
+            self._geometry_rest_dialog = None
+
+        dialog.destroyed.connect(_on_geometry_rest_dialog_destroyed)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        info = QLabel(
+            "Tune below-center rest behavior when intensity drops.\n"
+            "Lower sink start = sink later; higher y-offset = deeper rest point."
+        )
+        info.setStyleSheet("color: #bbb; font-size: 11px;")
+        layout.addWidget(info)
+
+        y_offset_slider = SliderWithLabel(
+            "Rest Y Offset",
+            0.00,
+            1.00,
+            float(getattr(self.config.stroke, 'geometry_y_offset', 0.50) or 0.50),
+            2,
+        )
+
+        sink_start_slider = SliderWithLabel(
+            "Sink Start Intensity",
+            0.01,
+            1.00,
+            float(getattr(self.config.stroke, 'geometry_sink_start_intensity', 0.25) or 0.25),
+            2,
+        )
+
+        def _apply_geometry_rest_from_sliders() -> None:
+            self.config.stroke.geometry_y_offset = float(y_offset_slider.value())
+            self.config.stroke.geometry_sink_start_intensity = float(sink_start_slider.value())
+            self._apply_geometry_rest_to_mapper()
+
+        y_offset_slider.valueChanged.connect(lambda _v: _apply_geometry_rest_from_sliders())
+        sink_start_slider.valueChanged.connect(lambda _v: _apply_geometry_rest_from_sliders())
+
+        layout.addWidget(y_offset_slider)
+        layout.addWidget(sink_start_slider)
+
+        dialog.finished.connect(lambda _r: save_config(self.config))
+
+        self._geometry_rest_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _apply_geometry_rest_to_mapper(self) -> None:
+        if not self.stroke_mapper:
+            return
+        y_offset = float(getattr(self.config.stroke, 'geometry_y_offset', 0.50) or 0.50)
+        sink_start = float(getattr(self.config.stroke, 'geometry_sink_start_intensity', 0.25) or 0.25)
+        if hasattr(self.stroke_mapper, 'configure_geometry_rest_state'):
+            self.stroke_mapper.configure_geometry_rest_state(
+                y_offset=y_offset,
+                sink_start_intensity=sink_start,
+            )
 
     def _on_options_auto_fill_adaptation(self):
         """Show Developer Controls popout for adaptive amp-fill gate tuning."""
@@ -9695,6 +9783,7 @@ Like the app?<br>
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
             self.stroke_mapper._micro_effects_enabled = True
+            self._apply_geometry_rest_to_mapper()
             # Warmup gate: allow audio analysis to settle and beat pickup before motion
             self._play_warmup_active = True
             self._play_warmup_started_at = time.time()
@@ -9761,6 +9850,7 @@ Like the app?<br>
 
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
         self.stroke_mapper._micro_effects_enabled = True
+        self._apply_geometry_rest_to_mapper()
 
         # Network engine is already started on program launch via _auto_connect_tcp
         # Only create if somehow missing

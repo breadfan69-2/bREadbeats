@@ -23,6 +23,7 @@ from config import Config, StrokeMode
 from audio_engine import BeatEvent
 from network_engine import TCodeCommand
 from logging_utils import log_event
+from geometry_utils import GeometryUtils
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +109,10 @@ class StrokeMapper:
         self.send_callback = send_callback
         self.get_volume = get_volume if get_volume is not None else (lambda: 1.0)
         self.audio_engine = audio_engine
+        self._geometry = GeometryUtils(
+            y_offset=float(getattr(self.config.stroke, 'geometry_y_offset', 0.50) or 0.50),
+            sink_start_intensity=float(getattr(self.config.stroke, 'geometry_sink_start_intensity', 0.25) or 0.25),
+        )
 
         # Motion intensity multiplier (0.25-2.0, default 1.0) — GUI slider
         self.motion_intensity: float = 1.0
@@ -424,6 +429,9 @@ class StrokeMapper:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def configure_geometry_rest_state(self, y_offset: float, sink_start_intensity: float) -> None:
+        self._geometry.set_rest_parameters(y_offset=y_offset, sink_start_intensity=sink_start_intensity)
 
     def _vol_floor(self, base_vol: float) -> float:
         """Minimum allowed volume given vol_reduction_limit config."""
@@ -1414,6 +1422,7 @@ class StrokeMapper:
             if synced < 0:
                 synced += 2 * np.pi
             self.state.creep_angle = synced
+            self._geometry.reset(synced / (2 * np.pi))
 
     def _advance_phase(self, event: BeatEvent) -> None:
         """Advance the continuous beat phase based on current BPM."""
@@ -3952,7 +3961,7 @@ class StrokeMapper:
             # Angle sync now happens only on mode transitions and arc completion
             # (via _sync_creep_angle_to_position), not every frame.
             # This prevents the sync from fighting the tempo-based rotation.
-            
+
             bpm = reliable_tempo_bpm
             if bpm <= 0:
                 fallback_bpm = self._last_known_bpm if self._last_known_bpm > 0 else 90.0
@@ -3962,52 +3971,10 @@ class StrokeMapper:
             if bpm <= 0:
                 bpm = 90.0
 
-            beats_per_sec = bpm / 60.0
-            updates_per_sec = 1000.0 / 17.0
-            updates_per_beat = updates_per_sec / beats_per_sec
-            if orbit_replacement_active:
-                # Creep replacement: deterministic idle orbit at fixed radius,
-                # one full rotation per 8 beats (8x slower than beat arcs).
-                angle_increment = (2 * np.pi) / (updates_per_beat * 8.0)
-            else:
-                angle_increment = (np.pi / 2.0) / updates_per_beat * creep_cfg.speed
-
-                if self._motion_mode == MotionMode.CREEP_MICRO:
-                    # In CREEP_MICRO: one full rotation per measure (4 beats -> 2pi)
-                    # Override speed: exactly 2pi per measure
-                    angle_increment = (2 * np.pi) / (updates_per_beat * self.config.beat.beats_per_measure)
-
-            # Quiet-mode soft brake: keep moving, but cap spin speed when
-            # signal is near silence so we don't whip around at high inferred BPM.
-            near_quiet_flux = max(1e-6, quiet_flux_thresh * 2.1)
-            near_quiet_energy = max(1e-6, quiet_energy_thresh * 2.1)
-            quiet_ratio = float(np.clip(max(event_flux / near_quiet_flux, event_energy / near_quiet_energy), 0.0, 1.0))
-            max_quiet_increment = 0.014
-            min_quiet_increment = 0.003
-            quiet_cap = min_quiet_increment + ((max_quiet_increment - min_quiet_increment) * quiet_ratio)
-            if not recent_beats_active:
-                truly_quiet = (event_flux < quiet_flux_thresh * 1.3) and (event_energy < quiet_energy_thresh * 1.3)
-                if truly_quiet:
-                    quiet_cap = min(quiet_cap, 0.005)
-                else:
-                    quiet_cap = min(quiet_cap, 0.008)
-            if suppress_idle_motion:
-                quiet_cap = min(quiet_cap, 0.003)
-            if angle_increment > quiet_cap:
-                angle_increment = quiet_cap
-
-            # Keep creep rotation continuous even during creep_reset so we never
-            # visually stall at top/edge points.
-            self.state.creep_angle += angle_increment
-            if self.state.creep_angle >= 2 * np.pi:
-                self.state.creep_angle -= 2 * np.pi
-
             if orbit_replacement_active:
                 orbit_bottom_radius = 0.87
                 orbit_top_radius = 0.60
-                orbit_phase_cos = float(np.cos(self.state.creep_angle))
-                upper_mix = float(np.clip((1.0 - orbit_phase_cos) * 0.5, 0.0, 1.0))
-                creep_radius = float(orbit_bottom_radius - ((orbit_bottom_radius - orbit_top_radius) * upper_mix))
+                creep_radius = float((orbit_bottom_radius + orbit_top_radius) * 0.5)
             elif self._motion_mode == MotionMode.CREEP_MICRO:
                 # CREEP_MICRO: smaller radius, drift toward center not edges
                 creep_radius = 0.20
@@ -4024,8 +3991,16 @@ class StrokeMapper:
                 park_radius = float(np.hypot(self._park_alpha, self._park_beta))
                 creep_radius = float(creep_radius + ((park_radius - creep_radius) * creep_reset_blend))
 
-            target_alpha = np.sin(self.state.creep_angle) * creep_radius
-            target_beta = np.cos(self.state.creep_angle) * creep_radius
+            idle_dt_s = float(np.clip(time_since_last / 1000.0, 0.0, 0.250))
+            target_alpha, target_beta = self._geometry.update(
+                bpm=bpm,
+                dt=idle_dt_s,
+                intensity=creep_radius,
+            )
+            synced = float(np.arctan2(target_alpha, target_beta))
+            if synced < 0:
+                synced += 2 * np.pi
+            self.state.creep_angle = synced
 
             # Smooth blend from arc endpoint to creep orbit
             if self._post_arc_blend < 1.0:

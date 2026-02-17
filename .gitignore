@@ -27,6 +27,7 @@ Thumbs.db
 *instruction*.txt
 *note*.txt
 *notes*.txt
+LOCAL_CONTEXT_BRIDGE_*.md
 *research*.txt
 *session*.txt
 GATE_MAP.md
@@ -41,6 +42,7 @@ session-summary*.md
 session_summary_*.md
 session_handoff*.md
 session-handoff*.md
+NEXT_AGENT_BUNDLED_LEARNING_HANDOFF.md
 *agent*.md
 *proposal*.md
 *proposal*.txt
