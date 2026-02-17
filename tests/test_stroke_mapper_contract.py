@@ -159,6 +159,27 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
         self.assertLessEqual(abs(cmd.beta - (-0.70)), epsilon)
 
+    def test_terminal_pose_lands_at_park_for_syncopation_with_high_treble_and_max_bloom(self):
+        mapper = StrokeMapper(Config())
+        mapper._high_energy = 1.0
+        mapper._mid_energy = 1.0
+
+        mapper._intelligence.build_decision = lambda event, dt: BeatDecision(
+            trigger_kind="syncopation",
+            interval_beats=1,
+            radius_bloom=0.95,
+            silence_active=False,
+            journey_completion=1.0,
+        )
+
+        cmd = mapper.process_beat(self._event(is_syncopated=True, raw_rms=0.2, peak_energy=0.8))
+
+        self.assertIsNotNone(cmd)
+        assert cmd is not None
+        epsilon = 1e-6
+        self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
+        self.assertLessEqual(abs(cmd.beta - (-0.70)), epsilon)
+
 
 if __name__ == "__main__":
     unittest.main()
