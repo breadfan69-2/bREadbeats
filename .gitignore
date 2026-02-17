@@ -63,3 +63,14 @@ breadbeats_reports_*.zip
 config.json
 config.json.bak
 learned_profile_slots.json
+
+# Local reference/scratch docs
+AGENT_REFERENCE.md
+claude.txt
+instructionsgpt.txt
+next_agent_pipeline_local.md
+REPAIR_PROPOSAL.md
+UI_LABEL_AUDIT_*.md
+FUNSCRIPT_*_PLAN*.md
+FUNSCRIPT_*_FINDINGS_*.md
+session_snapshot_*.md
