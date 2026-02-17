@@ -4030,7 +4030,7 @@ class BREadbeatsWindow(QMainWindow):
     
     def _on_options_audio_device(self):
         """Show Audio Device selection dialog"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QHBoxLayout, QLineEdit, QSpinBox
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QComboBox, QPushButton, QHBoxLayout, QLineEdit, QSpinBox, QMessageBox
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Audio Device")
@@ -4081,6 +4081,36 @@ class BREadbeatsWindow(QMainWindow):
         app_target_row.addWidget(app_name_edit)
         layout.addLayout(app_target_row)
 
+        app_picker_row = QHBoxLayout()
+        app_picker_row.addWidget(QLabel("Running Apps:"))
+        app_picker_combo = QComboBox()
+        app_picker_combo.setMinimumWidth(230)
+        app_picker_row.addWidget(app_picker_combo)
+        app_refresh_btn = QPushButton("Refresh")
+        app_picker_row.addWidget(app_refresh_btn)
+        layout.addLayout(app_picker_row)
+
+        def _populate_app_picker():
+            current_text = app_picker_combo.currentText().strip()
+            selected_name = app_name_edit.text().strip()
+            app_picker_combo.clear()
+            app_picker_combo.addItem("(select running process)")
+            for proc_name in self._list_running_process_names():
+                app_picker_combo.addItem(proc_name)
+            preferred = selected_name or current_text
+            if preferred:
+                idx = app_picker_combo.findText(preferred)
+                if idx >= 0:
+                    app_picker_combo.setCurrentIndex(idx)
+
+        app_refresh_btn.clicked.connect(lambda _checked=False: _populate_app_picker())
+        app_picker_combo.currentIndexChanged.connect(
+            lambda _idx: app_name_edit.setText(app_picker_combo.currentText().strip())
+            if app_picker_combo.currentIndex() > 0
+            else None
+        )
+        _populate_app_picker()
+
         app_pid_row = QHBoxLayout()
         app_pid_row.addWidget(QLabel("Process ID (optional):"))
         app_pid_spin = QSpinBox()
@@ -4098,6 +4128,8 @@ class BREadbeatsWindow(QMainWindow):
         def _refresh_app_fields_enabled():
             enabled = mode_combo.currentData() == "app_loopback"
             app_name_edit.setEnabled(enabled)
+            app_picker_combo.setEnabled(enabled)
+            app_refresh_btn.setEnabled(enabled)
             app_pid_spin.setEnabled(enabled)
             include_children_btn.setEnabled(enabled)
 
@@ -4131,7 +4163,17 @@ class BREadbeatsWindow(QMainWindow):
         # OK/Cancel buttons
         btn_row = QHBoxLayout()
         ok_btn = QPushButton("OK")
-        ok_btn.clicked.connect(dialog.accept)
+
+        def _on_accept_dialog():
+            selected_mode = str(mode_combo.currentData() or "endpoint_loopback")
+            entered_name = app_name_edit.text().strip()
+            entered_pid = int(app_pid_spin.value())
+            if selected_mode == "app_loopback" and not entered_name and entered_pid <= 0:
+                QMessageBox.warning(dialog, "Application Capture", "Set a Process Name or Process ID for Application Capture.")
+                return
+            dialog.accept()
+
+        ok_btn.clicked.connect(_on_accept_dialog)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(dialog.reject)
         btn_row.addStretch()
@@ -4148,6 +4190,36 @@ class BREadbeatsWindow(QMainWindow):
             self.config.audio.app_capture_include_children = include_children_btn.isChecked()
             # Apply the selected device
             self.device_combo.setCurrentIndex(device_combo.currentIndex())
+
+    def _list_running_process_names(self) -> list[str]:
+        """Return sorted running process image names (best effort, Windows)."""
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ['tasklist', '/FO', 'CSV', '/NH'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return []
+            names: set[str] = set()
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line or not line.startswith('"'):
+                    continue
+                if '","' not in line:
+                    continue
+                parts = [part.strip().strip('"') for part in line.split('","')]
+                if not parts:
+                    continue
+                name = parts[0].strip()
+                if name and name.lower().endswith('.exe'):
+                    names.add(name)
+            return sorted(names)
+        except Exception:
+            return []
     
     def _dialog_set_device_mic(self, combo: QComboBox):
         """Set mic device in dialog combo"""
@@ -9611,6 +9683,7 @@ Like the app?<br>
 
     def _start_engines(self):
         """Initialize and start all engines"""
+        requested_mode = str(getattr(self.config.audio, 'capture_mode', '') or '').strip().lower()
         # Set selected audio device and loopback mode
         combo_idx = self.device_combo.currentIndex()
         if combo_idx >= 0 and combo_idx in self.audio_device_map:
@@ -9628,6 +9701,15 @@ Like the app?<br>
         self.audio_engine = AudioEngine(self.config, self._audio_callback)
         self.audio_engine.start()
         self.audio_engine.set_metric_response_speed(getattr(self.config.auto_adjust, 'metric_response_speed', 1.0))
+
+        effective_mode = str(getattr(self.config.audio, 'capture_mode', '') or '').strip().lower()
+        if requested_mode == 'app_loopback' and effective_mode != 'app_loopback':
+            reason = "Application Capture is unavailable on this runtime; switched to System Audio endpoint loopback."
+            print(f"[Main] Capture mode fallback: requested={requested_mode}, effective={effective_mode}")
+            try:
+                QMessageBox.information(self, "Application Capture Fallback", reason)
+            except Exception:
+                pass
 
         # Sync metric checkbox states to the new audio engine
         # (checkboxes may already be checked from previous start)
