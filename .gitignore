@@ -65,3 +65,14 @@ breadbeats_reports_*.zip
 config.json
 config.json.bak
 learned_profile_slots.json
+
+# Local debug captures / transient logs
+*.out.log
+*.err.log
+silence_live*.log
+silence_live*.out.log
+silence_live*.err.log
+silence_trace.log
+silence_jump_debug*.log
+live_console_slew_check.log
+live_jump_watch*.log

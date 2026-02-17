@@ -121,6 +121,7 @@ class StrokeConfig:
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
     # Silence detection thresholds (fade-out when truly silent)
+    silence_threshold: float = 0.04      # Overall amplitude threshold for silence deadzone gate
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
@@ -412,6 +413,7 @@ class Config:
     auto_adjust: AutoAdjustConfig = field(default_factory=AutoAdjustConfig)
     
     # Global
+    base_radius: float = 0.30        # Global idle orbit radius (0.05-1.0)
     alpha_weight: float = 1.0         # Per-axis mix for alpha
     beta_weight: float = 1.0          # Per-axis mix for beta
     volume: float = 1.0               # Output volume (0.0-1.0)

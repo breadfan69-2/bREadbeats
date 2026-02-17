@@ -7,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 from config import Config, StrokeMode
-from stroke_mapper import StrokeMapper, PendingStrokeChange, PlannedTrajectory
+from stroke_mapper import StrokeMapper, PendingStrokeChange, PlannedTrajectory, MotionMode
 
 
 class _StubAudioEngine:
@@ -49,6 +49,24 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         self.assertTrue(mapper._has_recent_beats(now=now + 1.0, window_s=0.1))
         self.assertFalse(mapper._has_recent_beats(now=now + 3.0, window_s=0.1))
+
+    def test_hard_clamp_forces_overall_amplitude_to_zero_below_silence_threshold(self):
+        cfg = Config()
+        cfg.stroke.silence_threshold = 0.04
+        mapper = StrokeMapper(cfg)
+
+        loud_event = SimpleNamespace(peak_energy=0.7, raw_rms=0.3)
+        mapper._update_envelope(loud_event)
+        self.assertGreater(mapper._get_overall_amplitude(loud_event), 0.0)
+
+        near_threshold_event = SimpleNamespace(peak_energy=0.7, raw_rms=0.039)
+        mapper._update_envelope(near_threshold_event)
+        self.assertEqual(mapper._get_overall_amplitude(near_threshold_event), 0.0)
+
+        silent_event = SimpleNamespace(peak_energy=0.7, raw_rms=0.0003)
+        mapper._update_envelope(silent_event)
+        self.assertEqual(mapper._rms_envelope, 0.0)
+        self.assertEqual(mapper._get_overall_amplitude(silent_event), 0.0)
 
     def test_arc_launch_phase_uses_geometry_phase(self):
         mapper = StrokeMapper(Config())
@@ -294,7 +312,151 @@ class TestStrokeMapperContract(unittest.TestCase):
             mode=StrokeMode.SIMPLE_CIRCLE,
         )
 
-        self.assertAlmostEqual(float(np.hypot(alpha, beta)), 0.25, places=6)
+        self.assertAlmostEqual(float(np.hypot(alpha, beta)), 0.40, places=6)
+
+    def test_radius_slew_uses_fast_attack_and_slow_decay(self):
+        mapper = StrokeMapper(Config())
+
+        attack = mapper._slew_radius_toward(0.20, 0.90)
+        decay = mapper._slew_radius_toward(0.90, 0.20)
+
+        self.assertAlmostEqual(attack, 0.40, places=6)
+        self.assertAlmostEqual(decay, 0.87, places=6)
+
+    def test_silence_deadzone_gate_uses_hysteresis(self):
+        mapper = StrokeMapper(Config())
+
+        self.assertTrue(mapper._update_silence_deadzone_gate(0.01))
+        self.assertTrue(mapper._update_silence_deadzone_gate(0.045))
+        self.assertTrue(mapper._update_silence_deadzone_gate(0.055))
+        self.assertTrue(mapper._update_silence_deadzone_gate(0.055))
+        self.assertTrue(mapper._update_silence_deadzone_gate(0.055))
+        self.assertFalse(mapper._update_silence_deadzone_gate(0.055))
+
+    def test_idle_motion_noise_floor_runs_landing_sequence_to_bottom(self):
+        mapper = StrokeMapper(Config())
+        mapper._last_idle_time = 0.0
+        mapper._silence_deadzone_active = False
+        mapper.state.alpha = 0.42
+        mapper.state.beta = -0.35
+
+        event = SimpleNamespace(
+            monotonic_timestamp=time.perf_counter(),
+            intensity=0.0,
+            spectral_flux=0.0,
+            peak_energy=0.0,
+            metronome_bpm=120.0,
+            beat_band='',
+            fired_bands=[],
+            frequency=0.0,
+            is_beat=False,
+            is_downbeat=False,
+        )
+
+        with patch.object(mapper._geometry, 'update', wraps=mapper._geometry.update) as update_mock:
+            cmd = None
+            for _ in range(120):
+                event.monotonic_timestamp = time.perf_counter()
+                cmd = mapper._generate_idle_motion(event, force_update=True)
+
+        self.assertTrue(mapper._silence_deadzone_active)
+        self.assertGreaterEqual(update_mock.call_count, 1)
+        expected_alpha = 0.0
+        expected_beta = float(mapper._silence_park_radius)
+        self.assertLessEqual(abs(mapper.state.alpha - expected_alpha), 0.05)
+        self.assertLessEqual(abs(mapper.state.beta - expected_beta), 0.05)
+        self.assertTrue(mapper._silence_parked_lock)
+        self.assertAlmostEqual(mapper._idle_radius_value, 0.70, places=6)
+        self.assertAlmostEqual(cmd.volume, 0.0, places=6)
+
+    def test_idle_motion_reopens_with_fast_attack_from_park(self):
+        mapper = StrokeMapper(Config())
+        mapper._last_idle_time = 0.0
+        mapper._motion_mode = MotionMode.FULL_STROKE
+        mapper._silence_deadzone_active = True
+        mapper._idle_radius_value = 0.10
+        mapper._idle_radius_target = 0.10
+
+        event = SimpleNamespace(
+            monotonic_timestamp=time.perf_counter(),
+            intensity=0.8,
+            spectral_flux=0.4,
+            peak_energy=0.8,
+            metronome_bpm=120.0,
+            beat_band='low_mid',
+            fired_bands=['low_mid'],
+            frequency=120.0,
+            is_beat=False,
+            is_downbeat=False,
+        )
+
+        captured = {}
+
+        def _capture_update(*, bpm, dt, intensity, beat_detected):
+            captured['intensity'] = intensity
+            return mapper._park_alpha, mapper._park_beta
+
+        with patch.object(mapper._geometry, 'update', side_effect=_capture_update), \
+             patch.object(mapper._geometry, 'get_phase', return_value=mapper._last_geometry_phase):
+            for _ in range(5):
+                mapper._generate_idle_motion(event, force_update=True)
+
+        self.assertFalse(mapper._silence_deadzone_active)
+        self.assertAlmostEqual(captured['intensity'], 0.30, places=6)
+        self.assertAlmostEqual(mapper._idle_radius_value, 0.30, places=6)
+
+    def test_apply_micro_jerk_is_bypassed_for_circular_modes(self):
+        cfg = Config()
+        cfg.stroke.mode = StrokeMode.SIMPLE_CIRCLE
+        mapper = StrokeMapper(cfg)
+        mapper._micro_effects_enabled = True
+        mapper._micro_jerk_alpha = 0.2
+        mapper._micro_jerk_beta = -0.2
+        mapper._last_micro_jerk_time = time.time()
+
+        alpha, beta = mapper._apply_micro_jerk(
+            alpha=0.3,
+            beta=0.4,
+            overall_amplitude=0.9,
+            silence_deadzone_active=False,
+        )
+
+        self.assertAlmostEqual(alpha, 0.3, places=6)
+        self.assertAlmostEqual(beta, 0.4, places=6)
+
+    def test_apply_anti_stop_is_bypassed_at_low_amplitude(self):
+        mapper = StrokeMapper(Config())
+
+        alpha, beta = mapper._apply_anti_stop(
+            alpha=0.8,
+            beta=-0.2,
+            delta=0.001,
+            orbit_replacement_active=False,
+            overall_amplitude=0.01,
+            silence_deadzone_active=False,
+        )
+
+        self.assertAlmostEqual(alpha, 0.8, places=6)
+        self.assertAlmostEqual(beta, -0.2, places=6)
+
+    def test_jump_debug_filters_silence_and_small_delta(self):
+        mapper = StrokeMapper(Config())
+        mapper.state.alpha = 0.0
+        mapper.state.beta = 0.0
+
+        mapper._silence_deadzone_active = True
+        with patch('stroke_mapper.log_event') as mocked_log:
+            mapper._log_jump_debug(source="silence", alpha=0.8, beta=0.8)
+            mocked_log.assert_not_called()
+
+        mapper._silence_deadzone_active = False
+        with patch('stroke_mapper.log_event') as mocked_log:
+            mapper._log_jump_debug(source="small", alpha=0.05, beta=0.00)
+            mocked_log.assert_not_called()
+
+        with patch('stroke_mapper.log_event') as mocked_log:
+            mapper._log_jump_debug(source="large", alpha=0.2, beta=0.0)
+            mocked_log.assert_called_once()
 
 
 if __name__ == "__main__":

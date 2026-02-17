@@ -8381,7 +8381,7 @@ Like the app?<br>
                 self.peak_floor_slider.setValue(new_val)
                 valley = feedback_data.get('valley', 0)
                 margin = feedback_data.get('margin', 0)
-                print(f"[Metric] peak_floor: valley={valley:.4f} ({direction}) → {new_val:.4f}")
+                print(f"[Metric] peak_floor: valley={valley:.4f} ({direction}) -> {new_val:.4f}")
         
         elif metric == 'target_bps' and adjustment != 0:
             # Adjust peak_floor to hit target BPS
@@ -8405,7 +8405,7 @@ Like the app?<br>
                 self.peak_floor_slider.setValue(new_val)
                 actual_bps = feedback_data.get('actual_bps', 0)
                 target_bps = feedback_data.get('target_bps', 0)
-                print(f"[Metric] target_bps: actual={actual_bps:.2f} target={target_bps:.2f} ({direction}) → pf={new_val:.4f}")
+                print(f"[Metric] target_bps: actual={actual_bps:.2f} target={target_bps:.2f} ({direction}) -> pf={new_val:.4f}")
                 # Update the BPM display if we have one
                 # bpm_actual_label now shows metronome BPM (updated in _on_beat)
         
@@ -8419,7 +8419,7 @@ Like the app?<br>
                 self.audio_gain_slider.setValue(new_val)
                 reason = feedback_data.get('reason', '')
                 actual_bps = feedback_data.get('actual_bps', 0)
-                print(f"[Metric] audio_amp: {reason} ({direction}) → {new_val:.4f}")
+                print(f"[Metric] audio_amp: {reason} ({direction}) -> {new_val:.4f}")
         
         elif metric == 'flux_balance' and adjustment != 0:
             # Adjust flux_mult to balance flux ≈ energy bar heights
@@ -8433,7 +8433,7 @@ Like the app?<br>
                 self.flux_mult_slider.setValue(new_val)
                 ratio = feedback_data.get('ratio', 0)
                 reason = feedback_data.get('reason', '')
-                print(f"[Metric] flux_balance: {reason} ({direction}) → fm={new_val:.2f}")
+                print(f"[Metric] flux_balance: {reason} ({direction}) -> fm={new_val:.2f}")
     
     def _on_target_bpm_change(self, value: float):
         """Handle target BPM spinbox change - converts to BPS for engine"""
@@ -10694,7 +10694,7 @@ Like the app?<br>
                                 self._auto_align_last_adjust_time = now
                                 stable_elapsed = now - self._auto_align_stable_since
                                 print(
-                                    f"[Auto-align] Target BPM: {int(current_target)} → {new_target} "
+                                    f"[Auto-align] Target BPM: {int(current_target)} -> {new_target} "
                                     f"(sensed: {sensed_bpm:.1f}, conf: {acf_conf:.2f}, stable for {stable_elapsed:.1f}s, step: {step_bpm})"
                                 )
                 else:

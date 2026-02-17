@@ -38,7 +38,7 @@ class ZScorePeakDetector:
     peaks like normal data).
     
     Used in beat detection to provide an adaptive threshold that automatically
-    adjusts to the current audio level — eliminates the need for manual
+    adjusts to the current audio level - eliminates the need for manual
     peak_floor tuning in many cases.
     """
     __slots__ = ('lag', 'threshold', 'influence', 'buffer', 'filtered',
@@ -87,7 +87,7 @@ class ZScorePeakDetector:
         self.mean = float(np.mean(window))
         self.std = float(np.std(window))
 
-        # Bound memory — keep ~2× lag
+        # Bound memory - keep ~2x lag
         max_keep = self.lag * 2
         if self._buf_len > self.lag * 3:
             self.buffer = self.buffer[-max_keep:]
@@ -127,6 +127,7 @@ class BeatEvent:
     is_syncopated: bool = False   # True if an off-beat "and" onset was detected near this beat
     monotonic_timestamp: float = 0.0  # Monotonic timestamp for drift-safe timing
     beat_features: Optional[dict] = None  # Beat-window features for adaptive runtime learning
+    raw_rms: float = 0.0
 
 
 class AudioEngine:
@@ -333,7 +334,7 @@ class AudioEngine:
         self._prev_energy_for_valley: float = 0.0       # Previous energy for slope detection
         self._energy_was_falling: bool = False           # True when energy was decreasing
         
-        # Metric 3: Audio Amp Feedback (No Beats → raise, Excess Beats → lower)
+        # Metric 3: Audio Amp Feedback (No Beats -> raise, Excess Beats -> lower)
         self._metric_audio_amp_enabled: bool = False
         self._audio_amp_check_interval_ms: float = 2500.0  # Check every ~2.5s (was 1.1s)
         self._audio_amp_escalate_pct: float = 0.02     # 2% of range per check
@@ -341,7 +342,7 @@ class AudioEngine:
         self._audio_amp_hysteresis_count: int = 0       # Consecutive out-of-zone checks (hysteresis)
         self._metric_response_speed: float = float(getattr(config.auto_adjust, 'metric_response_speed', 1.0))
         
-        # Metric 5: Flux Balance (keep flux ≈ energy bars at similar height)
+        # Metric 5: Flux Balance (keep flux ~= energy bars at similar height)
         self._metric_flux_balance_enabled: bool = False
         self._flux_balance_check_interval_ms: float = 1000.0  # Check every 1s (was 500ms)
         self._last_flux_balance_check: float = 0.0
@@ -375,7 +376,7 @@ class AudioEngine:
         # Tracks actual beats per second and adjusts parameters to achieve target rate
         self._target_bps_enabled: bool = False          # User toggle
         self._target_bps: float = 1.5                   # Target beats per second (default 90 BPM)
-        self._target_bps_tolerance: float = 0.2         # ± tolerance (0.2 = accept 1.3-1.7 BPS if target is 1.5)
+        self._target_bps_tolerance: float = 0.2         # +/- tolerance (0.2 = accept 1.3-1.7 BPS if target is 1.5)
         self._bps_window_seconds: float = 4.0           # Rolling window for BPS calculation
         self._bps_beat_times: list[float] = []          # Timestamps of recent beats
         self._bps_adjustment_speed: float = 1.0         # Hardcoded to max (was adjustable via slider)
@@ -1004,6 +1005,18 @@ class AudioEngine:
             self._reset_downbeat_pattern()  # Also reset pattern matching when tempo resets
             tempo_reset_flag = True
         
+        silence_threshold = float(np.clip(
+            getattr(getattr(self.config, 'stroke', None), 'silence_threshold', 0.02) or 0.02,
+            0.0,
+            1.0,
+        ))
+        silence_veto_active = bool(raw_rms < silence_threshold)
+        if silence_veto_active:
+            spectral_flux = 0.0
+            self.peak_envelope = 0.0
+            self._metronome_beat_fired = False
+            self._metronome_downbeat_fired = False
+
         # Detect beat based on mode (using band energy)
         # Store last flux for flux balance metric
         self._last_spectral_flux = spectral_flux
@@ -1027,7 +1040,7 @@ class AudioEngine:
             self._estimate_tempo_acf()
         
         # Raw beat detection (still runs for onset detection + phase-lock + fallback)
-        raw_is_beat = self._detect_beat(band_energy, spectral_flux)
+        raw_is_beat = False if silence_veto_active else self._detect_beat(band_energy, spectral_flux)
         accepted_raw_is_beat = raw_is_beat and self._accept_raw_onset(current_time)
         
         # Track raw onset times for syncopation detection
@@ -1069,18 +1082,18 @@ class AudioEngine:
                 if dist_to_half < window:
                     self._syncopation_had_offbeat = True
                     if self._syncopation_streak >= 1:
-                        # Previous beat period had off-beats → fire immediately
+                        # Previous beat period had off-beats -> fire immediately
                         self._syncopation_detected = True
                         log_event("INFO", "Syncopation", "Off-beat onset detected",
                                   phase=f"{phase_frac:.2f}", bpm=f"{self._metronome_bpm:.1f}")
                     elif self._syncopation_armed:
-                        # Second off-beat in same period → fire (fast first-time reaction)
+                        # Second off-beat in same period -> fire (fast first-time reaction)
                         self._syncopation_detected = True
                         self._syncopation_streak = 1  # pre-confirm for next period
-                        log_event("INFO", "Syncopation", "Armed → firing (2nd onset)",
+                        log_event("INFO", "Syncopation", "Armed -> firing (2nd onset)",
                                   phase=f"{phase_frac:.2f}", bpm=f"{self._metronome_bpm:.1f}")
                     else:
-                        # First off-beat onset ever → arm for second
+                        # First off-beat onset ever -> arm for second
                         self._syncopation_armed = True
 
         # Predictive drop-off: if we're past the off-beat window (phase > 0.65)
@@ -1095,7 +1108,7 @@ class AudioEngine:
                 texture_factor = float(1.0 - ((1.0 - combo_texture) / 3.0) * (1.0 - 0.5))
             window = float(np.clip(self.config.beat.syncopation_window * texture_factor, 0.05, 0.45))
             if phase_frac > (0.5 + window) and not self._syncopation_had_offbeat:
-                # Past the "and" window with no onset → pattern broken
+                # Past the "and" window with no onset -> pattern broken
                 if self._syncopation_streak > 0 or self._syncopation_armed:
                     self._syncopation_streak = 0
                     self._syncopation_confirmed = False
@@ -1121,6 +1134,16 @@ class AudioEngine:
             is_downbeat_flag = self.is_downbeat if is_beat else False
             current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else self.last_known_tempo
             tempo_is_locked = self.consecutive_matching_downbeats >= self.consecutive_match_threshold
+
+        if silence_veto_active and is_beat:
+            log_event(
+                "INFO",
+                "Audio",
+                "[SILENCE VETO] Beat ignored",
+                Amp=f"{raw_rms:.5f}",
+            )
+            is_beat = False
+            is_downbeat_flag = False
         
         # Estimate dominant frequency in the configured depth band so
         # stroke depth mapping responds directly to depth band selection.
@@ -1165,6 +1188,7 @@ class AudioEngine:
             is_syncopated=self._syncopation_detected,
             monotonic_timestamp=current_time,
             beat_features=beat_features,
+            raw_rms=float(raw_rms),
         )
         
         # Notify callback
@@ -1383,7 +1407,7 @@ class AudioEngine:
         peak_idx = int(np.argmax(search))
         peak_value = float(search[peak_idx])
 
-        if peak_value < 0.08:  # Below noise floor — no clear tempo
+        if peak_value < 0.08:  # Below noise floor - no clear tempo
             self._acf_confidence *= 0.9  # Fade confidence
             return
 
@@ -1467,7 +1491,7 @@ class AudioEngine:
         # Smooth the BPM estimate
         if self._acf_bpm_smoothed > 0:
             ratio = abs(bpm - self._acf_bpm_smoothed) / self._acf_bpm_smoothed
-            if ratio < 0.15:  # Within 15% — smooth
+            if ratio < 0.15:  # Within 15% - smooth
                 self._acf_bpm_smoothed = 0.85 * self._acf_bpm_smoothed + 0.15 * bpm
             elif peak_value > 0.25:  # Large jump but confident
                 # Guard against octave jumps when target BPM is set
@@ -1662,7 +1686,7 @@ class AudioEngine:
                                   error_ms=f"{self.phase_error_ms:.1f}",
                                   correction=f"{phase_correction:.4f}")
                 else:
-                    # Don't fully reset on single mismatch — allow recovery
+                    # Don't fully reset on single mismatch - allow recovery
                     self.consecutive_matching_downbeats = max(0, self.consecutive_matching_downbeats - 1)
                     self._metronome_downbeat_fired = False
                     self.is_downbeat = False
@@ -1709,9 +1733,9 @@ class AudioEngine:
 
         # Distance to nearest beat boundary
         if phase_frac < 0.5:
-            error = -phase_frac    # Just past last beat → pull backward
+            error = -phase_frac    # Just past last beat -> pull backward
         else:
-            error = 1.0 - phase_frac  # Approaching next beat → push forward
+            error = 1.0 - phase_frac  # Approaching next beat -> push forward
 
         if abs(error) < self._metronome_pll_window:
             conf = max(0.0, min(1.0, self._acf_confidence))
@@ -1747,14 +1771,14 @@ class AudioEngine:
         
         A beat is detected if EITHER path triggers (after refractory guard).
         Z-score adapts automatically to any audio level, so it catches beats
-        that the manual peak_floor setting would miss — and vice-versa.
+        that the manual peak_floor setting would miss - and vice-versa.
         """
         cfg = self.config.beat
         
         # Track valley detection (local minima) for peak_floor metric
         # A valley occurs when energy stops falling and starts rising
         if energy > self._prev_energy_for_valley and self._energy_was_falling:
-            # Just turned upward → previous value was a valley
+            # Just turned upward -> previous value was a valley
             valley_val = self._prev_energy_for_valley
             if valley_val > 0.001:  # Ignore silence-level valleys
                 self._valley_history.append(valley_val)
@@ -1781,7 +1805,7 @@ class AudioEngine:
         if len(self.energy_history) < 5:
             return False
         
-        # Refractory period — suppress re-triggers inside a short guard window.
+        # Refractory period - suppress re-triggers inside a short guard window.
         # Uses beat.beat_refractory_ms (tempo detector domain), not stroke.min_interval_ms
         # (stroke scheduler domain), so high-BPM metronome operation is not choked by
         # legacy stroke timing limits.
@@ -1968,7 +1992,7 @@ class AudioEngine:
                 self._predict_next_beat(current_time)
                 
                 # Energy-based downbeat detection (raw/fallback path)
-                # ONLY runs when metronome is NOT active — metronome owns the
+                # ONLY runs when metronome is NOT active - metronome owns the
                 # downbeat state when it's running to avoid double-counting
                 metronome_active = (self._acf_metronome_enabled and self._metronome_bpm > 0)
                 if not metronome_active:
@@ -2124,10 +2148,10 @@ class AudioEngine:
             self.last_predicted_downbeat_time = current_time
             return True
         else:
-            # Error exceeds tolerance — but if it's close to a measure boundary,
+            # Error exceeds tolerance - but if it's close to a measure boundary,
             # update prediction anyway to prevent permanent lock-out
             if abs(self.phase_error_ms) <= effective_tolerance * 2.0:
-                # Close but not perfect — update prediction to re-sync
+                # Close but not perfect - update prediction to re-sync
                 self.last_predicted_downbeat_time = current_time
             return False
         
@@ -2262,7 +2286,7 @@ class AudioEngine:
         If peak_floor < valley: raise it (too much noise passes through)
         If peak_floor > valley: lower it (real peaks might be filtered out)
         
-        Tolerance band: peak_floor should be within ±20% of avg valley.
+        Tolerance band: peak_floor should be within +/-20% of avg valley.
         
         Returns:
             (margin, should_adjust, adjustment_direction)
@@ -2278,7 +2302,7 @@ class AudioEngine:
         
         # Need valley data to work with
         if len(self._valley_history) < 3:
-            # Not enough valley data yet — fall back to simple margin check
+            # Not enough valley data yet - fall back to simple margin check
             margin = band_energy - self.config.beat.peak_floor
             self._energy_margin_history.append(margin)
             if len(self._energy_margin_history) > 16:
@@ -2305,18 +2329,18 @@ class AudioEngine:
         if len(self._energy_margin_history) > 16:
             self._energy_margin_history.pop(0)
         
-        # Tolerance: peak_floor should be within ±20% of valley level
+        # Tolerance: peak_floor should be within +/-20% of valley level
         tolerance = avg_valley * 0.20
         
         should_adjust = False
         direction = 0
         
         if error > tolerance:
-            # peak_floor too HIGH vs valleys → lower it so peaks pass through
+            # peak_floor too HIGH vs valleys -> lower it so peaks pass through
             should_adjust = True
             direction = -1
         elif error < -tolerance:
-            # peak_floor too LOW vs valleys → raise it to filter noise
+            # peak_floor too LOW vs valleys -> raise it to filter noise
             should_adjust = True
             direction = +1
         
@@ -2336,7 +2360,7 @@ class AudioEngine:
                 'direction': 'raise' if direction > 0 else 'lower'
             })
         elif not should_adjust:
-            # In zone — increment settled counter
+            # In zone - increment settled counter
             self._metric_settled_counts['peak_floor'] = self._metric_settled_counts.get('peak_floor', 0) + 1
             if self._metric_settled_counts['peak_floor'] >= self._effective_metric_settled_threshold():
                 self._metric_settled_flags['peak_floor'] = True
@@ -2481,7 +2505,7 @@ class AudioEngine:
 
     def compute_flux_balance_feedback(self, now: float, callback=None):
         """
-        Timer-driven flux_mult adjustment to keep flux ≈ energy (bar balance).
+        Timer-driven flux_mult adjustment to keep flux ~= energy (bar balance).
         
         Compares recent average flux to recent average energy.
         If flux >> energy: LOWER flux_mult (shrink flux bar)
@@ -2538,12 +2562,12 @@ class AudioEngine:
         adjustment_reason = ''
         
         if avg_ratio > self._flux_balance_target_high:
-            # Flux bar too tall relative to energy → wants to LOWER flux_mult
+            # Flux bar too tall relative to energy -> wants to LOWER flux_mult
             wants_adjustment = True
             adjustment_direction = -1
             adjustment_reason = f'flux/energy ratio {avg_ratio:.2f} > {self._flux_balance_target_high:.1f}'
         elif avg_ratio < self._flux_balance_target_low:
-            # Flux bar too short relative to energy → wants to RAISE flux_mult
+            # Flux bar too short relative to energy -> wants to RAISE flux_mult
             wants_adjustment = True
             adjustment_direction = +1
             adjustment_reason = f'flux/energy ratio {avg_ratio:.2f} < {self._flux_balance_target_low:.1f}'
@@ -2565,7 +2589,7 @@ class AudioEngine:
                         'reason': f'{adjustment_reason} (2x confirmed)',
                     })
         else:
-            # In zone — reset hysteresis counter and increment settled
+            # In zone - reset hysteresis counter and increment settled
             self._flux_balance_hysteresis_count = 0
             self._metric_settled_counts['flux_balance'] = self._metric_settled_counts.get('flux_balance', 0) + 1
             if self._metric_settled_counts['flux_balance'] >= self._effective_metric_settled_threshold():
@@ -2577,8 +2601,8 @@ class AudioEngine:
         """
         Timer-driven audio_amp adjustment based on beat presence.
         
-        - No beats for >check_interval → RAISE audio_amp (+2% of range)
-        - Excess beats (BPS > 2× target) → LOWER audio_amp (1% of range, half raise rate)
+        - No beats for >check_interval -> RAISE audio_amp (+2% of range)
+        - Excess beats (BPS > 2x target) -> LOWER audio_amp (1% of range, half raise rate)
         - Tracks consecutive in-zone checks for SETTLED state
         - Requires 2 consecutive out-of-zone checks (hysteresis) before adjusting
         
@@ -2609,13 +2633,13 @@ class AudioEngine:
         
         wants_adjustment = False
         if time_since_beat > target_interval * 3.0:
-            # No beats detected for 3x expected interval → wants to RAISE audio_amp
+            # No beats detected for 3x expected interval -> wants to RAISE audio_amp
             wants_adjustment = True
         
-        # Check for excess beats: if BPS > 2× target for consecutive checks, LOWER audio_amp
+        # Check for excess beats: if BPS > 2x target for consecutive checks, LOWER audio_amp
         wants_lower = False
         if self.last_beat_time > 0 and time_since_beat < target_interval:
-            # Beats are coming — check if too many
+            # Beats are coming - check if too many
             if len(self._bps_beat_times) >= 2:
                 window_dur = self._bps_beat_times[-1] - self._bps_beat_times[0] if len(self._bps_beat_times) >= 2 else 1.0
                 if window_dur > 0:
@@ -2649,7 +2673,7 @@ class AudioEngine:
                         'reason': f'no beats for {time_since_beat:.1f}s (2x confirmed)',
                     })
         else:
-            # In zone — reset hysteresis counter and increment settled
+            # In zone - reset hysteresis counter and increment settled
             self._audio_amp_hysteresis_count = 0
             self._metric_settled_counts['audio_amp'] = self._metric_settled_counts.get('audio_amp', 0) + 1
             if self._metric_settled_counts['audio_amp'] >= self._effective_metric_settled_threshold():

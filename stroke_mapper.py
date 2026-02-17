@@ -3,8 +3,8 @@ bREadbeats - Stroke Mapper v2
 Converts beat events into alpha/beta stroke patterns.
 
 Two behavioral modes driven by audio amplitude:
-  FULL_STROKE  – high amplitude: tempo-synced full circle rotations on beats
-  CREEP_MICRO  – low amplitude: slow creep around edge with micro-effects on beats
+    FULL_STROKE  - high amplitude: tempo-synced full circle rotations on beats
+    CREEP_MICRO  - low amplitude: slow creep around edge with micro-effects on beats
 
 All modes use circular coordinates around (0,0) in the alpha/beta plane.
 """
@@ -131,15 +131,20 @@ class StrokeMapper:
         self._trajectory_handoff_blend_distance: float = 0.35
         self._phase_debug_enabled: bool = True
         self._last_phase_debug_log_time: float = 0.0
+        self.target_radius: float = float(np.clip(getattr(self.config, 'base_radius', 0.30) or 0.30, 0.05, 1.0))
+        self._last_overall_amplitude: float = 0.0
+        self._noise_check_frame_counter: int = 0
+        self._force_overall_amplitude_zero: bool = False
 
-        # Motion intensity multiplier (0.25-2.0, default 1.0) — GUI slider
+        # Motion intensity multiplier (0.25-2.0, default 1.0) - GUI slider
         self.motion_intensity: float = 1.0
 
         # ---------- Amplitude gate ----------
         # RMS envelope tracker for mode switching
         self._rms_envelope: float = 0.0
         self._rms_attack: float = 0.15     # faster attack to respond to loud passages
-        self._rms_release: float = 0.008   # moderate release
+        self._rms_release: float = 0.05    # musical release during normal playback
+        self._rms_fast_release: float = 0.20  # aggressive drop tracking for true silence
         # Gate thresholds now read from config.stroke.amplitude_gate_high/low
         self._motion_mode: str = MotionMode.CREEP_MICRO  # start quiet
         self._mode_switch_time: float = 0.0
@@ -225,7 +230,7 @@ class StrokeMapper:
         self._pending_arc_event: Optional[BeatEvent] = None
         self._pending_arc_target: float = 0.0       # phase target for deferred arc fire
         self._pending_arc_is_downbeat: bool = False
-        self._arc_anchor_threshold: float = 0.35     # radians (~20°) — close enough to fire
+        self._arc_anchor_threshold: float = 0.35     # radians (~20 deg) - close enough to fire
         self._single_anchor_bottom_phase: float = 0.0
         self._single_anchor_prebottom_offset: float = 0.22
         # Keep legacy single-anchor behavior only for mode3 (TEARDROP).
@@ -335,7 +340,29 @@ class StrokeMapper:
         self._gate_modulation_open_smooth: float = 0.12
         self._gate_modulation_open_max_step: float = 0.06
         self._gate_amplitude_max_step_per_frame: float = 0.05
-        self._radius_max_step_per_frame: float = 0.05
+        self._radius_attack_max_step_per_frame: float = 0.20
+        self._radius_decay_max_step_per_frame: float = 0.03
+        self._silence_noise_floor_threshold: float = float(np.clip(
+            getattr(self.config.stroke, 'silence_threshold', 0.02) or 0.02,
+            0.0,
+            1.0,
+        ))
+        self._silence_noise_floor_hysteresis: float = 0.01
+        self._silence_noise_floor_open_threshold: float = float(np.clip(
+            self._silence_noise_floor_threshold + self._silence_noise_floor_hysteresis,
+            0.0,
+            1.0,
+        ))
+        self._silence_park_radius: float = 0.70
+        self._silence_park_angle: float = 4.71
+        self._silence_landing_slew_rate: float = 0.05
+        self._silence_landing_angle_slew_rate: float = 0.08
+        self._silence_landing_radius_slew_rate: float = 0.02
+        self._silence_landing_lock_margin: float = 0.01
+        self._silence_deadzone_active: bool = False
+        self._silence_parked_lock: bool = False
+        self._silence_reopen_candidate_count: int = 0
+        self._silence_reopen_required_frames: int = 4
 
         # ---------- Adaptive amp-fill threshold controller ----------
         # Raises/lower required fill ratio per phase so beat fires stay selective.
@@ -501,7 +528,7 @@ class StrokeMapper:
     def _update_park_anchor_from_radius(self, radius_hint: Optional[float] = None) -> None:
         """Update park/landing anchor using dynamic radius from recent stroke size.
 
-        Landing target stays 5-10° right of display-bottom, with larger strokes
+        Landing target stays 5-10 deg right of display-bottom, with larger strokes
         using a slightly larger rightward offset.
         """
         if radius_hint is None:
@@ -564,6 +591,12 @@ class StrokeMapper:
     def _get_park_anchor(self) -> Tuple[float, float]:
         """Bottom-center park anchor at dynamic radius."""
         return self._park_alpha, self._park_beta
+
+    def _get_silence_parking_target(self) -> tuple[float, float]:
+        radius = float(np.clip(self._silence_park_radius, 0.0, 1.0))
+        target_alpha = 0.0
+        target_beta = radius
+        return target_alpha, target_beta
 
     def _get_park_phase(self) -> float:
         alpha, beta = self._get_park_anchor()
@@ -710,6 +743,27 @@ class StrokeMapper:
         if amplitude_multiplier is not None:
             self._gate_amplitude_target = float(np.clip(amplitude_multiplier, 0.40, 1.0))
 
+    def _log_jump_debug(self,
+                        source: str,
+                        alpha: float,
+                        beta: float,
+                        **details) -> None:
+        """Verbose source tracing for coordinate updates while diagnosing jump leaks."""
+        if bool(self._silence_deadzone_active):
+            return
+        delta = float(np.hypot(float(alpha) - float(self.state.alpha), float(beta) - float(self.state.beta)))
+        if delta <= 0.1:
+            return
+        payload = {
+            'Source': source,
+            'Value': f"a={float(alpha):.4f},b={float(beta):.4f}",
+            'log_delta': f"{float(delta):.6f}",
+            'overall_amplitude': f"{float(np.clip(self._last_overall_amplitude, 0.0, 1.0)):.4f}",
+            'silence_deadzone': bool(self._silence_deadzone_active),
+        }
+        payload.update(details)
+        log_event("INFO", "StrokeMapper", "[JUMP DEBUG]", **payload)
+
     @staticmethod
     def _slew_toward(current: float,
                      target: float,
@@ -725,6 +779,176 @@ class StrokeMapper:
         if abs(delta) <= step:
             return target_val
         return float(np.clip(current_val + (step if delta > 0.0 else -step), min_value, max_value))
+
+    @staticmethod
+    def _safe_ratio(numerator: float,
+                    denominator: float,
+                    near_zero: float = 1e-6,
+                    default: float = 0.0) -> float:
+        """Return zero-safe ratio; force default when denominator is near zero."""
+        den = float(denominator)
+        if abs(den) <= float(max(1e-12, near_zero)):
+            return float(default)
+        return float(numerator / den)
+
+    def _slew_radius_toward(self, current: float, target: float) -> float:
+        """Asymmetric radius slew: fast attack, slow decay."""
+        current_val = float(np.clip(current, 0.0, 1.0))
+        target_val = float(np.clip(target, 0.0, 1.0))
+        if target_val >= current_val:
+            max_step = float(np.clip(self._radius_attack_max_step_per_frame, 0.01, 1.0))
+        else:
+            if target_val < 0.15:
+                max_step = 0.20
+            else:
+                max_step = float(np.clip(self._radius_decay_max_step_per_frame, 0.001, 1.0))
+        return self._slew_toward(
+            current=current_val,
+            target=target_val,
+            max_step=max_step,
+            min_value=0.0,
+            max_value=1.0,
+        )
+
+    def _get_overall_amplitude(self, event: Optional[BeatEvent]) -> float:
+        """Compute conservative overall amplitude used by silence deadzone gate."""
+        if self._force_overall_amplitude_zero:
+            return 0.0
+        envelope = float(np.clip(self._rms_envelope, 0.0, 1.0))
+        if event is None:
+            return envelope
+
+        peak = float(np.clip(getattr(event, 'peak_energy', 0.0) or 0.0, 0.0, 1.0))
+        return float(np.clip(max(envelope, peak), 0.0, 1.0))
+
+    def _is_circular_mode(self, mode: Optional[StrokeMode]) -> bool:
+        return bool(mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL))
+
+    def _apply_micro_jerk(self,
+                          alpha: float,
+                          beta: float,
+                          overall_amplitude: float,
+                          silence_deadzone_active: bool) -> tuple[float, float]:
+        if silence_deadzone_active and (abs(self._micro_jerk_alpha) > 1e-6 or abs(self._micro_jerk_beta) > 1e-6):
+            self._log_jump_debug(
+                source="_apply_micro_jerk_bypass_silence",
+                alpha=alpha,
+                beta=beta,
+                jerk_a=f"{float(self._micro_jerk_alpha):.6f}",
+                jerk_b=f"{float(self._micro_jerk_beta):.6f}",
+            )
+        if silence_deadzone_active:
+            return float(alpha), float(beta)
+        if overall_amplitude < 0.06 and (abs(self._micro_jerk_alpha) > 1e-6 or abs(self._micro_jerk_beta) > 1e-6):
+            self._log_jump_debug(
+                source="_apply_micro_jerk_bypass_low_amp",
+                alpha=alpha,
+                beta=beta,
+                jerk_a=f"{float(self._micro_jerk_alpha):.6f}",
+                jerk_b=f"{float(self._micro_jerk_beta):.6f}",
+            )
+        if overall_amplitude < 0.06:
+            return float(alpha), float(beta)
+        if self._is_circular_mode(self.config.stroke.mode) and (abs(self._micro_jerk_alpha) > 1e-6 or abs(self._micro_jerk_beta) > 1e-6):
+            self._log_jump_debug(
+                source="_apply_micro_jerk_bypass_circular",
+                alpha=alpha,
+                beta=beta,
+                mode=str(self.config.stroke.mode),
+                jerk_a=f"{float(self._micro_jerk_alpha):.6f}",
+                jerk_b=f"{float(self._micro_jerk_beta):.6f}",
+            )
+        if self._is_circular_mode(self.config.stroke.mode):
+            return float(alpha), float(beta)
+        if not self._micro_effects_enabled:
+            return float(alpha), float(beta)
+
+        jerk_a, jerk_b = self._get_micro_jerk_offset()
+        out_alpha = float(alpha + jerk_a)
+        out_beta = float(beta + jerk_b)
+        if abs(jerk_a) > 1e-6 or abs(jerk_b) > 1e-6:
+            self._log_jump_debug(
+                source="_apply_micro_jerk_apply",
+                alpha=out_alpha,
+                beta=out_beta,
+                jerk_a=f"{float(jerk_a):.6f}",
+                jerk_b=f"{float(jerk_b):.6f}",
+            )
+        return out_alpha, out_beta
+
+    def _apply_anti_stop(self,
+                         alpha: float,
+                         beta: float,
+                         delta: float,
+                         orbit_replacement_active: bool,
+                         overall_amplitude: float,
+                         silence_deadzone_active: bool) -> tuple[float, float]:
+        if silence_deadzone_active:
+            self._log_jump_debug(
+                source="_apply_anti_stop_bypass_silence",
+                alpha=alpha,
+                beta=beta,
+                delta=f"{float(delta):.6f}",
+            )
+            return float(alpha), float(beta)
+        if overall_amplitude < 0.06:
+            return float(alpha), float(beta)
+        if self._is_circular_mode(self.config.stroke.mode):
+            return float(alpha), float(beta)
+        if orbit_replacement_active:
+            return float(alpha), float(beta)
+        if delta >= self._anti_stop_min_delta:
+            return float(alpha), float(beta)
+        if not self._should_anti_stop(alpha, beta):
+            return float(alpha), float(beta)
+
+        ref_radius = float(np.clip(max(np.hypot(alpha, beta), self._edge_follow_radius), 0.85, 1.0))
+        out_alpha, out_beta = self._apply_anti_stop_nudge(alpha, beta, reference_radius=ref_radius)
+        self._log_jump_debug(
+            source="_apply_anti_stop_apply",
+            alpha=out_alpha,
+            beta=out_beta,
+            delta=f"{float(delta):.6f}",
+        )
+        return out_alpha, out_beta
+
+    def _update_silence_deadzone_gate(self, overall_amplitude: float) -> bool:
+        """Apply sticky close/open thresholds to prevent edge-of-silence flicker."""
+        prev_state = bool(self._silence_deadzone_active)
+        amplitude = float(np.clip(overall_amplitude, 0.0, 1.0))
+        close_threshold = float(np.clip(self._silence_noise_floor_threshold, 0.0, 1.0))
+        open_threshold = float(np.clip(
+            max(
+                self._silence_noise_floor_open_threshold,
+                close_threshold + self._silence_noise_floor_hysteresis,
+            ),
+            0.0,
+            1.0,
+        ))
+
+        if self._silence_deadzone_active:
+            if amplitude >= open_threshold:
+                self._silence_reopen_candidate_count += 1
+                if self._silence_reopen_candidate_count >= int(max(1, self._silence_reopen_required_frames)):
+                    self._silence_deadzone_active = False
+                    self._silence_reopen_candidate_count = 0
+            else:
+                self._silence_reopen_candidate_count = 0
+        elif amplitude < close_threshold:
+            self._silence_deadzone_active = True
+            self._silence_reopen_candidate_count = 0
+        else:
+            self._silence_reopen_candidate_count = 0
+
+        if self._silence_deadzone_active != prev_state:
+            new_state = "closed" if self._silence_deadzone_active else "open"
+            log_event(
+                "INFO",
+                "StrokeMapper",
+                f"[GATE DEBUG] State Changed: {new_state} | Amp: {amplitude:.5f}",
+            )
+
+        return self._silence_deadzone_active
 
     def _step_gate_modulation_value(self,
                                     current: float,
@@ -838,6 +1062,9 @@ class StrokeMapper:
             'traj_active': bool(traj is not None and traj.active),
             'traj_park_return': bool(getattr(traj, 'is_park_return', False)) if traj is not None else False,
             'traj_micro': bool(getattr(traj, 'is_micro', False)) if traj is not None else False,
+            'overall_amplitude': f"{float(np.clip(self._last_overall_amplitude, 0.0, 1.0)):.4f}",
+            'silence_deadzone': bool(self._silence_deadzone_active),
+            'target_radius': f"{float(np.clip(self.target_radius, 0.0, 1.0)):.3f}",
         }
         if traj is not None:
             payload['traj_idx'] = f"{traj.current_index}/{traj.n_points}"
@@ -1366,11 +1593,23 @@ class StrokeMapper:
 
     def _update_envelope(self, event: BeatEvent) -> None:
         """Track RMS envelope from peak_energy for mode gating."""
-        energy = event.peak_energy
+        raw_rms = float(getattr(event, 'raw_rms', 0.0) or 0.0)
+        if raw_rms < self._silence_noise_floor_threshold:
+            self._rms_envelope = 0.0
+            if hasattr(self, '_peak_envelope'):
+                self._peak_envelope = 0.0
+            self._last_overall_amplitude = 0.0
+            self._force_overall_amplitude_zero = True
+            return
+
+        self._force_overall_amplitude_zero = False
+        energy = float(np.clip(event.peak_energy, 0.0, 1.0))
         if energy > self._rms_envelope:
             self._rms_envelope += (energy - self._rms_envelope) * self._rms_attack
         else:
-            self._rms_envelope += (energy - self._rms_envelope) * self._rms_release
+            release_rate = float(np.clip(self._rms_release, 0.01, 1.0))
+            self._rms_envelope += (energy - self._rms_envelope) * release_rate
+        self._rms_envelope = float(np.clip(self._rms_envelope, 0.0, 1.0))
 
     def _update_stroke_readiness(self, event: BeatEvent) -> None:
         """Determine if strokes should fire based on metronome + traffic light.
@@ -1462,16 +1701,16 @@ class StrokeMapper:
             # Rule: one green + one yellow
             mixed_green_yellow = ((metro_green and traffic_yellow)
                                   or (metro_yellow and traffic_green))
-            # Rule: both yellow — only if NOT cold-starting from red/off,
+            # Rule: both yellow - only if NOT cold-starting from red/off,
             # OR if beat/downbeat indicator confirms
             both_yellow = metro_yellow and (traffic_yellow or traffic_green is False)
             both_yellow_ok = False
             if metro_yellow and traffic_yellow:
                 if self._prev_had_any_light:
-                    # Previously had lights on → trust both-yellow
+                    # Previously had lights on -> trust both-yellow
                     both_yellow_ok = True
                 elif event.is_beat or getattr(event, 'is_downbeat', False):
-                    # Cold start but beat/downbeat indicator confirms → allow
+                    # Cold start but beat/downbeat indicator confirms -> allow
                     both_yellow_ok = True
             # Recovery: traffic was recently green (now yellow) + metronome yellow/green
             option_recovery = (traffic_yellow and self._traffic_was_green
@@ -1492,14 +1731,14 @@ class StrokeMapper:
         self._prev_had_any_light = has_any_light
         
         if conditions_met:
-            # Conditions met — immediately ready, reset lost timer
+            # Conditions met - immediately ready, reset lost timer
             self._stroke_ready = True
             self._stroke_ready_lost_time = 0.0
             self._stroke_gate_block_streak = 0
         else:
-            # Conditions dropped — start or continue grace period
+            # Conditions dropped - start or continue grace period
             if self._stroke_ready:
-                # Was ready, just lost it — start grace timer
+                # Was ready, just lost it - start grace timer
                 if self._stroke_ready_lost_time == 0.0:
                     self._stroke_ready_lost_time = now
                 # Check if grace period expired
@@ -1602,6 +1841,12 @@ class StrokeMapper:
                 for idx in range(1, blend_points + 1):
                     target_alpha = float(alpha_points[idx])
                     target_beta = float(beta_points[idx])
+                    self._log_jump_debug(
+                        source="_align_trajectory_launch_handoff_raw",
+                        alpha=target_alpha,
+                        beta=target_beta,
+                        index=idx,
+                    )
                     t = float(idx / max(1, blend_points + 1))
                     eased = float(t * t * (3.0 - 2.0 * t))
                     alpha_points[idx] = float(np.clip(
@@ -1614,6 +1859,12 @@ class StrokeMapper:
                         -1.0,
                         1.0,
                     ))
+                    self._log_jump_debug(
+                        source="_align_trajectory_launch_handoff_blended",
+                        alpha=float(alpha_points[idx]),
+                        beta=float(beta_points[idx]),
+                        index=idx,
+                    )
 
         if self._is_forward_orbit_mode(mode):
             self._spiral_direction = 1
@@ -1635,12 +1886,9 @@ class StrokeMapper:
         if target_radius <= 1e-6:
             return 0.0, 0.0
         self._trajectory_radius_target = float(np.clip(target_radius, 0.0, 1.0))
-        self._trajectory_radius_value = self._slew_toward(
+        self._trajectory_radius_value = self._slew_radius_toward(
             current=self._trajectory_radius_value,
             target=self._trajectory_radius_target,
-            max_step=self._radius_max_step_per_frame,
-            min_value=0.0,
-            max_value=1.0,
         )
         radius = float(self._trajectory_radius_value)
 
@@ -2441,7 +2689,7 @@ class StrokeMapper:
                             self._trajectory = None
                             self._pending_arc_event = None
                             self._sync_creep_angle_to_position()
-                            log_event("INFO", "StrokeMapper", "Flux drop → creep fallback",
+                            log_event("INFO", "StrokeMapper", "Flux drop -> creep fallback",
                                       recent=f"{recent_avg:.4f}", older=f"{older_avg:.4f}")
 
         # ===== NO-BEAT TIMEOUT =====
@@ -2480,14 +2728,14 @@ class StrokeMapper:
                     transitioned = self._generate_park_return_arc()
                     if transitioned:
                         self._locked_anchor = None
-                        log_event("INFO", "StrokeMapper", "No-beat timeout → arc-to-park")
+                        log_event("INFO", "StrokeMapper", "No-beat timeout -> arc-to-park")
                     else:
                         self._trajectory = None
                         self._locked_anchor = None
                         if not self.state.creep_reset_active:
                             self.state.creep_reset_active = True
                             self.state.creep_reset_start_time = now
-                        log_event("INFO", "StrokeMapper", "No-beat timeout → park+jitter")
+                        log_event("INFO", "StrokeMapper", "No-beat timeout -> park+jitter")
 
         # ===== SILENCE FADE-OUT =====
         quiet_flux_thresh = cfg.flux_threshold * cfg.silence_flux_multiplier
@@ -2516,7 +2764,7 @@ class StrokeMapper:
         else:
             self._consecutive_silent_count = 0
             self._silence_reset_armed = True
-            # Detect transition from silence → sound: trigger post-silence volume ramp
+            # Detect transition from silence -> sound: trigger post-silence volume ramp
             if self._was_silent and self._fade_intensity < 0.5:
                 self._post_silence_ramp_active = True
                 self._post_silence_ramp_start = now
@@ -2536,7 +2784,7 @@ class StrokeMapper:
 
         # ===== FLUX FACTOR (for stroke scaling) =====
         if event.is_beat and bass_motion_allowed:
-            flux_ratio = event.spectral_flux / max(cfg.flux_threshold, 0.001)
+            flux_ratio = self._safe_ratio(event.spectral_flux, cfg.flux_threshold, near_zero=0.001, default=0.0)
             flux_ratio = np.clip(flux_ratio, 0.2, 3.0)
             base_factor = 0.5 + (flux_ratio / 3.0)
             depth_flux_scale = self._combo_scale('combo_depth', 0.40, 1.80)
@@ -2646,7 +2894,7 @@ class StrokeMapper:
                             fill=f"{sync_fill:.3f}",
                             fill_required=f"{sync_fill_req:.3f}",
                         )
-                        sync_amp_ratio = sync_amp / max(sync_min_amp, 1e-6)
+                        sync_amp_ratio = self._safe_ratio(sync_amp, sync_min_amp, near_zero=1e-6, default=0.0)
                         sync_amp_mult = float(np.clip(sync_amp_ratio, 0.45, 1.0))
                         cmd = self._generate_gated_idle_motion(
                             event,
@@ -2722,7 +2970,7 @@ class StrokeMapper:
                     return self._apply_fade(cmd)
 
         if event.is_beat:
-            # Real beat detected — burst-scheduling yields to metronome
+            # Real beat detected - burst-scheduling yields to metronome
             if self._burst_scheduled_active:
                 self._burst_scheduled_active = False
                 log_event("INFO", "StrokeMapper",
@@ -2767,7 +3015,8 @@ class StrokeMapper:
                     intensity=f"{beat_intensity:.3f}",
                     sink_start_intensity=f"{sink_start_intensity:.3f}",
                 )
-                intensity_mult = float(np.clip(beat_intensity / max(sink_start_intensity, 1e-6), 0.45, 1.0))
+                intensity_ratio = self._safe_ratio(beat_intensity, sink_start_intensity, near_zero=1e-6, default=0.0)
+                intensity_mult = float(np.clip(intensity_ratio, 0.45, 1.0))
                 cmd = self._generate_gated_idle_motion(
                     event,
                     visibility_target=0.65,
@@ -2804,7 +3053,11 @@ class StrokeMapper:
                     low_hz=f"{float(getattr(cfg, 'block_mid_trigger_low_hz', 100.0) or 100.0):.1f}",
                     high_hz=f"{float(getattr(cfg, 'block_mid_trigger_high_hz', 2000.0) or 2000.0):.1f}",
                 )
-                cmd = self._generate_idle_motion(event, force_update=True)
+                cmd = self._generate_gated_idle_motion(
+                    event,
+                    visibility_target=0.72,
+                    amplitude_multiplier=0.78,
+                )
                 return self._apply_fade(cmd)
 
             if not self._passes_dual_band_db_gate(event):
@@ -2817,7 +3070,11 @@ class StrokeMapper:
                     sub_bass_min=f"{float(getattr(cfg, 'dual_band_sub_bass_db_min', -15.0) or -15.0):.1f}",
                     high_min=f"{float(getattr(cfg, 'dual_band_high_db_min', -30.0) or -30.0):.1f}",
                 )
-                cmd = self._generate_idle_motion(event, force_update=True)
+                cmd = self._generate_gated_idle_motion(
+                    event,
+                    visibility_target=0.72,
+                    amplitude_multiplier=0.75,
+                )
                 return self._apply_fade(cmd)
 
             # ===== STROKE READINESS GATE =====
@@ -2858,7 +3115,7 @@ class StrokeMapper:
 
             if self._motion_mode == MotionMode.FULL_STROKE:
                 # High amplitude -> fire arc immediately from current position.
-                # No anchor gate — the dot sweeps 360° from wherever it is.
+                # No anchor gate - the dot sweeps 360 deg from wherever it is.
                 # Continuous rotation means it passes through top/bottom naturally.
                 self._pending_arc_event = None
 
@@ -2928,7 +3185,7 @@ class StrokeMapper:
                             fill=f"{fill_val:.3f}",
                             fill_required=f"{fill_req:.3f}",
                         )
-                        amp_ratio = amp_val / max(amp_min, 1e-6)
+                        amp_ratio = self._safe_ratio(amp_val, amp_min, near_zero=1e-6, default=0.0)
                         amp_mult = float(np.clip(amp_ratio, 0.45, 1.0))
                         cmd = self._generate_gated_idle_motion(
                             event,
@@ -2965,7 +3222,7 @@ class StrokeMapper:
                                 fill=f"{down_fill:.3f}",
                                 fill_required=f"{down_fill_req:.3f}",
                             )
-                            down_amp_ratio = down_amp / max(down_min_amp, 1e-6)
+                            down_amp_ratio = self._safe_ratio(down_amp, down_min_amp, near_zero=1e-6, default=0.0)
                             down_amp_mult = float(np.clip(down_amp_ratio, 0.45, 1.0))
                             cmd = self._generate_gated_idle_motion(
                                 event,
@@ -3022,9 +3279,15 @@ class StrokeMapper:
                 return self._apply_fade(cmd)
 
         elif self.state.idle_time > 0.05:
-            # Idle motion: creep + jitter + micro-jerk decay
-            if not is_truly_silent and self._fade_intensity > 0.01:
-                cmd = self._generate_idle_motion(event)
+            # Idle motion: keep update loop active during silence so parking
+            # autopilot can glide to target instead of freezing.
+            should_update_idle = bool(
+                self._fade_intensity > 0.01
+                or is_truly_silent
+                or self._silence_deadzone_active
+            )
+            if should_update_idle:
+                cmd = self._generate_idle_motion(event, force_update=is_truly_silent)
                 return self._apply_fade(cmd)
             return None
 
@@ -3060,7 +3323,8 @@ class StrokeMapper:
                     reduction = cfg.post_silence_vol_reduction
                     ramp_mult = (1.0 - reduction) + reduction * (elapsed / ramp_dur)
                     cmd.volume *= ramp_mult
-        return cmd if self._fade_intensity > 0.01 else None
+        keep_motion_during_silence = bool(self._silence_deadzone_active)
+        return cmd if (self._fade_intensity > 0.01 or keep_motion_during_silence) else None
 
     # ------------------------------------------------------------------
     # FULL_STROKE generators (same proven logic from v1)
@@ -3175,7 +3439,7 @@ class StrokeMapper:
 
         Important constraints:
         - Keep timing/trajectory generation unchanged (this is geometry only)
-        - Mode 3 (TEARDROP) is rotated 90° CCW relative to legacy display
+        - Mode 3 (TEARDROP) is rotated 90 deg CCW relative to legacy display
         - Mode 3 pattern traversal runs at half draw rate
         """
         mode = self.config.stroke.mode
@@ -3206,7 +3470,7 @@ class StrokeMapper:
             x = a * (np.sin(t) - 0.5 * np.sin(2 * t))
             y = -a * np.cos(t)
 
-            # Legacy used +π/2. Display rotated since then; apply +90° CCW more.
+            # Legacy used +pi/2. Display rotated since then; apply +90 deg CCW more.
             rot = np.pi
             alpha = (x * np.cos(rot) - y * np.sin(rot)) * alpha_weight
             beta = (x * np.sin(rot) + y * np.cos(rot)) * beta_weight
@@ -3292,7 +3556,7 @@ class StrokeMapper:
             except Exception:
                 carry_tangent = None
 
-        # Beat duration — prefer metronome BPM if available
+        # Beat duration - prefer metronome BPM if available
         # Downbeat arc spans configured beats for this mode.
         beats_in_measure = self._get_downbeat_span_beats(event)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
@@ -3606,7 +3870,7 @@ class StrokeMapper:
                 self._edge_follow_radius = float(np.clip(max(self._edge_follow_radius, max_norm_seen), 0.82, 1.00))
         else:
             n_points = max(8, int(beat_interval_ms / 10))
-            # Arc starts from current creep angle, sweeps exactly 360°.
+            # Arc starts from current creep angle, sweeps exactly 360 deg.
             anchor_phase = self._get_arc_launch_phase(cfg.mode)
             current_phase = anchor_phase / (2 * np.pi)
             if cfg.mode == StrokeMode.SPIRAL:
@@ -3732,7 +3996,7 @@ class StrokeMapper:
 
         depth = 1.0
 
-        # Arc size: configurable fraction of circle (0.5 = 180°)
+        # Arc size: configurable fraction of circle (0.5 = 180 deg)
         arc_size = getattr(beat_cfg, 'syncopation_arc_size', 0.5) * self._learned_sync_size_mult
         arc_size = float(np.clip(arc_size, 0.10, 1.0))
         if cfg.mode == StrokeMode.SIMPLE_CIRCLE:
@@ -4048,7 +4312,7 @@ class StrokeMapper:
                 # Real beat events will override this when they fire.
                 self._generate_continuation_arc()
             else:
-                # No good BPM or not in FULL_STROKE — drop to creep
+                # No good BPM or not in FULL_STROKE - drop to creep
                 self._post_arc_blend = 0.0
                 self._trajectory = None
 
@@ -4249,6 +4513,29 @@ class StrokeMapper:
             and (not recent_beats_active)
             and (not recent_confirmed_beats)
         )
+        was_silence_deadzone_active = bool(self._silence_deadzone_active)
+        overall_amplitude = self._get_overall_amplitude(event)
+        self._last_overall_amplitude = overall_amplitude
+        raw_rms = float(getattr(event, 'raw_rms', 0.0) or 0.0) if event is not None else 0.0
+        print(f"[CLAMP DEBUG] Raw: {raw_rms:.5f} | Amp: {overall_amplitude:.5f}")
+        self._noise_check_frame_counter += 1
+        if self._noise_check_frame_counter >= 60:
+            print(f"[NOISE CHECK] Amp: {overall_amplitude:.4f}")
+            self._noise_check_frame_counter = 0
+        silence_deadzone_active = self._update_silence_deadzone_gate(overall_amplitude)
+        silence_gate_reopened = bool((not silence_deadzone_active) and was_silence_deadzone_active)
+        silence_gate_closed = bool(silence_deadzone_active and (not was_silence_deadzone_active))
+        if silence_gate_reopened:
+            self._silence_parked_lock = False
+        if not silence_deadzone_active:
+            self._silence_parked_lock = False
+
+        park_target_alpha, park_target_beta = self._get_silence_parking_target()
+        if silence_deadzone_active and self._silence_parked_lock:
+            self.state.alpha = park_target_alpha
+            self.state.beta = park_target_beta
+            self._last_idle_time = now
+            return TCodeCommand(park_target_alpha, park_target_beta, 25, 0.0)
 
         beat_cfg = self.config.beat
         _BAND_LOWER_HZ = {'sub_bass': 30, 'low_mid': 100, 'mid': 500, 'high': 2000}
@@ -4302,6 +4589,8 @@ class StrokeMapper:
         creep_active = (creep_cfg.enabled and creep_cfg.speed > 0) or orbit_replacement_active
 
         if suppress_idle_motion:
+            jitter_active = False
+        if silence_deadzone_active:
             jitter_active = False
 
         if not jitter_active and not creep_active and not self.state.creep_reset_active:
@@ -4363,35 +4652,15 @@ class StrokeMapper:
             if bpm <= 0:
                 bpm = 90.0
 
-            if orbit_replacement_active:
-                orbit_bottom_radius = 0.87
-                orbit_top_radius = 0.60
-                creep_radius = float((orbit_bottom_radius + orbit_top_radius) * 0.5)
-            elif self._motion_mode == MotionMode.CREEP_MICRO:
-                # CREEP_MICRO: smaller radius, drift toward center not edges
-                creep_radius = 0.20
+            creep_radius = float(np.clip(self.target_radius, 0.05, 1.0))
+
+            if silence_deadzone_active:
+                landing_radius = float(np.hypot(park_target_alpha, park_target_beta))
+                self._idle_radius_target = landing_radius
+                self._idle_radius_value = landing_radius
             else:
-                creep_radius = 0.50
-
-            if (not orbit_replacement_active
-                and self._motion_mode == MotionMode.FULL_STROKE
-                and self.config.stroke.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL, StrokeMode.TEARDROP)):
-                follow_floor = 0.85 if self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
-                radius_cap = self._get_fullstroke_creep_radius_cap(event)
-                creep_radius = float(np.clip(max(creep_radius, self._edge_follow_radius, follow_floor), follow_floor, radius_cap))
-
-            if self.state.creep_reset_active:
-                park_radius = float(np.hypot(self._park_alpha, self._park_beta))
-                creep_radius = float(creep_radius + ((park_radius - creep_radius) * creep_reset_blend))
-
-            self._idle_radius_target = float(np.clip(creep_radius, 0.0, 1.0))
-            self._idle_radius_value = self._slew_toward(
-                current=self._idle_radius_value,
-                target=self._idle_radius_target,
-                max_step=self._radius_max_step_per_frame,
-                min_value=0.0,
-                max_value=1.0,
-            )
+                self._idle_radius_target = float(np.clip(self.target_radius, 0.05, 1.0))
+                self._idle_radius_value = self._idle_radius_target
             creep_radius = float(self._idle_radius_value)
 
             idle_dt_s = float(np.clip(time_since_last / 1000.0, 0.0, 0.250))
@@ -4401,11 +4670,19 @@ class StrokeMapper:
                     or bool(getattr(event, 'is_downbeat', False))
                 )
             )
+            phase_dt_s = 0.0 if silence_gate_reopened else idle_dt_s
             target_alpha, target_beta = self._geometry.update(
                 bpm=bpm,
-                dt=idle_dt_s,
+                dt=phase_dt_s,
                 intensity=creep_radius,
                 beat_detected=beat_detected_now,
+            )
+            self._log_jump_debug(
+                source="_generate_idle_motion_geometry_update",
+                alpha=float(target_alpha),
+                beta=float(target_beta),
+                phase_dt=f"{float(phase_dt_s):.4f}",
+                bpm=f"{float(bpm):.2f}",
             )
             current_phase = self._geometry.get_phase()
             self._log_phase_sawtooth(self._last_geometry_phase, current_phase, source="idle")
@@ -4435,7 +4712,7 @@ class StrokeMapper:
         else:
             # Creep disabled: quickly wobble toward park so dot
             # doesn't get stuck at the edge after an arc finishes.
-            blend_rate = 0.15  # per frame (~60fps → ~300ms to reach center)
+            blend_rate = 0.15  # per frame (~60fps -> ~300ms to reach center)
             base_alpha = alpha + (self._park_alpha - alpha) * blend_rate
             base_beta = beta + (self._park_beta - beta) * blend_rate
             # Snap to park when close enough to avoid perpetual micro-drift
@@ -4444,8 +4721,43 @@ class StrokeMapper:
             if abs(base_beta - self._park_beta) < 0.01:
                 base_beta = self._park_beta
 
+        # ---------- Active silence landing sequence ----------
+        if silence_deadzone_active:
+            current_alpha = float(self.state.alpha)
+            current_beta = float(self.state.beta)
+            current_radius = float(np.hypot(current_alpha, current_beta))
+            current_angle = float(np.arctan2(current_alpha, current_beta))
+            target_radius = float(np.clip(self._silence_park_radius, 0.0, 1.0))
+            target_angle = float(np.arctan2(park_target_alpha, park_target_beta))
+
+            angle_delta = float(np.arctan2(np.sin(target_angle - current_angle), np.cos(target_angle - current_angle)))
+            angle_step = float(np.clip(self._silence_landing_angle_slew_rate, 0.001, 0.25))
+            radius_step = float(np.clip(self._silence_landing_radius_slew_rate, 0.001, 0.25))
+
+            next_angle = current_angle + float(np.clip(angle_delta, -angle_step, angle_step))
+            next_radius = self._slew_toward(
+                current=current_radius,
+                target=target_radius,
+                max_step=radius_step,
+                min_value=0.0,
+                max_value=1.0,
+            )
+
+            alpha_target = float(np.sin(next_angle) * next_radius)
+            beta_target = float(np.cos(next_angle) * next_radius)
+            lock_margin = float(np.clip(self._silence_landing_lock_margin, 0.001, 0.05))
+            if abs(alpha_target - park_target_alpha) <= lock_margin and abs(beta_target - park_target_beta) <= lock_margin:
+                alpha_target = park_target_alpha
+                beta_target = park_target_beta
+            self._log_jump_debug(
+                source="_generate_idle_motion_silence_landing_slew",
+                alpha=alpha_target,
+                beta=beta_target,
+                landing_a=f"{park_target_alpha:.4f}",
+                landing_b=f"{park_target_beta:.4f}",
+            )
         # ---------- Jitter: sinusoidal micro-circles ----------
-        if jitter_active:
+        elif jitter_active:
             texture_jitter = self._combo_scale('combo_texture', 0.65, 1.60)
             if self._motion_mode == MotionMode.CREEP_MICRO:
                 # CREEP_MICRO: slower, smaller jitter
@@ -4480,19 +4792,42 @@ class StrokeMapper:
 
             alpha_target = base_alpha + np.cos(self.state.jitter_angle) * jitter_r
             beta_target = base_beta + np.sin(self.state.jitter_angle) * jitter_r
+            self._log_jump_debug(
+                source="_generate_idle_motion_jitter",
+                alpha=float(alpha_target),
+                beta=float(beta_target),
+                jitter_r=f"{float(jitter_r):.4f}",
+            )
         else:
             alpha_target = base_alpha
             beta_target = base_beta
+            self._log_jump_debug(
+                source="_generate_idle_motion_base",
+                alpha=float(alpha_target),
+                beta=float(beta_target),
+            )
 
         # ---------- Add micro-jerk offset (decaying impulse) ----------
-        if self._micro_effects_enabled:
-            jerk_a, jerk_b = self._get_micro_jerk_offset()
-            alpha_target += jerk_a
-            beta_target += jerk_b
+        alpha_target, beta_target = self._apply_micro_jerk(
+            alpha=alpha_target,
+            beta=beta_target,
+            overall_amplitude=overall_amplitude,
+            silence_deadzone_active=silence_deadzone_active,
+        )
+        self._log_jump_debug(
+            source="_generate_idle_motion_after_micro_jerk",
+            alpha=float(alpha_target),
+            beta=float(beta_target),
+        )
 
         # Clamp
         alpha_target = np.clip(alpha_target, -1.0, 1.0)
         beta_target = np.clip(beta_target, -1.0, 1.0)
+        self._log_jump_debug(
+            source="_generate_idle_motion_after_clip",
+            alpha=float(alpha_target),
+            beta=float(beta_target),
+        )
 
         duration_ms = 25  # short duration matching update rate for smooth motion
 
@@ -4500,14 +4835,38 @@ class StrokeMapper:
         prev_beta = float(self.state.beta)
         self._log_large_motion_jump(prev_alpha, prev_beta, alpha_target, beta_target, source="idle")
         delta = float(np.hypot(alpha_target - prev_alpha, beta_target - prev_beta))
-        if (not orbit_replacement_active
-            and delta < self._anti_stop_min_delta
-            and self._should_anti_stop(alpha_target, beta_target)):
-            ref_radius = float(np.clip(max(np.hypot(alpha_target, beta_target), self._edge_follow_radius), 0.85, 1.0))
-            alpha_target, beta_target = self._apply_anti_stop_nudge(alpha_target, beta_target, reference_radius=ref_radius)
+        alpha_target, beta_target = self._apply_anti_stop(
+            alpha=alpha_target,
+            beta=beta_target,
+            delta=delta,
+            orbit_replacement_active=orbit_replacement_active,
+            overall_amplitude=overall_amplitude,
+            silence_deadzone_active=silence_deadzone_active,
+        )
+        self._log_jump_debug(
+            source="_generate_idle_motion_after_anti_stop",
+            alpha=float(alpha_target),
+            beta=float(beta_target),
+            delta=f"{float(delta):.6f}",
+        )
 
         self.state.alpha = alpha_target
         self.state.beta = beta_target
+
+        if silence_deadzone_active:
+            lock_margin = float(np.clip(self._silence_landing_lock_margin, 0.001, 0.05))
+            dist = float(np.hypot(self.state.alpha - park_target_alpha, self.state.beta - park_target_beta))
+            if dist < lock_margin:
+                self.state.alpha = park_target_alpha
+                self.state.beta = park_target_beta
+                alpha_target = park_target_alpha
+                beta_target = park_target_beta
+                self._silence_parked_lock = True
+            else:
+                self._silence_parked_lock = False
+        else:
+            self._silence_parked_lock = False
+
         self._last_idle_time = now
 
         # Volume with fade + creep reduction
@@ -4532,20 +4891,9 @@ class StrokeMapper:
         gate_amp = float(np.clip(self._gate_amplitude_value, 0.40, 1.0))
         gate_vis = float(np.clip(self._gate_visibility_value, 0.35, 1.0))
 
-        gate_pull_allowed = bool(
-            self._motion_mode == MotionMode.CREEP_MICRO
-            or near_silence_now
-            or self.state.creep_reset_active
-        )
-        if gate_amp < 0.999 and gate_pull_allowed:
-            alpha_target = self._park_alpha + ((alpha_target - self._park_alpha) * gate_amp)
-            beta_target = self._park_beta + ((beta_target - self._park_beta) * gate_amp)
-            alpha_target = float(np.clip(alpha_target, -1.0, 1.0))
-            beta_target = float(np.clip(beta_target, -1.0, 1.0))
-            self.state.alpha = alpha_target
-            self.state.beta = beta_target
-
         volume *= gate_vis
+        if silence_deadzone_active:
+            volume = 0.0
 
         return TCodeCommand(alpha_target, beta_target, duration_ms, volume)
 
@@ -4654,6 +5002,12 @@ class StrokeMapper:
         self._bass_jitter_speed_mult = 1.0
         self._trajectory = None
         self._beats_since_stroke = 0
+        self._silence_deadzone_active = False
+        self._silence_parked_lock = False
+        self.target_radius = float(np.clip(getattr(self.config, 'base_radius', 0.30) or 0.30, 0.05, 1.0))
+        self._last_overall_amplitude = 0.0
+        self._noise_check_frame_counter = 0
+        self._force_overall_amplitude_zero = False
 
 
 # ---------------------------------------------------------------------------
