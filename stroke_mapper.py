@@ -73,6 +73,15 @@ class PlannedTrajectory:
         return self.current_index >= self.n_points
 
 
+@dataclass
+class PendingStrokeChange:
+    """Deferred stroke launch committed only at arc gate checkpoints."""
+    kind: str  # "beat" | "downbeat" | "syncopation"
+    event: BeatEvent
+    duration_mult: float = 1.0
+    queued_at: float = 0.0
+
+
 # ---------------------------------------------------------------------------
 # Behavioral mode enum
 # ---------------------------------------------------------------------------
@@ -113,6 +122,15 @@ class StrokeMapper:
             y_offset=float(getattr(self.config.stroke, 'geometry_y_offset', 0.50) or 0.50),
             sink_start_intensity=float(getattr(self.config.stroke, 'geometry_sink_start_intensity', 0.25) or 0.25),
         )
+        self._active_stroke_mode: StrokeMode = self.config.stroke.mode
+        self._pending_stroke_mode: Optional[StrokeMode] = None
+        self._pending_stroke_change: Optional[PendingStrokeChange] = None
+        self._arc_commit_gate_points: Tuple[float, ...] = (0.5,)
+        self._last_geometry_phase: float = self._geometry.get_phase()
+        self._trajectory_handoff_blend_frames: int = 3
+        self._trajectory_handoff_blend_distance: float = 0.35
+        self._phase_debug_enabled: bool = True
+        self._last_phase_debug_log_time: float = 0.0
 
         # Motion intensity multiplier (0.25-2.0, default 1.0) — GUI slider
         self.motion_intensity: float = 1.0
@@ -316,6 +334,8 @@ class StrokeMapper:
         self._gate_modulation_close_smooth: float = 0.30
         self._gate_modulation_open_smooth: float = 0.12
         self._gate_modulation_open_max_step: float = 0.06
+        self._gate_amplitude_max_step_per_frame: float = 0.05
+        self._radius_max_step_per_frame: float = 0.05
 
         # ---------- Adaptive amp-fill threshold controller ----------
         # Raises/lower required fill ratio per phase so beat fires stay selective.
@@ -436,6 +456,10 @@ class StrokeMapper:
         self._park_alpha: float = 0.0
         self._park_beta: float = 0.0
         self._update_park_anchor_from_radius(self._park_radius)
+        self._idle_radius_target: float = self._park_radius
+        self._idle_radius_value: float = self._park_radius
+        self._trajectory_radius_target: float = self._park_radius
+        self._trajectory_radius_value: float = self._park_radius
 
     # ------------------------------------------------------------------
     # Helpers
@@ -686,7 +710,26 @@ class StrokeMapper:
         if amplitude_multiplier is not None:
             self._gate_amplitude_target = float(np.clip(amplitude_multiplier, 0.40, 1.0))
 
-    def _step_gate_modulation_value(self, current: float, target: float) -> float:
+    @staticmethod
+    def _slew_toward(current: float,
+                     target: float,
+                     max_step: float,
+                     min_value: float = 0.0,
+                     max_value: float = 1.0) -> float:
+        current_val = float(np.clip(current, min_value, max_value))
+        target_val = float(np.clip(target, min_value, max_value))
+        step = float(max(0.0, max_step))
+        if step <= 0.0:
+            return current_val
+        delta = target_val - current_val
+        if abs(delta) <= step:
+            return target_val
+        return float(np.clip(current_val + (step if delta > 0.0 else -step), min_value, max_value))
+
+    def _step_gate_modulation_value(self,
+                                    current: float,
+                                    target: float,
+                                    max_step: Optional[float] = None) -> float:
         """Asymmetric gate smoothing: close fast, open gradually (bloom)."""
         current_val = float(np.clip(current, 0.0, 1.0))
         target_val = float(np.clip(target, 0.0, 1.0))
@@ -699,6 +742,15 @@ class StrokeMapper:
         else:
             smooth = float(np.clip(self._gate_modulation_close_smooth, 0.01, 1.0))
             next_val = current_val + ((target_val - current_val) * smooth)
+
+        if max_step is not None:
+            next_val = self._slew_toward(
+                current=current_val,
+                target=next_val,
+                max_step=float(max_step),
+                min_value=0.0,
+                max_value=1.0,
+            )
 
         return float(np.clip(next_val, 0.0, 1.0))
 
@@ -897,16 +949,32 @@ class StrokeMapper:
         if edge_creep_continuation:
             return fallback_phase
 
-        if direction_override in (-1, 1):
-            direction = int(direction_override)
-        elif mode == StrokeMode.SPIRAL:
-            direction = 1 if self._spiral_direction >= 0 else -1
-        else:
-            direction = 1
-
         offset = float(np.clip(self._single_anchor_prebottom_offset, 0.05, 0.6))
         base = float(self._single_anchor_bottom_phase)
-        return (base - offset) if direction >= 0 else (base + offset)
+        return base - offset
+
+    def _log_phase_sawtooth(self, prev_phase: float, current_phase: float, source: str) -> None:
+        if not self._phase_debug_enabled:
+            return
+        now = time.perf_counter()
+        if (now - self._last_phase_debug_log_time) < 0.08:
+            return
+        prev = float(prev_phase % 1.0)
+        curr = float(current_phase % 1.0)
+        unwrapped_curr = curr + (1.0 if curr < prev else 0.0)
+        crossed_bottom = bool(prev <= 0.5 <= unwrapped_curr)
+        near_bottom = bool(abs(curr - 0.5) <= 0.03)
+        if crossed_bottom or near_bottom:
+            log_event(
+                "INFO",
+                "StrokeMapper",
+                "Phase sawtooth",
+                source=source,
+                prev=f"{prev:.3f}",
+                curr=f"{curr:.3f}",
+                monotonic="yes" if unwrapped_curr >= prev else "no",
+            )
+            self._last_phase_debug_log_time = now
 
     def _get_arc_launch_phase(self, mode: StrokeMode) -> float:
         fallback_phase = float(self._geometry.get_phase() * 2.0 * np.pi)
@@ -1265,6 +1333,10 @@ class StrokeMapper:
             return 2
         return 1
 
+    def _is_forward_orbit_mode(self, mode: Optional[StrokeMode]) -> bool:
+        mode_to_use = mode if mode is not None else self.config.stroke.mode
+        return mode_to_use in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL)
+
     def _freq_to_factor(self, freq: float) -> float:
         """Convert frequency -> 0-1 factor.  Lower (bass) -> 0 -> deeper strokes."""
         cfg = self.config.stroke
@@ -1488,6 +1560,152 @@ class StrokeMapper:
                 synced += 2 * np.pi
             self.state.creep_angle = synced
             self._geometry.reset(synced / (2 * np.pi))
+            self._last_geometry_phase = self._geometry.get_phase()
+
+    def _sync_geometry_phase_from_point(self, alpha: float, beta: float) -> None:
+        """Align geometry phase/creep angle to a concrete alpha/beta point."""
+        radius = float(np.hypot(alpha, beta))
+        if radius <= 0.05:
+            return
+        synced = float(np.arctan2(alpha, beta))
+        if synced < 0:
+            synced += 2 * np.pi
+        self.state.creep_angle = synced
+        self._geometry.reset(synced / (2 * np.pi))
+        self._last_geometry_phase = self._geometry.get_phase()
+
+    def _align_trajectory_launch_handoff(
+        self,
+        alpha_points: np.ndarray,
+        beta_points: np.ndarray,
+        mode: StrokeMode,
+    ) -> None:
+        """Eliminate launch teleport by stitching trajectory ingress to live position."""
+        n_points = int(min(len(alpha_points), len(beta_points)))
+        if n_points <= 0:
+            return
+
+        start_alpha = float(self.state.alpha)
+        start_beta = float(self.state.beta)
+        alpha_points[0] = start_alpha
+        beta_points[0] = start_beta
+
+        if n_points > 1:
+            next_alpha = float(alpha_points[1])
+            next_beta = float(beta_points[1])
+            launch_gap = float(np.hypot(next_alpha - start_alpha, next_beta - start_beta))
+            if launch_gap > float(self._trajectory_handoff_blend_distance):
+                blend_points = int(min(
+                    max(2, int(self._trajectory_handoff_blend_frames)),
+                    n_points - 1,
+                ))
+                for idx in range(1, blend_points + 1):
+                    target_alpha = float(alpha_points[idx])
+                    target_beta = float(beta_points[idx])
+                    t = float(idx / max(1, blend_points + 1))
+                    eased = float(t * t * (3.0 - 2.0 * t))
+                    alpha_points[idx] = float(np.clip(
+                        start_alpha + ((target_alpha - start_alpha) * eased),
+                        -1.0,
+                        1.0,
+                    ))
+                    beta_points[idx] = float(np.clip(
+                        start_beta + ((target_beta - start_beta) * eased),
+                        -1.0,
+                        1.0,
+                    ))
+
+        if self._is_forward_orbit_mode(mode):
+            self._spiral_direction = 1
+        self._sync_geometry_phase_from_point(float(alpha_points[0]), float(beta_points[0]))
+
+    def _trajectory_overlay_from_phase(
+        self,
+        traj_alpha: float,
+        traj_beta: float,
+        phase: float,
+        mode: StrokeMode,
+    ) -> Tuple[float, float]:
+        """Project trajectory shape onto forward geometry phase.
+
+        Trajectory controls radius only; phase/direction remain continuous from
+        GeometryUtils.
+        """
+        target_radius = float(np.hypot(traj_alpha, traj_beta))
+        if target_radius <= 1e-6:
+            return 0.0, 0.0
+        self._trajectory_radius_target = float(np.clip(target_radius, 0.0, 1.0))
+        self._trajectory_radius_value = self._slew_toward(
+            current=self._trajectory_radius_value,
+            target=self._trajectory_radius_target,
+            max_step=self._radius_max_step_per_frame,
+            min_value=0.0,
+            max_value=1.0,
+        )
+        radius = float(self._trajectory_radius_value)
+
+        angle = float(phase % 1.0) * 2.0 * np.pi
+        return (
+            float(np.clip(np.sin(angle) * radius, -1.0, 1.0)),
+            float(np.clip(np.cos(angle) * radius, -1.0, 1.0)),
+        )
+
+    def _sync_requested_stroke_mode_change(self) -> None:
+        """Queue external stroke-mode changes; apply only on arc gate commit."""
+        requested_mode = self.config.stroke.mode
+        if requested_mode != self._active_stroke_mode:
+            self._pending_stroke_mode = requested_mode
+            self.config.stroke.mode = self._active_stroke_mode
+
+    @staticmethod
+    def _phase_crossed_gate(prev_phase: float, current_phase: float, gate_points: Tuple[float, float]) -> bool:
+        """Return True when phase crosses any configured gate point."""
+        prev = float(prev_phase % 1.0)
+        curr = float(current_phase % 1.0)
+        unwrapped_curr = curr
+        if unwrapped_curr < prev:
+            unwrapped_curr += 1.0
+
+        for gate in gate_points:
+            gate_val = float(gate)
+            while gate_val <= prev:
+                gate_val += 1.0
+            if gate_val <= (unwrapped_curr + 1e-9):
+                return True
+        return False
+
+    def _queue_stroke_change(self, kind: str, event: BeatEvent, duration_mult: float = 1.0) -> None:
+        """Store requested stroke transition for gate-committed handover."""
+        now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
+        self._pending_stroke_change = PendingStrokeChange(
+            kind=kind,
+            event=event,
+            duration_mult=float(duration_mult),
+            queued_at=float(now),
+        )
+
+    def _commit_pending_changes_if_gate_crossed(self, gate_crossed: bool) -> Optional[TCodeCommand]:
+        """Apply pending mode/stroke transitions only at gate checkpoints."""
+        if not gate_crossed:
+            return None
+
+        if self._pending_stroke_mode is not None:
+            self._active_stroke_mode = self._pending_stroke_mode
+            self.config.stroke.mode = self._active_stroke_mode
+            self._pending_stroke_mode = None
+
+        if self._pending_stroke_change is None:
+            return None
+        if self._trajectory is not None and self._trajectory.active:
+            return None
+
+        pending = self._pending_stroke_change
+        self._pending_stroke_change = None
+        if pending.kind == "syncopation":
+            return self._generate_syncopated_stroke(pending.event)
+        if pending.kind == "downbeat":
+            return self._generate_downbeat_stroke(pending.event, duration_mult=pending.duration_mult)
+        return self._generate_beat_stroke(pending.event)
 
     def _advance_phase(self, event: BeatEvent) -> None:
         """Advance the continuous beat phase based on current BPM."""
@@ -2130,8 +2348,10 @@ class StrokeMapper:
             TCodeCommand if a stroke should be sent, None otherwise.
         """
         now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
+        self._spiral_direction = 1
         cfg = self.config.stroke
         beat_cfg = self.config.beat
+        self._sync_requested_stroke_mode_change()
         min_interval_ms = self._effective_min_interval_ms()
         is_downbeat_call = bool(getattr(event, 'is_downbeat', False))
         is_beat_call = bool(getattr(event, 'is_beat', False))
@@ -2434,8 +2654,9 @@ class StrokeMapper:
                             amplitude_multiplier=sync_amp_mult,
                         )
                         return self._apply_fade(cmd)
-                    cmd = self._generate_syncopated_stroke(event)
-                    self._note_motion_resumed("syncopation")
+                    self._queue_stroke_change("syncopation", event)
+                    cmd = self._generate_idle_motion(event, force_update=True)
+                    self._note_motion_resumed("syncopation_queued")
                     return self._apply_fade(cmd)
 
         # ===== NOISE-PRIMARY MODE =====
@@ -2660,8 +2881,9 @@ class StrokeMapper:
                     return self._apply_fade(cmd)
                 if effective_divisor > 1 and (self.state.beat_counter % effective_divisor) != 1:
                     if is_downbeat:
-                        cmd = self._generate_downbeat_stroke(event, duration_mult=2.0)
-                        self._note_motion_resumed("downbeat_fallback")
+                        self._queue_stroke_change("downbeat", event, duration_mult=2.0)
+                        cmd = self._generate_idle_motion(event, force_update=True)
+                        self._note_motion_resumed("downbeat_fallback_queued")
                         return self._apply_fade(cmd)
                     self._note_motion_block(
                         "beat_divisor",
@@ -2715,10 +2937,11 @@ class StrokeMapper:
                         )
                         return self._apply_fade(cmd)
                     if is_downbeat:
-                        cmd = self._generate_downbeat_stroke(event, duration_mult=2.0)
+                        self._queue_stroke_change("downbeat", event, duration_mult=2.0)
                     else:
-                        cmd = self._generate_beat_stroke(event)
-                    self._note_motion_resumed("beat")
+                        self._queue_stroke_change("beat", event)
+                    cmd = self._generate_idle_motion(event, force_update=True)
+                    self._note_motion_resumed("beat_queued")
                     return self._apply_fade(cmd)
 
                 if is_downbeat:
@@ -2750,8 +2973,9 @@ class StrokeMapper:
                                 amplitude_multiplier=down_amp_mult,
                             )
                             return self._apply_fade(cmd)
-                        cmd = self._generate_downbeat_stroke(event, duration_mult=2.0)
-                        self._note_motion_resumed("downbeat_fallback")
+                        self._queue_stroke_change("downbeat", event, duration_mult=2.0)
+                        cmd = self._generate_idle_motion(event, force_update=True)
+                        self._note_motion_resumed("downbeat_fallback_queued")
                         return self._apply_fade(cmd)
 
                     if downbeat_gate_pass and not down_high_gate_pass:
@@ -3150,8 +3374,8 @@ class StrokeMapper:
         arc_radius = max(min_radius, min(1.0, arc_radius))
         if cfg.mode == StrokeMode.SPIRAL:
             spiral_drive = float(np.clip((curved_intensity + np.clip(event.spectral_flux / max(cfg.flux_threshold, 0.001), 0.0, 1.5)) * 0.5, 0.0, 1.0))
-            if random.random() < (0.40 + 0.20 * spiral_drive):
-                self._spiral_direction *= -1
+            if self._is_forward_orbit_mode(cfg.mode):
+                self._spiral_direction = 1
             direction = self._spiral_direction
             launch_phase = self._get_arc_launch_phase(cfg.mode)
             base_angle = self._get_anchor_phase_for_mode(cfg.mode, launch_phase, direction_override=direction)
@@ -3231,6 +3455,8 @@ class StrokeMapper:
                     scale = allowed_radius / point_radius
                     alpha_arc[i] *= scale
                     beta_arc[i] *= scale
+
+            self._align_trajectory_launch_handoff(alpha_arc, beta_arc, cfg.mode)
 
         # Downbeat-specific timing: slight acceleration over the last 1/8 of travel.
         step_durations = self._make_downbeat_tail_accel_durations(measure_duration_ms, n_points)
@@ -3347,12 +3573,8 @@ class StrokeMapper:
             alpha_weight = self.config.alpha_weight
             beta_weight = self.config.beta_weight
             spiral_drive = float(np.clip((curved_intensity + np.clip(event.spectral_flux / max(cfg.flux_threshold, 0.001), 0.0, 1.5)) * 0.5, 0.0, 1.0))
-            if random.random() < (0.45 + 0.25 * spiral_drive):
-                self._spiral_direction *= -1
-            direction = self._spiral_direction
-            if spiral_drive > 0.60 and random.random() < 0.45:
-                direction = 1
-                self._spiral_direction = direction
+            self._spiral_direction = 1
+            direction = 1
 
             spiral_inner = 0.24
             spiral_outer = float(np.clip(max(self._edge_follow_radius * 0.94, 0.76 + 0.20 * spiral_drive), 0.76, 1.0))
@@ -3418,6 +3640,8 @@ class StrokeMapper:
         else:
             # Landing emphasis: slow at start/end (tap feel), fast through middle
             step_durations = self._make_landing_durations(beat_interval_ms, n_points)
+
+        self._align_trajectory_launch_handoff(alpha_arc, beta_arc, cfg.mode)
 
         # Store trajectory for frame-by-frame playback (no thread)
         self._trajectory = PlannedTrajectory(
@@ -3541,6 +3765,8 @@ class StrokeMapper:
                 depth=depth,
                 event=event,
             )
+
+        self._align_trajectory_launch_handoff(alpha_arc, beta_arc, cfg.mode)
 
         # Always landing durations for tap feel
         step_durations = self._make_landing_durations(duration_ms, n_points)
@@ -3669,7 +3895,7 @@ class StrokeMapper:
     # Trajectory playback (called from _generate_idle_motion)
     # ------------------------------------------------------------------
 
-    def _advance_trajectory(self) -> Optional[TCodeCommand]:
+    def _advance_trajectory(self, now: Optional[float] = None, dt_s: Optional[float] = None) -> Optional[TCodeCommand]:
         """Read the next point from the active trajectory.
         Uses elapsed time to pick the correct point, so the arc stays in
         sync with the beat even if the frame rate fluctuates.
@@ -3679,7 +3905,14 @@ class StrokeMapper:
         if traj is None or traj.finished:
             return None
 
-        now = time.perf_counter()
+        self._spiral_direction = 1
+
+        if now is None:
+            now = time.perf_counter()
+        if dt_s is None:
+            dt_s = float(np.clip(now - float(self._last_idle_time), 0.0, 0.250))
+        else:
+            dt_s = float(np.clip(dt_s, 0.0, 0.250))
 
         if now < traj.start_time:
             traj.start_time = now
@@ -3721,9 +3954,38 @@ class StrokeMapper:
         if target_idx > (traj.current_index + max_advance):
             target_idx = traj.current_index + max_advance
 
-        alpha = float(traj.alpha_points[target_idx])
-        beta = float(traj.beta_points[target_idx])
+        legacy_alpha = float(traj.alpha_points[target_idx])
+        legacy_beta = float(traj.beta_points[target_idx])
         step_ms = traj.step_durations[target_idx]
+
+        if not getattr(traj, 'is_micro', False) and not getattr(traj, 'is_park_return', False):
+            phase_bpm = float(self._cap_bpm_to_last_locked(self._get_reliable_metronome_bpm(None)))
+            if phase_bpm <= 0:
+                if self._last_known_bpm > 0:
+                    phase_bpm = float(self._last_known_bpm)
+                elif traj.original_bpm > 0:
+                    phase_bpm = float(traj.original_bpm)
+                else:
+                    phase_bpm = 90.0
+            self._geometry.update(
+                bpm=phase_bpm,
+                dt=dt_s,
+                intensity=1.0,
+                beat_detected=False,
+            )
+            current_phase = float(self._geometry.get_phase())
+            self._log_phase_sawtooth(self._last_geometry_phase, current_phase, source="trajectory")
+            self._last_geometry_phase = current_phase
+            alpha, beta = self._trajectory_overlay_from_phase(
+                traj_alpha=legacy_alpha,
+                traj_beta=legacy_beta,
+                phase=current_phase,
+                mode=self.config.stroke.mode,
+            )
+            self.state.creep_angle = current_phase * 2.0 * np.pi
+        else:
+            alpha = legacy_alpha
+            beta = legacy_beta
 
         # Use short duration matching our update rate for smooth motion
         duration_ms = min(step_ms, 25)
@@ -3736,13 +3998,13 @@ class StrokeMapper:
         self._log_large_motion_jump(prev_alpha, prev_beta, alpha, beta, source="trajectory")
         self.state.alpha = alpha
         self.state.beta = beta
-        # Keep creep_angle in sync with actual position during trajectory playback
-        # so idle motion resumes smoothly after arc completes
-        r = np.sqrt(alpha**2 + beta**2)
-        if r > 0.05:
-            self.state.creep_angle = np.arctan2(alpha, beta)
-            if self.state.creep_angle < 0:
-                self.state.creep_angle += 2 * np.pi
+        # Keep creep angle in sync for non-overlay trajectories.
+        if getattr(traj, 'is_micro', False) or getattr(traj, 'is_park_return', False):
+            r = np.sqrt(alpha**2 + beta**2)
+            if r > 0.05:
+                self.state.creep_angle = np.arctan2(alpha, beta)
+                if self.state.creep_angle < 0:
+                    self.state.creep_angle += 2 * np.pi
         traj.current_index = target_idx + 1
 
         # Intentionally do NOT snap/catch-up to target after beat time.
@@ -3863,6 +4125,8 @@ class StrokeMapper:
                 alpha_arc[i] = np.sin(angle) * radius * self.config.alpha_weight
                 beta_arc[i] = np.cos(angle) * radius * self.config.beta_weight
 
+        self._align_trajectory_launch_handoff(alpha_arc, beta_arc, cfg.mode)
+
         # Apply timing shape: thump or landing (tap feel)
         if cfg.thump_enabled:
             step_durations = self._make_thump_durations(beat_interval_ms, n_points)
@@ -3942,6 +4206,7 @@ class StrokeMapper:
     def _generate_idle_motion(self, event: Optional[BeatEvent], force_update: bool = False) -> Optional[TCodeCommand]:
         """Generate motion: trajectory playback OR creep/jitter when idle."""
         now = time.perf_counter()
+        self._spiral_direction = 1
         jitter_cfg = self.config.jitter
         creep_cfg = self.config.creep
 
@@ -3952,8 +4217,12 @@ class StrokeMapper:
 
         # ---------- Trajectory playback (replaces arc thread) ----------
         if self._trajectory is not None and self._trajectory.active:
+            cmd = self._advance_trajectory(
+                now=now,
+                dt_s=float(np.clip(time_since_last / 1000.0, 0.0, 0.250)),
+            )
             self._last_idle_time = now
-            return self._advance_trajectory()
+            return cmd
 
         reliable_tempo_bpm = self._cap_bpm_to_last_locked(self._get_reliable_metronome_bpm(event))
         if reliable_tempo_bpm > 0:
@@ -4018,8 +4287,12 @@ class StrokeMapper:
                 and reliable_tempo_bpm > 0):
             self._generate_continuation_arc()
             if self._trajectory is not None and self._trajectory.active:
+                cmd = self._advance_trajectory(
+                    now=now,
+                    dt_s=float(np.clip(time_since_last / 1000.0, 0.0, 0.250)),
+                )
                 self._last_idle_time = now
-                return self._advance_trajectory()
+                return cmd
 
         orbit_replacement_active = not bool(creep_cfg.enabled)
 
@@ -4111,6 +4384,16 @@ class StrokeMapper:
                 park_radius = float(np.hypot(self._park_alpha, self._park_beta))
                 creep_radius = float(creep_radius + ((park_radius - creep_radius) * creep_reset_blend))
 
+            self._idle_radius_target = float(np.clip(creep_radius, 0.0, 1.0))
+            self._idle_radius_value = self._slew_toward(
+                current=self._idle_radius_value,
+                target=self._idle_radius_target,
+                max_step=self._radius_max_step_per_frame,
+                min_value=0.0,
+                max_value=1.0,
+            )
+            creep_radius = float(self._idle_radius_value)
+
             idle_dt_s = float(np.clip(time_since_last / 1000.0, 0.0, 0.250))
             beat_detected_now = bool(
                 event is not None and (
@@ -4124,6 +4407,18 @@ class StrokeMapper:
                 intensity=creep_radius,
                 beat_detected=beat_detected_now,
             )
+            current_phase = self._geometry.get_phase()
+            self._log_phase_sawtooth(self._last_geometry_phase, current_phase, source="idle")
+            gate_crossed = self._phase_crossed_gate(
+                self._last_geometry_phase,
+                current_phase,
+                self._arc_commit_gate_points,
+            )
+            self._last_geometry_phase = current_phase
+            committed_cmd = self._commit_pending_changes_if_gate_crossed(gate_crossed)
+            if committed_cmd is not None:
+                self._last_idle_time = now
+                return committed_cmd
             synced = float(np.arctan2(target_alpha, target_beta))
             if synced < 0:
                 synced += 2 * np.pi
@@ -4232,11 +4527,17 @@ class StrokeMapper:
         self._gate_amplitude_value = self._step_gate_modulation_value(
             self._gate_amplitude_value,
             self._gate_amplitude_target,
+            max_step=self._gate_amplitude_max_step_per_frame,
         )
         gate_amp = float(np.clip(self._gate_amplitude_value, 0.40, 1.0))
         gate_vis = float(np.clip(self._gate_visibility_value, 0.35, 1.0))
 
-        if gate_amp < 0.999:
+        gate_pull_allowed = bool(
+            self._motion_mode == MotionMode.CREEP_MICRO
+            or near_silence_now
+            or self.state.creep_reset_active
+        )
+        if gate_amp < 0.999 and gate_pull_allowed:
             alpha_target = self._park_alpha + ((alpha_target - self._park_alpha) * gate_amp)
             beta_target = self._park_beta + ((beta_target - self._park_beta) * gate_amp)
             alpha_target = float(np.clip(alpha_target, -1.0, 1.0))

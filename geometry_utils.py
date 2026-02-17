@@ -40,6 +40,9 @@ class GeometryUtils:
         )
         self._silence_threshold = max(0.0, min(1.0, self._safe_finite(silence_threshold, default=0.05)))
         self._min_rotation_scale = max(0.0, min(1.0, self._safe_finite(min_rotation_scale, default=0.04)))
+        self._ghost_spin_intensity_threshold = 0.05
+        self._ghost_spin_hold_seconds = 1.0
+        self._low_intensity_elapsed = 0.0
 
     @staticmethod
     def _safe_finite(value: float, default: float) -> float:
@@ -58,6 +61,7 @@ class GeometryUtils:
 
     def reset(self, phase: float = 0.0) -> None:
         self._phase = float(phase) % 1.0
+        self._low_intensity_elapsed = 0.0
 
     def get_phase(self) -> float:
         return float(self._phase)
@@ -70,6 +74,14 @@ class GeometryUtils:
         dt = max(0.0, self._safe_finite(dt, default=0.0))
         intensity = max(0.0, min(1.0, self._safe_finite(intensity, default=0.0)))
         beat_detected = bool(beat_detected)
+
+        if intensity < self._ghost_spin_intensity_threshold:
+            self._low_intensity_elapsed += dt
+        else:
+            self._low_intensity_elapsed = 0.0
+
+        if self._low_intensity_elapsed > self._ghost_spin_hold_seconds:
+            bpm = 0.0
 
         if beat_detected:
             self._beat_confidence = 1.0
