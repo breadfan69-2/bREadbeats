@@ -3318,6 +3318,7 @@ class BREadbeatsWindow(QMainWindow):
         self._advanced_flux_group = None
         self._tempo_tracking_dialog = None
         self._tempo_tracking_popout_content = None
+        self._show_capture_backend_diag = False
         
         # Setup UI
         self._setup_ui()
@@ -3337,6 +3338,10 @@ class BREadbeatsWindow(QMainWindow):
 
         self._register_app_run_startup()
         self._schedule_startup_notices()
+
+        self._capture_diag_timer = QTimer(self)
+        self._capture_diag_timer.timeout.connect(self._update_capture_backend_status_label)
+        self._capture_diag_timer.start(1000)
 
         # Connect signals
         self.signals.beat_detected.connect(self._on_beat)
@@ -3915,6 +3920,16 @@ class BREadbeatsWindow(QMainWindow):
         fft_diag_action = nerds_menu.addAction("FFT Bin Diagnostics...")
         assert fft_diag_action is not None
         fft_diag_action.triggered.connect(self._on_fft_bin_diagnostics)
+
+        self.capture_backend_diag_action = nerds_menu.addAction("Show Capture Backend Status")
+        assert self.capture_backend_diag_action is not None
+        self.capture_backend_diag_action.setCheckable(True)
+        self.capture_backend_diag_action.setChecked(False)
+        self.capture_backend_diag_action.triggered.connect(self._on_capture_backend_diag_toggle)
+
+        capture_backend_details_action = nerds_menu.addAction("Capture Backend Details...")
+        assert capture_backend_details_action is not None
+        capture_backend_details_action.triggered.connect(self._on_capture_backend_details)
         
         # Separator
         main_menu.addSeparator()
@@ -8468,6 +8483,10 @@ Like the app?<br>
         self.metric_status_label = QLabel("Metrics: [idle]")
         self.metric_status_label.setStyleSheet("color: #AAA; font-size: 9px;")
         status_row.addWidget(self.metric_status_label)
+        self.capture_backend_status_label = QLabel("")
+        self.capture_backend_status_label.setStyleSheet("color: #888; font-size: 9px;")
+        self.capture_backend_status_label.setVisible(False)
+        status_row.addWidget(self.capture_backend_status_label)
         status_row.addStretch()
         metric_layout.addLayout(status_row)
         
@@ -9656,6 +9675,52 @@ Like the app?<br>
             # DON'T disable sending_enabled — connection stays active until Stop
         self._transport_pending_play = None
         self._sync_transport_buttons()
+
+    def _on_capture_backend_diag_toggle(self, checked: bool):
+        self._show_capture_backend_diag = bool(checked)
+        if hasattr(self, 'capture_backend_status_label'):
+            self.capture_backend_status_label.setVisible(self._show_capture_backend_diag)
+        self._update_capture_backend_status_label()
+
+    def _on_capture_backend_details(self):
+        status = {}
+        if self.audio_engine is not None and hasattr(self.audio_engine, 'get_capture_backend_status'):
+            status = self.audio_engine.get_capture_backend_status()
+
+        backend = str(status.get('backend', 'idle') or 'idle')
+        reason = str(status.get('reason', '') or '').strip()
+        stderr_tail = status.get('helper_stderr_tail', []) or []
+        if not isinstance(stderr_tail, list):
+            stderr_tail = [str(stderr_tail)]
+
+        lines = [f"Backend: {backend}"]
+        if reason:
+            lines.append(f"Reason: {reason}")
+        if stderr_tail:
+            lines.append("")
+            lines.append("Helper stderr tail:")
+            lines.extend(f"- {line}" for line in stderr_tail[-10:])
+
+        QMessageBox.information(self, "Capture Backend Details", "\n".join(lines))
+
+    def _update_capture_backend_status_label(self):
+        if not hasattr(self, 'capture_backend_status_label'):
+            return
+        if not self._show_capture_backend_diag:
+            self.capture_backend_status_label.setText("")
+            return
+
+        if self.audio_engine is None or not hasattr(self.audio_engine, 'get_capture_backend_status'):
+            self.capture_backend_status_label.setText("Capture: idle")
+            return
+
+        status = self.audio_engine.get_capture_backend_status()
+        backend = str(status.get('backend', 'unknown') or 'unknown')
+        reason = str(status.get('reason', '') or '').strip()
+        if reason:
+            self.capture_backend_status_label.setText(f"Capture: {backend} ({reason})")
+        else:
+            self.capture_backend_status_label.setText(f"Capture: {backend}")
     
     def _on_detection_type_change(self, index: int):
         """Change beat detection type"""
