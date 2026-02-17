@@ -3,8 +3,9 @@ import unittest
 from typing import Any
 
 from audio_engine import BeatEvent
+from beat_intelligence import BeatDecision, BeatIntelligence
 from config import Config
-from stroke_mapper import BeatDecision, StrokeMapper
+from stroke_mapper import StrokeMapper
 
 
 class TestStrokeMapperContract(unittest.TestCase):
@@ -42,68 +43,122 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertAlmostEqual(decision.journey_completion, 0.25, places=6)
 
     def test_trigger_interval_mapping(self):
-        mapper = StrokeMapper(Config())
+        intelligence = BeatIntelligence(Config())
 
-        self.assertEqual(mapper._interval_beats_for_trigger("syncopation"), 1)
-        self.assertEqual(mapper._interval_beats_for_trigger("beat"), 2)
-        self.assertEqual(mapper._interval_beats_for_trigger("downbeat"), 4)
-        self.assertEqual(mapper._interval_beats_for_trigger("creep"), 8)
+        self.assertEqual(intelligence.interval_beats_for_trigger("syncopation"), 1)
+        self.assertEqual(intelligence.interval_beats_for_trigger("beat"), 2)
+        self.assertEqual(intelligence.interval_beats_for_trigger("downbeat"), 4)
+        self.assertEqual(intelligence.interval_beats_for_trigger("creep"), 8)
 
     def test_trigger_classifier_maps_to_creep_when_no_beat_family(self):
-        mapper = StrokeMapper(Config())
+        intelligence = BeatIntelligence(Config())
         event = self._event(is_beat=False, is_downbeat=False, is_syncopated=False)
-        self.assertEqual(mapper._classify_trigger(event), "creep")
+        self.assertEqual(intelligence.classify_trigger(event), "creep")
 
     def test_trigger_classifier_priority_syncopation_then_downbeat_then_beat(self):
-        mapper = StrokeMapper(Config())
+        intelligence = BeatIntelligence(Config())
 
         sync_event = self._event(is_syncopated=True, is_downbeat=True, is_beat=True)
-        self.assertEqual(mapper._classify_trigger(sync_event), "syncopation")
+        self.assertEqual(intelligence.classify_trigger(sync_event), "syncopation")
 
         downbeat_event = self._event(is_syncopated=False, is_downbeat=True, is_beat=True)
-        self.assertEqual(mapper._classify_trigger(downbeat_event), "downbeat")
+        self.assertEqual(intelligence.classify_trigger(downbeat_event), "downbeat")
 
         beat_event = self._event(is_syncopated=False, is_downbeat=False, is_beat=True)
-        self.assertEqual(mapper._classify_trigger(beat_event), "beat")
+        self.assertEqual(intelligence.classify_trigger(beat_event), "beat")
 
     def test_sub_bass_maps_to_radius_bloom_range(self):
-        mapper = StrokeMapper(Config())
+        intelligence = BeatIntelligence(Config())
 
-        mapper._sub_bass_energy = 0.0
-        self.assertAlmostEqual(mapper._compute_radius_bloom_from_sub_bass(), 0.70, places=6)
+        intelligence.energies.sub_bass = 0.0
+        self.assertAlmostEqual(intelligence.compute_radius_bloom_from_sub_bass(), 0.70, places=6)
 
-        mapper._sub_bass_energy = 1.0
-        self.assertAlmostEqual(mapper._compute_radius_bloom_from_sub_bass(), 0.95, places=6)
+        intelligence.energies.sub_bass = 1.0
+        self.assertAlmostEqual(intelligence.compute_radius_bloom_from_sub_bass(), 0.95, places=6)
 
-        mapper._sub_bass_energy = 0.5
-        self.assertAlmostEqual(mapper._compute_radius_bloom_from_sub_bass(), 0.825, places=6)
+        intelligence.energies.sub_bass = 0.5
+        midpoint = intelligence.compute_radius_bloom_from_sub_bass()
+        self.assertGreater(midpoint, 0.70)
+        self.assertLess(midpoint, 0.95)
 
-    def test_beat_decision_bridge_uses_trigger_and_radius_mapping(self):
-        mapper = StrokeMapper(Config())
-        mapper._sub_bass_energy = 0.8
-        event = self._event(is_syncopated=False, is_downbeat=False, is_beat=True)
+    def test_flux_boost_increases_bloom(self):
+        intelligence = BeatIntelligence(Config())
+        intelligence.energies.sub_bass = 0.5
 
-        decision = mapper._build_beat_decision(event, silence_active=False, dt=1.0 / 60.0)
+        low_flux_event = self._event(spectral_flux=0.0)
+        high_flux_event = self._event(spectral_flux=0.30)
+
+        low_flux_bloom = intelligence.compute_radius_bloom_from_sub_bass(low_flux_event)
+        high_flux_bloom = intelligence.compute_radius_bloom_from_sub_bass(high_flux_event)
+
+        self.assertGreater(high_flux_bloom, low_flux_bloom)
+
+    def test_build_decision_emits_trigger_interval_and_progress(self):
+        intelligence = BeatIntelligence(Config())
+        event = self._event(is_syncopated=False, is_downbeat=False, is_beat=True, tempo_locked=True)
+
+        decision = intelligence.build_decision(event=event, dt=1.0 / 60.0, silence_override=False)
 
         self.assertEqual(decision.trigger_kind, "beat")
         self.assertEqual(decision.interval_beats, 2)
-        self.assertAlmostEqual(decision.radius_bloom, 0.90, places=6)
+        self.assertGreaterEqual(decision.radius_bloom, 0.70)
+        self.assertLessEqual(decision.radius_bloom, 0.95)
         self.assertFalse(decision.silence_active)
         self.assertGreaterEqual(decision.journey_completion, 0.0)
         self.assertLessEqual(decision.journey_completion, 1.0)
+
+    def test_tempo_lock_required_falls_back_to_creep_when_not_ready(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = True
+        cfg.beat.teaching_metronome_relaxed_confidence = 0.5
+        intelligence = BeatIntelligence(cfg)
+
+        event = self._event(is_beat=True, tempo_locked=False, acf_confidence=0.1)
+        decision = intelligence.build_decision(event=event, dt=1.0 / 60.0, silence_override=False)
+
+        self.assertEqual(decision.trigger_kind, "creep")
+        self.assertEqual(decision.interval_beats, 8)
+
+    def test_strict_bass_gate_blocks_non_bass_beats(self):
+        cfg = Config()
+        cfg.beat.strict_bass_motion_gate_enabled = True
+        cfg.beat.tempo_lock_required = False
+        intelligence = BeatIntelligence(cfg)
+
+        event = self._event(is_beat=True, beat_band="high", fired_bands=["high"])
+        decision = intelligence.build_decision(event=event, dt=1.0 / 60.0, silence_override=False)
+
+        self.assertEqual(decision.trigger_kind, "creep")
+        self.assertEqual(decision.interval_beats, 8)
+
+    def test_active_beat_journey_is_not_overwritten_by_intermediate_creep_frames(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        intelligence = BeatIntelligence(cfg)
+
+        beat_event = self._event(is_beat=True, tempo_locked=True)
+        first = intelligence.build_decision(event=beat_event, dt=1.0 / 60.0, silence_override=False)
+
+        between_event = self._event(is_beat=False, is_downbeat=False, is_syncopated=False)
+        second = intelligence.build_decision(event=between_event, dt=1.0 / 60.0, silence_override=False)
+
+        self.assertEqual(first.trigger_kind, "beat")
+        self.assertEqual(second.trigger_kind, "beat")
+        self.assertEqual(second.interval_beats, 2)
+        self.assertGreater(second.journey_completion, 0.0)
 
     def test_treble_elevator_uses_negative_park_geometry(self):
         mapper = StrokeMapper(Config())
         self.assertAlmostEqual(mapper._park_y, -0.70, places=6)
 
     def test_treble_elevator_landing_guard_returns_center_to_park(self):
-        mapper = StrokeMapper(Config())
-        mapper._high_energy = 1.0
-        mapper._mid_energy = 1.0
+        intelligence = BeatIntelligence(Config())
+        intelligence.energies.high = 1.0
+        intelligence.energies.mid = 1.0
 
-        early_offset = mapper._compute_treble_lift(journey_completion=0.0)
-        late_offset = mapper._compute_treble_lift(journey_completion=0.95)
-        landed_offset = mapper._compute_treble_lift(journey_completion=1.0)
+        early_offset = intelligence.compute_treble_lift(journey_completion=0.0)
+        late_offset = intelligence.compute_treble_lift(journey_completion=0.95)
+        landed_offset = intelligence.compute_treble_lift(journey_completion=1.0)
 
         self.assertGreater(early_offset, 0.0)
         self.assertLess(late_offset, early_offset)
@@ -140,10 +195,10 @@ class TestStrokeMapperContract(unittest.TestCase):
 
     def test_terminal_pose_lands_at_park_with_high_treble_and_max_bloom(self):
         mapper = StrokeMapper(Config())
-        mapper._high_energy = 1.0
-        mapper._mid_energy = 1.0
+        mapper._intelligence.energies.high = 1.0
+        mapper._intelligence.energies.mid = 1.0
 
-        mapper._intelligence.build_decision = lambda event, dt: BeatDecision(
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
             trigger_kind="downbeat",
             interval_beats=4,
             radius_bloom=0.95,
@@ -161,10 +216,10 @@ class TestStrokeMapperContract(unittest.TestCase):
 
     def test_terminal_pose_lands_at_park_for_syncopation_with_high_treble_and_max_bloom(self):
         mapper = StrokeMapper(Config())
-        mapper._high_energy = 1.0
-        mapper._mid_energy = 1.0
+        mapper._intelligence.energies.high = 1.0
+        mapper._intelligence.energies.mid = 1.0
 
-        mapper._intelligence.build_decision = lambda event, dt: BeatDecision(
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
             trigger_kind="syncopation",
             interval_beats=1,
             radius_bloom=0.95,
@@ -173,6 +228,34 @@ class TestStrokeMapperContract(unittest.TestCase):
         )
 
         cmd = mapper.process_beat(self._event(is_syncopated=True, raw_rms=0.2, peak_energy=0.8))
+
+        self.assertIsNotNone(cmd)
+        assert cmd is not None
+        epsilon = 1e-6
+        self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
+        self.assertLessEqual(abs(cmd.beta - (-0.70)), epsilon)
+
+    def test_terminal_pose_lands_at_park_from_non_park_start_angle(self):
+        mapper = StrokeMapper(Config())
+        mapper._intelligence.energies.high = 1.0
+        mapper._intelligence.energies.mid = 1.0
+        mapper._orbit_phase = 1.0471975512
+        mapper._journey_start_angle = mapper._orbit_phase
+        mapper._last_journey_completion = 1.0
+
+        completions = iter((0.0, 1.0))
+
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="downbeat",
+            interval_beats=4,
+            radius_bloom=0.95,
+            silence_active=False,
+            journey_completion=next(completions),
+        )
+
+        mapper.process_beat(self._event(is_downbeat=True, raw_rms=0.2, peak_energy=0.8))
+
+        cmd = mapper.process_beat(self._event(is_downbeat=True, raw_rms=0.2, peak_energy=0.8))
 
         self.assertIsNotNone(cmd)
         assert cmd is not None

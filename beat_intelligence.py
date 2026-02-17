@@ -51,6 +51,10 @@ class BeatIntelligence:
         self.journey_elapsed_s = 0.0
         self.journey_active = False
 
+        self.treble_lift_ema = 0.0
+        self.treble_lift_attack = 0.28
+        self.treble_lift_release = 0.16
+
     def set_audio_engine(self, audio_engine) -> None:
         self.audio_engine = audio_engine
 
@@ -81,8 +85,9 @@ class BeatIntelligence:
 
     def update_silence_deadzone_gate(self, overall_amplitude: float) -> bool:
         threshold = float(getattr(self.config.stroke, "silence_threshold", 0.04) or 0.04)
-        open_threshold = threshold
-        close_threshold = threshold * 1.25
+        gate_low = float(getattr(self.config.stroke, "amplitude_gate_low", 0.04) or 0.04)
+        open_threshold = max(0.0, min(threshold, gate_low))
+        close_threshold = max(open_threshold + 1e-6, open_threshold * 1.20)
 
         if overall_amplitude < open_threshold:
             self.silence_open_count += 1
@@ -100,15 +105,41 @@ class BeatIntelligence:
 
         return self.silence_deadzone_active
 
-    @staticmethod
-    def classify_trigger(event: BeatEvent) -> str:
-        if bool(getattr(event, "is_syncopated", False)):
+    def classify_trigger(self, event: BeatEvent) -> str:
+        if bool(getattr(event, "is_syncopated", False)) and bool(getattr(self.config.beat, "syncopation_enabled", True)):
             return "syncopation"
         if bool(getattr(event, "is_downbeat", False)):
             return "downbeat"
         if bool(getattr(event, "is_beat", False)):
             return "beat"
         return "creep"
+
+    def _tempo_ready_for_motion(self, event: BeatEvent) -> bool:
+        if not bool(getattr(self.config.beat, "tempo_lock_required", True)):
+            return True
+        if bool(getattr(event, "tempo_locked", False)):
+            return True
+        relaxed = float(getattr(self.config.beat, "teaching_metronome_relaxed_confidence", 0.14) or 0.14)
+        acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+        return acf_conf >= relaxed
+
+    def _strict_bass_motion_allowed(self, event: BeatEvent, trigger_kind: str) -> bool:
+        if trigger_kind not in ("beat", "syncopation"):
+            return True
+        if not bool(getattr(self.config.beat, "strict_bass_motion_gate_enabled", False)):
+            return True
+
+        beat_band = str(getattr(event, "beat_band", "") or "")
+        if beat_band in ("sub_bass", "low_mid"):
+            return True
+
+        fired = getattr(event, "fired_bands", None)
+        if isinstance(fired, (list, tuple, set)):
+            fired_set = {str(item) for item in fired}
+            if "sub_bass" in fired_set or "low_mid" in fired_set:
+                return True
+
+        return False
 
     @staticmethod
     def interval_beats_for_trigger(trigger_kind: str) -> int:
@@ -129,11 +160,26 @@ class BeatIntelligence:
             bpm = 120.0
         return float(np.clip(bpm, 40.0, 240.0))
 
-    def compute_radius_bloom_from_sub_bass(self) -> float:
-        min_radius = 0.70
+    def compute_radius_bloom_from_sub_bass(self, event: BeatEvent | None = None) -> float:
+        base_radius = 0.70
         max_radius = 0.95
+        max_bloom = max_radius - base_radius
+
         sub_bass = float(np.clip(self.energies.sub_bass, 0.0, 1.0))
-        return float(min_radius + ((max_radius - min_radius) * sub_bass))
+        low_mid = float(np.clip(self.energies.low_mid, 0.0, 1.0))
+
+        weighted_bass = (sub_bass * 0.70) + (low_mid * 0.30)
+        bass_fill = float(np.clip(max(sub_bass, weighted_bass), 0.0, 1.0))
+        bloom = max_bloom * (bass_fill ** 1.5)
+
+        if event is not None:
+            spectral_flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
+            flux_threshold = float(getattr(self.config.stroke, "flux_threshold", 0.03) or 0.03)
+            flux_ratio = float(np.clip(spectral_flux / max(flux_threshold, 1e-6), 0.0, 2.0))
+            flux_boost = max_bloom * 0.15 * flux_ratio
+            bloom += flux_boost
+
+        return float(np.clip(base_radius + bloom, base_radius, max_radius))
 
     def update_journey_progress(self, trigger_kind: str, interval_beats: int, event: BeatEvent, dt: float) -> float:
         bpm = self.effective_bpm(event)
@@ -141,8 +187,10 @@ class BeatIntelligence:
         target_duration = max(1e-3, beat_period_s * float(interval_beats))
 
         trigger_started = bool(
-            trigger_kind in ("syncopation", "beat", "downbeat")
-            or (trigger_kind == "creep" and self.last_trigger_kind != "creep")
+            (trigger_kind == "syncopation" and bool(getattr(event, "is_syncopated", False)))
+            or (trigger_kind == "downbeat" and bool(getattr(event, "is_downbeat", False)))
+            or (trigger_kind == "beat" and bool(getattr(event, "is_beat", False)))
+            or (trigger_kind == "creep" and self.last_trigger_kind != "creep" and not self.journey_active)
         )
 
         if trigger_started or not self.journey_active or self.active_interval_beats != interval_beats:
@@ -162,7 +210,11 @@ class BeatIntelligence:
         max_lift = 0.40
         treble_fill = float(np.clip((self.energies.high * 0.75) + (self.energies.mid * 0.25), 0.0, 1.0))
         lift_factor = treble_fill ** 2.0
-        base_offset = max_lift * lift_factor
+        target_offset = max_lift * lift_factor
+
+        alpha = self.treble_lift_attack if target_offset >= self.treble_lift_ema else self.treble_lift_release
+        self.treble_lift_ema += (target_offset - self.treble_lift_ema) * alpha
+        smoothed_offset = float(np.clip(self.treble_lift_ema, 0.0, max_lift))
 
         guard_start = 0.80
         p = float(np.clip(journey_completion, 0.0, 1.0))
@@ -175,7 +227,7 @@ class BeatIntelligence:
 
         # Returns vertical center offset (0..max_lift), not absolute Y.
         # At journey completion, this is forced to 0 by the landing guard.
-        return float(base_offset * guard)
+        return float(smoothed_offset * guard)
 
     def build_decision(self, event: BeatEvent, dt: float, silence_override: bool | None = None) -> BeatDecision:
         self.update_band_energies()
@@ -186,9 +238,26 @@ class BeatIntelligence:
         if silence_override is not None:
             silence_active = bool(silence_override)
 
-        trigger_kind = self.classify_trigger(event)
+        raw_trigger_kind = self.classify_trigger(event)
+        trigger_kind = raw_trigger_kind
+
+        # Preserve active beat-family journeys between discrete beat/downbeat/sync events.
+        if (
+            raw_trigger_kind == "creep"
+            and self.journey_active
+            and self.last_trigger_kind in ("syncopation", "beat", "downbeat")
+        ):
+            trigger_kind = self.last_trigger_kind
+
+        # Tempo/bass gates apply to newly detected beat-family events.
+        if raw_trigger_kind in ("syncopation", "beat", "downbeat") and not silence_active:
+            if not self._tempo_ready_for_motion(event):
+                trigger_kind = "creep"
+            elif not self._strict_bass_motion_allowed(event, raw_trigger_kind):
+                trigger_kind = "creep"
+
         interval_beats = self.interval_beats_for_trigger(trigger_kind)
-        radius_bloom = self.compute_radius_bloom_from_sub_bass()
+        radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
         journey_completion = self.update_journey_progress(trigger_kind, interval_beats, event, dt)
 
         self.active_interval_beats = interval_beats

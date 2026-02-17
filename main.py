@@ -7472,7 +7472,9 @@ Like the app?<br>
                 for key in float_keys:
                     if key in learning_cfg:
                         try:
-                            setattr(self.config.beat, key, float(learning_cfg.get(key)))
+                            raw_value = learning_cfg.get(key)
+                            if isinstance(raw_value, (int, float, str)):
+                                setattr(self.config.beat, key, float(raw_value))
                         except Exception:
                             pass
 
@@ -7503,16 +7505,17 @@ Like the app?<br>
         mapper_live = self.stroke_mapper
         if mapper_live is None:
             return
-        mapper_live._learning_enabled = bool(self.config.beat.teaching_learning_enabled)
-        mapper_live._learning_use_fitted_rules = bool(self.config.beat.teaching_use_fitted_rules)
-        mapper_live._learning_apply_in_circle_mode = bool(self.config.beat.teaching_apply_in_circle_mode)
-        mapper_live._learning_isolation_mode = bool(self.config.beat.teaching_isolation_mode)
-        mapper_live._learning_strength = float(self.config.beat.teaching_learning_strength)
-        mapper_live._learning_min_confidence = float(self.config.beat.teaching_min_confidence)
-        mapper_live._learning_no_motion_bias = float(self.config.beat.teaching_no_motion_bias)
-        mapper_live._learning_rule_fit_path = str(self.config.beat.teaching_rule_fit_path)
-        if mapper_live._learning_enabled and mapper_live._learning_use_fitted_rules:
-            mapper_live._try_load_learning_model()
+        if hasattr(mapper_live, 'configure_learning'):
+            mapper_live.configure_learning(
+                enabled=bool(self.config.beat.teaching_learning_enabled),
+                use_fitted_rules=bool(self.config.beat.teaching_use_fitted_rules),
+                apply_in_circle_mode=bool(self.config.beat.teaching_apply_in_circle_mode),
+                isolation_mode=bool(self.config.beat.teaching_isolation_mode),
+                learning_strength=float(self.config.beat.teaching_learning_strength),
+                min_confidence=float(self.config.beat.teaching_min_confidence),
+                no_motion_bias=float(self.config.beat.teaching_no_motion_bias),
+                rule_fit_path=str(self.config.beat.teaching_rule_fit_path),
+            )
 
     def _on_learning_tune_controls(self) -> None:
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QHBoxLayout, QPushButton
@@ -7565,7 +7568,7 @@ Like the app?<br>
             self.config.beat.teaching_min_confidence = float(holdback_slider.value())
             self.config.beat.teaching_no_motion_bias = float(no_motion_bias_slider.value())
             self._apply_learning_config_to_mapper()
-            self.config.save()
+            save_config(self.config)
 
         apply_btn.clicked.connect(_apply_learning_settings)
         close_btn.clicked.connect(dialog.close)
@@ -9084,7 +9087,9 @@ Like the app?<br>
             for key in float_keys:
                 if key in learning:
                     try:
-                        setattr(self.config.beat, key, float(learning.get(key)))
+                        raw_value = learning.get(key)
+                        if isinstance(raw_value, (int, float, str)):
+                            setattr(self.config.beat, key, float(raw_value))
                     except Exception:
                         pass
             for key in str_keys:
@@ -9102,19 +9107,33 @@ Like the app?<br>
                 pass
             try:
                 if 'audio_gain' in calibration:
-                    self.audio_gain_slider.setValue(float(calibration.get('audio_gain')))
+                    raw_audio_gain = calibration.get('audio_gain')
+                    if isinstance(raw_audio_gain, (int, float, str)):
+                        self.audio_gain_slider.setValue(float(raw_audio_gain))
                 if 'sensitivity' in calibration:
-                    self.sensitivity_slider.setValue(float(calibration.get('sensitivity')))
+                    raw_sensitivity = calibration.get('sensitivity')
+                    if isinstance(raw_sensitivity, (int, float, str)):
+                        self.sensitivity_slider.setValue(float(raw_sensitivity))
                 if 'zscore_threshold' in calibration:
-                    self.zscore_threshold_slider.setValue(float(calibration.get('zscore_threshold')))
+                    raw_zscore_threshold = calibration.get('zscore_threshold')
+                    if isinstance(raw_zscore_threshold, (int, float, str)):
+                        self.zscore_threshold_slider.setValue(float(raw_zscore_threshold))
                 if 'flux_multiplier' in calibration:
-                    self.flux_mult_slider.setValue(float(calibration.get('flux_multiplier')))
+                    raw_flux_multiplier = calibration.get('flux_multiplier')
+                    if isinstance(raw_flux_multiplier, (int, float, str)):
+                        self.flux_mult_slider.setValue(float(raw_flux_multiplier))
                 if 'peak_floor' in calibration:
-                    self.peak_floor_slider.setValue(float(calibration.get('peak_floor')))
+                    raw_peak_floor = calibration.get('peak_floor')
+                    if isinstance(raw_peak_floor, (int, float, str)):
+                        self.peak_floor_slider.setValue(float(raw_peak_floor))
                 if 'peak_decay' in calibration:
-                    self.peak_decay_slider.setValue(float(calibration.get('peak_decay')))
+                    raw_peak_decay = calibration.get('peak_decay')
+                    if isinstance(raw_peak_decay, (int, float, str)):
+                        self.peak_decay_slider.setValue(float(raw_peak_decay))
                 if 'rise_sensitivity' in calibration:
-                    self.rise_sens_slider.setValue(float(calibration.get('rise_sensitivity')))
+                    raw_rise_sensitivity = calibration.get('rise_sensitivity')
+                    if isinstance(raw_rise_sensitivity, (int, float, str)):
+                        self.rise_sens_slider.setValue(float(raw_rise_sensitivity))
             except Exception:
                 pass
 
@@ -9782,7 +9801,6 @@ Like the app?<br>
         if checked:
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
-            self.stroke_mapper._micro_effects_enabled = True
             self._apply_geometry_rest_to_mapper()
             # Warmup gate: allow audio analysis to settle and beat pickup before motion
             self._play_warmup_active = True
@@ -9849,7 +9867,6 @@ Like the app?<br>
         self._sync_metric_checkboxes_to_engine()
 
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
-        self.stroke_mapper._micro_effects_enabled = True
         self._apply_geometry_rest_to_mapper()
 
         # Network engine is already started on program launch via _auto_connect_tcp
@@ -9913,10 +9930,6 @@ Like the app?<br>
     def _stop_engines(self):
         """Stop all engines and background threads"""
         self.is_running = False
-
-        # Clear any active trajectory on the stroke mapper
-        if self.stroke_mapper and hasattr(self.stroke_mapper, '_trajectory'):
-            self.stroke_mapper._trajectory = None
         self.stroke_mapper = None
 
         if self.audio_engine:
