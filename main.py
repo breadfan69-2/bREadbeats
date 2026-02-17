@@ -3318,6 +3318,8 @@ class BREadbeatsWindow(QMainWindow):
         self._advanced_flux_group = None
         self._tempo_tracking_dialog = None
         self._tempo_tracking_popout_content = None
+        self._auto_fill_controls_dialog = None
+        self._auto_fill_controls_widgets = {}
         
         # Setup UI
         self._setup_ui()
@@ -3457,6 +3459,8 @@ class BREadbeatsWindow(QMainWindow):
         self._advanced_flux_scaling_slider = None
         self._advanced_phase_advance_slider = None
         self._tempo_tracking_dialog = None
+        self._auto_fill_controls_dialog = None
+        self._auto_fill_controls_widgets = {}
         
         # Auto-align target BPM tracking (wall-clock time-based)
         self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
@@ -3997,6 +4001,10 @@ class BREadbeatsWindow(QMainWindow):
         assert advanced_action is not None
         advanced_action.triggered.connect(self._on_advanced_controls)
 
+        auto_fill_action = developer_controls_menu.addAction("Auto Fill %...")
+        assert auto_fill_action is not None
+        auto_fill_action.triggered.connect(self._on_options_auto_fill_adaptation)
+
         # Reports menu (top-level for easy findability)
         reports_menu = menubar.addMenu("Reports")
         assert reports_menu is not None
@@ -4175,6 +4183,162 @@ class BREadbeatsWindow(QMainWindow):
         layout.addWidget(content)
 
         self._tempo_tracking_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _on_options_auto_fill_adaptation(self):
+        """Show Developer Controls popout for adaptive amp-fill gate tuning."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox
+
+        dialog = getattr(self, '_auto_fill_controls_dialog', None)
+        if dialog is not None:
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._auto_fill_controls_dialog = None
+                self._auto_fill_controls_widgets = {}
+                dialog = None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Auto Fill Adaptation")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(460)
+        dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def _on_auto_fill_dialog_destroyed() -> None:
+            self._auto_fill_controls_dialog = None
+            self._auto_fill_controls_widgets = {}
+
+        dialog.destroyed.connect(_on_auto_fill_dialog_destroyed)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        info = QLabel(
+            "Adaptive per-phase fill gating.\n"
+            "If fill passes too often, required % rises; if too strict, it falls."
+        )
+        info.setStyleSheet("color: #bbb; font-size: 11px;")
+        layout.addWidget(info)
+
+        auto_enabled_cb = QCheckBox("Enable adaptive fill requirement")
+        auto_enabled_cb.setChecked(bool(getattr(self.config.stroke, 'overall_amp_fill_auto_enabled', True)))
+        auto_enabled_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'overall_amp_fill_auto_enabled', state == 2)
+        )
+        layout.addWidget(auto_enabled_cb)
+
+        target_rate_slider = SliderWithLabel(
+            "Target fill pass rate",
+            0.10,
+            0.95,
+            float(getattr(self.config.stroke, 'overall_amp_fill_auto_target_pass_rate', 0.58) or 0.58),
+            2,
+        )
+        target_rate_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'overall_amp_fill_auto_target_pass_rate', float(v))
+        )
+        layout.addWidget(target_rate_slider)
+
+        ema_alpha_slider = SliderWithLabel(
+            "Pass-rate EMA alpha",
+            0.01,
+            0.60,
+            float(getattr(self.config.stroke, 'overall_amp_fill_auto_ema_alpha', 0.12) or 0.12),
+            3,
+        )
+        ema_alpha_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'overall_amp_fill_auto_ema_alpha', float(v))
+        )
+        layout.addWidget(ema_alpha_slider)
+
+        deadband_slider = SliderWithLabel(
+            "Deadband",
+            0.00,
+            0.40,
+            float(getattr(self.config.stroke, 'overall_amp_fill_auto_deadband', 0.06) or 0.06),
+            3,
+        )
+        deadband_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'overall_amp_fill_auto_deadband', float(v))
+        )
+        layout.addWidget(deadband_slider)
+
+        step_slider = SliderWithLabel(
+            "Step size",
+            0.001,
+            0.15,
+            float(getattr(self.config.stroke, 'overall_amp_fill_auto_step', 0.02) or 0.02),
+            3,
+        )
+        step_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'overall_amp_fill_auto_step', float(v))
+        )
+        layout.addWidget(step_slider)
+
+        max_offset_slider = SliderWithLabel(
+            "Max offset from base requirement",
+            0.01,
+            0.80,
+            float(getattr(self.config.stroke, 'overall_amp_fill_auto_max_offset', 0.35) or 0.35),
+            3,
+        )
+        max_offset_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'overall_amp_fill_auto_max_offset', float(v))
+        )
+        layout.addWidget(max_offset_slider)
+
+        min_required_slider = SliderWithLabel(
+            "Minimum required fill",
+            0.00,
+            0.95,
+            float(getattr(self.config.stroke, 'overall_amp_fill_auto_min_required', 0.05) or 0.05),
+            3,
+        )
+        max_required_slider = SliderWithLabel(
+            "Maximum required fill",
+            0.05,
+            1.00,
+            float(getattr(self.config.stroke, 'overall_amp_fill_auto_max_required', 0.98) or 0.98),
+            3,
+        )
+
+        def _sync_required_bounds() -> None:
+            min_val = float(min_required_slider.value())
+            max_val = float(max_required_slider.value())
+            if max_val < min_val:
+                max_val = min_val
+                max_required_slider.setValue(max_val)
+            self.config.stroke.overall_amp_fill_auto_min_required = min_val
+            self.config.stroke.overall_amp_fill_auto_max_required = max_val
+
+        min_required_slider.valueChanged.connect(lambda _: _sync_required_bounds())
+        max_required_slider.valueChanged.connect(lambda _: _sync_required_bounds())
+
+        layout.addWidget(min_required_slider)
+        layout.addWidget(max_required_slider)
+        layout.addStretch()
+
+        self._auto_fill_controls_widgets = {
+            'enabled': auto_enabled_cb,
+            'target_pass_rate': target_rate_slider,
+            'ema_alpha': ema_alpha_slider,
+            'deadband': deadband_slider,
+            'step': step_slider,
+            'max_offset': max_offset_slider,
+            'min_required': min_required_slider,
+            'max_required': max_required_slider,
+        }
+        self._auto_fill_controls_dialog = dialog
+
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -6594,6 +6758,31 @@ Like the app?<br>
                 advanced_phase_advance_slider = getattr(self, '_advanced_phase_advance_slider', None)
                 if advanced_phase_advance_slider is not None:
                     advanced_phase_advance_slider.setValue(self.config.stroke.phase_advance)
+                auto_fill_widgets = getattr(self, '_auto_fill_controls_widgets', {}) or {}
+                auto_fill_enabled = auto_fill_widgets.get('enabled')
+                if auto_fill_enabled is not None:
+                    auto_fill_enabled.setChecked(bool(getattr(self.config.stroke, 'overall_amp_fill_auto_enabled', True)))
+                auto_fill_target = auto_fill_widgets.get('target_pass_rate')
+                if auto_fill_target is not None:
+                    auto_fill_target.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_target_pass_rate', 0.58) or 0.58))
+                auto_fill_alpha = auto_fill_widgets.get('ema_alpha')
+                if auto_fill_alpha is not None:
+                    auto_fill_alpha.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_ema_alpha', 0.12) or 0.12))
+                auto_fill_deadband = auto_fill_widgets.get('deadband')
+                if auto_fill_deadband is not None:
+                    auto_fill_deadband.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_deadband', 0.06) or 0.06))
+                auto_fill_step = auto_fill_widgets.get('step')
+                if auto_fill_step is not None:
+                    auto_fill_step.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_step', 0.02) or 0.02))
+                auto_fill_max_offset = auto_fill_widgets.get('max_offset')
+                if auto_fill_max_offset is not None:
+                    auto_fill_max_offset.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_max_offset', 0.35) or 0.35))
+                auto_fill_min_req = auto_fill_widgets.get('min_required')
+                if auto_fill_min_req is not None:
+                    auto_fill_min_req.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_min_required', 0.05) or 0.05))
+                auto_fill_max_req = auto_fill_widgets.get('max_required')
+                if auto_fill_max_req is not None:
+                    auto_fill_max_req.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_max_required', 0.98) or 0.98))
 
                 # Jitter/Creep tab
                 self.jitter_enabled.setChecked(self.config.jitter.enabled)

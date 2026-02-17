@@ -288,6 +288,55 @@ class StrokeMapper:
         self._motion_resumed_count: int = 0
         self._blocked_beat_events: int = 0
 
+        # ---------- Adaptive amp-fill threshold controller ----------
+        # Raises/lower required fill ratio per phase so beat fires stay selective.
+        stroke_cfg = self.config.stroke
+        self._auto_fill_enabled: bool = bool(getattr(stroke_cfg, 'overall_amp_fill_auto_enabled', True))
+        self._auto_fill_target_pass_rate: float = float(np.clip(
+            getattr(stroke_cfg, 'overall_amp_fill_auto_target_pass_rate', 0.58) or 0.58,
+            0.10,
+            0.95,
+        ))
+        self._auto_fill_ema_alpha: float = float(np.clip(
+            getattr(stroke_cfg, 'overall_amp_fill_auto_ema_alpha', 0.12) or 0.12,
+            0.01,
+            0.60,
+        ))
+        self._auto_fill_deadband: float = float(np.clip(
+            getattr(stroke_cfg, 'overall_amp_fill_auto_deadband', 0.06) or 0.06,
+            0.0,
+            0.40,
+        ))
+        self._auto_fill_step: float = float(np.clip(
+            getattr(stroke_cfg, 'overall_amp_fill_auto_step', 0.02) or 0.02,
+            0.001,
+            0.15,
+        ))
+        self._auto_fill_max_offset: float = float(np.clip(
+            getattr(stroke_cfg, 'overall_amp_fill_auto_max_offset', 0.35) or 0.35,
+            0.01,
+            0.80,
+        ))
+        self._auto_fill_min_required: float = float(np.clip(
+            getattr(stroke_cfg, 'overall_amp_fill_auto_min_required', 0.05) or 0.05,
+            0.0,
+            0.95,
+        ))
+        self._auto_fill_max_required: float = float(np.clip(
+            getattr(stroke_cfg, 'overall_amp_fill_auto_max_required', 0.98) or 0.98,
+            0.05,
+            1.0,
+        ))
+        if self._auto_fill_max_required < self._auto_fill_min_required:
+            self._auto_fill_max_required = self._auto_fill_min_required
+        self._auto_fill_state = {
+            'beat': {'ema': self._auto_fill_target_pass_rate, 'offset': 0.0},
+            'downbeat': {'ema': self._auto_fill_target_pass_rate, 'offset': 0.0},
+            'syncopation': {'ema': self._auto_fill_target_pass_rate, 'offset': 0.0},
+        }
+        self._auto_fill_log_interval_s: float = 2.0
+        self._auto_fill_last_log_time: float = 0.0
+
         # ---------- Large-jump diagnostics ----------
         self._jump_log_threshold: float = 0.85
         self._jump_log_interval_s: float = 0.25
@@ -1569,7 +1618,7 @@ class StrokeMapper:
         freq = float(getattr(event, 'frequency', 0.0) or 0.0)
         return bool(low_hz <= freq <= high_hz)
 
-    def _get_overall_amp_fill_required(self, phase: str) -> float:
+    def _get_overall_amp_fill_required_base(self, phase: str) -> float:
         cfg = self.config.stroke
         global_scale = float(np.clip(getattr(cfg, 'overall_amp_fill_required_scale', 1.0) or 1.0, 0.05, 20.0))
         reaction_scale = self._combo_scale('combo_reaction', 0.60, 1.70)
@@ -1588,6 +1637,71 @@ class StrokeMapper:
         if required >= 0.70:
             required = 0.10
         return float(np.clip(required * global_scale, 0.0, 1.0))
+
+    def _update_auto_fill_required(self, phase: str, fill_pass: bool) -> None:
+        if not self._auto_fill_enabled:
+            return
+        phase_state = self._auto_fill_state.get(phase)
+        if phase_state is None:
+            phase_state = {'ema': self._auto_fill_target_pass_rate, 'offset': 0.0}
+            self._auto_fill_state[phase] = phase_state
+
+        pass_value = 1.0 if fill_pass else 0.0
+        ema_prev = float(phase_state.get('ema', self._auto_fill_target_pass_rate))
+        ema_now = ema_prev + (pass_value - ema_prev) * self._auto_fill_ema_alpha
+        phase_state['ema'] = float(np.clip(ema_now, 0.0, 1.0))
+
+        error = phase_state['ema'] - self._auto_fill_target_pass_rate
+        if abs(error) <= self._auto_fill_deadband:
+            return
+
+        normalized = abs(error) / max(self._auto_fill_deadband, 1e-6)
+        step = self._auto_fill_step * min(2.0, normalized)
+        offset = float(phase_state.get('offset', 0.0))
+        if error > 0.0:
+            offset += step
+        else:
+            offset -= step
+        phase_state['offset'] = float(np.clip(offset, -self._auto_fill_max_offset, self._auto_fill_max_offset))
+
+    def _maybe_log_auto_fill_status(self, phase: str, fill_ratio: float, fill_required: float, fill_pass: bool) -> None:
+        if not self._auto_fill_enabled:
+            return
+        now = time.time()
+        if (now - self._auto_fill_last_log_time) < self._auto_fill_log_interval_s:
+            return
+
+        def _phase_payload(name: str) -> dict:
+            state = self._auto_fill_state.get(name) or {}
+            required_now = self._get_overall_amp_fill_required(name)
+            return {
+                f'{name}_required': f"{required_now:.3f}",
+                f'{name}_ema': f"{float(state.get('ema', self._auto_fill_target_pass_rate)):.3f}",
+                f'{name}_offset': f"{float(state.get('offset', 0.0)):.3f}",
+            }
+
+        payload = {
+            'phase': str(phase),
+            'fill_ratio': f"{fill_ratio:.3f}",
+            'fill_required_now': f"{fill_required:.3f}",
+            'fill_pass': bool(fill_pass),
+            'target_pass_rate': f"{self._auto_fill_target_pass_rate:.3f}",
+        }
+        payload.update(_phase_payload('beat'))
+        payload.update(_phase_payload('downbeat'))
+        payload.update(_phase_payload('syncopation'))
+        log_event("INFO", "StrokeMapper", "Auto fill adaptation", **payload)
+        self._auto_fill_last_log_time = now
+
+    def _get_overall_amp_fill_required(self, phase: str) -> float:
+        base_required = self._get_overall_amp_fill_required_base(phase)
+        if not self._auto_fill_enabled:
+            return base_required
+
+        phase_state = self._auto_fill_state.get(phase)
+        offset = float((phase_state or {}).get('offset', 0.0))
+        required = base_required + offset
+        return float(np.clip(required, self._auto_fill_min_required, self._auto_fill_max_required))
 
     def _get_spectrum_fill_ratio(self, target: float, phase: str = 'beat') -> float:
         """Return fraction of active spectrum bins above target-normalized amplitude."""
@@ -1643,6 +1757,8 @@ class StrokeMapper:
         fill_required = self._get_overall_amp_fill_required(phase)
         fill_ratio = self._get_spectrum_fill_ratio(target, phase)
         fill_pass = fill_ratio >= fill_required
+        self._update_auto_fill_required(phase, fill_pass)
+        self._maybe_log_auto_fill_status(phase, fill_ratio, self._get_overall_amp_fill_required(phase), fill_pass)
 
         return bool(amp_pass and fill_pass), overall_amp, fill_ratio, min_amp, fill_required
 
