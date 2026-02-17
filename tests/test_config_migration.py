@@ -61,6 +61,12 @@ class TestConfigMigration(unittest.TestCase):
         data = {
             "version": 1,
             "stroke": {"noise_burst_magnitude": 2.5},
+            "audio": {
+                "capture_mode": "app_loopback",
+                "app_capture_process_name": "vlc.exe",
+                "app_capture_process_id": 1234,
+                "app_capture_include_children": False,
+            },
             "device_limits": {
                 "p0_c0_sending_enabled": False,
                 "dont_show_on_startup": True,
@@ -74,10 +80,37 @@ class TestConfigMigration(unittest.TestCase):
 
         self.assertEqual(cfg.version, CURRENT_CONFIG_VERSION)
         self.assertEqual(cfg.stroke.noise_burst_magnitude, 2.5)
+        self.assertEqual(cfg.audio.capture_mode, "app_loopback")
+        self.assertEqual(cfg.audio.app_capture_process_name, "vlc.exe")
+        self.assertEqual(cfg.audio.app_capture_process_id, 1234)
+        self.assertFalse(cfg.audio.app_capture_include_children)
+        self.assertTrue(cfg.audio.is_loopback)
         self.assertFalse(cfg.device_limits.p0_c0_sending_enabled)
         self.assertTrue(cfg.device_limits.dont_show_on_startup)
         self.assertTrue(cfg.device_limits.prompted)
         self.assertTrue(cfg.device_limits.dry_run)
+
+    def test_capture_mode_defaults_and_invalid_values(self):
+        cfg = Config()
+        data = {
+            "version": 0,
+            "audio": {
+                "capture_mode": "not_real",
+                "is_loopback": False,
+                "app_capture_process_name": None,
+                "app_capture_process_id": 0,
+                "app_capture_include_children": None,
+            },
+        }
+
+        apply_dict_to_dataclass(cfg, data)
+        migrate_config(cfg, data.get("version"))
+
+        self.assertEqual(cfg.audio.capture_mode, "input_device")
+        self.assertFalse(cfg.audio.is_loopback)
+        self.assertEqual(cfg.audio.app_capture_process_name, "")
+        self.assertIsNone(cfg.audio.app_capture_process_id)
+        self.assertTrue(cfg.audio.app_capture_include_children)
 
     def test_load_config_auto_saves_bumped_version(self):
         # Set up a temp config file with an old version

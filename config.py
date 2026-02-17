@@ -6,7 +6,7 @@ from typing import Dict, Literal
 from enum import IntEnum
 
 
-CURRENT_CONFIG_VERSION = 1
+CURRENT_CONFIG_VERSION = 2
 
 class StrokeMode(IntEnum):
     """Stroke mapping modes - all use alpha/beta circular coordinates"""
@@ -374,6 +374,11 @@ class AudioConfig:
     device_index: int | None = None
     # Audio gain/amplification
     gain: float = 1.0
+    # Capture mode: endpoint_loopback (system mix), input_device (mic), app_loopback (per-app, experimental)
+    capture_mode: str = "endpoint_loopback"
+    app_capture_process_name: str = ""
+    app_capture_process_id: int | None = None
+    app_capture_include_children: bool = True
     # FFT optimization settings
     fft_size: int = 1024              # FFT size (512, 1024, 2048) - smaller = faster, less resolution
     spectrum_skip_frames: int = 2     # Skip N frames between spectrum updates (1=no skip, 2=every other)
@@ -469,6 +474,18 @@ def migrate_config(config: Config, loaded_version) -> None:
         if getattr(config.device_limits, 'dry_run', False) is None:
             config.device_limits.dry_run = False
 
+    if version < 2:
+        capture_mode = getattr(config.audio, 'capture_mode', None)
+        if capture_mode is None:
+            config.audio.capture_mode = 'endpoint_loopback' if getattr(config.audio, 'is_loopback', True) else 'input_device'
+
+        if getattr(config.audio, 'app_capture_process_name', None) is None:
+            config.audio.app_capture_process_name = ''
+        if getattr(config.audio, 'app_capture_process_id', None) in (0, -1):
+            config.audio.app_capture_process_id = None
+        if getattr(config.audio, 'app_capture_include_children', None) is None:
+            config.audio.app_capture_include_children = True
+
     if getattr(config, 'report_generation_enabled', True) is None:
         config.report_generation_enabled = True
     if getattr(config, 'privacy_notice_seen', False) is None:
@@ -520,6 +537,23 @@ def migrate_config(config: Config, loaded_version) -> None:
     config.stroke.high_tip_freq_low_hz = tip_low
     config.stroke.high_tip_freq_high_hz = tip_high
     config.stroke.high_tip_freq_hz = tip_low
+
+    capture_mode = str(getattr(config.audio, 'capture_mode', 'endpoint_loopback') or 'endpoint_loopback').strip().lower()
+    valid_capture_modes = {'endpoint_loopback', 'input_device', 'app_loopback'}
+    if capture_mode not in valid_capture_modes:
+        capture_mode = 'endpoint_loopback' if bool(getattr(config.audio, 'is_loopback', True)) else 'input_device'
+    config.audio.capture_mode = capture_mode
+    config.audio.is_loopback = capture_mode in {'endpoint_loopback', 'app_loopback'}
+
+    app_name = getattr(config.audio, 'app_capture_process_name', '')
+    config.audio.app_capture_process_name = str(app_name or '').strip()
+    try:
+        app_pid = getattr(config.audio, 'app_capture_process_id', None)
+        app_pid = int(app_pid) if app_pid is not None else None
+    except Exception:
+        app_pid = None
+    config.audio.app_capture_process_id = app_pid if app_pid and app_pid > 0 else None
+    config.audio.app_capture_include_children = bool(getattr(config.audio, 'app_capture_include_children', True))
 
     config.version = CURRENT_CONFIG_VERSION
 

@@ -7,6 +7,8 @@ Uses pyaudiowpatch for WASAPI loopback capture.
 import numpy as np
 import pyaudiowpatch as pyaudio
 import threading
+import importlib.util
+import sys
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -130,6 +132,22 @@ class BeatEvent:
 
 
 class AudioEngine:
+    @staticmethod
+    def probe_app_capture_capability() -> tuple[bool, str]:
+        """Report whether per-application loopback capture backend is available."""
+        if sys.platform != 'win32':
+            return False, "app capture requires Windows"
+        try:
+            win_ver = sys.getwindowsversion()
+            build = int(getattr(win_ver, 'build', 0))
+        except Exception:
+            build = 0
+        if build < 20348:
+            return False, f"Windows build {build} is below required 20348"
+        if importlib.util.find_spec('winsdk') is None and importlib.util.find_spec('winrt') is None:
+            return False, "winsdk/winrt backend not installed"
+        return False, "phase-1 only: backend wiring not implemented yet"
+
     def reset_tempo_tracking(self) -> None:
         """Public method to reset tempo and downbeat tracking immediately."""
         self.last_known_tempo = self.smoothed_tempo
@@ -739,18 +757,31 @@ class AudioEngine:
         
         # Initialize PyAudio
         self.pyaudio = pyaudio.PyAudio()
-        
-        # Check if we should use loopback or regular input
-        use_loopback = getattr(self.config.audio, 'is_loopback', True)
+
+        capture_mode = str(getattr(self.config.audio, 'capture_mode', '') or '').strip().lower()
+        if capture_mode not in {'endpoint_loopback', 'input_device', 'app_loopback'}:
+            capture_mode = 'endpoint_loopback' if bool(getattr(self.config.audio, 'is_loopback', True)) else 'input_device'
+        self.config.audio.capture_mode = capture_mode
         device_index = getattr(self.config.audio, 'device_index', None)
-        
+
         try:
-            if use_loopback:
+            if capture_mode == 'app_loopback':
+                supported, reason = self.probe_app_capture_capability()
+                if not supported:
+                    log_event("WARN", "AudioEngine", "App capture unavailable, falling back to endpoint loopback", reason=reason)
+                    self._start_loopback_capture(device_index)
+                    self.config.audio.is_loopback = True
+                else:
+                    self._start_loopback_capture(device_index)
+                    self.config.audio.is_loopback = True
+            elif capture_mode == 'endpoint_loopback':
                 # WASAPI loopback mode (system audio capture)
                 self._start_loopback_capture(device_index)
+                self.config.audio.is_loopback = True
             else:
                 # Regular input mode (microphone)
                 self._start_input_capture(device_index)
+                self.config.audio.is_loopback = False
             
             # Initialize Butterworth filter now that sample rate is known
             self._init_butterworth_filter()

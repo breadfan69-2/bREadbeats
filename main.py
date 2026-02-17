@@ -4036,6 +4036,43 @@ class BREadbeatsWindow(QMainWindow):
         dialog.setWindowTitle("Audio Device")
         dialog.setMinimumWidth(400)
         layout = QVBoxLayout(dialog)
+
+        mode_label = QLabel("Capture Mode:")
+        layout.addWidget(mode_label)
+
+        mode_combo = QComboBox()
+        mode_combo.addItem("🔊 System Audio (Endpoint Loopback)", "endpoint_loopback")
+        mode_combo.addItem("🎤 Microphone/Input Device", "input_device")
+        mode_combo.addItem("🧪 Application Capture (Experimental)", "app_loopback")
+
+        current_mode = str(getattr(self.config.audio, 'capture_mode', '') or '').strip().lower()
+        if current_mode not in {"endpoint_loopback", "input_device", "app_loopback"}:
+            current_mode = "endpoint_loopback" if bool(getattr(self.config.audio, 'is_loopback', True)) else "input_device"
+        mode_index = max(0, mode_combo.findData(current_mode))
+        mode_combo.setCurrentIndex(mode_index)
+        layout.addWidget(mode_combo)
+
+        app_cap_supported, app_cap_reason = AudioEngine.probe_app_capture_capability()
+        appcap_note = QLabel("")
+        appcap_note.setWordWrap(True)
+        appcap_note.setStyleSheet("color: #aaa; font-size: 11px;")
+        layout.addWidget(appcap_note)
+
+        def _refresh_mode_hint():
+            selected_mode = mode_combo.currentData()
+            if selected_mode == "app_loopback":
+                if app_cap_supported:
+                    appcap_note.setStyleSheet("color: #8f8; font-size: 11px;")
+                    appcap_note.setText("Application capture support detected (backend integration pending).")
+                else:
+                    appcap_note.setStyleSheet("color: #fa8; font-size: 11px;")
+                    appcap_note.setText(f"Application capture unavailable on this runtime: {app_cap_reason}. Will fall back to endpoint loopback.")
+            else:
+                appcap_note.setStyleSheet("color: #aaa; font-size: 11px;")
+                appcap_note.setText("")
+
+        mode_combo.currentIndexChanged.connect(lambda _idx: _refresh_mode_hint())
+        _refresh_mode_hint()
         
         layout.addWidget(QLabel("Select Audio Device:"))
         
@@ -4073,6 +4110,9 @@ class BREadbeatsWindow(QMainWindow):
         layout.addLayout(btn_row)
         
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_mode = str(mode_combo.currentData() or "endpoint_loopback")
+            self.config.audio.capture_mode = selected_mode
+            self.config.audio.is_loopback = selected_mode in {"endpoint_loopback", "app_loopback"}
             # Apply the selected device
             self.device_combo.setCurrentIndex(device_combo.currentIndex())
     
@@ -9542,9 +9582,15 @@ Like the app?<br>
         combo_idx = self.device_combo.currentIndex()
         if combo_idx >= 0 and combo_idx in self.audio_device_map:
             self.config.audio.device_index = self.audio_device_map[combo_idx]
-            self.config.audio.is_loopback = self.audio_device_is_loopback.get(combo_idx, False)
-            is_loopback = "loopback" if self.config.audio.is_loopback else "input"
-            print(f"[Main] Using audio device index: {self.config.audio.device_index} ({is_loopback})")
+            selected_mode = str(getattr(self.config.audio, 'capture_mode', '') or '').strip().lower()
+            if selected_mode not in {'endpoint_loopback', 'input_device', 'app_loopback'}:
+                selected_mode = 'endpoint_loopback' if self.audio_device_is_loopback.get(combo_idx, False) else 'input_device'
+            self.config.audio.capture_mode = selected_mode
+            self.config.audio.is_loopback = selected_mode in {'endpoint_loopback', 'app_loopback'}
+            print(
+                f"[Main] Using audio device index: {self.config.audio.device_index} "
+                f"(mode={self.config.audio.capture_mode}, loopback={self.config.audio.is_loopback})"
+            )
 
         self.audio_engine = AudioEngine(self.config, self._audio_callback)
         self.audio_engine.start()
