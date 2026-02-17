@@ -3634,13 +3634,13 @@ class StrokeMapper:
             beat_cfg = self.config.beat
             quiet_flux_thresh = float(stroke_cfg.flux_threshold) * float(stroke_cfg.silence_flux_multiplier)
             quiet_energy_thresh = float(beat_cfg.peak_floor) * float(stroke_cfg.silence_energy_multiplier)
-            near_quiet_flux = max(1e-6, quiet_flux_thresh * 1.8)
-            near_quiet_energy = max(1e-6, quiet_energy_thresh * 1.8)
+            near_quiet_flux = max(1e-6, quiet_flux_thresh * 2.1)
+            near_quiet_energy = max(1e-6, quiet_energy_thresh * 2.1)
             event_flux = float(getattr(event, 'spectral_flux', 0.0) or 0.0)
             event_energy = float(getattr(event, 'peak_energy', 0.0) or 0.0)
             quiet_ratio = float(np.clip(max(event_flux / near_quiet_flux, event_energy / near_quiet_energy), 0.0, 1.0))
-            max_quiet_increment = 0.032
-            min_quiet_increment = 0.010
+            max_quiet_increment = 0.026
+            min_quiet_increment = 0.008
             quiet_cap = min_quiet_increment + ((max_quiet_increment - min_quiet_increment) * quiet_ratio)
             if angle_increment > quiet_cap:
                 angle_increment = quiet_cap
