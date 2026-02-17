@@ -153,6 +153,15 @@ class StrokeConfig:
     geometry_y_offset: float = 0.50  # Below-center rest Y offset used when intensity is near 0
     geometry_sink_start_intensity: float = 0.25  # Intensity where sink-to-rest lerp begins
 
+    # Rhythmic phrasing: explode on solid beats, then return to park on-beat.
+    rhythmic_phrasing_enabled: bool = True
+    rhythmic_phrase_min_intensity: float = 0.18
+    rhythmic_phrase_energy_low: float = 0.28
+    rhythmic_phrase_energy_high: float = 0.70
+    rhythmic_phrase_ease_mode: str = "sine"  # "sine" | "linear"
+    rhythmic_phrase_explode_radius_min: float = 0.30
+    rhythmic_phrase_explode_radius_max: float = 0.95
+
     # Stroke timing cadence:
     # - 1 beat/stroke only allowed at very slow tempo (< single_stroke_bpm_cutoff)
     # - otherwise auto-select 2/4/8 beats per stroke from BPM cutoffs

@@ -82,6 +82,31 @@ class PendingStrokeChange:
     queued_at: float = 0.0
 
 
+@dataclass
+class RhythmicPhraseReturn:
+    """Queued beat-phased loop motion state."""
+    active: bool = False
+    state: str = "idle"  # "idle" | "pending" | "active"
+    pending_movement: bool = False
+    pending_trigger_kind: str = "beat"
+    pending_set_time: float = 0.0
+    queued_at_beat_count: int = 0
+    interval_beats: int = 4
+    bpm: float = 120.0
+    start_time: float = 0.0
+    duration_s: float = 0.0
+    start_alpha: float = 0.0
+    start_beta: float = 0.0
+    end_alpha: float = 0.0
+    end_beta: float = 0.70
+    peak_alpha: float = 0.0
+    peak_beta: float = 0.0
+    start_angle: float = 0.0
+    total_rotation: float = 0.0
+    park_radius: float = 0.70
+    bloom_amount: float = 0.20
+
+
 # ---------------------------------------------------------------------------
 # Behavioral mode enum
 # ---------------------------------------------------------------------------
@@ -363,6 +388,15 @@ class StrokeMapper:
         self._silence_parked_lock: bool = False
         self._silence_reopen_candidate_count: int = 0
         self._silence_reopen_required_frames: int = 4
+        self._rhythmic_phrase = RhythmicPhraseReturn(
+            active=False,
+            state="idle",
+            end_alpha=0.0,
+            end_beta=self._silence_park_radius,
+        )
+        self._rhythmic_phrase_beat_counter: int = 0
+        self._rhythmic_phrase_log_interval_s: float = 0.25
+        self._last_rhythmic_phrase_log_time: float = 0.0
 
         # ---------- Adaptive amp-fill threshold controller ----------
         # Raises/lower required fill ratio per phase so beat fires stay selective.
@@ -597,6 +631,277 @@ class StrokeMapper:
         target_alpha = 0.0
         target_beta = radius
         return target_alpha, target_beta
+
+    def _rhythmic_phrasing_enabled(self) -> bool:
+        return bool(getattr(self.config.stroke, 'rhythmic_phrasing_enabled', False))
+
+    def _resolve_phrase_bpm(self, event: Optional[BeatEvent]) -> float:
+        bpm = self._cap_bpm_to_last_locked(self._get_reliable_metronome_bpm(event))
+        if bpm <= 0.0 and event is not None:
+            bpm = float(getattr(event, 'metronome_bpm', 0.0) or 0.0)
+        if bpm <= 0.0:
+            bpm = float(self._last_known_bpm if self._last_known_bpm > 0.0 else self._current_bpm)
+        if bpm <= 0.0:
+            bpm = 120.0
+        return float(np.clip(bpm, 30.0, 240.0))
+
+    def _select_rhythmic_phrase_interval_beats(self, event: Optional[BeatEvent], bpm: float) -> int:
+        if event is None:
+            return 4
+        trigger_kind = self._classify_rhythmic_phrase_trigger(event, now=time.perf_counter())
+        return self._rhythmic_phrase_interval_for_trigger(trigger_kind)
+
+    def _rhythmic_phrase_interval_for_trigger(self, trigger_kind: str) -> int:
+        mapping = {
+            'syncopation': 1,
+            'beat': 2,
+            'downbeat': 4,
+            'idle_beat': 8,
+        }
+        return int(mapping.get(str(trigger_kind), 2))
+
+    def _classify_rhythmic_phrase_trigger(self, event: BeatEvent, now: float) -> str:
+        if bool(getattr(event, 'is_syncopated', False)):
+            return 'syncopation'
+        if bool(getattr(event, 'is_downbeat', False)):
+            return 'downbeat'
+        if bool(getattr(event, 'is_beat', False)):
+            recent_beats_active = self._has_recent_beats(now=now, window_s=1.4)
+            if not recent_beats_active:
+                return 'idle_beat'
+            return 'beat'
+        return 'beat'
+
+    def _resolve_rhythmic_phrase_explode_target(self, event: Optional[BeatEvent]) -> tuple[float, float]:
+        cfg = self.config.stroke
+        r_min = float(np.clip(getattr(cfg, 'rhythmic_phrase_explode_radius_min', 0.30) or 0.30, 0.05, 1.0))
+        r_max = float(np.clip(getattr(cfg, 'rhythmic_phrase_explode_radius_max', 0.95) or 0.95, r_min, 1.0))
+        park_alpha, park_beta = self._get_silence_parking_target()
+        park_angle = float(np.arctan2(park_alpha, park_beta))
+        peak_angle = float(park_angle + np.pi)
+        radius = float(r_max)
+        return float(np.sin(peak_angle) * radius), float(np.cos(peak_angle) * radius)
+
+    def _rhythmic_phrase_total_rotation_for_interval(self, interval_beats: int) -> float:
+        beats = int(max(1, interval_beats))
+        if beats >= 4:
+            return float(4.0 * np.pi)  # 720 deg
+        return float(2.0 * np.pi)  # 360 deg
+
+    def _is_solid_beat_for_phrase(self, event: BeatEvent, bass_motion_allowed: bool) -> bool:
+        if not (bool(getattr(event, 'is_beat', False)) or bool(getattr(event, 'is_downbeat', False))):
+            return False
+        if not bass_motion_allowed or not self._stroke_ready:
+            return False
+        min_intensity = float(np.clip(
+            getattr(self.config.stroke, 'rhythmic_phrase_min_intensity', 0.18) or 0.18,
+            0.0,
+            1.0,
+        ))
+        intensity = float(np.clip(
+            max(
+                float(getattr(event, 'intensity', 0.0) or 0.0),
+                float(getattr(event, 'peak_energy', 0.0) or 0.0),
+                float(self._rms_envelope),
+            ),
+            0.0,
+            1.0,
+        ))
+        return bool(intensity >= min_intensity)
+
+    def _ease_rhythmic_phrase_progress(self, t: float) -> float:
+        t_clamped = float(np.clip(t, 0.0, 1.0))
+        ease_mode = str(getattr(self.config.stroke, 'rhythmic_phrase_ease_mode', 'sine') or 'sine').lower().strip()
+        if ease_mode == 'linear':
+            return t_clamped
+        return float(0.5 - 0.5 * np.cos(np.pi * t_clamped))
+
+    def _rhythmic_phrase_phase_progress(self, progress: float) -> float:
+        """Smooth-step S-curve progress: sp = p*p*(3-2*p)."""
+        p = float(np.clip(progress, 0.0, 1.0))
+        return float(p * p * (3.0 - (2.0 * p)))
+
+    def _is_rhythmic_phrase_start_boundary(self, event: BeatEvent) -> bool:
+        return bool(getattr(event, 'is_beat', False) or getattr(event, 'is_downbeat', False))
+
+    def _queue_rhythmic_phrase_movement(self, event: BeatEvent, trigger_kind: str, now: float) -> None:
+        phrase = self._rhythmic_phrase
+        phrase.pending_movement = True
+        phrase.pending_trigger_kind = str(trigger_kind)
+        phrase.pending_set_time = float(now)
+        phrase.queued_at_beat_count = int(self._rhythmic_phrase_beat_counter)
+        phrase.state = "pending"
+        phrase.end_alpha = 0.0
+        phrase.end_beta = self._silence_park_radius
+        self.state.alpha = 0.0
+        self.state.beta = self._silence_park_radius
+        log_event(
+            "INFO",
+            "StrokeMapper",
+            "Rhythmic phrase queued",
+            trigger_kind=str(trigger_kind),
+            queued_at_beat_count=int(phrase.queued_at_beat_count),
+        )
+
+    def _sample_rhythmic_phrase_curve(self, phrase: RhythmicPhraseReturn, progress: float) -> tuple[float, float]:
+        sp = self._rhythmic_phrase_phase_progress(progress)
+        angle = float(phrase.start_angle + (phrase.total_rotation * sp))
+        radius = float(phrase.park_radius + (phrase.bloom_amount * np.sin(np.pi * sp)))
+        return float(np.sin(angle) * radius), float(np.cos(angle) * radius)
+
+    def _try_start_queued_rhythmic_phrase(self, event: BeatEvent, now: float) -> Optional[TCodeCommand]:
+        phrase = self._rhythmic_phrase
+        if not phrase.pending_movement:
+            return None
+        if not self._is_rhythmic_phrase_start_boundary(event):
+            return None
+
+        if self._rhythmic_phrase_beat_counter <= int(phrase.queued_at_beat_count):
+            return None
+
+        trigger_kind = str(phrase.pending_trigger_kind)
+        bpm = self._resolve_phrase_bpm(event)
+        interval_beats = self._rhythmic_phrase_interval_for_trigger(trigger_kind)
+        return_duration_s = float((60.0 / bpm) * float(interval_beats))
+
+        park_alpha, park_beta = self._get_silence_parking_target()
+        park_radius = float(np.hypot(park_alpha, park_beta))
+        cfg = self.config.stroke
+        r_min = float(np.clip(getattr(cfg, 'rhythmic_phrase_explode_radius_min', 0.30) or 0.30, 0.05, 1.0))
+        r_max = float(np.clip(getattr(cfg, 'rhythmic_phrase_explode_radius_max', 0.95) or 0.95, r_min, 1.0))
+        bloom_amount = float(np.clip(r_max - park_radius, 0.0, 1.0))
+        start_angle = float(np.arctan2(park_alpha, park_beta))
+        total_rotation = self._rhythmic_phrase_total_rotation_for_interval(interval_beats)
+
+        peak_progress = 0.5
+        peak_sp = self._rhythmic_phrase_phase_progress(peak_progress)
+        peak_angle = float(start_angle + (total_rotation * peak_sp))
+        peak_radius = float(park_radius + (bloom_amount * np.sin(np.pi * peak_sp)))
+        peak_alpha = float(np.sin(peak_angle) * peak_radius)
+        peak_beta = float(np.cos(peak_angle) * peak_radius)
+
+        self._last_known_bpm = bpm
+        self._rhythmic_phrase = RhythmicPhraseReturn(
+            active=True,
+            state="active",
+            pending_movement=False,
+            pending_trigger_kind="beat",
+            pending_set_time=0.0,
+            queued_at_beat_count=0,
+            interval_beats=int(interval_beats),
+            bpm=float(bpm),
+            start_time=float(now),
+            duration_s=max(0.05, float(return_duration_s)),
+            start_alpha=float(park_alpha),
+            start_beta=float(park_beta),
+            end_alpha=float(park_alpha),
+            end_beta=float(park_beta),
+            peak_alpha=float(peak_alpha),
+            peak_beta=float(peak_beta),
+            start_angle=float(start_angle),
+            total_rotation=float(total_rotation),
+            park_radius=float(park_radius),
+            bloom_amount=float(bloom_amount),
+        )
+
+        self.state.alpha = float(park_alpha)
+        self.state.beta = float(park_beta)
+        self.state.target_alpha = float(peak_alpha)
+        self.state.target_beta = float(peak_beta)
+
+        log_event(
+            "INFO",
+            "StrokeMapper",
+            "Rhythmic phrase launch",
+            trigger_kind=trigger_kind,
+            bpm=f"{bpm:.2f}",
+            interval_beats=int(interval_beats),
+            return_duration_s=f"{return_duration_s:.3f}",
+            start_alpha=f"{park_alpha:.4f}",
+            start_beta=f"{park_beta:.4f}",
+            peak_alpha=f"{peak_alpha:.4f}",
+            peak_beta=f"{peak_beta:.4f}",
+            total_rotation_deg=f"{np.degrees(total_rotation):.1f}",
+        )
+        return TCodeCommand(float(park_alpha), float(park_beta), 25, self.get_volume())
+
+    def _trigger_rhythmic_phrase_explode(self, event: BeatEvent, now: Optional[float] = None) -> TCodeCommand:
+        if now is None:
+            now = getattr(event, 'monotonic_timestamp', 0.0) or time.perf_counter()
+        trigger_kind = self._classify_rhythmic_phrase_trigger(event, now=now)
+        self._queue_rhythmic_phrase_movement(event, trigger_kind=trigger_kind, now=now)
+        park_alpha, park_beta = self._get_silence_parking_target()
+        return TCodeCommand(float(park_alpha), float(park_beta), 25, self.get_volume())
+
+    def _advance_rhythmic_phrase_return(self, now: Optional[float] = None) -> Optional[tuple[float, float, bool]]:
+        phrase = self._rhythmic_phrase
+        if not phrase.active:
+            return None
+        if now is None:
+            now = time.perf_counter()
+
+        duration_s = max(1e-6, float(phrase.duration_s))
+        progress = float(np.clip((float(now) - float(phrase.start_time)) / duration_s, 0.0, 1.0))
+        alpha, beta = self._sample_rhythmic_phrase_curve(phrase, progress)
+
+        lock_margin = float(np.clip(self._silence_landing_lock_margin, 0.001, 0.05))
+        target_dist = float(np.hypot(alpha - phrase.end_alpha, beta - phrase.end_beta))
+        locked = bool(target_dist <= lock_margin)
+        self._maybe_log_rhythmic_phrase_status(
+            now=float(now),
+            phrase=phrase,
+            progress=progress,
+            alpha=alpha,
+            beta=beta,
+            locked=locked,
+            force=False,
+        )
+
+        landed = bool(progress >= 1.0 - 1e-9)
+        if landed:
+            alpha = float(phrase.end_alpha)
+            beta = float(phrase.end_beta)
+            self._maybe_log_rhythmic_phrase_status(
+                now=float(now),
+                phrase=phrase,
+                progress=1.0,
+                alpha=alpha,
+                beta=beta,
+                locked=True,
+                force=True,
+            )
+            self._rhythmic_phrase.active = False
+            self._rhythmic_phrase.state = "idle"
+
+        return alpha, beta, landed
+
+    def _maybe_log_rhythmic_phrase_status(
+        self,
+        now: float,
+        phrase: RhythmicPhraseReturn,
+        progress: float,
+        alpha: float,
+        beta: float,
+        locked: bool,
+        force: bool = False,
+    ) -> None:
+        if not force and (now - self._last_rhythmic_phrase_log_time) < self._rhythmic_phrase_log_interval_s:
+            return
+        self._last_rhythmic_phrase_log_time = now
+        log_event(
+            "INFO",
+            "StrokeMapper",
+            "Rhythmic phrase return",
+            state=str(phrase.state),
+            interval_beats=int(phrase.interval_beats),
+            bpm=f"{float(phrase.bpm):.2f}",
+            progress=f"{float(np.clip(progress, 0.0, 1.0)):.3f}",
+            alpha=f"{float(alpha):.4f}",
+            beta=f"{float(beta):.4f}",
+            target_alpha=f"{float(phrase.end_alpha):.4f}",
+            target_beta=f"{float(phrase.end_beta):.4f}",
+            lock_status="locked" if locked else "tracking",
+        )
 
     def _get_park_phase(self) -> float:
         alpha, beta = self._get_park_anchor()
@@ -2663,6 +2968,21 @@ class StrokeMapper:
         self._update_bass_jitter_drive(event)
         self._update_learning_adapter(event)
 
+        if self._rhythmic_phrasing_enabled() and self._motion_mode == MotionMode.CREEP_MICRO:
+            beat_boundary = self._is_rhythmic_phrase_start_boundary(event)
+            if beat_boundary:
+                self._rhythmic_phrase_beat_counter += 1
+            if self._rhythmic_phrase.pending_movement:
+                launch_cmd = self._try_start_queued_rhythmic_phrase(event, now=now)
+                if launch_cmd is not None:
+                    self._note_motion_resumed("rhythmic_phrase_launch")
+                    return self._apply_fade(launch_cmd)
+
+            trigger_ready = self._is_solid_beat_for_phrase(event, bass_motion_allowed)
+            if trigger_ready and not self._rhythmic_phrase.pending_movement and not self._rhythmic_phrase.active:
+                cmd = self._trigger_rhythmic_phrase_explode(event, now=now)
+                return self._apply_fade(cmd)
+
         # ===== LOW-BAND DROP FALLBACK =====
         # Track recent low-band activity; if it drops sharply from a
         # high-activity state, force back to creep mode.
@@ -4537,6 +4857,47 @@ class StrokeMapper:
             self._last_idle_time = now
             return TCodeCommand(park_target_alpha, park_target_beta, 25, 0.0)
 
+        if self._rhythmic_phrase.pending_movement and not self._rhythmic_phrase.active:
+            self.state.alpha = park_target_alpha
+            self.state.beta = park_target_beta
+            self._last_idle_time = now
+            base_vol = self.get_volume()
+            if silence_deadzone_active:
+                base_vol = 0.0
+            return TCodeCommand(park_target_alpha, park_target_beta, 25, base_vol)
+
+        if self._rhythmic_phrase.active and not silence_deadzone_active:
+            phrase_target = self._advance_rhythmic_phrase_return(now=now)
+            if phrase_target is not None:
+                alpha_target, beta_target, _ = phrase_target
+                alpha_target = float(np.clip(alpha_target, -1.0, 1.0))
+                beta_target = float(np.clip(beta_target, -1.0, 1.0))
+                self.state.alpha = alpha_target
+                self.state.beta = beta_target
+                self._last_idle_time = now
+
+                base_vol = self.get_volume()
+                fade = self._fade_intensity
+                creep_vol = self._creep_volume_factor
+                fade_reduction = (1.0 - fade) * base_vol
+                creep_reduction = (1.0 - creep_vol) * base_vol
+                total_reduction = fade_reduction + creep_reduction
+                limit_pct = self.config.stroke.vol_reduction_limit / 100.0
+                volume = max(self._vol_floor(base_vol), base_vol - min(total_reduction, base_vol * limit_pct))
+
+                self._gate_visibility_value = self._step_gate_modulation_value(
+                    self._gate_visibility_value,
+                    self._gate_visibility_target,
+                )
+                self._gate_amplitude_value = self._step_gate_modulation_value(
+                    self._gate_amplitude_value,
+                    self._gate_amplitude_target,
+                    max_step=self._gate_amplitude_max_step_per_frame,
+                )
+                gate_vis = float(np.clip(self._gate_visibility_value, 0.35, 1.0))
+                volume *= gate_vis
+                return TCodeCommand(alpha_target, beta_target, 25, volume)
+
         beat_cfg = self.config.beat
         _BAND_LOWER_HZ = {'sub_bass': 30, 'low_mid': 100, 'mid': 500, 'high': 2000}
         cutoff = float(getattr(beat_cfg, 'motion_freq_cutoff', 0.0))
@@ -5004,6 +5365,13 @@ class StrokeMapper:
         self._beats_since_stroke = 0
         self._silence_deadzone_active = False
         self._silence_parked_lock = False
+        self._rhythmic_phrase = RhythmicPhraseReturn(
+            active=False,
+            state="idle",
+            end_alpha=0.0,
+            end_beta=self._silence_park_radius,
+        )
+        self._rhythmic_phrase_beat_counter = 0
         self.target_radius = float(np.clip(getattr(self.config, 'base_radius', 0.30) or 0.30, 0.05, 1.0))
         self._last_overall_amplitude = 0.0
         self._noise_check_frame_counter = 0
