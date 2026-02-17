@@ -458,6 +458,102 @@ class TestStrokeMapperContract(unittest.TestCase):
             mapper._log_jump_debug(source="large", alpha=0.2, beta=0.0)
             mocked_log.assert_called_once()
 
+    def test_rhythmic_phrase_interval_selection_uses_trigger_type_mapping(self):
+        mapper = StrokeMapper(Config())
+        now = time.perf_counter()
+
+        beat_event = SimpleNamespace(is_syncopated=False, is_downbeat=False, is_beat=True)
+        downbeat_event = SimpleNamespace(is_syncopated=False, is_downbeat=True, is_beat=True)
+        sync_event = SimpleNamespace(is_syncopated=True, is_downbeat=False, is_beat=False)
+
+        mapper._last_any_beat_time = now
+        self.assertEqual(mapper._rhythmic_phrase_interval_for_trigger(mapper._classify_rhythmic_phrase_trigger(sync_event, now=now)), 1)
+        self.assertEqual(mapper._rhythmic_phrase_interval_for_trigger(mapper._classify_rhythmic_phrase_trigger(beat_event, now=now)), 2)
+        self.assertEqual(mapper._rhythmic_phrase_interval_for_trigger(mapper._classify_rhythmic_phrase_trigger(downbeat_event, now=now)), 4)
+
+        mapper._last_any_beat_time = 0.0
+        self.assertEqual(mapper._rhythmic_phrase_interval_for_trigger(mapper._classify_rhythmic_phrase_trigger(beat_event, now=now)), 8)
+
+    def test_rhythmic_phrase_queued_launch_uses_next_beat_and_duration_formula(self):
+        cfg = Config()
+        mapper = StrokeMapper(cfg)
+        base_now = time.perf_counter()
+        mapper._last_any_beat_time = base_now
+
+        queue_event = SimpleNamespace(
+            monotonic_timestamp=base_now,
+            intensity=0.95,
+            peak_energy=0.95,
+            spectral_flux=0.30,
+            metronome_bpm=120.0,
+            is_beat=True,
+            is_downbeat=False,
+            is_syncopated=False,
+        )
+        mapper._rhythmic_phrase_beat_counter = 10
+        mapper._trigger_rhythmic_phrase_explode(queue_event, now=base_now)
+
+        self.assertTrue(mapper._rhythmic_phrase.pending_movement)
+        self.assertFalse(mapper._rhythmic_phrase.active)
+
+        mapper._rhythmic_phrase_beat_counter = 11
+        launch_cmd = mapper._try_start_queued_rhythmic_phrase(queue_event, now=base_now + 0.1)
+
+        self.assertIsNotNone(launch_cmd)
+        self.assertTrue(mapper._rhythmic_phrase.active)
+        self.assertEqual(mapper._rhythmic_phrase.interval_beats, 2)
+        self.assertAlmostEqual(mapper._rhythmic_phrase.duration_s, (60.0 / 120.0) * 2.0, places=6)
+
+    def test_rhythmic_phrase_curve_is_deterministic_bloom_arc(self):
+        mapper = StrokeMapper(Config())
+        phrase = mapper._rhythmic_phrase
+        phrase.start_angle = 0.0
+        phrase.total_rotation = float(2.0 * np.pi)
+        phrase.park_radius = 0.70
+        phrase.bloom_amount = 0.20
+
+        a0, b0 = mapper._sample_rhythmic_phrase_curve(phrase, 0.0)
+        am, bm = mapper._sample_rhythmic_phrase_curve(phrase, 0.5)
+        a1, b1 = mapper._sample_rhythmic_phrase_curve(phrase, 1.0)
+
+        self.assertAlmostEqual(a0, 0.0, places=6)
+        self.assertAlmostEqual(b0, 0.70, places=6)
+        self.assertAlmostEqual(am, 0.0, places=3)
+        self.assertLess(bm, -0.89)
+        self.assertAlmostEqual(a1, 0.0, places=6)
+        self.assertAlmostEqual(b1, 0.70, places=6)
+
+    def test_pending_rhythmic_phrase_keeps_wait_state_rock_solid_at_park(self):
+        mapper = StrokeMapper(Config())
+        mapper._last_idle_time = 0.0
+        mapper._silence_deadzone_active = False
+        mapper.state.alpha = -0.45
+        mapper.state.beta = 0.12
+        mapper._rhythmic_phrase.pending_movement = True
+        mapper._rhythmic_phrase.active = False
+        mapper._rhythmic_phrase.state = "pending"
+
+        event = SimpleNamespace(
+            monotonic_timestamp=time.perf_counter(),
+            intensity=0.2,
+            spectral_flux=0.0,
+            peak_energy=0.0,
+            metronome_bpm=120.0,
+            beat_band='',
+            fired_bands=[],
+            frequency=0.0,
+            is_beat=False,
+            is_downbeat=False,
+        )
+
+        cmd = mapper._generate_idle_motion(event, force_update=True)
+
+        self.assertIsNotNone(cmd)
+        self.assertAlmostEqual(mapper.state.alpha, 0.0, places=6)
+        self.assertAlmostEqual(mapper.state.beta, 0.70, places=6)
+        self.assertAlmostEqual(cmd.alpha, 0.0, places=6)
+        self.assertAlmostEqual(cmd.beta, 0.70, places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
