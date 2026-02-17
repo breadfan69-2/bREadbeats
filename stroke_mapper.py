@@ -3572,31 +3572,15 @@ class StrokeMapper:
 
         alpha, beta = self.state.alpha, self.state.beta
 
+        creep_reset_blend = 0.0
         if self.state.creep_reset_active:
             reset_duration_ms = 400
             elapsed_ms = (now - self.state.creep_reset_start_time) * 1000
             if elapsed_ms < reset_duration_ms:
                 progress = elapsed_ms / reset_duration_ms
                 eased_progress = 1.0 - (1.0 - progress) ** 2
-                try:
-                    current_angle = float(self.state.creep_angle)
-                    if not np.isfinite(current_angle):
-                        current_angle = 0.0
-                except:
-                    current_angle = 0.0
-                while current_angle > np.pi:
-                    current_angle -= 2 * np.pi
-                while current_angle < -np.pi:
-                    current_angle += 2 * np.pi
-                self.state.creep_angle = current_angle * (1.0 - eased_progress)
-                # Also drive position toward park quickly
-                blend = eased_progress * 0.3
-                self.state.alpha += (self._park_alpha - self.state.alpha) * blend
-                self.state.beta += (self._park_beta - self.state.beta) * blend
+                creep_reset_blend = float(np.clip(eased_progress, 0.0, 1.0))
             else:
-                self.state.creep_angle = 0.0
-                self.state.alpha = self._park_alpha
-                self.state.beta = self._park_beta
                 self.state.creep_reset_active = False
 
         # ---------- Creep volume lowering ----------
@@ -3644,11 +3628,11 @@ class StrokeMapper:
                 # Override speed: exactly 2pi per measure
                 angle_increment = (2 * np.pi) / (updates_per_beat * self.config.beat.beats_per_measure)
 
-            if not self.state.creep_reset_active:
-                # Normal creep rotation — keeps moving smoothly between arcs
-                self.state.creep_angle += angle_increment
-                if self.state.creep_angle >= 2 * np.pi:
-                    self.state.creep_angle -= 2 * np.pi
+            # Keep creep rotation continuous even during creep_reset so we never
+            # visually stall at top/edge points.
+            self.state.creep_angle += angle_increment
+            if self.state.creep_angle >= 2 * np.pi:
+                self.state.creep_angle -= 2 * np.pi
 
             if self._motion_mode == MotionMode.CREEP_MICRO:
                 # CREEP_MICRO: smaller radius, drift toward center not edges
@@ -3660,6 +3644,10 @@ class StrokeMapper:
                     and self.config.stroke.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL, StrokeMode.TEARDROP)):
                 follow_floor = 0.85 if self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
                 creep_radius = float(np.clip(max(creep_radius, self._edge_follow_radius, follow_floor), follow_floor, 0.85))
+
+            if self.state.creep_reset_active:
+                park_radius = float(np.hypot(self._park_alpha, self._park_beta))
+                creep_radius = float(creep_radius + ((park_radius - creep_radius) * creep_reset_blend))
 
             target_alpha = np.sin(self.state.creep_angle) * creep_radius
             target_beta = np.cos(self.state.creep_angle) * creep_radius
