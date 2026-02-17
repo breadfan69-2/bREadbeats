@@ -247,8 +247,10 @@ class StrokeMapper:
         self._last_snap_correction_ms: float = 0.0
         self._lead_trim_ms: float = 0.0
         self._lead_trim_limit_ms: float = 40.0
-        self._lead_target_error_ms: float = -6.0  # slight intentional early landing
+        self._lead_target_error_ms: float = 8.0  # slight intentional late landing
         self._no_beat_timeout_s: float = 2.0           # seconds before returning to center+jitter
+        self._timing_scale_min: float = 0.5   # up to 2x faster
+        self._timing_scale_max: float = 2.0   # up to 1/2 speed
 
         # ---------- Post-silence volume ramp ----------
         # After silence/track-change reset, reduce volume and slowly ramp back up
@@ -285,6 +287,17 @@ class StrokeMapper:
         self._block_reason_counts = {reason: 0 for reason in self._block_reason_order}
         self._motion_resumed_count: int = 0
         self._blocked_beat_events: int = 0
+
+        # ---------- Large-jump diagnostics ----------
+        self._jump_log_threshold: float = 0.85
+        self._jump_log_interval_s: float = 0.25
+        self._last_jump_log_time: float = 0.0
+        self._trajectory_max_step_advance: int = 2
+
+        # ---------- Anti-stop safeguards ----------
+        self._anti_stop_min_delta: float = 0.010
+        self._anti_stop_angle_step: float = 0.035
+        self._anti_stop_edge_radius: float = 0.80
 
         # ---------- Center+jitter flux guard diagnostics ----------
         self._last_center_guard_log_time: float = 0.0
@@ -591,6 +604,78 @@ class StrokeMapper:
             self._block_reason_counts[key] = 0
         self._motion_resumed_count = 0
         self._blocked_beat_events = 0
+
+    def _log_large_motion_jump(self,
+                               prev_alpha: float,
+                               prev_beta: float,
+                               next_alpha: float,
+                               next_beta: float,
+                               source: str) -> None:
+        """Log potentially visible straight-line jump transitions with context."""
+        delta = float(np.hypot(next_alpha - prev_alpha, next_beta - prev_beta))
+        if delta < self._jump_log_threshold:
+            return
+
+        now = time.time()
+        if (now - self._last_jump_log_time) < self._jump_log_interval_s:
+            return
+        self._last_jump_log_time = now
+
+        traj = self._trajectory
+        payload = {
+            'source': source,
+            'delta': f"{delta:.3f}",
+            'from_a': f"{prev_alpha:.2f}",
+            'from_b': f"{prev_beta:.2f}",
+            'to_a': f"{next_alpha:.2f}",
+            'to_b': f"{next_beta:.2f}",
+            'mode': self._motion_mode,
+            'stroke_ready': bool(self._stroke_ready),
+            'last_block_reason': self._last_block_reason or 'none',
+            'traj_active': bool(traj is not None and traj.active),
+            'traj_park_return': bool(getattr(traj, 'is_park_return', False)) if traj is not None else False,
+            'traj_micro': bool(getattr(traj, 'is_micro', False)) if traj is not None else False,
+        }
+        if traj is not None:
+            payload['traj_idx'] = f"{traj.current_index}/{traj.n_points}"
+        log_event("WARNING", "StrokeMapper", "Large motion jump", **payload)
+
+    def _should_anti_stop(self, alpha: float, beta: float) -> bool:
+        """Return True when motion should not be allowed to fully stall."""
+        park_dist = float(np.hypot(alpha - self._park_alpha, beta - self._park_beta))
+        at_bottom_park = park_dist <= 0.05
+        if at_bottom_park:
+            return False
+
+        radius = float(np.hypot(alpha, beta))
+        in_upper_half = beta < 0.0
+        at_edge = radius >= self._anti_stop_edge_radius
+        return bool(in_upper_half or at_edge)
+
+    def _apply_anti_stop_nudge(self,
+                               alpha: float,
+                               beta: float,
+                               reference_radius: Optional[float] = None) -> tuple[float, float]:
+        """Apply a tiny forward orbital nudge so the dot never fully freezes."""
+        current_radius = float(np.hypot(alpha, beta))
+        if current_radius > 0.05:
+            angle = float(np.arctan2(alpha, beta))
+            if angle < 0:
+                angle += 2 * np.pi
+            self.state.creep_angle = angle
+        else:
+            angle = float(self.state.creep_angle)
+
+        angle += self._anti_stop_angle_step
+        if angle >= 2 * np.pi:
+            angle -= 2 * np.pi
+        self.state.creep_angle = angle
+
+        radius = reference_radius if reference_radius is not None else current_radius
+        radius = float(np.clip(max(radius, 0.90), 0.85, 1.0))
+        nudged_alpha = float(np.sin(angle) * radius)
+        nudged_beta = float(np.cos(angle) * radius)
+        return nudged_alpha, nudged_beta
 
     def _update_flux_history(self, event: BeatEvent) -> None:
         now = event.timestamp
@@ -1734,6 +1819,28 @@ class StrokeMapper:
         target = predicted - self._get_effective_lead_seconds()
         return target if target > now else 0.0
 
+    def _plan_lazy_timing(self,
+                          now: float,
+                          nominal_duration_ms: int,
+                          min_interval_ms: float,
+                          predicted_target_time: float = 0.0) -> tuple[int, float, float]:
+        """Plan arc timing with continuous speed scaling (no hard stop holds)."""
+        nominal_ms = float(max(min_interval_ms, nominal_duration_ms))
+        duration_ms = int(nominal_ms)
+        start_time = now
+        beat_target_time = 0.0
+
+        if predicted_target_time > now:
+            window_ms = max(1.0, (predicted_target_time - now) * 1000.0)
+            scale = window_ms / max(1e-6, nominal_ms)
+            scale = float(np.clip(scale, self._timing_scale_min, self._timing_scale_max))
+            duration_ms = int(max(min_interval_ms, nominal_ms * scale))
+            beat_target_time = now + (duration_ms / 1000.0)
+        else:
+            beat_target_time = now + (duration_ms / 1000.0)
+
+        return duration_ms, start_time, beat_target_time
+
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
@@ -2484,11 +2591,9 @@ class StrokeMapper:
             measure_duration_ms = int(measure_duration_ms * 1.30)
             measure_duration_ms = max(min_interval_ms, min(5000, measure_duration_ms))
 
-        # ===== PRE-FIRE: time arc to LAND on beat+N =====
-        # For mode1 this is 4 beats ahead by default (full measure travel).
-        # For other modes, N follows applicable divisors.
-        # Account for event processing latency too.
-        beat_target_time = 0.0
+        # ===== PRE-FIRE: lazy timing =====
+        # Prefer delayed launch when there is extra room before beat+N.
+        predicted_target_time = 0.0
         if self.audio_engine and hasattr(self.audio_engine, 'get_tempo_info'):
             tempo_info = self.audio_engine.get_tempo_info()
             predicted = tempo_info.get('predicted_next_beat_mono', 0.0) or tempo_info.get('predicted_next_beat', 0.0)
@@ -2500,20 +2605,20 @@ class StrokeMapper:
                 target_time = self._adjust_predicted_target(target_predicted, now)
                 if target_time <= 0:
                     target_time = target_predicted
-                time_to_beat_ms = (target_time - now) * 1000
-                if measure_duration_ms * 0.4 < time_to_beat_ms < measure_duration_ms * 2.0:
-                    measure_duration_ms = int(time_to_beat_ms)
-                    beat_target_time = target_time
-        # Also account for event age (processing latency)
-        event_time = getattr(event, 'monotonic_timestamp', 0.0) or event.timestamp
-        event_age_ms = (now - event_time) * 1000
-        if beat_target_time == 0.0 and 0 < event_age_ms < measure_duration_ms * 0.3:
-            measure_duration_ms = max(min_interval_ms, int(measure_duration_ms - event_age_ms))
+                if target_time > now:
+                    predicted_target_time = target_time
 
         duration_mult = float(max(1.0, duration_mult))
         if duration_mult > 1.0:
             measure_duration_ms = int(measure_duration_ms * duration_mult)
             measure_duration_ms = max(min_interval_ms, min(8000, measure_duration_ms))
+
+        measure_duration_ms, trajectory_start_time, beat_target_time = self._plan_lazy_timing(
+            now=now,
+            nominal_duration_ms=int(measure_duration_ms),
+            min_interval_ms=min_interval_ms,
+            predicted_target_time=predicted_target_time,
+        )
 
         if self._is_learning_isolation_active():
             flux_factor = self._learned_radius_mult
@@ -2603,7 +2708,7 @@ class StrokeMapper:
             n_points=n_points,
             current_index=0,
             band_volume=self.get_volume(),
-            start_time=now,
+            start_time=trajectory_start_time,
             original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
             beat_target_time=beat_target_time,
         )
@@ -2619,6 +2724,7 @@ class StrokeMapper:
         log_event("INFO", "StrokeMapper", "Arc start",
                   mode=cfg.mode.name, points=n_points,
                   duration_ms=measure_duration_ms, tempo_state=lock_str,
+                  delayed_start="yes" if trajectory_start_time > now else "no",
                   pre_fire="yes" if beat_target_time > 0 else "no")
         return None  # idle motion will read from trajectory
 
@@ -2642,8 +2748,8 @@ class StrokeMapper:
         # Use single-beat arc span; beat skipping gate has been removed.
         beat_interval_ms = int(beat_interval_ms)
 
-        # ===== PRE-FIRE: time arc to LAND on the next beat =====
-        beat_target_time = 0.0
+        # ===== PRE-FIRE: lazy timing =====
+        predicted_target_time = 0.0
         if self.audio_engine and hasattr(self.audio_engine, 'get_tempo_info'):
             tempo_info = self.audio_engine.get_tempo_info()
             predicted = tempo_info.get('predicted_next_beat_mono', 0.0) or tempo_info.get('predicted_next_beat', 0.0)
@@ -2651,15 +2757,15 @@ class StrokeMapper:
                 target_time = self._adjust_predicted_target(predicted, now)
                 if target_time <= 0:
                     target_time = predicted
-                time_to_beat_ms = (target_time - now) * 1000
-                if beat_interval_ms * 0.4 < time_to_beat_ms < beat_interval_ms * 2.0:
-                    beat_interval_ms = int(time_to_beat_ms)
-                    beat_target_time = target_time
-        # Fallback: account for event processing latency
-        event_time = getattr(event, 'monotonic_timestamp', 0.0) or event.timestamp
-        event_age_ms = (now - event_time) * 1000
-        if beat_target_time == 0.0 and 0 < event_age_ms < beat_interval_ms * 0.3:
-            beat_interval_ms = max(min_interval_ms, int(beat_interval_ms - event_age_ms))
+                if target_time > now:
+                    predicted_target_time = target_time
+
+        beat_interval_ms, trajectory_start_time, beat_target_time = self._plan_lazy_timing(
+            now=now,
+            nominal_duration_ms=int(beat_interval_ms),
+            min_interval_ms=min_interval_ms,
+            predicted_target_time=predicted_target_time,
+        )
 
         # === SELF-CHECK: Apply snap timing correction from previous arc ===
         # If the last arc had to snap-to-target, the timing was slightly off.
@@ -2779,7 +2885,7 @@ class StrokeMapper:
             n_points=n_points,
             current_index=0,
             band_volume=self.get_volume(),
-            start_time=now,
+            start_time=trajectory_start_time,
             original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
             beat_target_time=beat_target_time,
         )
@@ -2798,6 +2904,7 @@ class StrokeMapper:
                   mode=cfg.mode.name, points=n_points,
                   duration_ms=beat_interval_ms, band=band,
                   motion=f"{self.motion_intensity:.2f}",
+                  delayed_start="yes" if trajectory_start_time > now else "no",
                   pre_fire="yes" if beat_target_time > 0 else "no")
         return None  # idle motion will read from trajectory
 
@@ -2824,9 +2931,8 @@ class StrokeMapper:
         duration_ms = max(min_interval_ms * 0.4, min(1000, beat_ms * speed_frac * mode_multiplier))
         duration_ms = int(duration_ms)
 
-        # Pre-fire: if metronome predicts next beat, adjust duration so
-        # the syncopated arc LANDS on the next beat
-        beat_target_time = 0.0
+        # Pre-fire: lazy timing to next beat
+        predicted_target_time = 0.0
         if self.audio_engine and hasattr(self.audio_engine, 'get_tempo_info'):
             tempo_info = self.audio_engine.get_tempo_info()
             predicted = tempo_info.get('predicted_next_beat_mono', 0.0) or tempo_info.get('predicted_next_beat', 0.0)
@@ -2834,10 +2940,15 @@ class StrokeMapper:
                 target_time = self._adjust_predicted_target(predicted, now)
                 if target_time <= 0:
                     target_time = predicted
-                time_to_beat_ms = (target_time - now) * 1000
-                if duration_ms * 0.5 < time_to_beat_ms < duration_ms * 3.0:
-                    duration_ms = int(time_to_beat_ms)
-                    beat_target_time = target_time
+                if target_time > now:
+                    predicted_target_time = target_time
+
+        duration_ms, trajectory_start_time, beat_target_time = self._plan_lazy_timing(
+            now=now,
+            nominal_duration_ms=int(duration_ms),
+            min_interval_ms=min_interval_ms,
+            predicted_target_time=predicted_target_time,
+        )
 
         # Reduced amplitude for lighter feel (70% of normal)
         if self._is_learning_isolation_active():
@@ -2893,7 +3004,7 @@ class StrokeMapper:
             n_points=n_points,
             current_index=0,
             band_volume=self.get_volume(),
-            start_time=now,
+            start_time=trajectory_start_time,
             beat_target_time=beat_target_time,
             original_bpm=metro_bpm if metro_bpm > 0 else self._last_known_bpm,
         )
@@ -2907,6 +3018,7 @@ class StrokeMapper:
         self.state.last_stroke_time = now
         log_event("INFO", "StrokeMapper", "Syncopated arc",
                   points=n_points, duration_ms=duration_ms,
+                  delayed_start="yes" if trajectory_start_time > now else "no",
                   arc_size=f"{arc_size:.2f}", speed=f"{speed_frac:.2f}")
         return None
 
@@ -3021,6 +3133,9 @@ class StrokeMapper:
 
         now = time.perf_counter()
 
+        if now < traj.start_time:
+            traj.start_time = now
+
         # ===== MID-ARC SPEED ADJUSTMENT =====
         # If BPM changed since arc was created, rescale remaining durations
         # so the dot still lands on target at the right time.
@@ -3051,8 +3166,12 @@ class StrokeMapper:
         else:
             target_idx = traj.n_points - 1  # past end
 
-        # Jump to the time-correct index (skip frames if needed)
+        # Jump to the time-correct index, but cap per-frame advance so
+        # we don't draw visible straight-line chords when timing gates block.
         target_idx = max(target_idx, traj.current_index)
+        max_advance = max(1, int(self._trajectory_max_step_advance))
+        if target_idx > (traj.current_index + max_advance):
+            target_idx = traj.current_index + max_advance
 
         alpha = float(traj.alpha_points[target_idx])
         beta = float(traj.beta_points[target_idx])
@@ -3064,6 +3183,9 @@ class StrokeMapper:
         fade_reduction = (1.0 - self._fade_intensity) * traj.band_volume
         volume = max(self._vol_floor(traj.band_volume), traj.band_volume - fade_reduction)
 
+        prev_alpha = float(self.state.alpha)
+        prev_beta = float(self.state.beta)
+        self._log_large_motion_jump(prev_alpha, prev_beta, alpha, beta, source="trajectory")
         self.state.alpha = alpha
         self.state.beta = beta
         # Keep creep_angle in sync with actual position during trajectory playback
@@ -3139,10 +3261,8 @@ class StrokeMapper:
         beat_interval_ms = int(60000.0 / bpm)
         beat_interval_ms = max(min_interval_ms, min(4000, beat_interval_ms))
 
-        # ===== PRE-FIRE: time arc to LAND on beat =====
-        # If we have a predicted next beat time from the metronome,
-        # adjust arc duration so it finishes exactly when the beat hits.
-        beat_target_time = 0.0
+        # ===== PRE-FIRE: lazy timing =====
+        predicted_target_time = 0.0
         if self.audio_engine and hasattr(self.audio_engine, 'get_tempo_info'):
             tempo_info = self.audio_engine.get_tempo_info()
             predicted = tempo_info.get('predicted_next_beat_mono', 0.0) or tempo_info.get('predicted_next_beat', 0.0)
@@ -3150,15 +3270,15 @@ class StrokeMapper:
                 target_time = self._adjust_predicted_target(predicted, now)
                 if target_time <= 0:
                     target_time = predicted
-                # Time until next predicted beat
-                time_to_beat_ms = (target_time - now) * 1000
-                # If the predicted beat is within a reasonable range (0.5x to 2x
-                # of our calculated interval), use it for precise timing
-                if beat_interval_ms * 0.5 < time_to_beat_ms < beat_interval_ms * 2.0:
-                    beat_interval_ms = int(time_to_beat_ms)
-                    beat_target_time = target_time
-                    log_event("DEBUG", "StrokeMapper", "Pre-fire: arc timed to land on beat",
-                              time_to_beat_ms=f"{time_to_beat_ms:.0f}")
+                if target_time > now:
+                    predicted_target_time = target_time
+
+        beat_interval_ms, trajectory_start_time, beat_target_time = self._plan_lazy_timing(
+            now=now,
+            nominal_duration_ms=int(beat_interval_ms),
+            min_interval_ms=min_interval_ms,
+            predicted_target_time=predicted_target_time,
+        )
 
         # Reuse the last trajectory's radius for visual continuity.
         # Fall back to a moderate default if unavailable.
@@ -3200,7 +3320,7 @@ class StrokeMapper:
             n_points=n_points,
             current_index=0,
             band_volume=prev_volume,
-            start_time=now,
+            start_time=trajectory_start_time,
             beat_target_time=beat_target_time,
             original_bpm=bpm,
         )
@@ -3211,6 +3331,7 @@ class StrokeMapper:
         log_event("INFO", "StrokeMapper", "Continuation arc",
                   bpm=f"{bpm:.1f}", points=n_points,
                   duration_ms=beat_interval_ms, radius=f"{radius:.2f}",
+                  delayed_start="yes" if trajectory_start_time > now else "no",
                   pre_fire="yes" if beat_target_time > 0 else "no")
 
     # ------------------------------------------------------------------
@@ -3475,6 +3596,14 @@ class StrokeMapper:
         beta_target = np.clip(beta_target, -1.0, 1.0)
 
         duration_ms = 25  # short duration matching update rate for smooth motion
+
+        prev_alpha = float(self.state.alpha)
+        prev_beta = float(self.state.beta)
+        self._log_large_motion_jump(prev_alpha, prev_beta, alpha_target, beta_target, source="idle")
+        delta = float(np.hypot(alpha_target - prev_alpha, beta_target - prev_beta))
+        if delta < self._anti_stop_min_delta and self._should_anti_stop(alpha_target, beta_target):
+            ref_radius = float(np.clip(max(np.hypot(alpha_target, beta_target), self._edge_follow_radius), 0.85, 1.0))
+            alpha_target, beta_target = self._apply_anti_stop_nudge(alpha_target, beta_target, reference_radius=ref_radius)
 
         self.state.alpha = alpha_target
         self.state.beta = beta_target
