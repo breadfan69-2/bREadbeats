@@ -2269,46 +2269,15 @@ class StrokeMapper:
         # Let current trajectory finish, then evaluate incoming beats afterward.
         trajectory_in_progress = bool(self._trajectory is not None and self._trajectory.active)
         is_downbeat_event = bool(getattr(event, 'is_downbeat', False))
-        incoming_faster_non_downbeat = bool((not is_downbeat_event) and (is_syncopated_event or high_flux_faster_call))
-        if trajectory_in_progress and is_downbeat_event:
+        if trajectory_in_progress and (bool(getattr(event, 'is_beat', False)) or bool(getattr(event, 'is_syncopated', False))):
             traj = self._trajectory
-            remaining_ms = 0.0
-            if traj is not None and traj.step_durations:
-                start_idx = int(np.clip(traj.current_index, 0, max(0, traj.n_points - 1)))
-                remaining_ms = float(max(0, sum(traj.step_durations[start_idx:])))
-
-            beats_in_measure = self._get_downbeat_span_beats(event)
-            metro_bpm_for_est = float(getattr(event, 'metronome_bpm', 0.0) or 0.0)
-            if metro_bpm_for_est > 0:
-                beat_interval_est = max(min_interval_ms, min(1000.0, 60000.0 / metro_bpm_for_est))
-                incoming_downbeat_ms = beat_interval_est * beats_in_measure
-            elif self.state.last_beat_time > 0:
-                beat_interval_est = max(min_interval_ms, min(1000.0, (now - self.state.last_beat_time) * 1000.0))
-                incoming_downbeat_ms = beat_interval_est * beats_in_measure
-            else:
-                incoming_downbeat_ms = float(500 * beats_in_measure)
-
-            incoming_downbeat_ms = float(max(min_interval_ms, min(4000.0, incoming_downbeat_ms)))
-            if cfg.mode == StrokeMode.TEARDROP:
-                incoming_downbeat_ms = float(max(min_interval_ms, min(5000.0, incoming_downbeat_ms * 1.30)))
-
-            if remaining_ms > 0 and incoming_downbeat_ms >= (remaining_ms * 0.98):
-                self._note_motion_block(
-                    "arc_in_progress",
-                    traj_idx=f"{int(traj.current_index)}/{int(traj.n_points)}" if traj is not None else "none",
-                    incoming="downbeat",
-                    remaining_ms=f"{remaining_ms:.1f}",
-                    incoming_ms=f"{incoming_downbeat_ms:.1f}",
-                )
-                cmd = self._generate_idle_motion(event)
-                return self._apply_fade(cmd)
-
-        if trajectory_in_progress and (not is_downbeat_event) and (bool(getattr(event, 'is_beat', False)) or bool(getattr(event, 'is_syncopated', False))) and (not incoming_faster_non_downbeat):
-            traj = self._trajectory
+            if traj is not None and not bool(getattr(traj, 'is_park_return', False)):
+                self._generate_park_return_arc()
             self._note_motion_block(
                 "arc_in_progress",
                 traj_idx=f"{int(traj.current_index)}/{int(traj.n_points)}" if traj is not None else "none",
                 traj_park_return=bool(getattr(traj, 'is_park_return', False)) if traj is not None else False,
+                incoming="downbeat" if is_downbeat_event else ("syncopation" if is_syncopated_event else "beat"),
             )
             cmd = self._generate_idle_motion(event)
             return self._apply_fade(cmd)
