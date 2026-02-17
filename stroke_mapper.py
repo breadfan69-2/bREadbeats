@@ -180,6 +180,7 @@ class StrokeMapper:
         # ---------- Last known BPM (persist through confidence drops) ----------
         self._last_known_bpm: float = 0.0
         self._last_locked_bpm: float = 0.0
+        self._last_unlocked_motion_bpm: float = 0.0
 
         # ---------- Post-arc smooth blend ----------
         # After an arc completes, smoothly blend from arc endpoint to creep orbit
@@ -1423,6 +1424,27 @@ class StrokeMapper:
             return float(min(bpm, self._last_locked_bpm))
         return float(bpm)
 
+    def _stabilize_unlocked_bpm(self, bpm: float, event: Optional[BeatEvent]) -> float:
+        """Clamp unlocked BPM spikes so creep rotation stays stable before lock."""
+        if bpm <= 0.0:
+            return 0.0
+
+        if bool(getattr(event, 'tempo_locked', False)):
+            self._last_unlocked_motion_bpm = 0.0
+            return float(bpm)
+
+        beat_cfg = self.config.beat
+        no_lock_ceiling = 140.0
+        jump_ratio = float(np.clip(getattr(beat_cfg, 'aggressive_snap_max_bpm_jump_ratio', 0.12) or 0.12, 0.03, 0.35))
+
+        clamped = float(min(bpm, no_lock_ceiling))
+        if self._last_unlocked_motion_bpm > 0.0:
+            allowed_up = self._last_unlocked_motion_bpm * (1.0 + jump_ratio)
+            clamped = float(min(clamped, allowed_up))
+
+        self._last_unlocked_motion_bpm = clamped
+        return clamped
+
     # ------------------------------------------------------------------
     # Band energy extraction (for micro-effects)
     # ------------------------------------------------------------------
@@ -2167,7 +2189,9 @@ class StrokeMapper:
         # 2x-speed full-circle "double" arc for the duh-DUH effect.
         is_syncopated = getattr(event, 'is_syncopated', False)
         metro_bpm = getattr(event, 'metronome_bpm', 0.0)
-        if (is_syncopated and bass_motion_allowed
+        if (is_syncopated
+            and bool(getattr(beat_cfg, 'syncopation_enabled', True))
+            and bass_motion_allowed
             and self._motion_mode == MotionMode.FULL_STROKE
             and self._is_low_band_full_enough(event)
             and self._passes_dual_band_db_gate(event)):
@@ -3376,6 +3400,8 @@ class StrokeMapper:
                     and self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE
                     and self._stroke_ready
                     and self._is_low_band_full_enough()
+                    and self._last_confirmed_beat_time > 0
+                    and (now - self._last_confirmed_beat_time) <= 0.45
                     and self._last_known_bpm > 0):
                 # Continuous rotation: immediately start another arc
                 # so the dot never stops moving between beats.
@@ -3552,6 +3578,24 @@ class StrokeMapper:
             self._last_known_bpm = reliable_tempo_bpm
 
         recent_beats_active = self._has_recent_beats(now=now, window_s=0.9)
+        recent_confirmed_beats = bool(
+            self._last_confirmed_beat_time > 0
+            and (now - self._last_confirmed_beat_time) <= 0.45
+        )
+
+        beat_cfg = self.config.beat
+        _BAND_LOWER_HZ = {'sub_bass': 30, 'low_mid': 100, 'mid': 500, 'high': 2000}
+        cutoff = float(getattr(beat_cfg, 'motion_freq_cutoff', 0.0))
+        strict_gate_enabled = bool(getattr(beat_cfg, 'strict_bass_motion_gate_enabled', True))
+        fired_bands = set(getattr(event, 'fired_bands', None) or []) if event is not None else set()
+        primary_band = getattr(event, 'beat_band', '') if event is not None else ''
+        candidate_bands = set(fired_bands)
+        if primary_band:
+            candidate_bands.add(primary_band)
+        if not strict_gate_enabled or cutoff <= 0:
+            bass_motion_allowed_now = True
+        else:
+            bass_motion_allowed_now = any(_BAND_LOWER_HZ.get(b, 99999) < cutoff for b in candidate_bands)
 
         anchor_state_active = (
             self._trajectory is None
@@ -3561,7 +3605,10 @@ class StrokeMapper:
         if anchor_state_active:
             anchor_bass_norm = self._update_anchor_from_bass_state(event)
         if (recent_beats_active
+            and recent_confirmed_beats
                 and self._motion_mode == MotionMode.FULL_STROKE
+            and self._stroke_ready
+            and bass_motion_allowed_now
                 and reliable_tempo_bpm > 0):
             self._generate_continuation_arc()
             if self._trajectory is not None and self._trajectory.active:
@@ -3628,6 +3675,7 @@ class StrokeMapper:
                 fallback_bpm = self._last_known_bpm if self._last_known_bpm > 0 else 90.0
                 bpm = float(np.clip(fallback_bpm, 45.0, 160.0))
             bpm = self._cap_bpm_to_last_locked(bpm)
+            bpm = self._stabilize_unlocked_bpm(bpm, event)
             if bpm <= 0:
                 bpm = 90.0
 
