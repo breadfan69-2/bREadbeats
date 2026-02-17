@@ -47,6 +47,42 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertTrue(mapper._has_recent_beats(now=now + 1.0, window_s=0.1))
         self.assertFalse(mapper._has_recent_beats(now=now + 3.0, window_s=0.1))
 
+    def test_arc_launch_phase_uses_geometry_phase(self):
+        mapper = StrokeMapper(Config())
+        mapper.state.alpha = 0.6
+        mapper.state.beta = 0.2
+        mapper.state.creep_reset_active = False
+        mapper._geometry.reset(0.375)
+
+        launch_phase = mapper._get_arc_launch_phase(StrokeMode.SIMPLE_CIRCLE)
+        expected = 0.375 * 2.0 * 3.141592653589793
+        self.assertAlmostEqual(launch_phase, expected, places=6)
+
+    def test_beat_rejected_by_downbeat_gate_still_returns_idle_motion(self):
+        cfg = Config()
+        mapper = StrokeMapper(cfg)
+        mapper._last_idle_time = time.perf_counter()
+
+        event = SimpleNamespace(
+            monotonic_timestamp=time.perf_counter(),
+            timestamp=time.perf_counter(),
+            intensity=0.9,
+            spectral_flux=0.4,
+            peak_energy=0.6,
+            metronome_bpm=120.0,
+            tempo_locked=True,
+            acf_confidence=1.0,
+            is_beat=True,
+            is_downbeat=False,
+            is_syncopated=False,
+            beat_band='low_mid',
+            fired_bands=['low_mid', 'high'],
+            frequency=120.0,
+        )
+
+        cmd = mapper.process_beat(event)
+        self.assertIsNotNone(cmd)
+
     def test_auto_fill_required_increases_when_fill_always_passes(self):
         cfg = Config()
         cfg.stroke.overall_amp_fill_target = 0.5

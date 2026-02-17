@@ -306,6 +306,17 @@ class StrokeMapper:
         self._motion_resumed_count: int = 0
         self._blocked_beat_events: int = 0
 
+        # ---------- Gate fallback modulation ----------
+        # When a beat-family gate rejects, keep motion continuous and softly
+        # reduce visual amplitude/visibility instead of freezing updates.
+        self._gate_visibility_target: float = 1.0
+        self._gate_visibility_value: float = 1.0
+        self._gate_amplitude_target: float = 1.0
+        self._gate_amplitude_value: float = 1.0
+        self._gate_modulation_close_smooth: float = 0.30
+        self._gate_modulation_open_smooth: float = 0.12
+        self._gate_modulation_open_max_step: float = 0.06
+
         # ---------- Adaptive amp-fill threshold controller ----------
         # Raises/lower required fill ratio per phase so beat fires stay selective.
         stroke_cfg = self.config.stroke
@@ -654,6 +665,8 @@ class StrokeMapper:
         """Emit one-shot diagnostic when motion resumes after being blocked."""
         now = time.time()
         self._emit_block_summary_if_due(now)
+        self._gate_visibility_target = 1.0
+        self._gate_amplitude_target = 1.0
         if not self._motion_block_active:
             return
         payload = {'mode': self._motion_mode}
@@ -663,6 +676,58 @@ class StrokeMapper:
         self._motion_block_active = False
         self._last_block_reason = ""
         self._motion_resumed_count += 1
+
+    def _set_gate_motion_modulation(self,
+                                    visibility_target: Optional[float] = None,
+                                    amplitude_multiplier: Optional[float] = None) -> None:
+        """Set soft modulation targets used by idle fallback after gate rejects."""
+        if visibility_target is not None:
+            self._gate_visibility_target = float(np.clip(visibility_target, 0.35, 1.0))
+        if amplitude_multiplier is not None:
+            self._gate_amplitude_target = float(np.clip(amplitude_multiplier, 0.40, 1.0))
+
+    def _step_gate_modulation_value(self, current: float, target: float) -> float:
+        """Asymmetric gate smoothing: close fast, open gradually (bloom)."""
+        current_val = float(np.clip(current, 0.0, 1.0))
+        target_val = float(np.clip(target, 0.0, 1.0))
+
+        if target_val >= current_val:
+            smooth = float(np.clip(self._gate_modulation_open_smooth, 0.01, 1.0))
+            next_val = current_val + ((target_val - current_val) * smooth)
+            max_step = float(np.clip(self._gate_modulation_open_max_step, 0.005, 0.25))
+            next_val = min(next_val, current_val + max_step)
+        else:
+            smooth = float(np.clip(self._gate_modulation_close_smooth, 0.01, 1.0))
+            next_val = current_val + ((target_val - current_val) * smooth)
+
+        return float(np.clip(next_val, 0.0, 1.0))
+
+    def _get_fullstroke_creep_radius_cap(self, event: Optional[BeatEvent]) -> float:
+        """Base low-power cap with intensity unlock toward full radius."""
+        base_cap = 0.85
+        unlock_start = 0.70
+        max_cap = 1.0
+
+        intensity = 0.0
+        if event is not None:
+            intensity = float(np.clip(getattr(event, 'intensity', 0.0) or 0.0, 0.0, 1.0))
+
+        if intensity <= unlock_start:
+            return base_cap
+
+        unlock_t = float(np.clip((intensity - unlock_start) / max(1e-6, (1.0 - unlock_start)), 0.0, 1.0))
+        return float(base_cap + ((max_cap - base_cap) * unlock_t))
+
+    def _generate_gated_idle_motion(self,
+                                    event: Optional[BeatEvent],
+                                    visibility_target: float,
+                                    amplitude_multiplier: float) -> Optional[TCodeCommand]:
+        """Keep geometry idle path active while applying soft gate modulation."""
+        self._set_gate_motion_modulation(
+            visibility_target=visibility_target,
+            amplitude_multiplier=amplitude_multiplier,
+        )
+        return self._generate_idle_motion(event, force_update=True)
 
     def _emit_block_summary_if_due(self, now: Optional[float] = None) -> None:
         """Emit compact blocker summary once per time window."""
@@ -844,12 +909,12 @@ class StrokeMapper:
         return (base - offset) if direction >= 0 else (base + offset)
 
     def _get_arc_launch_phase(self, mode: StrokeMode) -> float:
+        fallback_phase = float(self._geometry.get_phase() * 2.0 * np.pi)
+        if not np.isfinite(fallback_phase):
+            fallback_phase = self._get_park_phase()
+
         current_radius = float(np.hypot(self.state.alpha, self.state.beta))
-        if current_radius > 0.05:
-            fallback_phase = float(np.arctan2(self.state.alpha, self.state.beta))
-            if fallback_phase < 0:
-                fallback_phase += 2 * np.pi
-        else:
+        if current_radius <= 0.05:
             fallback_phase = self._get_park_phase()
 
         if mode == StrokeMode.SIMPLE_CIRCLE and current_radius > 0.05 and not self.state.creep_reset_active:
@@ -2311,7 +2376,11 @@ class StrokeMapper:
                     else "none"
                 ),
             )
-            cmd = self._generate_idle_motion(event)
+            cmd = self._generate_gated_idle_motion(
+                event,
+                visibility_target=0.72,
+                amplitude_multiplier=0.92,
+            )
             return self._apply_fade(cmd)
         if (
             is_syncopated
@@ -2327,7 +2396,11 @@ class StrokeMapper:
                     else "none"
                 ),
             )
-            cmd = self._generate_idle_motion(event)
+            cmd = self._generate_gated_idle_motion(
+                event,
+                visibility_target=0.68,
+                amplitude_multiplier=0.88,
+            )
             return self._apply_fade(cmd)
         if (is_syncopated
             and bool(getattr(beat_cfg, 'syncopation_enabled', True))
@@ -2353,7 +2426,13 @@ class StrokeMapper:
                             fill=f"{sync_fill:.3f}",
                             fill_required=f"{sync_fill_req:.3f}",
                         )
-                        cmd = self._generate_idle_motion(event)
+                        sync_amp_ratio = sync_amp / max(sync_min_amp, 1e-6)
+                        sync_amp_mult = float(np.clip(sync_amp_ratio, 0.45, 1.0))
+                        cmd = self._generate_gated_idle_motion(
+                            event,
+                            visibility_target=0.78,
+                            amplitude_multiplier=sync_amp_mult,
+                        )
                         return self._apply_fade(cmd)
                     cmd = self._generate_syncopated_stroke(event)
                     self._note_motion_resumed("syncopation")
@@ -2448,8 +2527,32 @@ class StrokeMapper:
                         energy=f"{event.peak_energy:.4f}",
                         energy_threshold=f"{low_energy:.4f}",
                     )
-                    cmd = self._generate_idle_motion(event)
+                    cmd = self._generate_gated_idle_motion(
+                        event,
+                        visibility_target=0.70,
+                        amplitude_multiplier=0.82,
+                    )
                     return self._apply_fade(cmd)
+
+            sink_start_intensity = float(np.clip(
+                getattr(cfg, 'geometry_sink_start_intensity', 0.25) or 0.25,
+                0.0,
+                1.0,
+            ))
+            beat_intensity = float(np.clip(getattr(event, 'intensity', 0.0) or 0.0, 0.0, 1.0))
+            if beat_intensity < sink_start_intensity:
+                self._note_motion_block(
+                    "overall_activity_gate",
+                    intensity=f"{beat_intensity:.3f}",
+                    sink_start_intensity=f"{sink_start_intensity:.3f}",
+                )
+                intensity_mult = float(np.clip(beat_intensity / max(sink_start_intensity, 1e-6), 0.45, 1.0))
+                cmd = self._generate_gated_idle_motion(
+                    event,
+                    visibility_target=0.65,
+                    amplitude_multiplier=intensity_mult,
+                )
+                return self._apply_fade(cmd)
 
             if not bass_motion_allowed:
                 low_activity_thresh = float(getattr(cfg, 'low_band_activity_threshold', 0.20) or 0.20)
@@ -2470,7 +2573,7 @@ class StrokeMapper:
                     beat_band=primary_band or "none",
                     fired_bands=','.join(sorted(fired_bands)) if fired_bands else "none",
                 )
-                cmd = self._generate_idle_motion(event)
+                cmd = self._generate_idle_motion(event, force_update=True)
                 return self._apply_fade(cmd)
 
             if self._is_mid_trigger_blocked(event):
@@ -2480,7 +2583,7 @@ class StrokeMapper:
                     low_hz=f"{float(getattr(cfg, 'block_mid_trigger_low_hz', 100.0) or 100.0):.1f}",
                     high_hz=f"{float(getattr(cfg, 'block_mid_trigger_high_hz', 2000.0) or 2000.0):.1f}",
                 )
-                cmd = self._generate_idle_motion(event)
+                cmd = self._generate_idle_motion(event, force_update=True)
                 return self._apply_fade(cmd)
 
             if not self._passes_dual_band_db_gate(event):
@@ -2493,7 +2596,7 @@ class StrokeMapper:
                     sub_bass_min=f"{float(getattr(cfg, 'dual_band_sub_bass_db_min', -15.0) or -15.0):.1f}",
                     high_min=f"{float(getattr(cfg, 'dual_band_high_db_min', -30.0) or -30.0):.1f}",
                 )
-                cmd = self._generate_idle_motion(event)
+                cmd = self._generate_idle_motion(event, force_update=True)
                 return self._apply_fade(cmd)
 
             # ===== STROKE READINESS GATE =====
@@ -2512,7 +2615,7 @@ class StrokeMapper:
                     )
                 else:
                     self._note_motion_block("stroke_ready", stroke_ready=False)
-                    cmd = self._generate_idle_motion(event)
+                    cmd = self._generate_idle_motion(event, force_update=True)
                     return self._apply_fade(cmd)
             else:
                 self._stroke_gate_block_streak = 0
@@ -2549,7 +2652,11 @@ class StrokeMapper:
                             else "none"
                         ),
                     )
-                    cmd = self._generate_idle_motion(event)
+                    cmd = self._generate_gated_idle_motion(
+                        event,
+                        visibility_target=0.76,
+                        amplitude_multiplier=0.90,
+                    )
                     return self._apply_fade(cmd)
                 if effective_divisor > 1 and (self.state.beat_counter % effective_divisor) != 1:
                     if is_downbeat:
@@ -2562,7 +2669,7 @@ class StrokeMapper:
                         mode=str(cfg.mode.name if hasattr(cfg.mode, 'name') else cfg.mode),
                         beat_counter=self.state.beat_counter,
                     )
-                    cmd = self._generate_idle_motion(event)
+                    cmd = self._generate_idle_motion(event, force_update=True)
                     return self._apply_fade(cmd)
 
                 beat_gate_pass, beat_mean, beat_delta, beat_var = self._get_low_band_gate_status(event, is_downbeat=False)
@@ -2599,7 +2706,13 @@ class StrokeMapper:
                             fill=f"{fill_val:.3f}",
                             fill_required=f"{fill_req:.3f}",
                         )
-                        cmd = self._generate_idle_motion(event)
+                        amp_ratio = amp_val / max(amp_min, 1e-6)
+                        amp_mult = float(np.clip(amp_ratio, 0.45, 1.0))
+                        cmd = self._generate_gated_idle_motion(
+                            event,
+                            visibility_target=0.82,
+                            amplitude_multiplier=amp_mult,
+                        )
                         return self._apply_fade(cmd)
                     if is_downbeat:
                         cmd = self._generate_downbeat_stroke(event, duration_mult=2.0)
@@ -2629,7 +2742,13 @@ class StrokeMapper:
                                 fill=f"{down_fill:.3f}",
                                 fill_required=f"{down_fill_req:.3f}",
                             )
-                            cmd = self._generate_idle_motion(event)
+                            down_amp_ratio = down_amp / max(down_min_amp, 1e-6)
+                            down_amp_mult = float(np.clip(down_amp_ratio, 0.45, 1.0))
+                            cmd = self._generate_gated_idle_motion(
+                                event,
+                                visibility_target=0.80,
+                                amplitude_multiplier=down_amp_mult,
+                            )
                             return self._apply_fade(cmd)
                         cmd = self._generate_downbeat_stroke(event, duration_mult=2.0)
                         self._note_motion_resumed("downbeat_fallback")
@@ -2645,7 +2764,7 @@ class StrokeMapper:
                             high_hits=f"{down_high_hits}/{down_high_window}",
                             phase="downbeat",
                         )
-                        cmd = self._generate_idle_motion(event)
+                        cmd = self._generate_idle_motion(event, force_update=True)
                         return self._apply_fade(cmd)
 
                 if beat_gate_pass and not high_gate_pass:
@@ -2657,7 +2776,7 @@ class StrokeMapper:
                         high_var=f"{high_var:.4f}",
                         high_hits=f"{high_hits}/{high_window}",
                     )
-                    cmd = self._generate_idle_motion(event)
+                    cmd = self._generate_idle_motion(event, force_update=True)
                     return self._apply_fade(cmd)
 
                 self._note_motion_block(
@@ -2666,7 +2785,7 @@ class StrokeMapper:
                     low_delta=f"{beat_delta:.4f}",
                     low_var=f"{beat_var:.4f}",
                 )
-                cmd = self._generate_idle_motion(event)
+                cmd = self._generate_idle_motion(event, force_update=True)
                 return self._apply_fade(cmd)
 
             else:  # CREEP_MICRO
@@ -3820,7 +3939,7 @@ class StrokeMapper:
     # Idle motion (creep + jitter + micro-jerk + arc return)
     # ------------------------------------------------------------------
 
-    def _generate_idle_motion(self, event: Optional[BeatEvent]) -> Optional[TCodeCommand]:
+    def _generate_idle_motion(self, event: Optional[BeatEvent], force_update: bool = False) -> Optional[TCodeCommand]:
         """Generate motion: trajectory playback OR creep/jitter when idle."""
         now = time.perf_counter()
         jitter_cfg = self.config.jitter
@@ -3828,7 +3947,7 @@ class StrokeMapper:
 
         # 60 fps throttle (use separate timer from beat strokes)
         time_since_last = (now - self._last_idle_time) * 1000
-        if time_since_last < 17:
+        if time_since_last < 17 and not force_update:
             return None
 
         # ---------- Trajectory playback (replaces arc thread) ----------
@@ -3985,17 +4104,25 @@ class StrokeMapper:
                 and self._motion_mode == MotionMode.FULL_STROKE
                 and self.config.stroke.mode in (StrokeMode.SIMPLE_CIRCLE, StrokeMode.SPIRAL, StrokeMode.TEARDROP)):
                 follow_floor = 0.85 if self.config.stroke.mode == StrokeMode.SIMPLE_CIRCLE else 0.82
-                creep_radius = float(np.clip(max(creep_radius, self._edge_follow_radius, follow_floor), follow_floor, 0.85))
+                radius_cap = self._get_fullstroke_creep_radius_cap(event)
+                creep_radius = float(np.clip(max(creep_radius, self._edge_follow_radius, follow_floor), follow_floor, radius_cap))
 
             if self.state.creep_reset_active:
                 park_radius = float(np.hypot(self._park_alpha, self._park_beta))
                 creep_radius = float(creep_radius + ((park_radius - creep_radius) * creep_reset_blend))
 
             idle_dt_s = float(np.clip(time_since_last / 1000.0, 0.0, 0.250))
+            beat_detected_now = bool(
+                event is not None and (
+                    bool(getattr(event, 'is_beat', False))
+                    or bool(getattr(event, 'is_downbeat', False))
+                )
+            )
             target_alpha, target_beta = self._geometry.update(
                 bpm=bpm,
                 dt=idle_dt_s,
                 intensity=creep_radius,
+                beat_detected=beat_detected_now,
             )
             synced = float(np.arctan2(target_alpha, target_beta))
             if synced < 0:
@@ -4097,6 +4224,27 @@ class StrokeMapper:
         total_reduction = fade_reduction + creep_reduction
         limit_pct = self.config.stroke.vol_reduction_limit / 100.0
         volume = max(self._vol_floor(base_vol), base_vol - min(total_reduction, base_vol * limit_pct))
+
+        self._gate_visibility_value = self._step_gate_modulation_value(
+            self._gate_visibility_value,
+            self._gate_visibility_target,
+        )
+        self._gate_amplitude_value = self._step_gate_modulation_value(
+            self._gate_amplitude_value,
+            self._gate_amplitude_target,
+        )
+        gate_amp = float(np.clip(self._gate_amplitude_value, 0.40, 1.0))
+        gate_vis = float(np.clip(self._gate_visibility_value, 0.35, 1.0))
+
+        if gate_amp < 0.999:
+            alpha_target = self._park_alpha + ((alpha_target - self._park_alpha) * gate_amp)
+            beta_target = self._park_beta + ((beta_target - self._park_beta) * gate_amp)
+            alpha_target = float(np.clip(alpha_target, -1.0, 1.0))
+            beta_target = float(np.clip(beta_target, -1.0, 1.0))
+            self.state.alpha = alpha_target
+            self.state.beta = beta_target
+
+        volume *= gate_vis
 
         return TCodeCommand(alpha_target, beta_target, duration_ms, volume)
 
