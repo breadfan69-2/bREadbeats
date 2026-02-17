@@ -4611,6 +4611,22 @@ class BREadbeatsWindow(QMainWindow):
         warning_layout.addWidget(self._advanced_unlock_cb)
         
         layout.addWidget(warning_box)
+
+        units_box = QGroupBox("Normalized Units Reference")
+        units_box.setStyleSheet("QGroupBox { background-color: #1f2630; border: 1px solid #4b5b70; border-radius: 4px; padding: 8px; }")
+        units_layout = QVBoxLayout(units_box)
+        units_label = QLabel(
+            "Most Trigger Settings sliders use normalized units (0.0–1.0).\n"
+            "• Amp (norm): 0 = no energy, 1 = near current peak envelope in active band.\n"
+            "• Fill/Occupancy (norm): fraction of active FFT bins that pass threshold in selected bin range.\n"
+            "• Mean/Δ/Var thresholds: unitless activity metrics over recent windows (not dB/Hz).\n"
+            "• dB, Hz, BPM, ms, and % controls are absolute units.\n"
+            "Tip: change one normalized slider by ±0.02 to ±0.05 at a time."
+        )
+        units_label.setWordWrap(True)
+        units_label.setStyleSheet("color: #b7c7d9; font-size: 11px;")
+        units_layout.addWidget(units_label)
+        layout.addWidget(units_box)
         
         # Scroll area for future controls
         scroll = NoWheelScrollArea()
@@ -4856,7 +4872,7 @@ class BREadbeatsWindow(QMainWindow):
         gate_layout.addWidget(new_gate_priority_cb)
 
         amp_fill_target_slider = SliderWithLabel(
-            "Overall amp target",
+            "Overall amp target (norm)",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'overall_amp_fill_target', 0.5) or 0.5),
@@ -4865,11 +4881,11 @@ class BREadbeatsWindow(QMainWindow):
         amp_fill_target_slider.valueChanged.connect(
             lambda v: (setattr(self.config.stroke, 'overall_amp_fill_target', float(v)), _update_overall_amp_fill_refs())
         )
-        amp_fill_target_slider.setToolTip("Full-spectrum normalized amplitude target for amp+fill gate; min gate amplitude is target minus tolerance")
+        amp_fill_target_slider.setToolTip("Normalized amplitude target (0-1). Gate min amplitude is target minus tolerance")
         gate_layout.addWidget(amp_fill_target_slider)
 
         amp_fill_tol_slider = SliderWithLabel(
-            "Overall amp tolerance",
+            "Overall amp tolerance (norm)",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'overall_amp_fill_tolerance', 0.5) or 0.5),
@@ -4878,11 +4894,11 @@ class BREadbeatsWindow(QMainWindow):
         amp_fill_tol_slider.valueChanged.connect(
             lambda v: (setattr(self.config.stroke, 'overall_amp_fill_tolerance', float(v)), _update_overall_amp_fill_refs())
         )
-        amp_fill_tol_slider.setToolTip("Allowed downward deviation from overall amp target before amp+fill gate blocks stroke events")
+        amp_fill_tol_slider.setToolTip("Normalized tolerance (0-1) below amp target before gate blocks")
         gate_layout.addWidget(amp_fill_tol_slider)
 
         downbeat_fill_slider = SliderWithLabel(
-            "Downbeat fill required",
+            "Downbeat fill required (occ 0-1)",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'downbeat_overall_amp_fill_required', 0.08) or 0.08),
@@ -4895,7 +4911,7 @@ class BREadbeatsWindow(QMainWindow):
         gate_layout.addWidget(downbeat_fill_slider)
 
         beat_fill_slider = SliderWithLabel(
-            "Beat fill required",
+            "Beat fill required (occ 0-1)",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'beat_overall_amp_fill_required', 0.10) or 0.10),
@@ -4908,7 +4924,7 @@ class BREadbeatsWindow(QMainWindow):
         gate_layout.addWidget(beat_fill_slider)
 
         sync_fill_slider = SliderWithLabel(
-            "Syncopation fill required",
+            "Syncopation fill required (occ 0-1)",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'syncopation_overall_amp_fill_required', 0.12) or 0.12),
@@ -5684,7 +5700,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addLayout(low_band_window_row)
 
         low_band_mean_slider = SliderWithLabel(
-            "Low-band mean threshold",
+            "Low-band mean threshold (norm)",
             0.001,
             2.00,
             float(getattr(self.config.stroke, 'low_band_activity_threshold', 0.20) or 0.20),
@@ -5696,7 +5712,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(low_band_mean_slider)
 
         low_band_delta_slider = SliderWithLabel(
-            "Low-band Δ threshold",
+            "Low-band Δ threshold (norm)",
             0.0005,
             1.00,
             float(getattr(self.config.stroke, 'low_band_delta_threshold', 0.06) or 0.06),
@@ -5708,7 +5724,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(low_band_delta_slider)
 
         low_band_var_slider = SliderWithLabel(
-            "Low-band variance threshold",
+            "Low-band variance threshold (norm)",
             0.00001,
             0.2000,
             float(getattr(self.config.stroke, 'low_band_variance_threshold', 0.0015) or 0.0015),
@@ -5720,7 +5736,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(low_band_var_slider)
 
         low_band_occ_slider = SliderWithLabel(
-            "Low-band fullness occupancy",
+            "Low-band fullness occupancy (0-1)",
             0.00,
             1.00,
             float(getattr(self.config.stroke, 'low_band_fullness_occupancy_threshold', 0.62) or 0.62),
@@ -5741,7 +5757,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(low_band_occ_slider)
 
         low_high_ratio_slider = SliderWithLabel(
-            "Low:high mean ratio min",
+            "Low:high mean ratio min (unitless)",
             0.10,
             3.00,
             float(getattr(self.config.stroke, 'low_band_to_high_ratio_min', 0.58) or 0.58),
@@ -5827,7 +5843,7 @@ class BREadbeatsWindow(QMainWindow):
         _emit_mid_bass_range_ghost()
 
         mid_bass_activity_slider = SliderWithLabel(
-            "Mid-bass activity min",
+            "Mid-bass activity min (norm)",
             0.0005,
             1.00,
             float(getattr(self.config.stroke, 'mid_bass_activity_threshold', 0.035) or 0.035),
@@ -5848,7 +5864,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(mid_bass_activity_slider)
 
         mid_bass_occ_slider = SliderWithLabel(
-            "Mid-bass occupancy",
+            "Mid-bass occupancy (0-1)",
             0.00,
             1.00,
             float(getattr(self.config.stroke, 'mid_bass_occupancy_threshold', 0.45) or 0.45),
@@ -5926,7 +5942,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addLayout(high_band_window_row)
 
         high_mean_slider = SliderWithLabel(
-            "High-band mean threshold",
+            "High-band mean threshold (norm)",
             0.001,
             2.00,
             float(getattr(self.config.stroke, 'high_band_mean_threshold', 0.12) or 0.12),
@@ -5938,7 +5954,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(high_mean_slider)
 
         high_floor_slider = SliderWithLabel(
-            "High-band fill floor",
+            "High-band fill floor (norm)",
             0.0005,
             1.00,
             float(getattr(self.config.stroke, 'high_band_floor_threshold', 0.06) or 0.06),
@@ -5950,7 +5966,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(high_floor_slider)
 
         high_occ_slider = SliderWithLabel(
-            "High-band occupancy threshold",
+            "High-band occupancy threshold (0-1)",
             0.00,
             1.00,
             float(getattr(self.config.stroke, 'high_band_occupancy_threshold', 0.55) or 0.55),
@@ -5962,7 +5978,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(high_occ_slider)
 
         high_delta_slider = SliderWithLabel(
-            "High-band Δ threshold",
+            "High-band Δ threshold (norm)",
             0.0005,
             1.00,
             float(getattr(self.config.stroke, 'high_band_delta_threshold', 0.05) or 0.05),
@@ -5974,7 +5990,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(high_delta_slider)
 
         high_var_slider = SliderWithLabel(
-            "High-band variance threshold",
+            "High-band variance threshold (norm)",
             0.00001,
             0.2000,
             float(getattr(self.config.stroke, 'high_band_variance_threshold', 0.0010) or 0.0010),
@@ -6042,7 +6058,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(overall_guard_cb)
 
         overall_flux_slider = SliderWithLabel(
-            "Overall low flux threshold",
+            "Overall low flux threshold (norm)",
             0.001,
             0.50,
             float(getattr(self.config.stroke, 'overall_low_flux_threshold', 0.06) or 0.06),
@@ -6054,7 +6070,7 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(overall_flux_slider)
 
         overall_energy_slider = SliderWithLabel(
-            "Overall low energy threshold",
+            "Overall low energy threshold (norm)",
             0.001,
             1.00,
             float(getattr(self.config.stroke, 'overall_low_energy_threshold', 0.14) or 0.14),
