@@ -2064,6 +2064,12 @@ class StrokeMapper:
             bass_motion_allowed = True
         else:
             bass_motion_allowed = any(_BAND_LOWER_HZ.get(b, 99999) < cutoff for b in candidate_bands)
+            if not bass_motion_allowed:
+                event_freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+                if event_freq > 0.0 and event_freq < cutoff:
+                    bass_motion_allowed = True
+                elif self._get_low_band_activity(event) >= float(getattr(cfg, 'low_band_activity_threshold', 0.20) or 0.20):
+                    bass_motion_allowed = True
 
         # Update continuous trackers
         self._update_flux_history(event)
@@ -2327,6 +2333,17 @@ class StrokeMapper:
                     return self._apply_fade(cmd)
 
             if not bass_motion_allowed:
+                low_activity_thresh = float(getattr(cfg, 'low_band_activity_threshold', 0.20) or 0.20)
+                low_activity = self._get_low_band_activity(event)
+                event_freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+                low_band_evidence = bool(
+                    (low_activity >= low_activity_thresh)
+                    or (event_freq > 0.0 and cutoff > 0.0 and event_freq < cutoff)
+                )
+                if low_band_evidence:
+                    bass_motion_allowed = True
+
+            if not bass_motion_allowed:
                 self._note_motion_block(
                     "bass_gate",
                     strict_gate=strict_gate_enabled,
@@ -2430,7 +2447,12 @@ class StrokeMapper:
                 high_gate_enabled = bool(getattr(cfg, 'high_band_gate_enabled', True))
                 high_presence_pass, high_mean, high_occ, high_delta, high_var = self._get_high_band_presence_status(is_downbeat=False)
                 high_pattern_pass, high_hits, high_window = self._get_high_band_pattern_status(is_downbeat=False)
-                high_gate_pass = (not high_gate_enabled) or (high_presence_pass or high_pattern_pass)
+                low_activity_thresh = float(getattr(cfg, 'low_band_activity_threshold', 0.20) or 0.20)
+                event_freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+                low_freq_bass_evidence = bool(event_freq > 0.0 and event_freq < max(140.0, cutoff if cutoff > 0 else 140.0))
+                strong_low_band_evidence = bool(low_band_activity >= low_activity_thresh)
+                bass_evidence_bypass = bool(low_freq_bass_evidence or strong_low_band_evidence)
+                high_gate_pass = (not high_gate_enabled) or (high_presence_pass or high_pattern_pass or bass_evidence_bypass)
 
                 if beat_gate_pass and high_gate_pass:
                     phase_name = 'downbeat' if is_downbeat else 'beat'
@@ -2454,7 +2476,12 @@ class StrokeMapper:
                     downbeat_gate_pass, down_mean, down_delta, down_var = self._get_low_band_gate_status(event, is_downbeat=True)
                     down_high_presence_pass, down_high_mean, down_high_occ, down_high_delta, down_high_var = self._get_high_band_presence_status(is_downbeat=True)
                     down_high_pattern_pass, down_high_hits, down_high_window = self._get_high_band_pattern_status(is_downbeat=True)
-                    down_high_gate_pass = (not high_gate_enabled) or (down_high_presence_pass or down_high_pattern_pass)
+                    down_low_activity_thresh = float(getattr(cfg, 'low_band_activity_threshold', 0.20) or 0.20)
+                    down_event_freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+                    down_low_freq_bass_evidence = bool(down_event_freq > 0.0 and down_event_freq < max(140.0, cutoff if cutoff > 0 else 140.0))
+                    down_strong_low_band_evidence = bool(low_band_activity >= down_low_activity_thresh)
+                    down_bass_evidence_bypass = bool(down_low_freq_bass_evidence or down_strong_low_band_evidence)
+                    down_high_gate_pass = (not high_gate_enabled) or (down_high_presence_pass or down_high_pattern_pass or down_bass_evidence_bypass)
                     if downbeat_gate_pass and down_high_gate_pass:
                         down_amp_pass, down_amp, down_fill, down_min_amp, down_fill_req = self._passes_overall_amp_fill_gate(event, 'downbeat')
                         if not down_amp_pass:
@@ -3628,6 +3655,12 @@ class StrokeMapper:
             bass_motion_allowed_now = True
         else:
             bass_motion_allowed_now = any(_BAND_LOWER_HZ.get(b, 99999) < cutoff for b in candidate_bands)
+            if not bass_motion_allowed_now:
+                event_freq = float(getattr(event, 'frequency', 0.0) or 0.0) if event is not None else 0.0
+                if event_freq > 0.0 and event_freq < cutoff:
+                    bass_motion_allowed_now = True
+                elif self._get_low_band_activity(event) >= float(getattr(self.config.stroke, 'low_band_activity_threshold', 0.20) or 0.20):
+                    bass_motion_allowed_now = True
 
         anchor_state_active = (
             self._trajectory is None
@@ -3732,9 +3765,15 @@ class StrokeMapper:
             event_flux = float(getattr(event, 'spectral_flux', 0.0) or 0.0)
             event_energy = float(getattr(event, 'peak_energy', 0.0) or 0.0)
             quiet_ratio = float(np.clip(max(event_flux / near_quiet_flux, event_energy / near_quiet_energy), 0.0, 1.0))
-            max_quiet_increment = 0.026
-            min_quiet_increment = 0.008
+            max_quiet_increment = 0.018
+            min_quiet_increment = 0.005
             quiet_cap = min_quiet_increment + ((max_quiet_increment - min_quiet_increment) * quiet_ratio)
+            if not recent_beats_active:
+                truly_quiet = (event_flux < quiet_flux_thresh * 1.3) and (event_energy < quiet_energy_thresh * 1.3)
+                if truly_quiet:
+                    quiet_cap = min(quiet_cap, 0.008)
+                else:
+                    quiet_cap = min(quiet_cap, 0.012)
             if angle_increment > quiet_cap:
                 angle_increment = quiet_cap
 
