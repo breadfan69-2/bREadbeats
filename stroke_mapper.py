@@ -179,6 +179,7 @@ class StrokeMapper:
 
         # ---------- Last known BPM (persist through confidence drops) ----------
         self._last_known_bpm: float = 0.0
+        self._last_locked_bpm: float = 0.0
 
         # ---------- Post-arc smooth blend ----------
         # After an arc completes, smoothly blend from arc endpoint to creep orbit
@@ -1388,7 +1389,7 @@ class StrokeMapper:
         dt = now - self._phase_time
         self._phase_time = now
 
-        bpm = self._get_reliable_metronome_bpm(event)
+        bpm = self._cap_bpm_to_last_locked(self._get_reliable_metronome_bpm(event))
         self._current_bpm = bpm
 
         if bpm > 0 and dt > 0 and dt < 1.0:
@@ -1406,12 +1407,21 @@ class StrokeMapper:
             return 0.0
 
         if bool(getattr(event, 'tempo_locked', False)):
+            self._last_locked_bpm = metro_bpm
             return metro_bpm
 
         conf = float(getattr(event, 'acf_confidence', 0.0) or 0.0)
         threshold = self._metronome_relaxed_confidence if min_conf is None else float(min_conf)
         threshold = float(np.clip(threshold, 0.05, 0.40))
         return metro_bpm if conf >= threshold else 0.0
+
+    def _cap_bpm_to_last_locked(self, bpm: float) -> float:
+        """Suppress motion faster than the most recent locked tempo."""
+        if bpm <= 0.0:
+            return 0.0
+        if self._last_locked_bpm > 0.0:
+            return float(min(bpm, self._last_locked_bpm))
+        return float(bpm)
 
     # ------------------------------------------------------------------
     # Band energy extraction (for micro-effects)
@@ -3537,7 +3547,7 @@ class StrokeMapper:
             self._last_idle_time = now
             return self._advance_trajectory()
 
-        reliable_tempo_bpm = self._get_reliable_metronome_bpm(event)
+        reliable_tempo_bpm = self._cap_bpm_to_last_locked(self._get_reliable_metronome_bpm(event))
         if reliable_tempo_bpm > 0:
             self._last_known_bpm = reliable_tempo_bpm
 
@@ -3617,6 +3627,9 @@ class StrokeMapper:
             if bpm <= 0:
                 fallback_bpm = self._last_known_bpm if self._last_known_bpm > 0 else 90.0
                 bpm = float(np.clip(fallback_bpm, 45.0, 160.0))
+            bpm = self._cap_bpm_to_last_locked(bpm)
+            if bpm <= 0:
+                bpm = 90.0
 
             beats_per_sec = bpm / 60.0
             updates_per_sec = 1000.0 / 17.0
