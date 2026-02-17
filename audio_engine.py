@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 import time
+import threading as threading_mod
 
 from audio_session_reporter import AudioSessionReporter
 from logging_utils import log_event
@@ -207,6 +208,164 @@ class AudioEngine:
             return False, reason or 'helper reports unsupported'
         return True, reason or 'helper backend available'
 
+    def _probe_external_app_capture_backend_details(self, process_id: int, include_children: bool) -> tuple[bool, bool, str]:
+        helper_path = self._resolve_app_capture_helper_path()
+        if not helper_path.exists():
+            return False, False, f"helper not found: {helper_path}"
+
+        if helper_path.suffix.lower() == '.py':
+            command = [sys.executable, str(helper_path)]
+        else:
+            command = [str(helper_path)]
+
+        command.extend([
+            '--probe',
+            '--pid',
+            str(process_id),
+            '--include-children',
+            '1' if include_children else '0',
+        ])
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=6,
+                check=False,
+            )
+        except Exception as exc:
+            return False, False, f"helper launch failed: {exc}"
+
+        stdout = (result.stdout or '').strip()
+        stderr = (result.stderr or '').strip()
+        if result.returncode != 0:
+            return False, False, f"helper returned {result.returncode}: {stderr or stdout or 'no output'}"
+
+        if not stdout:
+            return False, False, "helper returned no probe payload"
+
+        try:
+            payload = json.loads(stdout)
+        except Exception:
+            return False, False, f"invalid helper payload: {stdout[:180]}"
+
+        supported = bool(payload.get('supported', False))
+        stream_enabled = bool(payload.get('stream_enabled', False))
+        reason = str(payload.get('reason', '') or '').strip()
+        if not supported:
+            return False, False, reason or 'helper reports unsupported'
+        return True, stream_enabled, reason or 'helper backend available'
+
+    def _read_exact(self, stream, size: int) -> bytes:
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining > 0 and self.running:
+            chunk = stream.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b''.join(chunks)
+
+    def _app_capture_stream_loop(self, process: subprocess.Popen, frame_count: int, channels: int) -> None:
+        try:
+            stdout = process.stdout
+            if stdout is None:
+                log_event("ERROR", "AudioEngine", "App capture helper has no stdout stream")
+                return
+
+            bytes_per_frame = channels * 4  # float32
+            chunk_bytes = max(1, frame_count) * bytes_per_frame
+
+            while self.running:
+                packet = self._read_exact(stdout, chunk_bytes)
+                if len(packet) != chunk_bytes:
+                    break
+                self._audio_callback_pyaudio(packet, frame_count, None, 0)
+        except Exception as exc:
+            log_event("WARN", "AudioEngine", "App capture stream loop failed", error=exc)
+        finally:
+            if self.running:
+                log_event("WARN", "AudioEngine", "App capture helper stream ended")
+
+    def _start_app_capture_stream(self, process_id: int, include_children: bool) -> None:
+        helper_path = self._resolve_app_capture_helper_path()
+        if helper_path.suffix.lower() == '.py':
+            command = [sys.executable, str(helper_path)]
+        else:
+            command = [str(helper_path)]
+
+        frame_count = int(getattr(self.config.audio, 'buffer_size', 1024) or 1024)
+        channels = int(getattr(self.config.audio, 'channels', 2) or 2)
+        sample_rate = int(getattr(self.config.audio, 'sample_rate', 44100) or 44100)
+
+        command.extend([
+            '--stream',
+            '--pid',
+            str(process_id),
+            '--include-children',
+            '1' if include_children else '0',
+            '--sample-rate',
+            str(sample_rate),
+            '--channels',
+            str(channels),
+            '--frames-per-buffer',
+            str(frame_count),
+        ])
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+        )
+        self._app_capture_process = process
+        self._app_capture_frame_count = frame_count
+        self._app_capture_channels = channels
+        self._app_capture_thread = threading_mod.Thread(
+            target=self._app_capture_stream_loop,
+            args=(process, frame_count, channels),
+            daemon=True,
+        )
+        self._app_capture_thread.start()
+        log_event(
+            "INFO",
+            "AudioEngine",
+            "App capture helper stream started",
+            pid=process_id,
+            sample_rate=sample_rate,
+            channels=channels,
+            frames_per_buffer=frame_count,
+            helper=str(helper_path),
+        )
+
+    def _stop_app_capture_stream(self) -> None:
+        thread = getattr(self, '_app_capture_thread', None)
+        process = getattr(self, '_app_capture_process', None)
+
+        if process is not None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=1.0)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+
+        if thread is not None:
+            try:
+                thread.join(timeout=1.0)
+            except Exception:
+                pass
+
+        self._app_capture_thread = None
+        self._app_capture_process = None
+
     @staticmethod
     def _resolve_process_pid_by_name(process_name: str) -> Optional[int]:
         """Best-effort process-name to PID resolution on Windows."""
@@ -328,6 +487,10 @@ class AudioEngine:
         self.pyaudio = None
         self.stream = None
         self.running = False
+        self._app_capture_thread = None
+        self._app_capture_process = None
+        self._app_capture_frame_count = 0
+        self._app_capture_channels = 0
         
         # Beat detection state
         self.prev_spectrum: Optional[np.ndarray] = None
@@ -910,12 +1073,16 @@ class AudioEngine:
                     self._start_loopback_capture(device_index)
                     self.config.audio.is_loopback = True
                 else:
-                    helper_supported, helper_reason = self._probe_external_app_capture_backend(target_pid, include_children)
+                    helper_supported, helper_stream_enabled, helper_reason = self._probe_external_app_capture_backend_details(target_pid, include_children)
                     if not helper_supported:
                         log_event("WARN", "AudioEngine", "App capture helper unavailable, falling back to endpoint loopback", reason=helper_reason)
                         self.config.audio.capture_mode = 'endpoint_loopback'
                         self._start_loopback_capture(device_index)
                         self.config.audio.is_loopback = True
+                    elif helper_stream_enabled:
+                        self._start_app_capture_stream(target_pid, include_children)
+                        self.config.audio.is_loopback = True
+                        self.config.audio.capture_mode = 'app_loopback'
                     else:
                         log_event("WARN", "AudioEngine", "App capture helper probe succeeded but stream bridge is not enabled yet; falling back", reason=helper_reason)
                         self.config.audio.capture_mode = 'endpoint_loopback'
@@ -1018,6 +1185,7 @@ class AudioEngine:
         """Stop audio capture"""
         self.running = False
         self._log_shutdown_summary()
+        self._stop_app_capture_stream()
         if self.stream:
             self.stream.stop_stream()
             self.stream.close()
