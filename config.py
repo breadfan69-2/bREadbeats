@@ -93,7 +93,7 @@ class BeatDetectionConfig:
     teaching_no_motion_bias: float = 1.0        # Multiplier for hold-still behavior in quiet/unscripted moments
     teaching_apply_in_circle_mode: bool = False # Keep SIMPLE_CIRCLE behavior legacy by default unless explicitly enabled
     teaching_isolation_mode: bool = True        # Branch-only: suspend selected legacy runtime modifiers while learning drives motion
-    teaching_relax_phase1_gates: bool = True    # Keep selected non-tempo gates relaxed while learning is active
+    teaching_relax_phase1_gates: bool = False   # Enforce dual-band/mid-trigger legacy gates unless explicitly relaxed
     teaching_ignore_traffic_lights: bool = False  # Re-enable traffic-light stroke readiness by default
     tempo_lock_required: bool = True             # Require metronome lock confidence for stroke readiness
     teaching_metronome_relaxed_confidence: float = 0.14  # Metronome-only fallback confidence for relaxed readiness
@@ -159,6 +159,7 @@ class StrokeConfig:
     bpm_cutoff_4_to_8: float = 180.0         # BPM at/above this moves 4 -> 8 beats/stroke
     beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
     cadence_cutoff_bias_bpm: float = 0.0     # +/- BPM shift applied to cadence cutoffs (0 = disabled)
+    continuation_arcs_enabled: bool = False  # Continue arc chaining between beats (legacy behavior)
 
     # Thump: legacy setting, replaced by landing durations
     thump_enabled: bool = False             # Kept for preset compatibility, not used in UI
