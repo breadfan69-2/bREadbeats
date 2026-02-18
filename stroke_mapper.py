@@ -56,6 +56,7 @@ class StrokeMapper:
         self._last_trigger_kind = "creep"
         self._park_radius = 0.70
         self._max_radius = 1.0
+        self._journey_fixed_radius = self._park_radius
         self._park_angle = 0.0
         self._journey_start_angle = self._park_angle
         self._journey_total_rotation = float(2.0 * np.pi)
@@ -267,12 +268,18 @@ class StrokeMapper:
                 bloom_target_radius = float(type_park_radius + ((type_bloom - type_park_radius) * learning_mult))
                 bloom_target_radius = float(np.clip(bloom_target_radius, type_park_radius, type_max_radius))
 
+                if started_new_journey:
+                    self._journey_fixed_radius = bloom_target_radius
+                    self._actual_radius = self._journey_fixed_radius
+
                 if progress >= 1.0 and not started_new_journey:
+                    if self._last_journey_completion >= 1.0:
+                        self._journey_fixed_radius = bloom_target_radius
                     if not self._radius_hold_active:
                         self._radius_hold_active = True
                         self._radius_hold_start_time = now
-                        # Use bloom_target_radius directly - allows return to park for smaller beat types
-                        self._radius_hold_value = bloom_target_radius
+                        # Hold at the same radius used throughout the journey.
+                        self._radius_hold_value = float(np.clip(self._journey_fixed_radius, type_park_radius, type_max_radius))
                     # ── Elastic landing: damped harmonic settle ──
                     # Momentum carry-over from exit velocity drives overshoot;
                     # damped oscillation creates one visible wobble then rest.
@@ -324,15 +331,9 @@ class StrokeMapper:
                     target_radius = float(np.clip(self._radius_hold_value, type_park_radius, type_max_radius))
                     radius_alpha = 0.12 if target_radius > self._actual_radius else 0.04
                 else:
-                    if self._lazy_glide_active:
-                        target_radius = float(np.clip(max(self._actual_radius, bloom_target_radius), type_park_radius, type_max_radius))
-                        radius_alpha = 0.08 if target_radius > self._actual_radius else 0.01
-                    else:
-                        target_radius = bloom_target_radius
-                        if target_radius > self._actual_radius:
-                            radius_alpha = 0.12
-                        else:
-                            radius_alpha = 0.02
+                    target_radius = float(np.clip(self._journey_fixed_radius, type_park_radius, type_max_radius))
+                    self._actual_radius = target_radius
+                    radius_alpha = 0.0
                 self._actual_radius += radius_alpha * (target_radius - self._actual_radius)
                 radius = float(np.clip(self._actual_radius, type_park_radius, type_max_radius))
 
