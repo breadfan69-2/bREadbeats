@@ -4832,21 +4832,11 @@ class BREadbeatsWindow(QMainWindow):
         gate_layout = QVBoxLayout(gate_group)
 
         gate_info = QLabel(
-            "Controls when full strokes activate vs quiet creep mode.\n"
-            "RMS values use the same raw RMS scale printed in console [Audio] logs.\n"
+            "Controls stroke gating behavior and overall amplitude/fill requirements.\n"
             "Overall amp target/tolerance define the full-spectrum amplitude zone used by the amp+fill gate (target ± tolerance)."
         )
         gate_info.setStyleSheet("color: #aaa; font-size: 11px;")
         gate_layout.addWidget(gate_info)
-
-        # Gate high slider (threshold to enter FULL_STROKE)
-        gate_high_slider = SliderWithLabel(
-            "Full stroke threshold (enter RMS)",
-            0.01,
-            1.00,
-            float(getattr(self.config.stroke, 'amplitude_gate_high', 0.055) or 0.055),
-            3,
-        )
         def _show_waveform_amp_ref(key: str, value: float, label: str, color: str = '#FF66AA', dashed: bool = False):
             canvas = None
             if self.calibration_popout is not None and self.calibration_popout.isVisible():
@@ -4900,23 +4890,6 @@ class BREadbeatsWindow(QMainWindow):
         def _update_fill_requirement_refs() -> None:
             self._preview_fill_requirement_ghosts()
 
-        gate_high_slider.valueChanged.connect(
-            lambda v: (setattr(self.config.stroke, 'amplitude_gate_high', v), _show_waveform_amp_ref('full_stroke_enter', float(v), 'Full enter', '#44FF88'))
-        )
-        gate_layout.addWidget(gate_high_slider)
-
-        # Gate low slider (threshold to drop to CREEP_MICRO)
-        gate_low_slider = SliderWithLabel(
-            "Creep threshold (exit RMS)",
-            0.005,
-            1.00,
-            float(getattr(self.config.stroke, 'amplitude_gate_low', 0.035) or 0.035),
-            3,
-        )
-        gate_low_slider.valueChanged.connect(
-            lambda v: (setattr(self.config.stroke, 'amplitude_gate_low', v), _show_waveform_amp_ref('creep_exit', float(v), 'Creep exit', '#FF8866', dashed=True))
-        )
-        gate_layout.addWidget(gate_low_slider)
 
         bass_gate_cb = QCheckBox("Require bass z-score bands for beat/sync stroke motion")
         bass_gate_cb.setChecked(getattr(self.config.beat, 'strict_bass_motion_gate_enabled', False))
@@ -5858,34 +5831,6 @@ class BREadbeatsWindow(QMainWindow):
         high_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_variance_threshold', 'high_band_var', 'High var', '#FFBBEE', ghost_band='high', ghost_range=True))
         _style_ref_slider(high_var_slider, '#FFBBEE', 'High var')
         flux_layout.addWidget(high_var_slider)
-
-        high_pattern_window_row = QHBoxLayout()
-        high_pattern_window_label = QLabel("Upper pattern window (beats):")
-        high_pattern_window_label.setStyleSheet("color: #ccc;")
-        high_pattern_window_row.addWidget(high_pattern_window_label)
-        high_pattern_window_spin = QSpinBox()
-        high_pattern_window_spin.setMinimum(1)
-        high_pattern_window_spin.setMaximum(16)
-        high_pattern_window_spin.setValue(int(getattr(self.config.stroke, 'high_band_pattern_window_beats', 5) or 5))
-        high_pattern_window_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'high_band_pattern_window_beats', int(v))
-        )
-        high_pattern_window_row.addWidget(high_pattern_window_spin)
-        flux_layout.addLayout(high_pattern_window_row)
-
-        high_pattern_hits_row = QHBoxLayout()
-        high_pattern_hits_label = QLabel("Upper pattern min hits:")
-        high_pattern_hits_label.setStyleSheet("color: #ccc;")
-        high_pattern_hits_row.addWidget(high_pattern_hits_label)
-        high_pattern_hits_spin = QSpinBox()
-        high_pattern_hits_spin.setMinimum(1)
-        high_pattern_hits_spin.setMaximum(16)
-        high_pattern_hits_spin.setValue(int(getattr(self.config.stroke, 'high_band_pattern_min_hits', 3) or 3))
-        high_pattern_hits_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'high_band_pattern_min_hits', int(v))
-        )
-        high_pattern_hits_row.addWidget(high_pattern_hits_spin)
-        flux_layout.addLayout(high_pattern_hits_row)
 
         high_downbeat_relax_slider = SliderWithLabel(
             "Downbeat high-band relax",
@@ -7620,8 +7565,6 @@ Like the app?<br>
             'flux_multiplier': self.flux_mult_slider.value(),
             'audio_gain': self.audio_gain_slider.value(),
             'zscore_threshold': self.zscore_threshold_slider.value(),
-            'amp_gate_high': self.config.stroke.amplitude_gate_high,
-            'amp_gate_low': self.config.stroke.amplitude_gate_low,
             'silence_reset_ms': int(self.silence_reset_slider.value()),
             'detection_type': self.detection_type_combo.currentIndex(),
             
@@ -7711,10 +7654,6 @@ Like the app?<br>
         if 'zscore_threshold' in preset_data:
             self.zscore_threshold_slider.setValue(preset_data['zscore_threshold'])
             self._on_zscore_threshold_change(preset_data['zscore_threshold'])
-        if 'amp_gate_high' in preset_data:
-            self.config.stroke.amplitude_gate_high = preset_data['amp_gate_high']
-        if 'amp_gate_low' in preset_data:
-            self.config.stroke.amplitude_gate_low = preset_data['amp_gate_low']
         self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
         self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
         

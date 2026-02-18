@@ -72,6 +72,10 @@ class StrokeMapper:
         self._settle_frequency = 10.0  # oscillation freq (rad/s) – ~1 visible cycle
         self._settle_max_amplitude = 0.12  # max angular displacement (radians)
 
+        # Bass-reactive jitter state (applied on creep only)
+        self._bass_jitter_phase = 0.0
+        self._bass_jitter_freq_ema = 0.5
+
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
         self._learning_enabled = bool(getattr(self.config.beat, "teaching_learning_enabled", False))
@@ -236,6 +240,12 @@ class StrokeMapper:
 
             alpha = float(radius * np.sin(angle))
             beta = float(center_offset_y + (radius * np.cos(angle)))
+
+            if decision.trigger_kind == "creep":
+                jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
+                alpha += jitter_alpha
+                beta += jitter_beta
+
             # Apply post-silence ramp to volume
             ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
             volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
@@ -248,6 +258,45 @@ class StrokeMapper:
         self.state.beta = beta
 
         return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+
+    def _compute_bass_jitter_offsets(self, event: BeatEvent, dt: float) -> tuple[float, float]:
+        if not bool(getattr(self.config.jitter, "enabled", True)):
+            return 0.0, 0.0
+
+        base_amp = float(getattr(self.config.jitter, "amplitude", 0.0) or 0.0)
+        base_speed = float(getattr(self.config.jitter, "intensity", 0.0) or 0.0)
+        if base_amp <= 0.0 or base_speed <= 0.0:
+            return 0.0, 0.0
+
+        freq = float(getattr(event, "frequency", 0.0) or 0.0)
+        lo_hz, hi_hz = 30.0, 220.0
+        norm = float(np.clip((freq - lo_hz) / max(hi_hz - lo_hz, 1e-6), 0.0, 1.0))
+
+        # Smooth frequency-derived jitter control to avoid frame-to-frame flicker
+        self._bass_jitter_freq_ema += 0.2 * (norm - self._bass_jitter_freq_ema)
+        norm_smooth = float(np.clip(self._bass_jitter_freq_ema, 0.0, 1.0))
+
+        # Low bass -> slower/smaller, high bass -> faster/larger
+        bass_mult = 0.5 + (1.5 * norm_smooth)  # 0.5..2.0
+
+        speed_inf = float(getattr(self.config.stroke, "bass_jitter_speed_influence_percent", 100.0) or 100.0)
+        size_inf = float(getattr(self.config.stroke, "bass_jitter_size_influence_percent", 0.0) or 0.0)
+        speed_blend = float(np.clip(speed_inf / 100.0, 0.0, 2.0))
+        size_blend = float(np.clip(size_inf / 100.0, 0.0, 2.0))
+
+        speed_mult = 1.0 + ((bass_mult - 1.0) * speed_blend)
+        size_mult = 1.0 + ((bass_mult - 1.0) * size_blend)
+
+        jitter_speed = max(0.0, base_speed * speed_mult)
+        jitter_amp = max(0.0, base_amp * size_mult)
+
+        self._bass_jitter_phase += float(jitter_speed * max(dt, 1e-4))
+        phase = float(self._bass_jitter_phase)
+
+        # Slight ellipse keeps movement feeling organic, not perfectly circular
+        jitter_alpha = float(jitter_amp * np.sin(phase))
+        jitter_beta = float((jitter_amp * 0.70) * np.cos(phase))
+        return jitter_alpha, jitter_beta
 
     @staticmethod
     def _s_curve(progress: float) -> float:

@@ -175,7 +175,6 @@ class TestSilenceDecayState(Phase2Mixin, unittest.TestCase):
         decision = bi.build_decision(self._event(), dt=1 / 60)
         self.assertTrue(hasattr(decision, "silence_fade"))
         self.assertTrue(hasattr(decision, "post_silence_ramp"))
-        self.assertTrue(hasattr(decision, "request_tempo_reset"))
 
 
 # ── §14 Post-silence volume ramp ───────────────────────────────────────

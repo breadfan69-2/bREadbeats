@@ -61,19 +61,6 @@ class TestRollingDeques(Phase1Mixin, unittest.TestCase):
         self.assertEqual(len(bi._recent_flux_values), 60)
         self.assertEqual(len(bi._recent_low_band_values), 60)
 
-    def test_high_band_beat_hits_recorded_on_beat_events(self):
-        bi = BeatIntelligence(Config())
-        # Prime with downbeat
-        bi.build_decision(self._event(is_downbeat=True), dt=1 / 60)
-        bi.build_decision(self._event(is_beat=True, fired_bands=["high"]), dt=1 / 60)
-        self.assertGreaterEqual(len(bi._recent_high_band_beat_hits), 1)
-
-    def test_high_band_beat_hits_not_recorded_on_creep(self):
-        bi = BeatIntelligence(Config())
-        bi.build_decision(self._event(is_beat=False, is_downbeat=False), dt=1 / 60)
-        # Creep events don't add to beat hit deque
-        self.assertEqual(len(bi._recent_high_band_beat_hits), 0)
-
 
 # ── §2 FluxTracker ─────────────────────────────────────────────────────────
 
@@ -83,31 +70,6 @@ class TestFluxTracker(Phase1Mixin, unittest.TestCase):
         bi = BeatIntelligence(Config())
         bi.build_decision(self._event(spectral_flux=0.05), dt=1 / 60)
         self.assertGreaterEqual(len(bi._flux_history), 1)
-
-    def test_flux_rise_factor_increases_with_rising_flux(self):
-        bi = BeatIntelligence(Config())
-        # Feed low flux first
-        for _ in range(5):
-            bi.build_decision(self._event(spectral_flux=0.01), dt=1 / 60)
-        low_rise = bi._get_flux_rise_factor()
-
-        # Then high flux
-        for _ in range(5):
-            bi.build_decision(self._event(spectral_flux=0.15), dt=1 / 60)
-        high_rise = bi._get_flux_rise_factor()
-
-        self.assertGreater(high_rise, low_rise)
-
-    def test_flux_stroke_factor_above_one_with_high_flux(self):
-        bi = BeatIntelligence(Config())
-        bi.build_decision(self._event(spectral_flux=0.30), dt=1 / 60)
-        self.assertGreater(bi._flux_stroke_factor, 1.0)
-
-    def test_flux_stroke_factor_below_one_with_low_flux(self):
-        bi = BeatIntelligence(Config())
-        bi.build_decision(self._event(spectral_flux=0.001), dt=1 / 60)
-        # Very low flux → factor < 1.0 (dampens response)
-        self.assertLess(bi._flux_stroke_factor, 1.0)
 
 
 # ── §3 Beat-family admission ───────────────────────────────────────────────
@@ -337,18 +299,6 @@ class TestActivityHelpers(Phase1Mixin, unittest.TestCase):
         for _ in range(3):
             bi._recent_high_band_values.append(0.01)
         self.assertTrue(bi._get_high_band_presence_status())
-
-    def test_high_band_pattern_status_passes_with_hits(self):
-        bi = BeatIntelligence(Config())
-        for _ in range(5):
-            bi._recent_high_band_beat_hits.append(True)
-        self.assertTrue(bi._get_high_band_pattern_status())
-
-    def test_high_band_pattern_status_fails_with_no_hits(self):
-        bi = BeatIntelligence(Config())
-        for _ in range(5):
-            bi._recent_high_band_beat_hits.append(False)
-        self.assertFalse(bi._get_high_band_pattern_status())
 
 
 if __name__ == "__main__":

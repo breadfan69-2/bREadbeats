@@ -43,8 +43,7 @@ class BeatDecision:
     journey_completion: float
     silence_fade: float = 1.0          # 1.0 = full volume, 0.0 = fully faded
     post_silence_ramp: float = 1.0     # 1.0 = full volume, <1 = ramping back in
-    request_tempo_reset: bool = False  # edge-triggered: silence threshold crossed
-    motion_mode: str = "creep_micro"   # advisory: "full_stroke" or "creep_micro"
+
     learning: LearningOutputs = field(default_factory=LearningOutputs)
 
 
@@ -87,21 +86,14 @@ class BeatIntelligence:
         self._recent_low_band_values: deque = deque(maxlen=60)
         self._recent_high_band_values: deque = deque(maxlen=60)
         self._recent_mid_bass_values: deque = deque(maxlen=60)
-        self._recent_high_band_beat_hits: deque = deque(maxlen=16)
+
 
         # ── Phase 1: FluxTracker (#2) ──
         self._flux_history: deque = deque()  # (timestamp, flux) tuples
         self._flux_rise_window_ms: float = 250.0
-        self._flux_stroke_factor: float = 1.0
 
-        # ── Phase 1: Beat hierarchy guards (#3) ──
+        # ── Phase 1: Beat timing (#3) ──
         self._last_any_beat_time: float = 0.0
-        self._last_confirmed_beat_time: float = 0.0
-        self._last_downbeat_call_time: float = 0.0
-        self._last_beat_or_downbeat_call_time: float = 0.0
-        self._last_downbeat_stroke_time: float = 0.0
-        self._downbeat_chain_active: bool = False
-        self._downbeat_chain_last_time: float = 0.0
         self._tempo_reset_motion_hold_s: float = 1.8
         self._tempo_reset_motion_hold_until: float = 0.0
 
@@ -133,9 +125,6 @@ class BeatIntelligence:
         self._auto_fill_offsets: dict[str, float] = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
         self._auto_fill_ema: dict[str, float] = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
 
-        # ── Phase 4: Motion Mode Resolver (#9) ──
-        self._motion_mode: str = "creep_micro"  # start quiet
-        self._mode_switch_time: float = 0.0
 
         # ── Phase 5: Learning Adapter (#10-12, #18) ──
         self._learning_enabled: bool = False
@@ -163,10 +152,7 @@ class BeatIntelligence:
         self._stabilized_bpm: float = 120.0         # EMA-smoothed BPM output
         self._bpm_jump_ratio_limit: float = 1.5     # max allowed jump ratio per update
 
-        # ── Phase 6: Bass Jitter Stub (#15) ──
-        self._bass_jitter_enabled: bool = False      # feature flag, no runtime influence yet
-        self._bass_jitter_drive: float = 1.0         # speed multiplier from bass frequency
-        self._bass_jitter_ema: float = 1.0           # EMA-smoothed jitter drive
+
 
     def set_audio_engine(self, audio_engine) -> None:
         self.audio_engine = audio_engine
@@ -583,21 +569,7 @@ class BeatIntelligence:
         while self._flux_history and (now - self._flux_history[0][0]) > window_s:
             self._flux_history.popleft()
 
-    def _get_flux_rise_factor(self) -> float:
-        if len(self._flux_history) < 2:
-            return 0.0
-        oldest_flux = self._flux_history[0][1]
-        newest_flux = self._flux_history[-1][1]
-        rise = max(0.0, newest_flux - oldest_flux)
-        return float(min(1.0, rise / 0.1))
 
-    def _update_flux_stroke_factor(self, event: BeatEvent) -> None:
-        flux_threshold = float(getattr(self.config.stroke, "flux_threshold", 0.03) or 0.03)
-        scaling_weight = float(getattr(self.config.stroke, "flux_scaling_weight", 1.0) or 1.0)
-        flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
-        flux_ratio = float(np.clip(flux / max(flux_threshold, 0.001), 0.2, 3.0))
-        base_factor = 0.5 + (flux_ratio / 3.0)
-        self._flux_stroke_factor = 1.0 + (base_factor - 1.0) * scaling_weight
 
     # ── Phase 1 §21: Activity helpers ────────────────────────────────
 
@@ -635,16 +607,7 @@ class BeatIntelligence:
         occupancy = above_floor / max(1, len(recent))
         return occupancy >= occ_thresh
 
-    def _get_high_band_pattern_status(self) -> bool:
-        """Check if recent beats had upper-band context (mid/high fired)."""
-        window = int(getattr(self.config.stroke, "high_band_pattern_window_beats", 5))
-        min_hits = int(getattr(self.config.stroke, "high_band_pattern_min_hits", 3))
-        recent = list(self._recent_high_band_beat_hits)[-window:]
-        if len(recent) < min_hits:
-            return True  # insufficient data, don't block
-        return sum(recent) >= min_hits
-
-    # ── Phase 1 §3: Beat hierarchy guards ────────────────────────────
+    # ── Phase 1 §3: Beat timing ─────────────────────────────────────
 
     def _has_recent_beats(self, now: float, window_s: float = 0.9) -> bool:
         """True if any beat/downbeat happened within window, or tempo-reset hold is active."""
@@ -672,50 +635,6 @@ class BeatIntelligence:
         if is_beat or is_downbeat or is_syncopated:
             self._last_any_beat_time = now
 
-        if is_beat:
-            self._last_confirmed_beat_time = now
-            self._last_beat_or_downbeat_call_time = now
-
-        if is_downbeat:
-            self._last_downbeat_call_time = now
-            self._last_beat_or_downbeat_call_time = now
-            self._last_downbeat_stroke_time = now
-            self._downbeat_chain_active = True
-            self._downbeat_chain_last_time = now
-
-    def _beat_hierarchy_allows(self, event: BeatEvent, trigger_kind: str, now: float, bpm: float) -> bool:
-        """Enforce beat hierarchy: syncopation needs recent beat/downbeat, beat needs recent downbeat."""
-        if trigger_kind not in ("syncopation", "beat"):
-            return True
-
-        beat_period_s = 60.0 / max(1e-6, bpm)
-        prereq_window_s = max(2.0, beat_period_s * 2.5)
-
-        if trigger_kind == "syncopation":
-            # Syncopation requires recent beat or downbeat call
-            recent_bd = (
-                self._last_beat_or_downbeat_call_time > 0.0
-                and (now - self._last_beat_or_downbeat_call_time) <= prereq_window_s
-            )
-            if not recent_bd:
-                return False
-            # Syncopation also requires recent downbeat stroke
-            recent_ds = (
-                self._last_downbeat_stroke_time > 0.0
-                and (now - self._last_downbeat_stroke_time) <= prereq_window_s
-            )
-            return bool(recent_ds)
-
-        if trigger_kind == "beat":
-            # Beat requires recent downbeat stroke
-            recent_ds = (
-                self._last_downbeat_stroke_time > 0.0
-                and (now - self._last_downbeat_stroke_time) <= prereq_window_s
-            )
-            return bool(recent_ds)
-
-        return True
-
     # ── Phase 1 §7: Mid-trigger block ────────────────────────────────
 
     def _is_mid_trigger_blocked(self, event: BeatEvent) -> bool:
@@ -732,46 +651,6 @@ class BeatIntelligence:
         low_hz = float(getattr(self.config.stroke, "block_mid_trigger_low_hz", 100.0))
         high_hz = float(getattr(self.config.stroke, "block_mid_trigger_high_hz", 2000.0))
         return bool(low_hz <= freq <= high_hz)
-    # ── Phase 4 §9: Motion Mode Resolver ─────────────────────────────────
-
-    def _update_motion_mode(self, now: float) -> str:
-        """Advisory mode resolver (#9): FULL_STROKE / CREEP_MICRO.
-
-        Uses RMS envelope against amplitude thresholds with 500ms dwell
-        to prevent rapid toggling.  The output is advisory — consumed
-        for debug telemetry and future cadence influence only.
-        """
-        cfg = self.config.stroke
-        gate_high = float(getattr(cfg, 'amplitude_gate_high', 0.08))
-        gate_low = float(getattr(cfg, 'amplitude_gate_low', 0.04))
-        dwell_bias = float(getattr(cfg, 'full_stroke_dwell_bias', 0.0))
-        dwell_s = 0.5  # 500ms dwell before switching
-
-        rms = self.rms_envelope
-
-        if self._motion_mode == "creep_micro":
-            # Need RMS above high threshold (+ bias) to switch up
-            if rms >= (gate_high + dwell_bias):
-                if self._mode_switch_time <= 0.0:
-                    self._mode_switch_time = now
-                elif (now - self._mode_switch_time) >= dwell_s:
-                    self._motion_mode = "full_stroke"
-                    self._mode_switch_time = 0.0
-            else:
-                self._mode_switch_time = 0.0
-        else:  # full_stroke
-            # Need RMS below low threshold (- bias) to switch down
-            if rms < (gate_low - dwell_bias):
-                if self._mode_switch_time <= 0.0:
-                    self._mode_switch_time = now
-                elif (now - self._mode_switch_time) >= dwell_s:
-                    self._motion_mode = "creep_micro"
-                    self._mode_switch_time = 0.0
-            else:
-                self._mode_switch_time = 0.0
-
-        return self._motion_mode
-
     # ── Phase 3 §5: Low-band fullness gate ────────────────────────────────
 
     def _is_low_band_full_enough(self, event: BeatEvent, trigger_kind: str, bpm: float) -> bool:
@@ -1095,20 +974,6 @@ class BeatIntelligence:
         self._recent_high_band_values.append(self._get_high_band_activity(event))
         self._recent_mid_bass_values.append(self._get_mid_bass_activity(event))
 
-    def _record_high_band_beat_hit(self, event: BeatEvent, trigger_kind: str) -> None:
-        """Record whether this beat event had high-band context."""
-        if trigger_kind in ("beat", "downbeat", "syncopation"):
-            fired = getattr(event, "fired_bands", None) or []
-            fired_set = {str(b) for b in fired} if isinstance(fired, (list, tuple, set)) else set()
-            beat_band = str(getattr(event, "beat_band", "") or "")
-            include_mid = bool(getattr(self.config.stroke, "high_band_include_mid", True))
-            hit = (
-                "high" in fired_set
-                or beat_band == "high"
-                or (include_mid and ("mid" in fired_set or beat_band == "mid"))
-            )
-            self._recent_high_band_beat_hits.append(bool(hit))
-
     def update_band_energies(self) -> None:
         energies = {}
         if self.audio_engine is not None and hasattr(self.audio_engine, "_band_energies"):
@@ -1246,32 +1111,6 @@ class BeatIntelligence:
         self._stabilized_bpm += alpha * (raw_bpm - self._stabilized_bpm)
         return float(np.clip(self._stabilized_bpm, 40.0, 240.0))
 
-    def _update_bass_jitter_drive(self, event: BeatEvent) -> float:
-        """Map bass frequency 30–220 Hz to jitter speed multiplier (#15).
-
-        Behind feature flag — no runtime influence yet.
-        Returns EMA-smoothed speed multiplier in [0.5, 2.0].
-        """
-        if not self._bass_jitter_enabled:
-            return 1.0
-
-        freq = float(getattr(event, "frequency", 0.0) or 0.0)
-        if freq <= 0.0:
-            return self._bass_jitter_ema
-
-        # Map 30–220 Hz to 0.0–1.0 (clamped)
-        lo, hi = 30.0, 220.0
-        t = float(np.clip((freq - lo) / max(hi - lo, 1e-6), 0.0, 1.0))
-
-        # Map linear t to speed multiplier: low bass (30 Hz) → slow (0.5), high bass (220 Hz) → fast (2.0)
-        raw_mult = 0.5 + t * 1.5  # 0.5..2.0
-
-        # EMA smooth
-        alpha = 0.2
-        self._bass_jitter_ema += alpha * (raw_mult - self._bass_jitter_ema)
-        self._bass_jitter_drive = float(np.clip(self._bass_jitter_ema, 0.5, 2.0))
-        return self._bass_jitter_drive
-
     def compute_radius_bloom_from_sub_bass(self, event: BeatEvent | None = None) -> float:
         base_radius = 0.70
         max_radius = 1.0   # cap at canvas edge
@@ -1400,7 +1239,6 @@ class BeatIntelligence:
 
         # Phase 1: flux + deque tracking (every frame)
         self._update_flux_history(event)
-        self._update_flux_stroke_factor(event)
         self._populate_rolling_deques(event)
 
         now = float(getattr(event, "monotonic_timestamp", 0.0) or 0.0)
@@ -1413,20 +1251,14 @@ class BeatIntelligence:
             silence_active = bool(silence_override)
 
         # Phase 2: silence fade + post-silence ramp
-        silence_fade, request_tempo_reset = self._update_silence_fade(silence_active, now)
+        silence_fade, _request_tempo_reset = self._update_silence_fade(silence_active, now)
         post_silence_ramp = self._update_post_silence_ramp(silence_active, now)
 
         # Phase 2: readiness state machine (replaces raw _tempo_ready_for_motion)
         stroke_ready = self._update_stroke_readiness(event, now)
 
-        # Phase 4: motion mode resolver
-        motion_mode = self._update_motion_mode(now)
-
         # Phase 5: learning adapter
         learning = self._update_learning_adapter(event)
-
-        # Phase 6: bass jitter drive (behind feature flag, no runtime influence yet)
-        self._update_bass_jitter_drive(event)
 
         raw_trigger_kind = self.classify_trigger(event)
         trigger_kind = raw_trigger_kind
@@ -1458,9 +1290,6 @@ class BeatIntelligence:
                 trigger_kind = "creep"
             elif self._check_flux_drop_guard(now):
                 trigger_kind = "creep"
-
-        # Record high-band beat hit for pattern gate
-        self._record_high_band_beat_hit(event, trigger_kind)
 
         # No-beat timeout: force decay to park
         no_beat_timed_out = False
@@ -1498,7 +1327,5 @@ class BeatIntelligence:
             journey_completion=journey_completion,
             silence_fade=float(silence_fade),
             post_silence_ramp=float(post_silence_ramp),
-            request_tempo_reset=bool(request_tempo_reset),
-            motion_mode=motion_mode,
             learning=learning,
         )

@@ -147,10 +147,6 @@ class StrokeConfig:
     # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
     phase_advance: float = 0.25
 
-    # Amplitude gate thresholds for FULL_STROKE vs CREEP_MICRO mode switching
-    amplitude_gate_high: float = 0.08  # RMS above this -> FULL_STROKE
-    amplitude_gate_low: float = 0.04   # RMS below this -> CREEP_MICRO
-    full_stroke_dwell_bias: float = 0.0  # +/- RMS hysteresis bias (0 = disabled)
     geometry_y_offset: float = 0.50  # Below-center rest Y offset used when intensity is near 0
     geometry_sink_start_intensity: float = 0.25  # Intensity where sink-to-rest lerp begins
 
@@ -251,10 +247,7 @@ class StrokeConfig:
     # Presence pass:
     #   mean >= threshold AND occupancy >= threshold
     #   AND (delta >= threshold OR variance >= threshold)
-    # Pattern pass:
-    #   enough recent beats with upper-band context (mid/high fired/primary).
-    # Final upper gate:
-    #   presence OR pattern
+    # Final upper gate: presence status
     high_band_gate_enabled: bool = True
     high_band_window_frames: int = 18
     high_band_mean_threshold: float = 0.12
@@ -262,8 +255,6 @@ class StrokeConfig:
     high_band_occupancy_threshold: float = 0.55
     high_band_delta_threshold: float = 0.05
     high_band_variance_threshold: float = 0.0010
-    high_band_pattern_window_beats: int = 5
-    high_band_pattern_min_hits: int = 3
     high_band_include_mid: bool = True
     downbeat_high_band_relax: float = 0.90
 

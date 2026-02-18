@@ -212,6 +212,92 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         self.assertEqual(cmd.duration_ms, 25)
 
+    def test_bass_jitter_applies_only_on_creep(self):
+        mapper = StrokeMapper(Config())
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.70,
+            silence_active=False,
+            journey_completion=0.5,
+        )
+
+        phase_before = mapper._bass_jitter_phase
+        mapper.process_beat(self._event(is_beat=True, frequency=220.0))
+        self.assertAlmostEqual(mapper._bass_jitter_phase, phase_before, places=7)
+
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="creep",
+            interval_beats=8,
+            radius_bloom=0.70,
+            silence_active=False,
+            journey_completion=0.5,
+        )
+        mapper.process_beat(self._event(is_beat=False, frequency=220.0))
+        self.assertGreater(mapper._bass_jitter_phase, phase_before)
+
+    def test_bass_jitter_requires_jitter_enabled(self):
+        cfg = Config()
+        cfg.jitter.enabled = False
+        mapper = StrokeMapper(cfg)
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="creep",
+            interval_beats=8,
+            radius_bloom=0.70,
+            silence_active=False,
+            journey_completion=0.5,
+        )
+
+        phase_before = mapper._bass_jitter_phase
+        mapper.process_beat(self._event(is_beat=False, frequency=220.0))
+        self.assertAlmostEqual(mapper._bass_jitter_phase, phase_before, places=7)
+
+    def test_bass_jitter_speed_influence_changes_phase_rate(self):
+        cfg_low = Config()
+        cfg_low.stroke.bass_jitter_speed_influence_percent = 0.0
+        mapper_low = StrokeMapper(cfg_low)
+        mapper_low._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="creep",
+            interval_beats=8,
+            radius_bloom=0.70,
+            silence_active=False,
+            journey_completion=0.5,
+        )
+
+        cfg_high = Config()
+        cfg_high.stroke.bass_jitter_speed_influence_percent = 200.0
+        mapper_high = StrokeMapper(cfg_high)
+        mapper_high._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="creep",
+            interval_beats=8,
+            radius_bloom=0.70,
+            silence_active=False,
+            journey_completion=0.5,
+        )
+
+        event = self._event(is_beat=False, frequency=220.0)
+        mapper_low.process_beat(event)
+        mapper_high.process_beat(event)
+
+        self.assertGreater(mapper_high._bass_jitter_phase, mapper_low._bass_jitter_phase)
+
+    def test_bass_jitter_size_influence_changes_offset_magnitude(self):
+        cfg_low = Config()
+        cfg_low.stroke.bass_jitter_size_influence_percent = 0.0
+        mapper_low = StrokeMapper(cfg_low)
+
+        cfg_high = Config()
+        cfg_high.stroke.bass_jitter_size_influence_percent = 200.0
+        mapper_high = StrokeMapper(cfg_high)
+
+        event = self._event(is_beat=False, frequency=220.0)
+        alpha_low, beta_low = mapper_low._compute_bass_jitter_offsets(event=event, dt=1.0 / 60.0)
+        alpha_high, beta_high = mapper_high._compute_bass_jitter_offsets(event=event, dt=1.0 / 60.0)
+
+        mag_low = abs(alpha_low) + abs(beta_low)
+        mag_high = abs(alpha_high) + abs(beta_high)
+        self.assertGreater(mag_high, mag_low)
+
     def test_terminal_pose_lands_at_park_angle_with_smoothed_radius_downbeat(self):
         mapper = StrokeMapper(Config())
         mapper._intelligence.energies.high = 1.0
