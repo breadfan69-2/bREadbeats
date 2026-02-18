@@ -127,9 +127,6 @@ class StrokeConfig:
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
 
-    # Volume reduction limit: max % volume can be reduced by band/fade/creep effects (post-silence excluded)
-    vol_reduction_limit: float = 10.0  # 0-20, default 10 means max 10% reduction (floor = 0.90)
-
     # Flux-rise depth factor over 250ms.
     # Note: flux_depth_boost_enabled is legacy/internal (UI toggle removed).
     # It remains for backward compatibility with older saved configs.
@@ -292,14 +289,14 @@ class StrokeConfig:
 class JitterConfig:
     """Jitter - micro-circles when no beat detected"""
     enabled: bool = True
-    intensity: float = 0.3            # Speed of jitter movement
-    amplitude: float = 0.1            # Circle size (slider 0.05-0.2)
+    intensity: float = 9.5            # Speed of jitter movement
+    amplitude: float = 0.024          # Circle size
 
 @dataclass
 class CreepConfig:
     """Creep - very slow movement when idle"""
     enabled: bool = True
-    speed: float = 0.02               # Multiplier for creep rotation (0.0-2.0) - lower = slower drift
+    speed: float = 0.25               # Multiplier for creep rotation
 
 @dataclass 
 class ConnectionConfig:

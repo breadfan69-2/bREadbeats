@@ -52,8 +52,6 @@ class _WindowStub:
         self.f0_weight_slider = _Value(0.5)
 
         self.volume_slider = _Value(84)
-        self.alpha_weight_slider = _Value(1.1)
-        self.beta_weight_slider = _Value(0.9)
 
         self.tempo_tracking_checkbox = _Check(True)
         self.time_sig_combo = _Combo(2)
@@ -86,8 +84,8 @@ class TestClosePersistWiring(unittest.TestCase):
         self.assertAlmostEqual(cfg.carrier_freq.freq_weight, 0.5, places=6)
 
         self.assertAlmostEqual(cfg.volume, 0.84, places=6)
-        self.assertAlmostEqual(cfg.alpha_weight, 1.1, places=6)
-        self.assertAlmostEqual(cfg.beta_weight, 0.9, places=6)
+        self.assertAlmostEqual(cfg.alpha_weight, 1.0, places=6)
+        self.assertAlmostEqual(cfg.beta_weight, 1.0, places=6)
 
         self.assertTrue(cfg.beat.tempo_tracking_enabled)
         self.assertEqual(cfg.beat.beats_per_measure, 6)

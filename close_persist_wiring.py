@@ -26,8 +26,6 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
     f0_tcode_range_slider = _require_window_attr(window, "f0_tcode_range_slider")
     f0_weight_slider = _require_window_attr(window, "f0_weight_slider")
     volume_slider = _require_window_attr(window, "volume_slider")
-    alpha_weight_slider = _require_window_attr(window, "alpha_weight_slider")
-    beta_weight_slider = _require_window_attr(window, "beta_weight_slider")
     tempo_tracking_checkbox = _require_window_attr(window, "tempo_tracking_checkbox")
     time_sig_combo = _require_window_attr(window, "time_sig_combo")
     stability_threshold_slider = _require_window_attr(window, "stability_threshold_slider")
@@ -51,8 +49,8 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
     config.carrier_freq.freq_weight = f0_weight_slider.value()
 
     config.volume = volume_slider.value() / 100.0
-    config.alpha_weight = alpha_weight_slider.value()
-    config.beta_weight = beta_weight_slider.value()
+    config.alpha_weight = 1.0
+    config.beta_weight = 1.0
 
     config.beat.tempo_tracking_enabled = tempo_tracking_checkbox.isChecked()
     beats_map = {0: 4, 1: 3, 2: 6}

@@ -1501,6 +1501,10 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
 
 class BREadbeatsWindow(QMainWindow):
     """Main application window"""
+    FIXED_JITTER_AMPLITUDE = 0.024
+    FIXED_JITTER_INTENSITY = 9.5
+    FIXED_CREEP_SPEED = 0.25
+    FIXED_AXIS_WEIGHT = 1.0
     
     def __init__(self):
         super().__init__()
@@ -1535,6 +1539,7 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
+        self._enforce_fixed_effect_axis_values()
         
         # Initialize engines to None early (required before learning-config apply)
         self.audio_engine = None
@@ -1578,12 +1583,10 @@ class BREadbeatsWindow(QMainWindow):
         # Load config values into UI sliders
         self._apply_config_to_ui()
         
-        # Initialize indicator visibility: peak visible, range bands hidden (controlled by per-slider toggles)
+        # Initialize indicator visibility: peak visible, range bands hidden by default
         self._on_show_peak_indicators_toggle(True)
         self._on_toggle_beat_band(False)
         self._on_toggle_depth_band(False)
-        self._on_toggle_p0_band(False)
-        self._on_toggle_f0_band(False)
         
         # Load presets from disk
         self._load_presets_from_disk()
@@ -1722,6 +1725,13 @@ class BREadbeatsWindow(QMainWindow):
         # This guarantees an early single Start click is queued then applied,
         # instead of feeling like it was dropped during startup warm-up.
         QTimer.singleShot(0, self._mark_transport_ready)
+
+    def _enforce_fixed_effect_axis_values(self):
+        self.config.jitter.amplitude = float(self.FIXED_JITTER_AMPLITUDE)
+        self.config.jitter.intensity = float(self.FIXED_JITTER_INTENSITY)
+        self.config.creep.speed = float(self.FIXED_CREEP_SPEED)
+        self.config.alpha_weight = float(self.FIXED_AXIS_WEIGHT)
+        self.config.beta_weight = float(self.FIXED_AXIS_WEIGHT)
 
     def _mark_transport_ready(self) -> None:
         """Enable transport input after startup and apply queued Start, if any."""
@@ -2208,6 +2218,21 @@ class BREadbeatsWindow(QMainWindow):
         geometry_rest_action = options_menu.addAction("Geometry Rest State...")
         assert geometry_rest_action is not None
         geometry_rest_action.triggered.connect(self._on_options_geometry_rest_state)
+
+        effects_menu = options_menu.addMenu("Effects")
+        assert effects_menu is not None
+
+        self.jitter_effect_action = effects_menu.addAction("Jitter")
+        assert self.jitter_effect_action is not None
+        self.jitter_effect_action.setCheckable(True)
+        self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
+        self.jitter_effect_action.triggered.connect(self._on_effects_jitter_toggle)
+
+        self.slow_fill_effect_action = effects_menu.addAction("Slow Fill")
+        assert self.slow_fill_effect_action is not None
+        self.slow_fill_effect_action.setCheckable(True)
+        self.slow_fill_effect_action.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
+        self.slow_fill_effect_action.triggered.connect(self._on_effects_slow_fill_toggle)
 
         developer_controls_menu = options_menu.addMenu("Developer Controls")
         assert developer_controls_menu is not None
@@ -4356,13 +4381,12 @@ class BREadbeatsWindow(QMainWindow):
         axis_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
         axb_layout = QVBoxLayout(axis_box)
         axb_layout.setSpacing(2)
-        axb_layout.addWidget(QLabel("[Effects/Axis] Check axis weights (0=no motion):"))
-        axis_reset_btn = QPushButton("Reset to 1.0")
+        axb_layout.addWidget(QLabel("[Options→Effects] Check Jitter / Slow Fill toggles:"))
+        axis_reset_btn = QPushButton("Enable Both")
         axis_reset_btn.clicked.connect(lambda: (
-            self.alpha_weight_slider.setValue(1.0),
-            self.beta_weight_slider.setValue(1.0),
-            setattr(self.config, 'alpha_weight', 1.0),
-            setattr(self.config, 'beta_weight', 1.0)
+            setattr(self.config.jitter, 'enabled', True),
+            setattr(self.config.creep, 'enabled', True),
+            self._sync_effects_menu_actions()
         ))
         axb_layout.addWidget(axis_reset_btn)
         g2_layout.addWidget(axis_box)
@@ -4374,7 +4398,7 @@ class BREadbeatsWindow(QMainWindow):
         g3_layout = QVBoxLayout(group3)
         g3_layout.setSpacing(4)
         g3_layout.addWidget(QLabel("• [Beat Detection] Lower audio amplification,\n  sensitivity, flux multiplier"))
-        g3_layout.addWidget(QLabel("• [Effects/Axis] Lower axis weights"))
+        g3_layout.addWidget(QLabel("• [Options→Effects] Disable Jitter or Slow Fill"))
         g3_layout.addWidget(QLabel("• [Tempo Tracking] Check spectral flux control"))
         scroll_layout.addWidget(group3)
         
@@ -4883,6 +4907,7 @@ Like the app?<br>
         """Apply loaded config values to UI sliders"""
         try:
             self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
+            self._enforce_fixed_effect_axis_values()
             beats_to_index = {4: 0, 3: 1, 6: 2}
             with self._signals_blocked(
                 self.detection_type_combo,
@@ -4908,11 +4933,8 @@ Like the app?<br>
                 self.combo_reaction_spin,
                 self.tempo_lock_required_cb,
                 self.fill_gate_scale_spin,
-                self.jitter_enabled,
-                self.jitter_amplitude_slider,
-                self.jitter_intensity_slider,
-                self.alpha_weight_slider,
-                self.beta_weight_slider,
+                self.jitter_effect_action,
+                self.slow_fill_effect_action,
                 self.host_edit,
                 self.port_spin,
                 self.pulse_freq_range_slider,
@@ -4990,21 +5012,9 @@ Like the app?<br>
                 if auto_fill_max_req is not None:
                     auto_fill_max_req.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_max_required', 0.98) or 0.98))
 
-                # Jitter/Creep tab
-                self.jitter_enabled.setChecked(self.config.jitter.enabled)
-                self.config.jitter.amplitude = max(0.01, min(0.075, float(self.config.jitter.amplitude)))
-                self.config.jitter.intensity = max(8.0, min(10.0, float(self.config.jitter.intensity)))
-                self.jitter_amplitude_slider.setValue(self.config.jitter.amplitude)
-                self.jitter_intensity_slider.setValue(self.config.jitter.intensity)
-                self.creep_enabled.setChecked(self.config.creep.enabled)
-                self.creep_speed_slider.setValue(max(0.0, min(2.0, float(self.config.creep.speed))))
-
-                # Axis weights tab
-                self.alpha_weight_slider.setValue(self.config.alpha_weight)
-                self.beta_weight_slider.setValue(self.config.beta_weight)
-
-                # Effects tab
-                self.vol_reduction_limit_slider.setValue(self.config.stroke.vol_reduction_limit)
+                # Effects menu toggles
+                self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
+                self.slow_fill_effect_action.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
 
                 # Connection settings
                 self.host_edit.setText(self.config.connection.host)
@@ -5635,6 +5645,20 @@ Like the app?<br>
         """Handle Show Peak Indicators toggle from Options menu"""
         self._on_show_peak_indicators_toggle(checked)
 
+    def _on_effects_jitter_toggle(self, checked: bool):
+        self.config.jitter.enabled = bool(checked)
+
+    def _on_effects_slow_fill_toggle(self, checked: bool):
+        self.config.creep.enabled = bool(checked)
+
+    def _sync_effects_menu_actions(self):
+        if hasattr(self, 'jitter_effect_action'):
+            with self._signals_blocked(self.jitter_effect_action):
+                self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
+        if hasattr(self, 'slow_fill_effect_action'):
+            with self._signals_blocked(self.slow_fill_effect_action):
+                self.slow_fill_effect_action.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
+
     def _on_toggle_beat_band(self, checked: bool):
         """Toggle visibility of beat detection band (red) on all visualizers"""
         for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
@@ -5701,7 +5725,6 @@ Like the app?<br>
             self._beat_detection_popout_content = self._create_beat_detection_tab()
         if self._pulse_settings_popout_content is None:
             self._pulse_settings_popout_content = self._create_tcode_freq_tab()
-        tabs.addTab(self._create_jitter_creep_tab(), "Effects / Axis")
         self._tempo_tracking_popout_content = self._create_tempo_tracking_tab(include_advanced_controls=True, advanced_locked=True)
         return tabs
     
@@ -5923,18 +5946,15 @@ Like the app?<br>
             'flux_scaling_weight': float(getattr(self.config.stroke, 'flux_scaling_weight', 1.0) or 1.0),
 
             # Jitter / Creep Tab
-            'jitter_enabled': self.jitter_enabled.isChecked(),
-            'jitter_amplitude': self.jitter_amplitude_slider.value(),
-            'jitter_intensity': self.jitter_intensity_slider.value(),
-            'creep_enabled': self.creep_enabled.isChecked(),
-            'creep_speed': self.creep_speed_slider.value(),
+            'jitter_enabled': bool(getattr(self.config.jitter, 'enabled', True)),
+            'jitter_amplitude': float(self.FIXED_JITTER_AMPLITUDE),
+            'jitter_intensity': float(self.FIXED_JITTER_INTENSITY),
+            'creep_enabled': bool(getattr(self.config.creep, 'enabled', True)),
+            'creep_speed': float(self.FIXED_CREEP_SPEED),
 
             # Axis Weights Tab
-            'alpha_weight': self.alpha_weight_slider.value(),
-            'beta_weight': self.beta_weight_slider.value(),
-
-            # Effects Tab
-            'vol_reduction_limit': self.vol_reduction_limit_slider.value(),
+            'alpha_weight': float(self.FIXED_AXIS_WEIGHT),
+            'beta_weight': float(self.FIXED_AXIS_WEIGHT),
 
             # Pulse Freq Tab
             'pulse_freq_low': self.pulse_freq_range_slider.low(),
@@ -6042,19 +6062,10 @@ Like the app?<br>
             advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
         
         # Jitter / Creep Tab
-        self.jitter_enabled.setChecked(preset_data['jitter_enabled'])
-        self.jitter_amplitude_slider.setValue(preset_data['jitter_amplitude'])
-        self.jitter_intensity_slider.setValue(preset_data['jitter_intensity'])
-        self.creep_enabled.setChecked(bool(preset_data.get('creep_enabled', getattr(self.config.creep, 'enabled', True))))
-        self.creep_speed_slider.setValue(float(preset_data.get('creep_speed', getattr(self.config.creep, 'speed', 0.02))))
-        
-        # Axis Weights Tab
-        self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
-        self.beta_weight_slider.setValue(preset_data['beta_weight'])
-        
-        # Effects Tab
-        if 'vol_reduction_limit' in preset_data:
-            self.vol_reduction_limit_slider.setValue(preset_data['vol_reduction_limit'])
+        self.config.jitter.enabled = bool(preset_data.get('jitter_enabled', getattr(self.config.jitter, 'enabled', True)))
+        self.config.creep.enabled = bool(preset_data.get('creep_enabled', getattr(self.config.creep, 'enabled', True)))
+        self._enforce_fixed_effect_axis_values()
+        self._sync_effects_menu_actions()
         
         # Pulse Freq Tab
         self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
@@ -6130,11 +6141,6 @@ Like the app?<br>
         self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.pulse_freq_range_slider.rangeChanged.connect(self._on_p0_band_change)
         p0_slider_row.addWidget(self.pulse_freq_range_slider)
-        self.p0_band_toggle = QCheckBox("Show")
-        self.p0_band_toggle.setToolTip("Show/hide blue overlay on spectrum")
-        self.p0_band_toggle.setChecked(False)
-        self.p0_band_toggle.stateChanged.connect(lambda state: self._on_toggle_p0_band(state == 2))
-        p0_slider_row.addWidget(self.p0_band_toggle)
         pulse_layout.addLayout(p0_slider_row)
 
         self.tcode_freq_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 2010, 7035, 0)
@@ -6169,11 +6175,6 @@ Like the app?<br>
         self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.f0_freq_range_slider.rangeChanged.connect(self._on_f0_band_change)
         f0_slider_row.addWidget(self.f0_freq_range_slider)
-        self.f0_band_toggle = QCheckBox("Show")
-        self.f0_band_toggle.setToolTip("Show/hide cyan overlay on spectrum")
-        self.f0_band_toggle.setChecked(False)
-        self.f0_band_toggle.stateChanged.connect(lambda state: self._on_toggle_f0_band(state == 2))
-        f0_slider_row.addWidget(self.f0_band_toggle)
         carrier_layout.addLayout(f0_slider_row)
 
         self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 0, 5000, 0)
@@ -6204,6 +6205,7 @@ Like the app?<br>
         p1_layout = QVBoxLayout(p1_group)
 
         self.p1_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
+        self.p1_monitor_range_slider.rangeChanged.connect(self._on_p1_band_change)
         p1_layout.addWidget(self.p1_monitor_range_slider)
 
         self.p1_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 1000, 8000, 0)
@@ -6234,6 +6236,7 @@ Like the app?<br>
         p3_layout = QVBoxLayout(p3_group)
 
         self.p3_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
+        self.p3_monitor_range_slider.rangeChanged.connect(self._on_p3_band_change)
         p3_layout.addWidget(self.p3_monitor_range_slider)
 
         self.p3_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 1000, 8000, 0)
@@ -6728,7 +6731,7 @@ Like the app?<br>
             self.freqdb_canvas.set_depth_band(low, high)
     
     def _on_p0_band_change(self, low=None, high=None):
-        """Update P0 TCode frequency band in config and spectrum overlay"""
+        """Update P0 TCode frequency band in config and show 5s range ghosts."""
         if low is None:
             low = self.pulse_freq_range_slider.low() or 0.0
             high = self.pulse_freq_range_slider.high() or 22050.0
@@ -6737,13 +6740,10 @@ Like the app?<br>
         
         self.config.pulse_freq.monitor_freq_min = low
         self.config.pulse_freq.monitor_freq_max = high
-        
-        # Update spectrum overlay (blue band)
-        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_p0_band'):
-            self.freqdb_canvas.set_p0_band(low, high)
+        self._show_pulse_frequency_ghosts('p0', low, high, 'Pulse monitor', '#5599FF')
     
     def _on_f0_band_change(self, low=None, high=None):
-        """Update F0 TCode frequency band in config and spectrum overlay"""
+        """Update F0 TCode frequency band in config and show 5s range ghosts."""
         if low is None:
             low = self.f0_freq_range_slider.low() or 0.0
             high = self.f0_freq_range_slider.high() or 22050.0
@@ -6752,10 +6752,67 @@ Like the app?<br>
         
         self.config.carrier_freq.monitor_freq_min = low
         self.config.carrier_freq.monitor_freq_max = high
-        
-        # Update spectrum overlay (cyan band for F0)
-        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_f0_band'):
-            self.freqdb_canvas.set_f0_band(low, high)
+
+        self._show_pulse_frequency_ghosts('f0', low, high, 'Carrier monitor', '#55DDFF')
+
+    def _on_p1_band_change(self, low=None, high=None):
+        """Update P1 monitor frequency band in config and show 5s range ghosts."""
+        if low is None:
+            low = self.p1_monitor_range_slider.low() or 0.0
+            high = self.p1_monitor_range_slider.high() or 22050.0
+        low = float(low)  # type: ignore
+        high = float(high)  # type: ignore
+
+        self.config.pulse_width.monitor_freq_min = low
+        self.config.pulse_width.monitor_freq_max = high
+        self._show_pulse_frequency_ghosts('p1', low, high, 'Pulse width monitor', '#FFB347')
+
+    def _on_p3_band_change(self, low=None, high=None):
+        """Update P3 monitor frequency band in config and show 5s range ghosts."""
+        if low is None:
+            low = self.p3_monitor_range_slider.low() or 0.0
+            high = self.p3_monitor_range_slider.high() or 22050.0
+        low = float(low)  # type: ignore
+        high = float(high)  # type: ignore
+
+        self.config.rise_time.monitor_freq_min = low
+        self.config.rise_time.monitor_freq_max = high
+        self._show_pulse_frequency_ghosts('p3', low, high, 'Rise time monitor', '#9DFF8A')
+
+    def _show_pulse_frequency_ghosts(self, key: str, low_hz: float, high_hz: float, label: str, color: str) -> None:
+        """Show temporary 5s frequency-range ghosts on Freq dB and FFT-bin visualizers."""
+        low = float(max(0.0, min(low_hz, high_hz)))
+        high = float(max(0.0, max(low_hz, high_hz)))
+
+        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
+            self.freqdb_canvas.show_flux_ghost(
+                f'{key}_monitor_range',
+                low,
+                f'{label} ({int(low)}-{int(high)} Hz)',
+                color=color,
+                duration_s=5.0,
+                dashed=False,
+                mode='hz_line',
+                range_box=True,
+                hz_max=high,
+            )
+
+        sample_rate = float(getattr(self.config.audio, 'sample_rate', 44100) or 44100)
+        fft_size = int(getattr(self.config.audio, 'fft_size', 1024) or 1024)
+        max_bin = max(1, fft_size // 2)
+        low_bin = int(np.clip(round((low * fft_size) / max(1.0, sample_rate)), 0, max_bin))
+        high_bin = int(np.clip(round((high * fft_size) / max(1.0, sample_rate)), 0, max_bin))
+
+        if hasattr(self, 'fft_bin_canvas') and hasattr(self.fft_bin_canvas, 'show_bin_range_ghost'):
+            self.fft_bin_canvas.show_bin_range_ghost(
+                f'{key}_monitor_range',
+                low_bin,
+                high_bin,
+                f'{label} bins',
+                color=color,
+                duration_s=5.0,
+                dashed=False,
+            )
     
     def _on_stroke_range_change(self, low: float, high: float):
         """Update stroke min/max in config"""
@@ -7114,88 +7171,6 @@ Like the app?<br>
             btn.setEnabled(False)
         if hasattr(self, 'revert_btn'):
             self.revert_btn.setEnabled(False)
-    
-    def _create_jitter_creep_tab(self) -> QWidget:
-        """Effects (jitter) and axis weight settings"""
-        scroll_area = NoWheelScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setStyleSheet(self._get_thin_scrollbar_style())
-
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        # Combined Effects section (windowshade)
-        effects_group = CollapsibleGroupBox("Effects", collapsed=True)
-        effects_layout = QVBoxLayout(effects_group)
-
-        self.jitter_enabled = QCheckBox("Jitter")
-        self.jitter_enabled.setChecked(True)
-        self.jitter_enabled.stateChanged.connect(lambda s: setattr(self.config.jitter, 'enabled', s == 2))
-        effects_layout.addWidget(self.jitter_enabled)
-
-        jitter_size_default = max(0.01, min(0.075, float(getattr(self.config.jitter, 'amplitude', 0.075))))
-        self.config.jitter.amplitude = jitter_size_default
-        self.jitter_amplitude_slider = SliderWithLabel("Circle Size", 0.01, 0.075, jitter_size_default, 3)
-        self.jitter_amplitude_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'amplitude', v))
-        effects_layout.addWidget(self.jitter_amplitude_slider)
-
-        jitter_speed_default = max(8.0, min(10.0, float(getattr(self.config.jitter, 'intensity', 8.0))))
-        self.config.jitter.intensity = jitter_speed_default
-        self.jitter_intensity_slider = SliderWithLabel("Circle Speed", 8.0, 10.0, jitter_speed_default)
-        self.jitter_intensity_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'intensity', v))
-        effects_layout.addWidget(self.jitter_intensity_slider)
-
-        self.creep_enabled = QCheckBox("Creep")
-        self.creep_enabled.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
-        self.creep_enabled.stateChanged.connect(lambda s: setattr(self.config.creep, 'enabled', s == 2))
-        effects_layout.addWidget(self.creep_enabled)
-
-        creep_speed_default = max(0.0, min(2.0, float(getattr(self.config.creep, 'speed', 0.02))))
-        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 2.0, creep_speed_default, 3)
-        self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
-        effects_layout.addWidget(self.creep_speed_slider)
-
-        layout.addWidget(effects_group)
-
-        # Axis Weights section (moved from Stroke Settings)
-        axis_group = QGroupBox("Axis Weights")
-        axis_layout = QVBoxLayout(axis_group)
-
-        self.alpha_weight_slider = SliderWithLabel("Alpha Weight", 0.0, 2.0, 1.0)
-        self.alpha_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'alpha_weight', v))
-        axis_layout.addWidget(self.alpha_weight_slider)
-
-        self.beta_weight_slider = SliderWithLabel("Beta Weight", 0.0, 2.0, 1.0)
-        self.beta_weight_slider.valueChanged.connect(lambda v: setattr(self.config, 'beta_weight', v))
-        axis_layout.addWidget(self.beta_weight_slider)
-
-        # Set initial tooltips (updated dynamically by _on_mode_change)
-        self._update_axis_weight_tooltips()
-
-        layout.addWidget(axis_group)
-
-        # Volume Reduction Limit
-        vol_limit_group = QGroupBox("Volume Reduction Limit")
-        vol_limit_layout = QVBoxLayout(vol_limit_group)
-        vol_limit_layout.addWidget(QLabel("Max % volume can be reduced by band/fade/creep effects (excludes post-silence ramp)"))
-
-        self.vol_reduction_limit_slider = SliderWithLabel("Max Reduction %", 0, 20, 10, 0)
-        self.vol_reduction_limit_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'vol_reduction_limit', v))
-        vol_limit_layout.addWidget(self.vol_reduction_limit_slider)
-
-        layout.addWidget(vol_limit_group)
-
-        layout.addStretch()
-        scroll_area.setWidget(widget)
-        return scroll_area
-
-    def _update_axis_weight_tooltips(self):
-        """Update axis weight slider tooltips (mode temporarily pinned to circle)."""
-        tip = "Circle mode only (temporary): scales axis amplitude (0=off, 1=normal, max 1.25)."
-        self.alpha_weight_slider.setToolTip(tip)
-        self.beta_weight_slider.setToolTip(tip)
     
     def _create_tempo_response_group(self, lock_default: bool = True) -> QGroupBox:
         """Advanced tempo-response controls group used in Tempo Tracking popout."""
@@ -7730,19 +7705,7 @@ Like the app?<br>
         if hasattr(self, 'mode_combo') and self.mode_combo.currentIndex() != 0:
             with self._signals_blocked(self.mode_combo):
                 self.mode_combo.setCurrentIndex(0)
-
-        new_max = 1.25
-        if self.alpha_weight_slider.value() > new_max:
-            self.alpha_weight_slider.setValue(new_max)
-        if self.beta_weight_slider.value() > new_max:
-            self.beta_weight_slider.setValue(new_max)
-        self.alpha_weight_slider.slider.setMaximum(int(new_max * self.alpha_weight_slider.multiplier))
-        self.beta_weight_slider.slider.setMaximum(int(new_max * self.beta_weight_slider.multiplier))
-        self.alpha_weight_slider.max_val = new_max
-        self.beta_weight_slider.max_val = new_max
-
-        # Update axis weight tooltips for the current mode
-        self._update_axis_weight_tooltips()
+        self._enforce_fixed_effect_axis_values()
 
     def _start_engines(self):
         """Initialize and start all engines"""
