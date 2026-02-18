@@ -1326,24 +1326,24 @@ class BeatIntelligence:
             or (trigger_kind == "beat" and bool(getattr(event, "is_beat", False)))
         )
 
-        # ── Priority interrupt logic with intensity gating ──
+        # ── Priority interrupt logic with force overrides ──
         incoming_pri = self._TRIGGER_PRIORITY.get(trigger_kind, 3)
         active_pri = self._TRIGGER_PRIORITY.get(self.last_trigger_kind, 3)
+        force_override = bool(
+            (trigger_kind == "syncopation" and bool(getattr(event, "is_syncopated", False)))
+            or (trigger_kind == "beat" and bool(getattr(event, "is_beat", False)))
+        )
         should_start = False
 
-        if not self.journey_active:
+        if force_override:
+            # Immediate restart for beat/syncopation triggers, even if current
+            # journey is active. Velocity-handoff math handles continuity.
+            should_start = True
+        elif not self.journey_active:
             should_start = True
         elif is_new_beat:
-            # Current journey progress for landing protection
-            current_completion = float(np.clip(
-                self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0))
-            # Rule: if > 90% progress, let the journey finish its elastic landing
-            if current_completion > 0.90:
-                should_start = False
-            elif incoming_pri <= active_pri:
-                # Intensity gating: only interrupt if new trigger is stronger
-                new_intensity = float(getattr(event, 'intensity', 0.0) or 0.0)
-                should_start = new_intensity > self._journey_start_intensity
+            # Beat-family event: interrupt if equal or higher priority
+            should_start = incoming_pri <= active_pri
         elif trigger_kind == "creep" and self.last_trigger_kind == "creep" and not self.journey_active:
             should_start = True
 
