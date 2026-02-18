@@ -60,9 +60,13 @@ class StrokeMapper:
         self._journey_total_rotation = float(2.0 * np.pi)
         self._last_journey_completion = 1.0
         self._actual_radius = self._park_radius
+        self._radius_hold_active = False
+        self._radius_hold_value = self._park_radius
+        self._radius_hold_start_time = 0.0
         self._angular_velocity = 0.0
         self._last_phase_for_velocity = self._orbit_phase
         self._journey_initial_speed_slope = 0.0
+        self._lazy_glide_active = False
 
         # Elastic landing / settle state
         self._settle_active = False
@@ -165,12 +169,23 @@ class StrokeMapper:
 
         self._active_interval_beats = decision.interval_beats
         self._last_trigger_kind = decision.trigger_kind
+        self._lazy_glide_active = bool(getattr(decision, "lazy_glide_active", False))
 
         if decision.silence_active:
-            # Apply silence fade (gradual, not binary)
+            # Apply silence fade (gradual, not binary) with radius exhale.
+            # Do NOT hard-snap back to park on silence entry.
             fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
+            self._orbit_phase = float(self._park_angle)
+            self._last_phase_for_velocity = self._orbit_phase
+            self._angular_velocity = 0.0
+
+            held_radius = float(np.clip(max(self._actual_radius, self._radius_hold_value), self._park_radius, 1.0))
+            target_radius = float(self._park_radius + ((held_radius - self._park_radius) * fade))
+            self._actual_radius += 0.08 * (target_radius - self._actual_radius)
+            radius = float(np.clip(self._actual_radius, self._park_radius, 1.0))
+
             alpha = 0.0
-            beta = self._park_y
+            beta = float(self._park_y + (radius - self._park_radius))
             volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
             self._last_journey_completion = 1.0
         else:
@@ -182,13 +197,20 @@ class StrokeMapper:
 
             if creep_motion_disabled:
                 self._settle_active = False
+                if not self._radius_hold_active:
+                    self._radius_hold_active = True
+                    self._radius_hold_start_time = now
+                    self._radius_hold_value = float(np.clip(self._actual_radius, self._park_radius, 1.0))
                 self._orbit_phase = float(self._park_angle)
                 self._last_phase_for_velocity = self._orbit_phase
                 self._angular_velocity = 0.0
-                self._actual_radius = float(self._park_radius)
+
+                target_radius = float(np.clip(self._radius_hold_value, self._park_radius, 1.0))
+                self._actual_radius += 0.08 * (target_radius - self._actual_radius)
+                radius = float(np.clip(self._actual_radius, self._park_radius, 1.0))
 
                 alpha = 0.0
-                beta = self._park_y
+                beta = float(self._park_y + (radius - self._park_radius))
                 jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
                 alpha += jitter_alpha
                 beta += jitter_beta
@@ -200,6 +222,7 @@ class StrokeMapper:
                 started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
                 if started_new_journey:
                     self._settle_active = False  # cancel any active settle
+                    self._radius_hold_active = False
                     self._journey_start_angle = float(self._orbit_phase)
                     self._journey_total_rotation = self._compute_landing_rotation(
                         start_angle=self._journey_start_angle,
@@ -210,7 +233,19 @@ class StrokeMapper:
                         interval_beats=decision.interval_beats,
                     )
 
+                learning_mult = 1.0
+                if decision.learning.active:
+                    learning_mult = float(np.clip(decision.learning.radius_mult, 0.3, 2.5))
+
+                bloom_delta = float(max(0.0, decision.radius_bloom - self._park_radius))
+                bloom_target_radius = float(self._park_radius + (bloom_delta * learning_mult))
+                bloom_target_radius = float(np.clip(bloom_target_radius, self._park_radius, 1.0))
+
                 if progress >= 1.0 and not started_new_journey:
+                    if not self._radius_hold_active:
+                        self._radius_hold_active = True
+                        self._radius_hold_start_time = now
+                        self._radius_hold_value = float(np.clip(max(self._actual_radius, bloom_target_radius), self._park_radius, 1.0))
                     # ── Elastic landing: damped harmonic settle ──
                     # Momentum carry-over from exit velocity drives overshoot;
                     # damped oscillation creates one visible wobble then rest.
@@ -227,11 +262,28 @@ class StrokeMapper:
                         disp = 0.0
                     angle = float(self._park_angle + disp)
                 else:
+                    effective_progress = progress
+                    if self._lazy_glide_active and progress > 0.70:
+                        tail_t = float(np.clip((progress - 0.70) / 0.30, 0.0, 1.0))
+                        stretched_tail = float(tail_t * tail_t)
+                        effective_progress = float(0.70 + (0.30 * stretched_tail))
+
                     smooth_progress = self._s_curve_with_initial_velocity(
-                        progress=progress,
+                        progress=effective_progress,
                         initial_slope=self._journey_initial_speed_slope,
+                        lazy_glide=self._lazy_glide_active,
                     )
-                    angle = float(self._journey_start_angle + (self._journey_total_rotation * smooth_progress))
+                    raw_angle = float(self._journey_start_angle + (self._journey_total_rotation * smooth_progress))
+                    angle = raw_angle
+
+                    if self._lazy_glide_active:
+                        target_angle = float(self._journey_start_angle + self._journey_total_rotation)
+                        remaining = float(max(0.0, target_angle - raw_angle))
+                        anchor_window = float(np.deg2rad(5.0))
+                        if 0.0 < remaining < anchor_window:
+                            ratio = float(np.clip(remaining / anchor_window, 0.0, 1.0))
+                            slowed_remaining = float(anchor_window * (ratio ** 0.35))
+                            angle = float(target_angle - slowed_remaining)
 
                 self._orbit_phase = float(angle % (2.0 * np.pi))
 
@@ -241,19 +293,19 @@ class StrokeMapper:
 
                 # Continuous "Smoooooth Arc": radius is independent of journey progress.
                 # Target radius follows music/learning; actual radius lerps via EMA.
-                learning_mult = 1.0
-                if decision.learning.active:
-                    learning_mult = float(np.clip(decision.learning.radius_mult, 0.3, 2.5))
-
-                bloom_delta = float(max(0.0, decision.radius_bloom - self._park_radius))
-                target_radius = float(self._park_radius + (bloom_delta * learning_mult))
-                target_radius = float(np.clip(target_radius, self._park_radius, 1.0))
-
-                # Reactive decay: fast "inhale" (expand), slow "exhale" (return to park)
-                if target_radius > self._actual_radius:
-                    radius_alpha = 0.12  # fast attack for power hits
+                if self._radius_hold_active:
+                    target_radius = float(np.clip(self._radius_hold_value, self._park_radius, 1.0))
+                    radius_alpha = 0.12 if target_radius > self._actual_radius else 0.04
                 else:
-                    radius_alpha = 0.02  # slow release stays full through heavy sections
+                    if self._lazy_glide_active:
+                        target_radius = float(np.clip(max(self._actual_radius, bloom_target_radius), self._park_radius, 1.0))
+                        radius_alpha = 0.08 if target_radius > self._actual_radius else 0.01
+                    else:
+                        target_radius = bloom_target_radius
+                        if target_radius > self._actual_radius:
+                            radius_alpha = 0.12
+                        else:
+                            radius_alpha = 0.02
                 self._actual_radius += radius_alpha * (target_radius - self._actual_radius)
                 radius = float(np.clip(self._actual_radius, self._park_radius, 1.0))
 
@@ -325,7 +377,12 @@ class StrokeMapper:
         return float(p * p * (3.0 - (2.0 * p)))
 
     @staticmethod
-    def _s_curve_with_initial_velocity(progress: float, initial_slope: float, end_slope: float = 0.0) -> float:
+    def _s_curve_with_initial_velocity(
+        progress: float,
+        initial_slope: float,
+        end_slope: float = 0.0,
+        lazy_glide: bool = False,
+    ) -> float:
         """Cubic Hermite easing with configurable initial slope and elastic back-ease landing."""
         p = float(np.clip(progress, 0.0, 1.0))
         m0 = float(np.clip(initial_slope, 0.0, 2.5))
@@ -339,7 +396,7 @@ class StrokeMapper:
         # Back-ease overshoot: sine bump in the final 8% of the journey.
         # Dot swings slightly past target before the post-journey settle
         # takes over → elastic, biological landing feel.
-        if p > 0.92:
+        if (not lazy_glide) and p > 0.92:
             t = (p - 0.92) / 0.08  # 0…1 within last 8%
             overshoot = 0.025 * float(np.sin(t * np.pi))
             eased += overshoot

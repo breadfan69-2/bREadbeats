@@ -43,6 +43,7 @@ class BeatDecision:
     journey_completion: float
     silence_fade: float = 1.0          # 1.0 = full volume, 0.0 = fully faded
     post_silence_ramp: float = 1.0     # 1.0 = full volume, <1 = ramping back in
+    lazy_glide_active: bool = False
 
     learning: LearningOutputs = field(default_factory=LearningOutputs)
 
@@ -81,6 +82,7 @@ class BeatIntelligence:
         self._journey_duration_blend_frames_remaining = 0
         self._journey_duration_blend_alpha = 0.35
         self._journey_start_intensity = 0.0  # intensity of current journey's trigger
+        self._lazy_glide_active: bool = False
 
         self.treble_lift_ema = 0.0
         self.treble_lift_attack = 0.28
@@ -151,6 +153,15 @@ class BeatIntelligence:
         self._learned_sync_size_mult: float = 1.0
         self._learned_sync_speed_mult: float = 1.0
         self._learned_gate_bias: float = 0.0
+
+        # ── Phrase Commitment: measure-locked high-gear hold ──
+        self._phrase_committed: bool = False
+        self._phrase_beats_remaining: int = 0
+        self._phrase_gear: str = ""             # "beat" or "syncopation"
+        self._phrase_flux_baseline: float = 0.0  # mean flux when phrase entered
+        self._phrase_flux_drop_ratio: float = 0.35  # cancel if flux drops below 35% of baseline
+        self._phrase_renew_ratio: float = 0.55       # renew if flux still >= 55% at measure end
+        self._phrase_measure_beats: int = 4          # beats per phrase commitment (one measure)
 
         # ── Phase 6: BPM Stabilization (#13) ──
         self._last_locked_bpm: float = 120.0       # last BPM when tempo_locked was True
@@ -1153,6 +1164,10 @@ class BeatIntelligence:
         elif is_new_beat and incoming_pri < active_pri:
             # Faster stroke type interrupts slower one (e.g. beat interrupts downbeat)
             should_start = True
+        elif is_new_beat and self._lazy_glide_active and incoming_pri <= active_pri and trigger_kind != "creep":
+            # During lazy glide, a newly arriving beat should snap back
+            # into high-energy momentum-preserving travel immediately.
+            should_start = True
         elif trigger_kind == "creep" and self.last_trigger_kind == "creep" and not self.journey_active:
             should_start = True
 
@@ -1163,6 +1178,7 @@ class BeatIntelligence:
             self._journey_duration_blend_frames_remaining = 0
             self.journey_elapsed_s = 0.0
             self.journey_active = True
+            self._lazy_glide_active = False
             return 0.0
 
         if self._journey_duration_blend_frames_remaining > 0:
@@ -1173,12 +1189,63 @@ class BeatIntelligence:
             if self._journey_duration_blend_frames_remaining <= 0:
                 self.journey_duration_s = self._journey_duration_target_s
 
-        step = float(np.clip(dt, 1e-4, 0.25))
+        now = float(getattr(event, "monotonic_timestamp", 0.0) or 0.0)
+        if now <= 0.0:
+            now = time.perf_counter()
+
+        completion_before = float(np.clip(self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0))
+        seconds_until_next = self._seconds_until_next_beat(event=event, bpm=bpm, now=now)
+        quarter_measure_window_s = beat_period_s  # 4/4 default: a quarter-measure is one beat
+
+        lazy_glide = (
+            trigger_kind != "creep"
+            and completion_before > 0.70
+            and seconds_until_next > quarter_measure_window_s
+        )
+
+        if is_new_beat and self._lazy_glide_active:
+            lazy_glide = False
+
+        if lazy_glide:
+            tail_t = float(np.clip((completion_before - 0.70) / 0.30, 0.0, 1.0))
+            lazy_scale = float(np.clip(np.exp(-1.8 * tail_t), 0.16, 1.0))
+        else:
+            lazy_scale = 1.0
+
+        step = float(np.clip(dt, 1e-4, 0.25)) * lazy_scale
         self.journey_elapsed_s = min(self.journey_duration_s, self.journey_elapsed_s + step)
         completion = float(np.clip(self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0))
         if completion >= 1.0:
             self.journey_active = False
+            lazy_glide = False
+        self._lazy_glide_active = bool(lazy_glide)
         return completion
+
+    def _seconds_until_next_beat(self, event: BeatEvent, bpm: float, now: float) -> float:
+        beat_period_s = 60.0 / max(1e-6, bpm)
+
+        predicted_mono = 0.0
+        if self.audio_engine is not None:
+            predicted_mono = float(getattr(self.audio_engine, "predicted_next_beat_mono", 0.0) or 0.0)
+        if predicted_mono > now:
+            return float(max(0.0, predicted_mono - now))
+
+        met_bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+        if self.audio_engine is not None and met_bpm <= 0.0:
+            met_bpm = float(getattr(self.audio_engine, "_metronome_bpm", 0.0) or 0.0)
+        if met_bpm > 0.0 and self.audio_engine is not None:
+            met_phase = getattr(self.audio_engine, "_metronome_phase", None)
+            if met_phase is not None:
+                phase_frac = float(met_phase) % 1.0
+                until_frac = 1.0 - phase_frac
+                if until_frac <= 1e-6:
+                    until_frac = 1.0
+                return float(until_frac * (60.0 / max(1e-6, met_bpm)))
+
+        if met_bpm > 0.0:
+            return float(0.5 * (60.0 / max(1e-6, met_bpm)))
+
+        return float(10.0 * beat_period_s)
 
     def compute_treble_lift(self, journey_completion: float) -> float:
         max_lift = 0.40
@@ -1280,6 +1347,64 @@ class BeatIntelligence:
             if trigger_kind != "creep":
                 self._creep_consecutive_frames = 0
 
+        # ── Phrase Commitment: musical phrase locking ──
+        # When switching from slow gear (creep/downbeat) to fast gear
+        # (beat/syncopation), commit for a full measure (4 beats).
+        # This prevents sporadic jumps and creates consistent high-energy
+        # "performances" for the duration of the musical phrase.
+        is_beat_event = bool(
+            getattr(event, "is_beat", False)
+            or getattr(event, "is_downbeat", False)
+            or getattr(event, "is_syncopated", False)
+        )
+
+        # Detect new phrase entry: slow→fast gear switch
+        if (not self._phrase_committed
+                and trigger_kind in ("beat", "syncopation")
+                and not silence_active
+                and self.last_trigger_kind in ("creep", "downbeat")):
+            self._phrase_committed = True
+            self._phrase_beats_remaining = self._phrase_measure_beats
+            self._phrase_gear = trigger_kind
+            recent_flux = list(self._recent_flux_values)
+            self._phrase_flux_baseline = float(np.mean(recent_flux)) if len(recent_flux) >= 4 else 0.0
+
+        # Enforce phrase commitment
+        if self._phrase_committed and self._phrase_beats_remaining > 0:
+            # Count beats toward measure completion
+            if is_beat_event:
+                self._phrase_beats_remaining -= 1
+
+            # Flux-drop cancellation: if energy crashes, release early
+            recent_flux = list(self._recent_flux_values)
+            current_flux_mean = float(np.mean(recent_flux)) if len(recent_flux) >= 4 else 0.0
+            if (self._phrase_flux_baseline > 1e-6
+                    and current_flux_mean < (self._phrase_flux_baseline * self._phrase_flux_drop_ratio)):
+                # Hard flux drop — cancel phrase commitment immediately
+                self._phrase_committed = False
+                self._phrase_beats_remaining = 0
+            elif trigger_kind in ("creep", "downbeat") and not silence_active:
+                # Override: don't allow slow gear during committed phrase
+                trigger_kind = "beat"
+
+        # Intensity-Lock: at measure end, renew if still pumping
+        if self._phrase_committed and self._phrase_beats_remaining <= 0:
+            recent_flux = list(self._recent_flux_values)
+            current_flux_mean = float(np.mean(recent_flux)) if len(recent_flux) >= 4 else 0.0
+            if (self._phrase_flux_baseline > 1e-6
+                    and current_flux_mean >= (self._phrase_flux_baseline * self._phrase_renew_ratio)):
+                # Still pumping — renew for another measure
+                self._phrase_beats_remaining = self._phrase_measure_beats
+                self._phrase_flux_baseline = current_flux_mean  # update baseline
+            else:
+                # Release commitment — graceful gear-down on the '1'
+                self._phrase_committed = False
+
+        # Cancel phrase commitment during silence
+        if silence_active and self._phrase_committed:
+            self._phrase_committed = False
+            self._phrase_beats_remaining = 0
+
         # No-beat timeout: force decay to park
         no_beat_timed_out = False
         if self._check_no_beat_timeout(now) and self.journey_active:
@@ -1287,6 +1412,8 @@ class BeatIntelligence:
             self.journey_active = False
             self.last_trigger_kind = "creep"
             self.active_interval_beats = 8
+            self._phrase_committed = False
+            self._phrase_beats_remaining = 0
             no_beat_timed_out = True
 
         interval_beats = self.interval_beats_for_trigger(trigger_kind)
@@ -1316,5 +1443,6 @@ class BeatIntelligence:
             journey_completion=journey_completion,
             silence_fade=float(silence_fade),
             post_silence_ramp=float(post_silence_ramp),
+            lazy_glide_active=bool(self._lazy_glide_active),
             learning=learning,
         )
