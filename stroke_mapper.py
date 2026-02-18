@@ -24,7 +24,7 @@ from network_engine import TCodeCommand
 @dataclass
 class StrokeState:
     alpha: float = 0.0
-    beta: float = -0.70
+    beta: float = 0.70
     last_time: float = 0.0
 
 
@@ -49,13 +49,13 @@ class StrokeMapper:
         self.audio_engine = audio_engine
 
         self.state = StrokeState()
-        self._park_y = -0.70
+        self._park_y = 0.70
 
         self._orbit_phase = 0.0
         self._active_interval_beats = 8
         self._last_trigger_kind = "creep"
         self._park_radius = 0.70
-        self._park_angle = float(np.pi)
+        self._park_angle = 0.0
         self._journey_start_angle = self._park_angle
         self._journey_total_rotation = float(2.0 * np.pi)
         self._last_journey_completion = 1.0
@@ -73,7 +73,7 @@ class StrokeMapper:
         self._learning_model: Optional[dict] = None
 
     def configure_geometry_rest_state(self, y_offset: float, sink_start_intensity: float = 0.25) -> None:
-        self._park_y = -0.70
+        self._park_y = 0.70
         self._intelligence.set_park_y(self._park_y)
 
     def configure_learning(

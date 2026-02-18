@@ -144,8 +144,9 @@ def _apply_release_learning_defaults(self) -> None:
     )
 ```
 
-The rest of startup calls `_apply_learning_config_to_mapper()` which already drives
-`mapper._try_load_learning_model()`, so no additional wiring is needed.
+The rest of startup calls `_apply_learning_config_to_mapper()` which drives
+`mapper._try_load_learning_model()` — **but that method must be implemented first**
+(see Step 6).
 
 ---
 
@@ -175,18 +176,145 @@ self._apply_release_learning_defaults()  # must come first
 self._apply_learning_config_to_mapper()  # pushes paths into StrokeMapper
 ```
 
-After the StrokeMapper is constructed (later during engine start), it calls
-`_try_load_learning_model()` with the path that was stored in
-`config.beat.teaching_rule_fit_path`. No extra work needed beyond ensuring the paths
-are set before the mapper is constructed.
-
-If the order is inverted (mapper created before `_apply_release_learning_defaults` is
-called) the mapper will also call `_try_load_learning_model()` again after each path
-assignment via `_apply_learning_config_to_mapper()`, so either order is safe.
+`_apply_learning_config_to_mapper()` sets `mapper._learning_rule_fit_path` and then
+calls `mapper._try_load_learning_model()`. That method **does not currently exist** on
+the refactored `StrokeMapper` — it was removed during the decision-only refactor. It
+must be re-implemented (Step 6) before the path wiring has any effect.
 
 ---
 
-## Step 6 — Remove any remaining dependency on `D:\breadbeats_datasets`
+## Step 6 — Implement `_try_load_learning_model()` in `StrokeMapper`
+
+The refactored `StrokeMapper` (post-autopsy) has no model loader. Add this method:
+
+```python
+def _try_load_learning_model(self) -> None:
+    """Load rule_fit.json from _learning_rule_fit_path into _rule_fit_model."""
+    import json
+    path_str = getattr(self, '_learning_rule_fit_path', '')
+    if not path_str:
+        self._rule_fit_model = None
+        return
+    try:
+        from pathlib import Path
+        data = json.loads(Path(path_str).read_text(encoding='utf-8'))
+        if data.get('status') != 'ok':
+            raise ValueError(f"rule_fit status not ok: {data.get('status')}")
+        self._rule_fit_model = data
+        features = data.get('feature_columns', [])
+        targets  = data.get('target_columns', [])
+        print(f"[Learning] Loaded rule_fit: {len(features)} features → {len(targets)} targets")
+    except Exception as exc:
+        print(f"[Learning] Failed to load rule_fit model: {exc}")
+        self._rule_fit_model = None
+```
+
+Also initialise the attribute in `__init__`:
+
+```python
+self._rule_fit_model: dict | None = None
+self._learning_rule_fit_path: str = ''
+self._learning_enabled: bool = False
+self._learning_use_fitted_rules: bool = False
+```
+
+---
+
+## Step 7 — Wire model inference into `BeatIntelligence.build_decision()`
+
+Loading the model has no effect unless its outputs are applied. Currently nothing in
+`BeatIntelligence` reads `_rule_fit_model`. The inference shape from `rule_fit.json` is:
+
+```
+normalize features → dot(coefficients) + intercept → motion parameter override
+```
+
+Targets from the model: `arc_size`, `arc_duration_frac`, `jitter_mix`, `creep_mix`,
+`gate_strictness`, `burst_prob`.
+
+Required additions:
+
+**In `StrokeMapper`:** add a method that executes inference for one frame:
+
+```python
+def _apply_rule_fit(self, raw_features: dict[str, float]) -> dict[str, float]:
+    """Run one inference pass and return a dict of override values, or {} on failure."""
+    model = getattr(self, '_rule_fit_model', None)
+    if model is None:
+        return {}
+    try:
+        import numpy as np
+        norm   = model['normalization']
+        mean   = norm['mean']
+        std    = norm['std']
+        cols   = model['feature_columns']
+        models = model['models']
+
+        x_norm = np.array([
+            (raw_features.get(c, mean[c]) - mean[c]) / max(std[c], 1e-8)
+            for c in cols
+        ], dtype=float)
+
+        result = {}
+        for target, spec in models.items():
+            intercept = float(spec['intercept'])
+            coefs     = [float(spec['coefficients'].get(c, 0.0)) for c in cols]
+            result[target] = float(intercept + np.dot(coefs, x_norm))
+        return result
+    except Exception:
+        return {}
+```
+
+**In `BeatIntelligence.build_decision()`:** after it assembles its raw energy values
+but before it returns `BeatDecision`, call `_apply_rule_fit` (passed in or via a back-
+reference) and blend the results into the decision fields. The cleanest seam is to give
+`BeatIntelligence` a reference to the model via a setter:
+
+```python
+# In BeatIntelligence.__init__:
+self._rule_fit_apply: Callable[[dict], dict] | None = None
+
+# In StrokeMapper.__init__ (after self._intelligence is created):
+self._intelligence._rule_fit_apply = self._apply_rule_fit
+
+# In BeatIntelligence.build_decision(), after energies are computed:
+if self._rule_fit_apply is not None:
+    overrides = self._rule_fit_apply({
+        'rms':                 self.energies.rms,
+        'log_energy':          self.energies.log_energy,
+        'spectral_flux':       self.energies.spectral_flux,
+        'flux_delta':          self.energies.flux_delta,
+        'sub_bass_energy':     self.energies.sub_bass,
+        'low_mid_energy':      self.energies.low_mid,
+        'mid_energy':          self.energies.mid,
+        'high_energy':         self.energies.high,
+        'low_high_ratio':      self.energies.low_high_ratio,
+        'spectral_centroid_hz':  self.energies.spectral_centroid,
+        'spectral_bandwidth_hz': self.energies.spectral_bandwidth,
+        'spectral_rolloff_hz':   self.energies.spectral_rolloff,
+        'spectral_flatness':     self.energies.spectral_flatness,
+    })
+    # apply overrides to decision fields (clamp to valid range)
+    arc_size = float(np.clip(overrides.get('arc_size', decision.radius_bloom), 0.0, 1.0))
+    decision = BeatDecision(
+        trigger_kind=decision.trigger_kind,
+        interval_beats=decision.interval_beats,
+        radius_bloom=arc_size,
+        silence_active=decision.silence_active,
+        journey_completion=decision.journey_completion,
+    )
+```
+
+Map the remaining targets (`jitter_mix`, `creep_mix`, `gate_strictness`, `burst_prob`)
+to the corresponding config fields or local effect weights as appropriate.
+
+> **Note:** The energy field names inside `BeatIntelligence` (e.g. `self.energies.rms`,
+> `self.energies.spectral_flux`) must be confirmed against the actual `BeatIntelligence`
+> dataclass before writing the dict literal above. Adjust key names to match exactly.
+
+---
+
+## Step 8 — Remove any remaining dependency on `D:\breadbeats_datasets`
 
 Search `main.py` for:
 
@@ -198,6 +326,9 @@ Delete that line and all code that depends on `base_dir` within
 `_apply_release_learning_defaults()`. After the rewrite in Step 3, nothing in that
 function should reference an external absolute path.
 
+Also remove the `_by_mtime_desc` inner function and the glob-based candidate
+selection — all of that logic is replaced by the deterministic filename lookup in Step 3.
+
 ---
 
 ## What NOT to change
@@ -205,23 +336,23 @@ function should reference an external absolute path.
 | Area | Reason |
 |---|---|
 | `_apply_learning_config_to_mapper()` | Already correct; pushes config → StrokeMapper |
-| `_try_load_learning_model()` in StrokeMapper/BeatIntelligence | Already reads from `_learning_rule_fit_path`; no change needed |
 | `learned_profile_slots.json` / preset buttons | Separate user-managed system; leave intact |
 | `teaching_*` config defaults in `config.py` | Only `teaching_learning_enabled` and `teaching_use_fitted_rules` must default to `True`; already the case |
-| Stroke motion logic | Out of scope entirely |
+| Core stroke geometry / S-curve / journey logic | Out of scope; model overrides blend in at the decision level only |
 
 ---
 
 ## Validation checklist
 
 ```
-1. python -m py_compile main.py
+1. python -m py_compile main.py beat_intelligence.py stroke_mapper.py
 2. python -m pytest -q tests/test_stroke_mapper_contract.py
 3. python run.py
+   → look for: [Learning] Loaded rule_fit: 13 features → 6 targets
    → look for: [Learning] Release defaults applied — source=bundled profile=... rule_fit=...
 4. Run PyInstaller build task
 5. Launch dist/bREadbeats/bREadbeats.exe
-   → same startup log line, no D:\ reference, no file-not-found errors
+   → same startup log lines, no D:\ reference, no file-not-found errors
 ```
 
 ---
@@ -235,4 +366,6 @@ function should reference an external absolute path.
 | Edit | `main.py` — replace `_apply_release_learning_defaults()` body |
 | Edit | `main.py` — add `_get_bundled_defaults_dir()` helper |
 | Edit | `bREadbeats.spec` — add two entries to `datas` |
-| No change | `stroke_mapper.py`, `beat_intelligence.py`, `config.py` |
+| Edit | `stroke_mapper.py` — add `_try_load_learning_model()`, `_apply_rule_fit()`, and init attributes |
+| Edit | `beat_intelligence.py` — add `_rule_fit_apply` hook and inference call in `build_decision()` |
+| No change | `config.py` |

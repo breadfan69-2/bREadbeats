@@ -1,0 +1,344 @@
+"""
+Phase 1 checkpoint tests — rolling deques, FluxTracker, beat hierarchy guards,
+no-beat timeout, mid-trigger block, activity helpers.
+"""
+
+import time
+import unittest
+from typing import Any
+
+from audio_engine import BeatEvent
+from beat_intelligence import BeatIntelligence
+from config import Config
+
+
+class Phase1Mixin:
+    """Shared event factory for Phase 1 tests."""
+
+    def _event(self, **overrides) -> BeatEvent:
+        payload: dict[str, Any] = dict(
+            timestamp=time.time(),
+            intensity=0.5,
+            frequency=60.0,
+            is_beat=False,
+            spectral_flux=0.1,
+            peak_energy=0.3,
+            is_downbeat=False,
+            bpm=120.0,
+            tempo_locked=True,
+            metronome_bpm=120.0,
+            is_syncopated=False,
+            monotonic_timestamp=time.perf_counter(),
+            raw_rms=0.08,
+            beat_band="sub_bass",
+            fired_bands=["sub_bass"],
+        )
+        payload.update(overrides)
+        return BeatEvent(**payload)
+
+
+# ── §1 Rolling history deques ──────────────────────────────────────────────
+
+
+class TestRollingDeques(Phase1Mixin, unittest.TestCase):
+    def test_deques_populate_on_build_decision(self):
+        bi = BeatIntelligence(Config())
+        self.assertEqual(len(bi._recent_flux_values), 0)
+        bi.build_decision(self._event(), dt=1 / 60)
+        self.assertEqual(len(bi._recent_flux_values), 1)
+        self.assertEqual(len(bi._recent_low_band_values), 1)
+        self.assertEqual(len(bi._recent_high_band_values), 1)
+        self.assertEqual(len(bi._recent_mid_bass_values), 1)
+
+    def test_deques_respect_maxlen(self):
+        bi = BeatIntelligence(Config())
+        for _ in range(80):
+            bi.build_decision(self._event(), dt=1 / 60)
+        self.assertEqual(len(bi._recent_flux_values), 60)
+        self.assertEqual(len(bi._recent_low_band_values), 60)
+
+    def test_high_band_beat_hits_recorded_on_beat_events(self):
+        bi = BeatIntelligence(Config())
+        # Prime with downbeat
+        bi.build_decision(self._event(is_downbeat=True), dt=1 / 60)
+        bi.build_decision(self._event(is_beat=True, fired_bands=["high"]), dt=1 / 60)
+        self.assertGreaterEqual(len(bi._recent_high_band_beat_hits), 1)
+
+    def test_high_band_beat_hits_not_recorded_on_creep(self):
+        bi = BeatIntelligence(Config())
+        bi.build_decision(self._event(is_beat=False, is_downbeat=False), dt=1 / 60)
+        # Creep events don't add to beat hit deque
+        self.assertEqual(len(bi._recent_high_band_beat_hits), 0)
+
+
+# ── §2 FluxTracker ─────────────────────────────────────────────────────────
+
+
+class TestFluxTracker(Phase1Mixin, unittest.TestCase):
+    def test_flux_history_populated(self):
+        bi = BeatIntelligence(Config())
+        bi.build_decision(self._event(spectral_flux=0.05), dt=1 / 60)
+        self.assertGreaterEqual(len(bi._flux_history), 1)
+
+    def test_flux_rise_factor_increases_with_rising_flux(self):
+        bi = BeatIntelligence(Config())
+        # Feed low flux first
+        for _ in range(5):
+            bi.build_decision(self._event(spectral_flux=0.01), dt=1 / 60)
+        low_rise = bi._get_flux_rise_factor()
+
+        # Then high flux
+        for _ in range(5):
+            bi.build_decision(self._event(spectral_flux=0.15), dt=1 / 60)
+        high_rise = bi._get_flux_rise_factor()
+
+        self.assertGreater(high_rise, low_rise)
+
+    def test_flux_stroke_factor_above_one_with_high_flux(self):
+        bi = BeatIntelligence(Config())
+        bi.build_decision(self._event(spectral_flux=0.30), dt=1 / 60)
+        self.assertGreater(bi._flux_stroke_factor, 1.0)
+
+    def test_flux_stroke_factor_below_one_with_low_flux(self):
+        bi = BeatIntelligence(Config())
+        bi.build_decision(self._event(spectral_flux=0.001), dt=1 / 60)
+        # Very low flux → factor < 1.0 (dampens response)
+        self.assertLess(bi._flux_stroke_factor, 1.0)
+
+
+# ── §3 Beat hierarchy guards ───────────────────────────────────────────────
+
+
+class TestBeatHierarchyGuards(Phase1Mixin, unittest.TestCase):
+    def test_beat_without_prior_downbeat_falls_to_creep(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        bi = BeatIntelligence(cfg)
+
+        decision = bi.build_decision(self._event(is_beat=True), dt=1 / 60, silence_override=False)
+        self.assertEqual(decision.trigger_kind, "creep")
+
+    def test_beat_after_downbeat_fires(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        bi = BeatIntelligence(cfg)
+
+        bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+        decision = bi.build_decision(self._event(is_beat=True), dt=1 / 60, silence_override=False)
+        self.assertEqual(decision.trigger_kind, "beat")
+
+    def test_syncopation_without_downbeat_falls_to_creep(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        bi = BeatIntelligence(cfg)
+
+        decision = bi.build_decision(
+            self._event(is_syncopated=True), dt=1 / 60, silence_override=False
+        )
+        self.assertEqual(decision.trigger_kind, "creep")
+
+    def test_syncopation_after_downbeat_and_beat_fires(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        bi = BeatIntelligence(cfg)
+
+        bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+        bi.build_decision(self._event(is_beat=True), dt=1 / 60, silence_override=False)
+        decision = bi.build_decision(
+            self._event(is_syncopated=True), dt=1 / 60, silence_override=False
+        )
+        self.assertEqual(decision.trigger_kind, "syncopation")
+
+    def test_downbeat_always_allowed_even_cold_start(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        bi = BeatIntelligence(cfg)
+
+        decision = bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+        self.assertEqual(decision.trigger_kind, "downbeat")
+
+    def test_tempo_reset_arms_motion_hold(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        bi = BeatIntelligence(cfg)
+
+        now = time.perf_counter()
+        event = self._event(is_downbeat=True, monotonic_timestamp=now)
+        event.tempo_reset = True
+        bi.build_decision(event, dt=1 / 60, silence_override=False)
+
+        self.assertGreater(bi._tempo_reset_motion_hold_until, now)
+
+    def test_has_recent_beats_true_after_beat(self):
+        bi = BeatIntelligence(Config())
+        now = time.perf_counter()
+        event = self._event(is_downbeat=True, monotonic_timestamp=now)
+        bi.build_decision(event, dt=1 / 60)
+        self.assertTrue(bi._has_recent_beats(now + 0.1))
+
+    def test_has_recent_beats_false_after_long_gap(self):
+        bi = BeatIntelligence(Config())
+        now = time.perf_counter()
+        event = self._event(is_downbeat=True, monotonic_timestamp=now)
+        bi.build_decision(event, dt=1 / 60)
+        self.assertFalse(bi._has_recent_beats(now + 5.0))
+
+
+# ── §4 No-beat timeout ─────────────────────────────────────────────────────
+
+
+class TestNoBeatTimeout(Phase1Mixin, unittest.TestCase):
+    def test_no_timeout_on_cold_start(self):
+        bi = BeatIntelligence(Config())
+        self.assertFalse(bi._check_no_beat_timeout(time.perf_counter()))
+
+    def test_timeout_triggers_after_gap(self):
+        bi = BeatIntelligence(Config())
+        now = time.perf_counter()
+        bi._last_any_beat_time = now - 3.0  # 3s ago
+        self.assertTrue(bi._check_no_beat_timeout(now))
+
+    def test_timeout_does_not_trigger_when_recent(self):
+        bi = BeatIntelligence(Config())
+        now = time.perf_counter()
+        bi._last_any_beat_time = now - 0.5  # 0.5s ago
+        self.assertFalse(bi._check_no_beat_timeout(now))
+
+    def test_timeout_forces_journey_inactive_in_build_decision(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        bi = BeatIntelligence(cfg)
+
+        # Start a journey
+        bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+        self.assertTrue(bi.journey_active)
+
+        # Simulate 3s gap by backdating last beat time
+        bi._last_any_beat_time = time.perf_counter() - 3.0
+
+        decision = bi.build_decision(self._event(), dt=1 / 60, silence_override=False)
+        self.assertFalse(bi.journey_active)
+        self.assertEqual(decision.trigger_kind, "creep")
+
+
+# ── §7 Mid-trigger block ───────────────────────────────────────────────────
+
+
+class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
+    def test_mid_freq_beat_blocked(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        cfg.stroke.block_mid_trigger_range_enabled = True
+        bi = BeatIntelligence(cfg)
+
+        # Prime hierarchy
+        bi.build_decision(self._event(is_downbeat=True, frequency=60.0), dt=1 / 60, silence_override=False)
+
+        # Beat at 500 Hz (vocal range) should be blocked
+        decision = bi.build_decision(
+            self._event(is_beat=True, frequency=500.0), dt=1 / 60, silence_override=False
+        )
+        self.assertEqual(decision.trigger_kind, "creep")
+
+    def test_bass_freq_beat_not_blocked(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        cfg.stroke.block_mid_trigger_range_enabled = True
+        bi = BeatIntelligence(cfg)
+
+        bi.build_decision(self._event(is_downbeat=True, frequency=60.0), dt=1 / 60, silence_override=False)
+
+        # Beat at 60 Hz (bass) should pass
+        decision = bi.build_decision(
+            self._event(is_beat=True, frequency=60.0), dt=1 / 60, silence_override=False
+        )
+        self.assertEqual(decision.trigger_kind, "beat")
+
+    def test_mid_block_disabled_allows_mid_freq(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        cfg.stroke.block_mid_trigger_range_enabled = False
+        bi = BeatIntelligence(cfg)
+
+        bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+
+        decision = bi.build_decision(
+            self._event(is_beat=True, frequency=500.0), dt=1 / 60, silence_override=False
+        )
+        self.assertEqual(decision.trigger_kind, "beat")
+
+    def test_learning_relax_bypasses_mid_block(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        cfg.stroke.block_mid_trigger_range_enabled = True
+        cfg.beat.teaching_learning_enabled = True
+        cfg.beat.teaching_relax_phase1_gates = True
+        bi = BeatIntelligence(cfg)
+
+        bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+
+        decision = bi.build_decision(
+            self._event(is_beat=True, frequency=500.0), dt=1 / 60, silence_override=False
+        )
+        self.assertEqual(decision.trigger_kind, "beat")
+
+
+# ── §21 Activity helpers ───────────────────────────────────────────────────
+
+
+class TestActivityHelpers(Phase1Mixin, unittest.TestCase):
+    def test_low_band_activity_from_sub_bass(self):
+        bi = BeatIntelligence(Config())
+        bi.energies.sub_bass = 0.8
+        bi.energies.low_mid = 0.0
+        activity = bi._get_low_band_activity(self._event())
+        self.assertGreater(activity, 0.0)
+
+    def test_high_band_activity_from_high(self):
+        bi = BeatIntelligence(Config())
+        bi.energies.high = 0.9
+        bi.energies.mid = 0.0
+        activity = bi._get_high_band_activity(self._event())
+        self.assertGreater(activity, 0.0)
+
+    def test_mid_bass_activity_from_low_mid(self):
+        bi = BeatIntelligence(Config())
+        bi.energies.low_mid = 0.5
+        activity = bi._get_mid_bass_activity(self._event())
+        self.assertAlmostEqual(activity, 0.5, places=4)
+
+    def test_high_band_presence_status_passes_when_enough_data(self):
+        bi = BeatIntelligence(Config())
+        # Fill with above-threshold values
+        for _ in range(20):
+            bi._recent_high_band_values.append(0.30)
+        self.assertTrue(bi._get_high_band_presence_status())
+
+    def test_high_band_presence_status_fails_when_low(self):
+        bi = BeatIntelligence(Config())
+        for _ in range(20):
+            bi._recent_high_band_values.append(0.01)
+        self.assertFalse(bi._get_high_band_presence_status())
+
+    def test_high_band_presence_status_passes_with_insufficient_data(self):
+        bi = BeatIntelligence(Config())
+        # < 8 frames → don't block
+        for _ in range(3):
+            bi._recent_high_band_values.append(0.01)
+        self.assertTrue(bi._get_high_band_presence_status())
+
+    def test_high_band_pattern_status_passes_with_hits(self):
+        bi = BeatIntelligence(Config())
+        for _ in range(5):
+            bi._recent_high_band_beat_hits.append(True)
+        self.assertTrue(bi._get_high_band_pattern_status())
+
+    def test_high_band_pattern_status_fails_with_no_hits(self):
+        bi = BeatIntelligence(Config())
+        for _ in range(5):
+            bi._recent_high_band_beat_hits.append(False)
+        self.assertFalse(bi._get_high_band_pattern_status())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -13,7 +13,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         payload: dict[str, Any] = dict(
             timestamp=time.time(),
             intensity=0.5,
-            frequency=100.0,
+            frequency=60.0,
             is_beat=False,
             spectral_flux=0.1,
             peak_energy=0.3,
@@ -95,8 +95,11 @@ class TestStrokeMapperContract(unittest.TestCase):
 
     def test_build_decision_emits_trigger_interval_and_progress(self):
         intelligence = BeatIntelligence(Config())
-        event = self._event(is_syncopated=False, is_downbeat=False, is_beat=True, tempo_locked=True)
+        # Prime hierarchy with a downbeat so beat is allowed
+        prime = self._event(is_downbeat=True, tempo_locked=True)
+        intelligence.build_decision(event=prime, dt=1.0 / 60.0, silence_override=False)
 
+        event = self._event(is_syncopated=False, is_downbeat=False, is_beat=True, tempo_locked=True)
         decision = intelligence.build_decision(event=event, dt=1.0 / 60.0, silence_override=False)
 
         self.assertEqual(decision.trigger_kind, "beat")
@@ -136,6 +139,10 @@ class TestStrokeMapperContract(unittest.TestCase):
         cfg.beat.tempo_lock_required = False
         intelligence = BeatIntelligence(cfg)
 
+        # Prime hierarchy with a downbeat so subsequent beat is allowed
+        prime = self._event(is_downbeat=True)
+        intelligence.build_decision(event=prime, dt=1.0 / 60.0, silence_override=False)
+
         beat_event = self._event(is_beat=True, tempo_locked=True)
         first = intelligence.build_decision(event=beat_event, dt=1.0 / 60.0, silence_override=False)
 
@@ -147,9 +154,9 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertEqual(second.interval_beats, 2)
         self.assertGreater(second.journey_completion, 0.0)
 
-    def test_treble_elevator_uses_negative_park_geometry(self):
+    def test_treble_elevator_uses_positive_park_geometry(self):
         mapper = StrokeMapper(Config())
-        self.assertAlmostEqual(mapper._park_y, -0.70, places=6)
+        self.assertAlmostEqual(mapper._park_y, 0.70, places=6)
 
     def test_treble_elevator_landing_guard_returns_center_to_park(self):
         intelligence = BeatIntelligence(Config())
@@ -212,7 +219,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         epsilon = 1e-6
         self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
-        self.assertLessEqual(abs(cmd.beta - (-0.70)), epsilon)
+        self.assertLessEqual(abs(cmd.beta - 0.70), epsilon)
 
     def test_terminal_pose_lands_at_park_for_syncopation_with_high_treble_and_max_bloom(self):
         mapper = StrokeMapper(Config())
@@ -233,7 +240,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         epsilon = 1e-6
         self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
-        self.assertLessEqual(abs(cmd.beta - (-0.70)), epsilon)
+        self.assertLessEqual(abs(cmd.beta - 0.70), epsilon)
 
     def test_terminal_pose_lands_at_park_from_non_park_start_angle(self):
         mapper = StrokeMapper(Config())
@@ -261,7 +268,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         epsilon = 1e-6
         self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
-        self.assertLessEqual(abs(cmd.beta - (-0.70)), epsilon)
+        self.assertLessEqual(abs(cmd.beta - 0.70), epsilon)
 
 
 if __name__ == "__main__":

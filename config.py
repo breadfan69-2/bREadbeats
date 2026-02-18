@@ -122,6 +122,7 @@ class StrokeConfig:
 
     # Silence detection thresholds (fade-out when truly silent)
     silence_threshold: float = 0.04      # Overall amplitude threshold for silence deadzone gate
+    silence_close_threshold: float = 0.048  # Overall amplitude threshold to exit silence deadzone gate
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup

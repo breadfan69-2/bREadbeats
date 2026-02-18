@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QCheckBox,
     QSpinBox, QDoubleSpinBox, QLineEdit, QTabWidget, QFrame,
     QGridLayout, QMenuBar, QMenu, QMessageBox, QFileDialog,
-    QSplashScreen, QScrollArea, QSplitter, QInputDialog
+    QSplashScreen, QScrollArea, QSplitter, QInputDialog, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QPixmap
@@ -1287,11 +1287,17 @@ class SliderWithLabel(QWidget):
         self.decimals = decimals
         self.multiplier = 10 ** decimals
         
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
         
         self.label = QLabel(name)
-        self.label.setFixedWidth(120)
+        self.label.setWordWrap(True)
+        self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.label.setStyleSheet("color: #aaa;")
         
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -1305,12 +1311,14 @@ class SliderWithLabel(QWidget):
         self.slider.valueChanged.connect(self._on_change)
         
         self.value_label = QLabel(f"{default:.{decimals}f}")
-        self.value_label.setFixedWidth(50)
+        self.value_label.setFixedWidth(64)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.value_label.setStyleSheet("color: #0af;")
         
-        layout.addWidget(self.label)
+        header.addWidget(self.label)
+        header.addWidget(self.value_label)
+        layout.addLayout(header)
         layout.addWidget(self.slider)
-        layout.addWidget(self.value_label)
         
     def _on_change(self, value: int):
         real_value = value / self.multiplier
@@ -3313,7 +3321,6 @@ class BREadbeatsWindow(QMainWindow):
         self._advanced_controls_dialog = None
         self._advanced_flux_threshold_slider = None
         self._advanced_flux_scaling_slider = None
-        self._advanced_phase_advance_slider = None
         self._advanced_controls_scroll = None
         self._advanced_flux_group = None
         self._tempo_tracking_dialog = None
@@ -3457,7 +3464,6 @@ class BREadbeatsWindow(QMainWindow):
         self._advanced_controls_dialog = None
         self._advanced_flux_threshold_slider = None
         self._advanced_flux_scaling_slider = None
-        self._advanced_phase_advance_slider = None
         self._tempo_tracking_dialog = None
         self._auto_fill_controls_dialog = None
         self._auto_fill_controls_widgets = {}
@@ -4191,7 +4197,7 @@ class BREadbeatsWindow(QMainWindow):
         dialog.activateWindow()
 
     def _on_options_geometry_rest_state(self):
-        """Show Geometry Rest State controls (below-center sink behavior)."""
+        """Show Geometry Rest State controls."""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel
 
         dialog = getattr(self, '_geometry_rest_dialog', None)
@@ -4224,8 +4230,8 @@ class BREadbeatsWindow(QMainWindow):
         layout.setSpacing(10)
 
         info = QLabel(
-            "Tune below-center rest behavior when intensity drops.\n"
-            "Lower sink start = sink later; higher y-offset = deeper rest point."
+            "Tune rest parking geometry behavior.\n"
+            "Higher y-offset = deeper rest point."
         )
         info.setStyleSheet("color: #bbb; font-size: 11px;")
         layout.addWidget(info)
@@ -4238,24 +4244,13 @@ class BREadbeatsWindow(QMainWindow):
             2,
         )
 
-        sink_start_slider = SliderWithLabel(
-            "Sink Start Intensity",
-            0.01,
-            1.00,
-            float(getattr(self.config.stroke, 'geometry_sink_start_intensity', 0.25) or 0.25),
-            2,
-        )
-
         def _apply_geometry_rest_from_sliders() -> None:
             self.config.stroke.geometry_y_offset = float(y_offset_slider.value())
-            self.config.stroke.geometry_sink_start_intensity = float(sink_start_slider.value())
             self._apply_geometry_rest_to_mapper()
 
         y_offset_slider.valueChanged.connect(lambda _v: _apply_geometry_rest_from_sliders())
-        sink_start_slider.valueChanged.connect(lambda _v: _apply_geometry_rest_from_sliders())
 
         layout.addWidget(y_offset_slider)
-        layout.addWidget(sink_start_slider)
 
         dialog.finished.connect(lambda _r: save_config(self.config))
 
@@ -4268,12 +4263,8 @@ class BREadbeatsWindow(QMainWindow):
         if not self.stroke_mapper:
             return
         y_offset = float(getattr(self.config.stroke, 'geometry_y_offset', 0.50) or 0.50)
-        sink_start = float(getattr(self.config.stroke, 'geometry_sink_start_intensity', 0.25) or 0.25)
         if hasattr(self.stroke_mapper, 'configure_geometry_rest_state'):
-            self.stroke_mapper.configure_geometry_rest_state(
-                y_offset=y_offset,
-                sink_start_intensity=sink_start,
-            )
+            self.stroke_mapper.configure_geometry_rest_state(y_offset=y_offset)
 
     def _on_options_auto_fill_adaptation(self):
         """Show Developer Controls popout for adaptive amp-fill gate tuning."""
@@ -4656,7 +4647,6 @@ class BREadbeatsWindow(QMainWindow):
                 self._advanced_flux_group = None
                 self._advanced_flux_threshold_slider = None
                 self._advanced_flux_scaling_slider = None
-                self._advanced_phase_advance_slider = None
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Trigger Settings")
@@ -4673,7 +4663,6 @@ class BREadbeatsWindow(QMainWindow):
             self._advanced_flux_group = None
             self._advanced_flux_threshold_slider = None
             self._advanced_flux_scaling_slider = None
-            self._advanced_phase_advance_slider = None
 
         dialog.destroyed.connect(_on_advanced_dialog_destroyed)
         self._advanced_controls_dialog = dialog
@@ -4706,6 +4695,7 @@ class BREadbeatsWindow(QMainWindow):
         units_label = QLabel(
             "Most Trigger Settings sliders use normalized units (0.0–1.0).\n"
             "• Amp (norm): 0 = no energy, 1 = near current peak envelope in active band.\n"
+            "• RMS-labeled controls use the same raw_rms units shown in console [Audio] logs.\n"
             "• Fill/Occupancy (norm): fraction of active FFT bins that pass threshold in selected bin range.\n"
             "• Mean/Δ/Var thresholds: unitless activity metrics over recent windows (not dB/Hz).\n"
             "• dB, Hz, BPM, ms, and % controls are absolute units.\n"
@@ -4724,6 +4714,60 @@ class BREadbeatsWindow(QMainWindow):
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(10)
+
+        # ===== Silence Gate Controls (Top Priority) =====
+        silence_group = QGroupBox("Silence Gate (RMS)")
+        silence_layout = QVBoxLayout(silence_group)
+
+        silence_info = QLabel(
+            "These thresholds control the silence deadzone hysteresis using RMS amplitude units.\n"
+            "Open = enter silence (park), Close = exit silence (resume motion)."
+        )
+        silence_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        silence_layout.addWidget(silence_info)
+
+        silence_open_slider = SliderWithLabel(
+            "Silence gate open (RMS)",
+            0.001,
+            0.250,
+            float(getattr(self.config.stroke, 'silence_threshold', 0.04) or 0.04),
+            3,
+        )
+
+        silence_close_slider = SliderWithLabel(
+            "Silence gate close (RMS)",
+            0.001,
+            0.300,
+            float(getattr(self.config.stroke, 'silence_close_threshold', 0.048) or 0.048),
+            3,
+        )
+
+        def _set_silence_open(v: float) -> None:
+            open_v = float(v)
+            setattr(self.config.stroke, 'silence_threshold', open_v)
+            close_v = float(getattr(self.config.stroke, 'silence_close_threshold', 0.048) or 0.048)
+            if close_v <= open_v:
+                close_v = open_v + 0.001
+                setattr(self.config.stroke, 'silence_close_threshold', close_v)
+                silence_close_slider.blockSignals(True)
+                silence_close_slider.setValue(close_v)
+                silence_close_slider.blockSignals(False)
+
+        def _set_silence_close(v: float) -> None:
+            close_v = float(v)
+            open_v = float(getattr(self.config.stroke, 'silence_threshold', 0.04) or 0.04)
+            if close_v <= open_v:
+                close_v = open_v + 0.001
+                silence_close_slider.blockSignals(True)
+                silence_close_slider.setValue(close_v)
+                silence_close_slider.blockSignals(False)
+            setattr(self.config.stroke, 'silence_close_threshold', close_v)
+
+        silence_open_slider.valueChanged.connect(_set_silence_open)
+        silence_close_slider.valueChanged.connect(_set_silence_close)
+        silence_layout.addWidget(silence_open_slider)
+        silence_layout.addWidget(silence_close_slider)
+        scroll_layout.addWidget(silence_group)
         
         # ===== Syncopation Controls =====
         syncope_group = QGroupBox("Syncopation / Double-Stroke")
@@ -4781,45 +4825,23 @@ class BREadbeatsWindow(QMainWindow):
         )
         syncope_layout.addWidget(syncope_bpm_slider)
 
-        # Arc size: fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
-        syncope_arc_slider = SliderWithLabel(
-            "Syncopation arc size (circle fraction)",
-            0.10,
-            1.0,
-            float(getattr(self.config.beat, 'syncopation_arc_size', 0.30)),
-            2,
-        )
-        syncope_arc_slider.valueChanged.connect(
-            lambda v: setattr(self.config.beat, 'syncopation_arc_size', v)
-        )
-        syncope_layout.addWidget(syncope_arc_slider)
-
-        # Speed: duration as fraction of beat interval (0.25=quarter beat, 0.5=half, 1.0=full)
-        syncope_speed_slider = SliderWithLabel(
-            "Syncopation speed (beat fraction)",
-            0.10,
-            1.0,
-            float(getattr(self.config.beat, 'syncopation_speed', 0.20)),
-            2,
-        )
-        syncope_speed_slider.valueChanged.connect(
-            lambda v: setattr(self.config.beat, 'syncopation_speed', v)
-        )
-        syncope_layout.addWidget(syncope_speed_slider)
-
         scroll_layout.addWidget(syncope_group)
 
         # ===== Amplitude Gate Controls =====
         gate_group = QGroupBox("Amplitude Gate (Stroke vs Creep)")
         gate_layout = QVBoxLayout(gate_group)
 
-        gate_info = QLabel("Controls when full strokes activate vs quiet creep mode.\nOverall amp target/tolerance define the full-spectrum amplitude zone used by the amp+fill gate (target ± tolerance).")
+        gate_info = QLabel(
+            "Controls when full strokes activate vs quiet creep mode.\n"
+            "RMS values use the same raw RMS scale printed in console [Audio] logs.\n"
+            "Overall amp target/tolerance define the full-spectrum amplitude zone used by the amp+fill gate (target ± tolerance)."
+        )
         gate_info.setStyleSheet("color: #aaa; font-size: 11px;")
         gate_layout.addWidget(gate_info)
 
         # Gate high slider (threshold to enter FULL_STROKE)
         gate_high_slider = SliderWithLabel(
-            "Full stroke threshold (enter)",
+            "Full stroke threshold (enter RMS)",
             0.01,
             1.00,
             float(getattr(self.config.stroke, 'amplitude_gate_high', 0.055) or 0.055),
@@ -4885,7 +4907,7 @@ class BREadbeatsWindow(QMainWindow):
 
         # Gate low slider (threshold to drop to CREEP_MICRO)
         gate_low_slider = SliderWithLabel(
-            "Creep threshold (exit)",
+            "Creep threshold (exit RMS)",
             0.005,
             1.00,
             float(getattr(self.config.stroke, 'amplitude_gate_low', 0.035) or 0.035),
@@ -4895,24 +4917,6 @@ class BREadbeatsWindow(QMainWindow):
             lambda v: (setattr(self.config.stroke, 'amplitude_gate_low', v), _show_waveform_amp_ref('creep_exit', float(v), 'Creep exit', '#FF8866', dashed=True))
         )
         gate_layout.addWidget(gate_low_slider)
-
-        dwell_bias_row = QHBoxLayout()
-        dwell_bias_label = QLabel("Full-stroke dwell bias (±RMS):")
-        dwell_bias_label.setStyleSheet("color: #ccc;")
-        dwell_bias_row.addWidget(dwell_bias_label)
-        dwell_bias_spin = QDoubleSpinBox()
-        dwell_bias_spin.setDecimals(3)
-        dwell_bias_spin.setRange(-0.050, 0.050)
-        dwell_bias_spin.setSingleStep(0.001)
-        dwell_bias_spin.setValue(float(getattr(self.config.stroke, 'full_stroke_dwell_bias', 0.0) or 0.0))
-        dwell_bias_spin.setSuffix(" RMS")
-        dwell_bias_spin.setToolTip("0 disables bias. + keeps FULL_STROKE longer, - drops to CREEP_MICRO sooner")
-        dwell_bias_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'full_stroke_dwell_bias', float(v))
-        )
-        dwell_bias_row.addWidget(dwell_bias_spin)
-        dwell_bias_row.addStretch()
-        gate_layout.addLayout(dwell_bias_row)
 
         bass_gate_cb = QCheckBox("Require bass z-score bands for beat/sync stroke motion")
         bass_gate_cb.setChecked(getattr(self.config.beat, 'strict_bass_motion_gate_enabled', False))
@@ -4950,14 +4954,6 @@ class BREadbeatsWindow(QMainWindow):
             lambda state: setattr(self.config.stroke, 'overall_amp_fill_gate_enabled', state == 2)
         )
         gate_layout.addWidget(amp_fill_gate_cb)
-
-        new_gate_priority_cb = QCheckBox("New Gate Priority (bypass legacy overall low-activity guard)")
-        new_gate_priority_cb.setChecked(bool(getattr(self.config.stroke, 'new_gate_priority_enabled', True)))
-        new_gate_priority_cb.setToolTip("When enabled with overall amp+fill gate, legacy overall low flux/energy block is skipped")
-        new_gate_priority_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'new_gate_priority_enabled', state == 2)
-        )
-        gate_layout.addWidget(new_gate_priority_cb)
 
         amp_fill_target_slider = SliderWithLabel(
             "Overall amp target (norm)",
@@ -5293,202 +5289,8 @@ class BREadbeatsWindow(QMainWindow):
 
         scroll_layout.addWidget(gate_group)
 
-        # ===== Noise Burst Controls (Hybrid System) =====
-        burst_group = QGroupBox("Noise Burst (Transient Reaction)")
-        burst_layout = QVBoxLayout(burst_group)
-
-        burst_info = QLabel("React immediately to sudden loud sounds between beats.\nCombines noise-driven speed with metronome-timed arcs.")
-        burst_info.setStyleSheet("color: #aaa; font-size: 11px;")
-        burst_layout.addWidget(burst_info)
-
-        # On/Off checkbox
-        burst_enabled_cb = QCheckBox("Enable noise burst arcs")
-        burst_enabled_cb.setChecked(bool(getattr(self.config.stroke, 'noise_burst_enabled', False)))
-        burst_enabled_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'noise_burst_enabled', state == 2)
-        )
-        burst_layout.addWidget(burst_enabled_cb)
-
-        # Flux multiplier slider
-        burst_flux_slider = SliderWithLabel(
-            "Burst sensitivity (flux multiplier)",
-            0.05,
-            10.0,
-            float(getattr(self.config.stroke, 'noise_burst_flux_multiplier', 2.0) or 2.0),
-            2,
-        )
-        burst_flux_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'noise_burst_flux_multiplier', v)
-        )
-        burst_layout.addWidget(burst_flux_slider)
-
-        # Magnitude slider — scale the size of noise burst patterns
-        burst_mag_slider = SliderWithLabel(
-            "Burst magnitude (pattern size)",
-            0.05,
-            10.0,
-            float(getattr(self.config.stroke, 'noise_burst_magnitude', 1.0) or 1.0),
-            2,
-        )
-        burst_mag_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'noise_burst_magnitude', v)
-        )
-        burst_layout.addWidget(burst_mag_slider)
-
-        burst_scale_row = QHBoxLayout()
-        burst_scale_label = QLabel("Burst final scale:")
-        burst_scale_label.setStyleSheet("color: #ccc;")
-        burst_scale_label.setToolTip("Final downscale applied to burst displacement after magnitude/energy")
-        burst_scale_row.addWidget(burst_scale_label)
-        burst_scale_spin = QDoubleSpinBox()
-        burst_scale_spin.setRange(0.0, 0.5)
-        burst_scale_spin.setSingleStep(0.01)
-        burst_scale_spin.setDecimals(2)
-        burst_scale_spin.setValue(float(getattr(self.config.stroke, 'noise_burst_scale', 0.35) or 0.35))
-        burst_scale_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'noise_burst_scale', float(v))
-        )
-        burst_scale_row.addWidget(burst_scale_spin)
-        burst_scale_row.addStretch()
-        burst_layout.addLayout(burst_scale_row)
-
-        downbeat_jitter_row = QHBoxLayout()
-        downbeat_jitter_label = QLabel("Downbeat jitter blend (%):")
-        downbeat_jitter_label.setStyleSheet("color: #ccc;")
-        downbeat_jitter_label.setToolTip("Adds this percent of the current jitter vector to downbeat strokes")
-        downbeat_jitter_row.addWidget(downbeat_jitter_label)
-        downbeat_jitter_spin = QSpinBox()
-        downbeat_jitter_spin.setRange(0, 100)
-        downbeat_jitter_spin.setSingleStep(1)
-        downbeat_jitter_spin.setValue(int(round(float(getattr(self.config.stroke, 'downbeat_jitter_vector_percent', 50.0) or 50.0))))
-        downbeat_jitter_spin.setSuffix(" %")
-        downbeat_jitter_spin.setToolTip("0% = no jitter on downbeats, 100% = full current jitter vector")
-        downbeat_jitter_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'downbeat_jitter_vector_percent', float(v))
-        )
-        downbeat_jitter_row.addWidget(downbeat_jitter_spin)
-        downbeat_jitter_row.addStretch()
-        burst_layout.addLayout(downbeat_jitter_row)
-
-        bass_jitter_speed_row = QHBoxLayout()
-        bass_jitter_speed_label = QLabel("Bass→jitter speed influence (%):")
-        bass_jitter_speed_label.setStyleSheet("color: #ccc;")
-        bass_jitter_speed_label.setToolTip("Depth of bass-frequency impact on jitter speed (100% = current behavior)")
-        bass_jitter_speed_row.addWidget(bass_jitter_speed_label)
-        bass_jitter_speed_spin = QSpinBox()
-        bass_jitter_speed_spin.setRange(0, 200)
-        bass_jitter_speed_spin.setSingleStep(5)
-        bass_jitter_speed_spin.setValue(int(round(float(getattr(self.config.stroke, 'bass_jitter_speed_influence_percent', 100.0) or 100.0))))
-        bass_jitter_speed_spin.setSuffix(" %")
-        bass_jitter_speed_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'bass_jitter_speed_influence_percent', float(v))
-        )
-        bass_jitter_speed_row.addWidget(bass_jitter_speed_spin)
-        bass_jitter_speed_row.addStretch()
-        burst_layout.addLayout(bass_jitter_speed_row)
-
-        bass_jitter_size_row = QHBoxLayout()
-        bass_jitter_size_label = QLabel("Bass→jitter size influence (%):")
-        bass_jitter_size_label.setStyleSheet("color: #ccc;")
-        bass_jitter_size_label.setToolTip("Depth of bass-frequency impact on jitter size (0% off, 100% matches speed depth)")
-        bass_jitter_size_row.addWidget(bass_jitter_size_label)
-        bass_jitter_size_spin = QSpinBox()
-        bass_jitter_size_spin.setRange(0, 200)
-        bass_jitter_size_spin.setSingleStep(5)
-        bass_jitter_size_spin.setValue(int(round(float(getattr(self.config.stroke, 'bass_jitter_size_influence_percent', 0.0) or 0.0))))
-        bass_jitter_size_spin.setSuffix(" %")
-        bass_jitter_size_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'bass_jitter_size_influence_percent', float(v))
-        )
-        bass_jitter_size_row.addWidget(bass_jitter_size_spin)
-        bass_jitter_size_row.addStretch()
-        burst_layout.addLayout(bass_jitter_size_row)
-
-        scroll_layout.addWidget(burst_group)
-
-        # ===== Beats Between Strokes =====
-        bbs_group = QGroupBox("Stroke Timing")
-        bbs_layout = QVBoxLayout(bbs_group)
-
-        bbs_info = QLabel(
-            "Auto cadence by BPM: 1 stroke/beat only below 90 BPM, then 2/4/8 beats per stroke by cutoffs.\n"
-            "Teardrop mode runs 2x slower than other modes. Downbeats always fire."
-        )
-        bbs_info.setStyleSheet("color: #aaa; font-size: 11px;")
-        bbs_layout.addWidget(bbs_info)
-
-        bbs_row = QHBoxLayout()
-        bbs_label = QLabel("Fallback beats/stroke (no BPM):")
-        bbs_label.setStyleSheet("color: #ccc;")
-        bbs_row.addWidget(bbs_label)
-        bbs_combo = QComboBox()
-        bbs_combo.addItems(["2", "4", "8"])
-        fallback_beats = int(getattr(self.config.stroke, 'beats_between_strokes', 2) or 2)
-        if fallback_beats not in (2, 4, 8):
-            fallback_beats = 2
-        bbs_combo.setCurrentText(str(fallback_beats))
-        bbs_combo.setToolTip("Used only when BPM is unavailable")
-        bbs_combo.currentTextChanged.connect(
-            lambda text: setattr(self.config.stroke, 'beats_between_strokes', int(text))
-        )
-        bbs_row.addWidget(bbs_combo)
-        bbs_layout.addLayout(bbs_row)
-
-        cutoff_2_to_4_row = QHBoxLayout()
-        cutoff_2_to_4_label = QLabel("Auto cutoff 2→4 beats (BPM):")
-        cutoff_2_to_4_label.setStyleSheet("color: #ccc;")
-        cutoff_2_to_4_row.addWidget(cutoff_2_to_4_label)
-        cutoff_2_to_4_spin = QSpinBox()
-        cutoff_2_to_4_spin.setRange(40, 220)
-        cutoff_2_to_4_spin.setSingleStep(1)
-        cutoff_2_to_4_spin.setValue(int(getattr(self.config.stroke, 'bpm_cutoff_2_to_4', 60)))
-        cutoff_2_to_4_spin.setSuffix(" BPM")
-        cutoff_2_to_4_spin.setToolTip("At/above this BPM, cadence moves from 2 to 4 beats per stroke")
-        cutoff_2_to_4_row.addWidget(cutoff_2_to_4_spin)
-        bbs_layout.addLayout(cutoff_2_to_4_row)
-
-        cutoff_4_to_8_row = QHBoxLayout()
-        cutoff_4_to_8_label = QLabel("Auto cutoff 4→8 beats (BPM):")
-        cutoff_4_to_8_label.setStyleSheet("color: #ccc;")
-        cutoff_4_to_8_row.addWidget(cutoff_4_to_8_label)
-        cutoff_4_to_8_spin = QSpinBox()
-        cutoff_4_to_8_spin.setRange(100, 260)
-        cutoff_4_to_8_spin.setSingleStep(1)
-        cutoff_4_to_8_spin.setValue(int(getattr(self.config.stroke, 'bpm_cutoff_4_to_8', 155)))
-        cutoff_4_to_8_spin.setSuffix(" BPM")
-        cutoff_4_to_8_spin.setToolTip("At/above this BPM, cadence moves from 4 to 8 beats per stroke")
-
-        def _on_cutoff_2_to_4_change(value: int):
-            self.config.stroke.bpm_cutoff_2_to_4 = float(value)
-            if cutoff_4_to_8_spin.value() <= value:
-                cutoff_4_to_8_spin.setValue(value + 1)
-
-        cutoff_2_to_4_spin.valueChanged.connect(_on_cutoff_2_to_4_change)
-
-        def _on_cutoff_4_to_8_change(value: int):
-            low = float(getattr(self.config.stroke, 'bpm_cutoff_2_to_4', 60.0) or 60.0)
-            self.config.stroke.bpm_cutoff_4_to_8 = float(max(value, int(low) + 1))
-
-        cutoff_4_to_8_spin.valueChanged.connect(_on_cutoff_4_to_8_change)
-        cutoff_4_to_8_row.addWidget(cutoff_4_to_8_spin)
-        bbs_layout.addLayout(cutoff_4_to_8_row)
-
-        cadence_bias_row = QHBoxLayout()
-        cadence_bias_label = QLabel("Cadence cutoff bias (±BPM):")
-        cadence_bias_label.setStyleSheet("color: #ccc;")
-        cadence_bias_row.addWidget(cadence_bias_label)
-        cadence_bias_spin = QSpinBox()
-        cadence_bias_spin.setRange(-120, 120)
-        cadence_bias_spin.setSingleStep(1)
-        cadence_bias_spin.setValue(int(round(float(getattr(self.config.stroke, 'cadence_cutoff_bias_bpm', 0.0) or 0.0))))
-        cadence_bias_spin.setSuffix(" BPM")
-        cadence_bias_spin.setToolTip("0 disables bias. + delays 2→4/4→8 shifts, - makes thinning more aggressive")
-        cadence_bias_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'cadence_cutoff_bias_bpm', float(v))
-        )
-        cadence_bias_row.addWidget(cadence_bias_spin)
-        cadence_bias_row.addStretch()
-        bbs_layout.addLayout(cadence_bias_row)
+        scheduling_group = QGroupBox("Beat Scheduling")
+        scheduling_layout = QVBoxLayout(scheduling_group)
 
         lead_row = QHBoxLayout()
         lead_label = QLabel("Scheduled lead (ms):")
@@ -5504,28 +5306,9 @@ class BREadbeatsWindow(QMainWindow):
             lambda v: setattr(self.config.beat, 'scheduled_lead_ms', int(v))
         )
         lead_row.addWidget(lead_spin)
-        bbs_layout.addLayout(lead_row)
+        scheduling_layout.addLayout(lead_row)
 
-        scroll_layout.addWidget(bbs_group)
-
-        # ===== Noise-Primary Mode =====
-        noise_mode_group = QGroupBox("Noise vs Metronome Priority")
-        noise_mode_layout = QVBoxLayout(noise_mode_group)
-
-        noise_mode_info = QLabel("DEFAULT: metronome fires strokes, noise adds bursts.\n"
-                                 "REVERSED: noise fires strokes, metronome verifies timing.\n"
-                                 "Reversed mode reacts faster to transients.")
-        noise_mode_info.setStyleSheet("color: #aaa; font-size: 11px;")
-        noise_mode_layout.addWidget(noise_mode_info)
-
-        noise_primary_cb = QCheckBox("Noise-primary mode (reversed)")
-        noise_primary_cb.setChecked(bool(getattr(self.config.stroke, 'noise_primary_mode', False)))
-        noise_primary_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'noise_primary_mode', state == 2)
-        )
-        noise_mode_layout.addWidget(noise_primary_cb)
-
-        scroll_layout.addWidget(noise_mode_group)
+        scroll_layout.addWidget(scheduling_group)
 
         # ===== Post-Silence Volume Ramp =====
         silence_ramp_group = QGroupBox("Post-Silence Volume Ramp")
@@ -5621,19 +5404,6 @@ class BREadbeatsWindow(QMainWindow):
             lambda v: setattr(self.config.stroke, 'flux_scaling_weight', float(v))
         )
         flux_layout.addWidget(flux_scaling_slider)
-
-        phase_advance_slider = SliderWithLabel(
-            "Phase Advance (0=downbeats, 1=all)",
-            0.0,
-            1.0,
-            float(getattr(self.config.stroke, 'phase_advance', 0.25) or 0.25),
-            2,
-        )
-        self._advanced_phase_advance_slider = phase_advance_slider
-        phase_advance_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'phase_advance', float(v))
-        )
-        flux_layout.addWidget(phase_advance_slider)
 
         # Low-band drop ratio slider
         flux_drop_slider = SliderWithLabel(
@@ -6138,37 +5908,6 @@ class BREadbeatsWindow(QMainWindow):
         ))
         flux_layout.addWidget(high_downbeat_relax_slider)
 
-        overall_guard_cb = QCheckBox("Block beat/downbeat strokes when overall activity is low")
-        overall_guard_cb.setChecked(bool(getattr(self.config.stroke, 'overall_activity_guard_enabled', True)))
-        overall_guard_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'overall_activity_guard_enabled', state == 2)
-        )
-        flux_layout.addWidget(overall_guard_cb)
-
-        overall_flux_slider = SliderWithLabel(
-            "Overall low flux threshold (norm)",
-            0.001,
-            0.50,
-            float(getattr(self.config.stroke, 'overall_low_flux_threshold', 0.06) or 0.06),
-            3,
-            step=0.005,
-        )
-        overall_flux_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_flux_threshold', 'overall_low_flux', 'Overall flux', '#FFD166', ghost_band='full'))
-        _style_ref_slider(overall_flux_slider, '#FFD166', 'Overall flux')
-        flux_layout.addWidget(overall_flux_slider)
-
-        overall_energy_slider = SliderWithLabel(
-            "Overall low energy threshold (norm)",
-            0.001,
-            1.00,
-            float(getattr(self.config.stroke, 'overall_low_energy_threshold', 0.14) or 0.14),
-            3,
-            step=0.005,
-        )
-        overall_energy_slider.valueChanged.connect(_set_stroke_attr_with_ref('overall_low_energy_threshold', 'overall_low_energy', 'Overall energy', '#FFC06A', ghost_band='full'))
-        _style_ref_slider(overall_energy_slider, '#FFC06A', 'Overall energy')
-        flux_layout.addWidget(overall_energy_slider)
-
         center_guard_cb = QCheckBox("Block center+jitter reset while flux activity is high")
         center_guard_cb.setChecked(bool(getattr(self.config.beat, 'center_jitter_flux_guard_enabled', False)))
         center_guard_cb.stateChanged.connect(
@@ -6280,34 +6019,13 @@ class BREadbeatsWindow(QMainWindow):
         g2_layout = QVBoxLayout(group2)
         g2_layout.setSpacing(4)
         
-        # Stroke min/max reset
         stroke_box = QGroupBox()
         stroke_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
         sb_layout = QVBoxLayout(stroke_box)
         sb_layout.setSpacing(2)
-        sb_layout.addWidget(QLabel("[Stroke Settings] Check stroke min/max:"))
-        stroke_reset_btn = QPushButton("Reset to 0-100%")
-        stroke_reset_btn.clicked.connect(lambda: (
-            self.stroke_range_slider.setLow(0.0),
-            self.stroke_range_slider.setHigh(1.0),
-            self._on_stroke_range_change(0.0, 1.0)
-        ))
-        sb_layout.addWidget(stroke_reset_btn)
+        sb_layout.addWidget(QLabel("Stroke Settings tab has been removed in orbital mode."))
+        sb_layout.addWidget(QLabel("Use Main Controls + Advanced Controls for motion tuning."))
         g2_layout.addWidget(stroke_box)
-        
-        # Fullness reset
-        full_box = QGroupBox()
-        full_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
-        fb_layout = QVBoxLayout(full_box)
-        fb_layout.setSpacing(2)
-        fb_layout.addWidget(QLabel("[Stroke Settings] Check stroke fullness:"))
-        fullness_reset_btn = QPushButton("Reset to 100%")
-        fullness_reset_btn.clicked.connect(lambda: (
-            self.fullness_slider.setValue(1.0),
-            setattr(self.config.stroke, 'stroke_fullness', 1.0)
-        ))
-        fb_layout.addWidget(fullness_reset_btn)
-        g2_layout.addWidget(full_box)
         
         # Peak floor reset
         floor_box = QGroupBox()
@@ -6796,13 +6514,9 @@ Like the app?<br>
                 self.combo_reaction_spin,
                 self.tempo_lock_required_cb,
                 self.fill_gate_scale_spin,
-                self.stroke_range_slider,
-                self.fullness_slider,
                 self.jitter_enabled,
                 self.jitter_amplitude_slider,
                 self.jitter_intensity_slider,
-                self.creep_enabled,
-                self.creep_speed_slider,
                 self.alpha_weight_slider,
                 self.beta_weight_slider,
                 self.host_edit,
@@ -6837,10 +6551,7 @@ Like the app?<br>
                 self.tempo_timeout_slider.setValue(self.config.beat.tempo_timeout_ms)
                 self.phase_snap_slider.setValue(self.config.beat.phase_snap_weight)
                 self.mode_combo.setCurrentIndex(0)
-                self.stroke_range_slider.setLow(self.config.stroke.stroke_min)
-                self.stroke_range_slider.setHigh(self.config.stroke.stroke_max)
                 self.config.stroke.min_interval_ms = 150
-                self.fullness_slider.setValue(self.config.stroke.stroke_fullness)
                 self.config.stroke.minimum_depth = 0.0
                 self.combo_power_spin.setValue(float(getattr(self.config.stroke, 'combo_power', 1.0)))
                 self.combo_depth_spin.setValue(float(getattr(self.config.stroke, 'combo_depth', 1.0)))
@@ -6859,9 +6570,6 @@ Like the app?<br>
                 advanced_flux_scaling_slider = getattr(self, '_advanced_flux_scaling_slider', None)
                 if advanced_flux_scaling_slider is not None:
                     advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
-                advanced_phase_advance_slider = getattr(self, '_advanced_phase_advance_slider', None)
-                if advanced_phase_advance_slider is not None:
-                    advanced_phase_advance_slider.setValue(self.config.stroke.phase_advance)
                 auto_fill_widgets = getattr(self, '_auto_fill_controls_widgets', {}) or {}
                 auto_fill_enabled = auto_fill_widgets.get('enabled')
                 if auto_fill_enabled is not None:
@@ -6894,8 +6602,6 @@ Like the app?<br>
                 self.config.jitter.intensity = max(8.0, min(10.0, float(self.config.jitter.intensity)))
                 self.jitter_amplitude_slider.setValue(self.config.jitter.amplitude)
                 self.jitter_intensity_slider.setValue(self.config.jitter.intensity)
-                self.creep_enabled.setChecked(self.config.creep.enabled)
-                self.creep_speed_slider.setValue(self.config.creep.speed)
 
                 # Axis weights tab
                 self.alpha_weight_slider.setValue(self.config.alpha_weight)
@@ -7728,7 +7434,6 @@ Like the app?<br>
         """Settings tabs with all the sliders"""
         tabs = QTabWidget()
         tabs.addTab(self._create_beat_detection_tab(), "Beat Detection")
-        tabs.addTab(self._create_stroke_settings_tab(), "Stroke Settings")
         tabs.addTab(self._create_jitter_creep_tab(), "Effects / Axis")
         self._tempo_tracking_popout_content = self._create_tempo_tracking_tab(include_advanced_controls=True, advanced_locked=True)
         tabs.addTab(self._create_tcode_freq_tab(), "Pulse")
@@ -7934,10 +7639,7 @@ Like the app?<br>
 
             # Stroke Settings Tab
             'stroke_mode': 0,
-            'stroke_min': self.stroke_range_slider.low(),
-            'stroke_max': self.stroke_range_slider.high(),
             'min_interval_ms': 150,
-            'stroke_fullness': self.fullness_slider.value(),
             'minimum_depth': 0.0,
             'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
             'combo_size': float(getattr(self.config.stroke, 'combo_size', 1.0)),
@@ -7949,15 +7651,13 @@ Like the app?<br>
             'overall_amp_fill_required_scale': float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0),
             'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
             'flux_scaling_weight': float(getattr(self.config.stroke, 'flux_scaling_weight', 1.0) or 1.0),
-            'phase_advance': float(getattr(self.config.stroke, 'phase_advance', 0.25) or 0.25),
 
             # Jitter / Creep Tab
             'jitter_enabled': self.jitter_enabled.isChecked(),
             'jitter_amplitude': self.jitter_amplitude_slider.value(),
             'jitter_intensity': self.jitter_intensity_slider.value(),
-            'creep_enabled': self.creep_enabled.isChecked(),
-            'creep_speed': self.creep_speed_slider.value(),
-            'thump_enabled': self.config.stroke.thump_enabled,
+            'creep_enabled': bool(getattr(self.config.creep, 'enabled', True)),
+            'creep_speed': float(getattr(self.config.creep, 'speed', 0.02)),
 
             # Axis Weights Tab
             'alpha_weight': self.alpha_weight_slider.value(),
@@ -8060,10 +7760,7 @@ Like the app?<br>
         # Stroke Settings Tab
         self.mode_combo.setCurrentIndex(0)
         self._on_mode_change(0)
-        self.stroke_range_slider.setLow(preset_data['stroke_min'])
-        self.stroke_range_slider.setHigh(preset_data['stroke_max'])
         self.config.stroke.min_interval_ms = 150
-        self.fullness_slider.setValue(preset_data['stroke_fullness'])
         self.config.stroke.minimum_depth = 0.0
         if 'overall_amp_fill_required_scale' in preset_data:
             self.fill_gate_scale_spin.setValue(
@@ -8077,19 +7774,13 @@ Like the app?<br>
         advanced_flux_scaling_slider = getattr(self, '_advanced_flux_scaling_slider', None)
         if advanced_flux_scaling_slider is not None:
             advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
-        self.config.stroke.phase_advance = float(preset_data['phase_advance'])
-        advanced_phase_advance_slider = getattr(self, '_advanced_phase_advance_slider', None)
-        if advanced_phase_advance_slider is not None:
-            advanced_phase_advance_slider.setValue(self.config.stroke.phase_advance)
         
         # Jitter / Creep Tab
         self.jitter_enabled.setChecked(preset_data['jitter_enabled'])
         self.jitter_amplitude_slider.setValue(preset_data['jitter_amplitude'])
         self.jitter_intensity_slider.setValue(preset_data['jitter_intensity'])
-        self.creep_enabled.setChecked(preset_data['creep_enabled'])
-        self.creep_speed_slider.setValue(preset_data['creep_speed'])
-        if 'thump_enabled' in preset_data:
-            self.config.stroke.thump_enabled = preset_data['thump_enabled']
+        self.config.creep.enabled = bool(preset_data.get('creep_enabled', getattr(self.config.creep, 'enabled', True)))
+        self.config.creep.speed = float(preset_data.get('creep_speed', getattr(self.config.creep, 'speed', 0.02)))
         
         # Axis Weights Tab
         self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
@@ -9190,39 +8881,8 @@ Like the app?<br>
         if hasattr(self, 'revert_btn'):
             self.revert_btn.setEnabled(False)
     
-    def _create_stroke_settings_tab(self) -> QWidget:
-        """Stroke generation settings"""
-        scroll_area = NoWheelScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_area.setStyleSheet(self._get_thin_scrollbar_style())
-
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
-        stroke_group = CollapsibleGroupBox("stroke paramaters", collapsed=True)
-        stroke_layout = QVBoxLayout(stroke_group)
-
-        self.config.stroke.min_interval_ms = 150
-        self.config.stroke.minimum_depth = 0.0
-        
-        self.stroke_range_slider = RangeSliderWithLabel("Stroke Min/Max", 0.0, 1.0, 0.2, 1.0, 2)
-        self.stroke_range_slider.rangeChanged.connect(self._on_stroke_range_change)
-        stroke_layout.addWidget(self.stroke_range_slider)
-        
-        self.fullness_slider = SliderWithLabel("Stroke Fullness", 0.0, 1.0, 0.7)
-        self.fullness_slider.valueChanged.connect(lambda v: setattr(self.config.stroke, 'stroke_fullness', v))
-        stroke_layout.addWidget(self.fullness_slider)
-
-        layout.addWidget(stroke_group)
-
-        layout.addStretch()
-        scroll_area.setWidget(widget)
-        return scroll_area
-
     def _create_jitter_creep_tab(self) -> QWidget:
-        """Effects (jitter + creep) and axis weight settings"""
+        """Effects (jitter) and axis weight settings"""
         scroll_area = NoWheelScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -9252,15 +8912,6 @@ Like the app?<br>
         self.jitter_intensity_slider = SliderWithLabel("Circle Speed", 8.0, 10.0, jitter_speed_default)
         self.jitter_intensity_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'intensity', v))
         effects_layout.addWidget(self.jitter_intensity_slider)
-
-        self.creep_enabled = QCheckBox("Creep")
-        self.creep_enabled.setChecked(True)
-        self.creep_enabled.stateChanged.connect(lambda s: setattr(self.config.creep, 'enabled', s == 2))
-        effects_layout.addWidget(self.creep_enabled)
-
-        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 2.0, 0.02, 3)
-        self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
-        effects_layout.addWidget(self.creep_speed_slider)
 
         layout.addWidget(effects_group)
 
