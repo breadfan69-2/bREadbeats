@@ -1,5 +1,5 @@
 """
-Phase 1 checkpoint tests — rolling deques, FluxTracker, beat hierarchy guards,
+Phase 1 checkpoint tests — rolling deques, FluxTracker, beat-family admission,
 no-beat timeout, mid-trigger block, activity helpers.
 """
 
@@ -35,6 +35,10 @@ class Phase1Mixin:
         )
         payload.update(overrides)
         return BeatEvent(**payload)
+
+    def _drain_journey(self, bi: BeatIntelligence, frames: int = 140) -> None:
+        for _ in range(frames):
+            bi.build_decision(self._event(), dt=1 / 60, silence_override=False)
 
 
 # ── §1 Rolling history deques ──────────────────────────────────────────────
@@ -106,7 +110,7 @@ class TestFluxTracker(Phase1Mixin, unittest.TestCase):
         self.assertLess(bi._flux_stroke_factor, 1.0)
 
 
-# ── §3 Beat hierarchy guards ───────────────────────────────────────────────
+# ── §3 Beat-family admission ───────────────────────────────────────────────
 
 
 class TestBeatHierarchyGuards(Phase1Mixin, unittest.TestCase):
@@ -116,7 +120,7 @@ class TestBeatHierarchyGuards(Phase1Mixin, unittest.TestCase):
         bi = BeatIntelligence(cfg)
 
         decision = bi.build_decision(self._event(is_beat=True), dt=1 / 60, silence_override=False)
-        self.assertEqual(decision.trigger_kind, "creep")
+        self.assertEqual(decision.trigger_kind, "beat")
 
     def test_beat_after_downbeat_fires(self):
         cfg = Config()
@@ -124,6 +128,7 @@ class TestBeatHierarchyGuards(Phase1Mixin, unittest.TestCase):
         bi = BeatIntelligence(cfg)
 
         bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+        self._drain_journey(bi)
         decision = bi.build_decision(self._event(is_beat=True), dt=1 / 60, silence_override=False)
         self.assertEqual(decision.trigger_kind, "beat")
 
@@ -135,7 +140,7 @@ class TestBeatHierarchyGuards(Phase1Mixin, unittest.TestCase):
         decision = bi.build_decision(
             self._event(is_syncopated=True), dt=1 / 60, silence_override=False
         )
-        self.assertEqual(decision.trigger_kind, "creep")
+        self.assertEqual(decision.trigger_kind, "syncopation")
 
     def test_syncopation_after_downbeat_and_beat_fires(self):
         cfg = Config()
@@ -143,7 +148,9 @@ class TestBeatHierarchyGuards(Phase1Mixin, unittest.TestCase):
         bi = BeatIntelligence(cfg)
 
         bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+        self._drain_journey(bi)
         bi.build_decision(self._event(is_beat=True), dt=1 / 60, silence_override=False)
+        self._drain_journey(bi)
         decision = bi.build_decision(
             self._event(is_syncopated=True), dt=1 / 60, silence_override=False
         )
@@ -231,8 +238,9 @@ class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
         cfg.stroke.block_mid_trigger_range_enabled = True
         bi = BeatIntelligence(cfg)
 
-        # Prime hierarchy
+        # Prime with downbeat and allow protected journey to finish
         bi.build_decision(self._event(is_downbeat=True, frequency=60.0), dt=1 / 60, silence_override=False)
+        self._drain_journey(bi)
 
         # Beat at 500 Hz (vocal range) should be blocked
         decision = bi.build_decision(
@@ -247,6 +255,7 @@ class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
         bi = BeatIntelligence(cfg)
 
         bi.build_decision(self._event(is_downbeat=True, frequency=60.0), dt=1 / 60, silence_override=False)
+        self._drain_journey(bi)
 
         # Beat at 60 Hz (bass) should pass
         decision = bi.build_decision(
@@ -261,6 +270,7 @@ class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
         bi = BeatIntelligence(cfg)
 
         bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+        self._drain_journey(bi)
 
         decision = bi.build_decision(
             self._event(is_beat=True, frequency=500.0), dt=1 / 60, silence_override=False
@@ -276,6 +286,7 @@ class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
         bi = BeatIntelligence(cfg)
 
         bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+        self._drain_journey(bi)
 
         decision = bi.build_decision(
             self._event(is_beat=True, frequency=500.0), dt=1 / 60, silence_override=False

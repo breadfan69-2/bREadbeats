@@ -28,6 +28,10 @@ class TestStrokeMapperContract(unittest.TestCase):
         payload.update(overrides)
         return BeatEvent(**payload)
 
+    def _drain_journey(self, bi: BeatIntelligence, frames: int = 140) -> None:
+        for _ in range(frames):
+            bi.build_decision(event=self._event(), dt=1.0 / 60.0, silence_override=False)
+
     def test_decision_dataclass_exists(self):
         decision = BeatDecision(
             trigger_kind="beat",
@@ -69,20 +73,23 @@ class TestStrokeMapperContract(unittest.TestCase):
 
     def test_sub_bass_maps_to_radius_bloom_range(self):
         intelligence = BeatIntelligence(Config())
+        intelligence.rms_envelope = 0.15  # above low-amp suppression threshold
 
         intelligence.energies.sub_bass = 0.0
         self.assertAlmostEqual(intelligence.compute_radius_bloom_from_sub_bass(), 0.70, places=6)
 
         intelligence.energies.sub_bass = 1.0
-        self.assertAlmostEqual(intelligence.compute_radius_bloom_from_sub_bass(), 0.95, places=6)
+        bloom_max = intelligence.compute_radius_bloom_from_sub_bass()
+        self.assertAlmostEqual(bloom_max, 1.0, places=6)
 
         intelligence.energies.sub_bass = 0.5
         midpoint = intelligence.compute_radius_bloom_from_sub_bass()
         self.assertGreater(midpoint, 0.70)
-        self.assertLess(midpoint, 0.95)
+        self.assertLess(midpoint, 1.0)
 
-    def test_flux_does_not_increase_bloom(self):
+    def test_flux_increases_bloom(self):
         intelligence = BeatIntelligence(Config())
+        intelligence.rms_envelope = 0.15  # above low-amp suppression
         intelligence.energies.sub_bass = 0.5
 
         low_flux_event = self._event(spectral_flux=0.0)
@@ -91,13 +98,15 @@ class TestStrokeMapperContract(unittest.TestCase):
         low_flux_bloom = intelligence.compute_radius_bloom_from_sub_bass(low_flux_event)
         high_flux_bloom = intelligence.compute_radius_bloom_from_sub_bass(high_flux_event)
 
-        self.assertAlmostEqual(high_flux_bloom, low_flux_bloom, places=6)
+        self.assertGreater(high_flux_bloom, low_flux_bloom)
+        self.assertLessEqual(high_flux_bloom, 1.0)
 
     def test_build_decision_emits_trigger_interval_and_progress(self):
         intelligence = BeatIntelligence(Config())
-        # Prime hierarchy with a downbeat so beat is allowed
+        # Prime with downbeat and allow protected journey to finish
         prime = self._event(is_downbeat=True, tempo_locked=True)
         intelligence.build_decision(event=prime, dt=1.0 / 60.0, silence_override=False)
+        self._drain_journey(intelligence)
 
         event = self._event(is_syncopated=False, is_downbeat=False, is_beat=True, tempo_locked=True)
         decision = intelligence.build_decision(event=event, dt=1.0 / 60.0, silence_override=False)
@@ -139,9 +148,10 @@ class TestStrokeMapperContract(unittest.TestCase):
         cfg.beat.tempo_lock_required = False
         intelligence = BeatIntelligence(cfg)
 
-        # Prime hierarchy with a downbeat so subsequent beat is allowed
+        # Prime with downbeat and allow protected journey to finish before beat trigger
         prime = self._event(is_downbeat=True)
         intelligence.build_decision(event=prime, dt=1.0 / 60.0, silence_override=False)
+        self._drain_journey(intelligence)
 
         beat_event = self._event(is_beat=True, tempo_locked=True)
         first = intelligence.build_decision(event=beat_event, dt=1.0 / 60.0, silence_override=False)

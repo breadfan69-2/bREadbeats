@@ -76,6 +76,7 @@ class BeatIntelligence:
         self._journey_duration_target_s = 0.0
         self._journey_duration_blend_frames_remaining = 0
         self._journey_duration_blend_alpha = 0.35
+        self._journey_start_intensity = 0.0  # intensity of current journey's trigger
 
         self.treble_lift_ema = 0.0
         self.treble_lift_attack = 0.28
@@ -1273,43 +1274,84 @@ class BeatIntelligence:
 
     def compute_radius_bloom_from_sub_bass(self, event: BeatEvent | None = None) -> float:
         base_radius = 0.70
-        max_radius = 0.95
+        max_radius = 1.0   # cap at canvas edge
         max_bloom = max_radius - base_radius
 
         sub_bass = float(np.clip(self.energies.sub_bass, 0.0, 1.0))
         low_mid = float(np.clip(self.energies.low_mid, 0.0, 1.0))
 
+        # Exponential bass scaling: power function for dramatic dynamic range
+        # Low-amplitude bass stays near park; high bass balloons out quickly
         weighted_bass = (sub_bass * 0.70) + (low_mid * 0.30)
         bass_fill = float(np.clip(max(sub_bass, weighted_bass), 0.0, 1.0))
-        bloom = max_bloom * (bass_fill ** 1.5)
+        bass_power = bass_fill ** 2.0
+
+        # Spectral flux influence: flux adds extra bloom proportional to config weight
+        flux = 0.0
+        flux_weight = 1.0
+        if event is not None:
+            flux = float(getattr(event, 'spectral_flux', 0.0) or 0.0)
+            flux_weight = float(getattr(self.config.stroke, 'flux_scaling_weight', 1.0) or 1.0)
+        flux_boost = float(np.clip(flux * flux_weight * 3.0, 0.0, 0.15))
+
+        # Low-amp suppression: quiet music → dot stays very close to park
+        rms = self.rms_envelope
+        if rms < 0.02:
+            amp_gate = 0.0
+        elif rms < 0.08:
+            amp_gate = float((rms - 0.02) / 0.06)
+        else:
+            amp_gate = 1.0
+
+        bloom = (max_bloom * bass_power + flux_boost) * amp_gate
 
         return float(np.clip(base_radius + bloom, base_radius, max_radius))
+
+    # Priority rank: lower number = faster arc = higher priority for interrupts.
+    _TRIGGER_PRIORITY: dict[str, int] = {
+        "syncopation": 0,
+        "beat": 1,
+        "downbeat": 2,
+        "creep": 3,
+    }
 
     def update_journey_progress(self, trigger_kind: str, interval_beats: int, event: BeatEvent, dt: float) -> float:
         bpm = self.effective_bpm(event)
         beat_period_s = 60.0 / max(1e-6, bpm)
         target_duration = max(1e-3, beat_period_s * float(interval_beats))
 
-        trigger_started = bool(
+        is_new_beat = bool(
             (trigger_kind == "syncopation" and bool(getattr(event, "is_syncopated", False)))
             or (trigger_kind == "downbeat" and bool(getattr(event, "is_downbeat", False)))
             or (trigger_kind == "beat" and bool(getattr(event, "is_beat", False)))
-            or (trigger_kind == "creep" and self.last_trigger_kind != "creep" and not self.journey_active)
         )
 
-        if trigger_started or not self.journey_active or self.active_interval_beats != interval_beats:
-            previous_duration = float(self.journey_duration_s if self.journey_duration_s > 0.0 else target_duration)
-            self._journey_duration_target_s = float(target_duration)
+        # ── Priority interrupt logic with intensity gating ──
+        incoming_pri = self._TRIGGER_PRIORITY.get(trigger_kind, 3)
+        active_pri = self._TRIGGER_PRIORITY.get(self.last_trigger_kind, 3)
+        should_start = False
 
-            ratio = previous_duration / max(1e-6, target_duration)
-            big_jump = ratio > 1.6 or ratio < (1.0 / 1.6)
-            if self.journey_active and big_jump:
-                self.journey_duration_s = previous_duration
-                self._journey_duration_blend_frames_remaining = 6
-            else:
-                self.journey_duration_s = target_duration
-                self._journey_duration_blend_frames_remaining = 0
+        if not self.journey_active:
+            should_start = True
+        elif is_new_beat:
+            # Current journey progress for landing protection
+            current_completion = float(np.clip(
+                self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0))
+            # Rule: if > 90% progress, let the journey finish its elastic landing
+            if current_completion > 0.90:
+                should_start = False
+            elif incoming_pri <= active_pri:
+                # Intensity gating: only interrupt if new trigger is stronger
+                new_intensity = float(getattr(event, 'intensity', 0.0) or 0.0)
+                should_start = new_intensity > self._journey_start_intensity
+        elif trigger_kind == "creep" and self.last_trigger_kind == "creep" and not self.journey_active:
+            should_start = True
 
+        if should_start:
+            self._journey_start_intensity = float(getattr(event, 'intensity', 0.0) or 0.0)
+            self.journey_duration_s = target_duration
+            self._journey_duration_target_s = target_duration
+            self._journey_duration_blend_frames_remaining = 0
             self.journey_elapsed_s = 0.0
             self.journey_active = True
             return 0.0
@@ -1392,25 +1434,20 @@ class BeatIntelligence:
         # Record beat times for hierarchy tracking
         self._record_beat_times(event, raw_trigger_kind, now)
 
-        # Preserve active beat-family journeys between discrete beat/downbeat/sync events.
-        if (
-            raw_trigger_kind == "creep"
-            and self.journey_active
-            and self.last_trigger_kind in ("syncopation", "beat", "downbeat")
-        ):
-            trigger_kind = self.last_trigger_kind
-
         bpm = self.effective_bpm(event)
 
-        # Tempo/bass/hierarchy gates apply to newly detected beat-family events.
-        if raw_trigger_kind in ("syncopation", "beat", "downbeat") and not silence_active:
+        # ── Priority interrupt: beat-family events always run the gate chain.
+        # If a beat-family journey is active but incoming is equal/higher
+        # priority, the gate chain decides whether the new trigger fires.
+        # Creep frames during an active beat-family journey keep the current kind.
+        if raw_trigger_kind == "creep" and self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
+            trigger_kind = self.last_trigger_kind
+        elif raw_trigger_kind in ("syncopation", "beat", "downbeat") and not silence_active:
             if not stroke_ready:
                 trigger_kind = "creep"
             elif not self._strict_bass_motion_allowed(event, raw_trigger_kind):
                 trigger_kind = "creep"
             elif self._is_mid_trigger_blocked(event):
-                trigger_kind = "creep"
-            elif not self._beat_hierarchy_allows(event, raw_trigger_kind, now, bpm):
                 trigger_kind = "creep"
             # Phase 3 gates: low-band → dual-band → spectrum fill → flux-drop
             elif not self._is_low_band_full_enough(event, raw_trigger_kind, bpm):

@@ -53,6 +53,10 @@ class Phase3Mixin:
                 setattr(cfg.beat, key, val)
         return BeatIntelligence(cfg)
 
+    def _drain_journey(self, bi: BeatIntelligence, frames: int = 140) -> None:
+        for _ in range(frames):
+            bi.build_decision(self._event(), dt=1 / 60, silence_override=False)
+
 
 # ── §5 Low-band fullness gate ──────────────────────────────────────────────
 
@@ -140,8 +144,9 @@ class TestLowBandFullnessGate(Phase3Mixin, unittest.TestCase):
     def test_wired_into_build_decision(self):
         """In build_decision, low-band gate blocks beat when conditions fail."""
         bi = self._bi(mid_bass_support_enabled=False)
-        # Prime hierarchy with downbeat
+        # Prime with downbeat and allow protected journey to finish
         bi.build_decision(self._event(is_downbeat=True), dt=1/60, silence_override=False)
+        self._drain_journey(bi)
         # Fill deques with low activity to trigger gate
         bi.energies.sub_bass = 0.05
         bi.energies.low_mid = 0.02
@@ -257,8 +262,9 @@ class TestDualBandDbGate(Phase3Mixin, unittest.TestCase):
     def test_wired_into_build_decision(self):
         """In build_decision, dual-band gate blocks when sub-bass too low."""
         bi = self._bi(high_tip_fullness_enabled=False)
-        # Prime hierarchy
+        # Prime with downbeat and allow protected journey to finish
         bi.build_decision(self._event(is_downbeat=True), dt=1/60, silence_override=False)
+        self._drain_journey(bi)
         # Set energy so dual-band fails (sub_bass too low)
         bi.energies.sub_bass = 0.10   # -20 dB < -15 dB min
         bi.energies.high = 0.10       # -20 dB > -30 dB min
@@ -564,8 +570,9 @@ class TestGateCascadeIntegration(Phase3Mixin, unittest.TestCase):
     def test_all_gates_pass_when_no_audio_engine(self):
         """Without an audio engine, all Phase 3 gates pass."""
         bi = self._bi()
-        # Prime hierarchy
+        # Prime with downbeat and allow protected journey to finish
         bi.build_decision(self._event(is_downbeat=True), dt=1/60, silence_override=False)
+        self._drain_journey(bi)
         decision = bi.build_decision(
             self._event(is_beat=True), dt=1/60, silence_override=False
         )
@@ -597,8 +604,9 @@ class TestGateCascadeIntegration(Phase3Mixin, unittest.TestCase):
     def test_journey_continuity_preserved_through_gates(self):
         """An active beat journey is not interrupted by subsequent creep frames."""
         bi = self._bi()
-        # Prime + trigger
+        # Prime with downbeat and allow protected journey to finish before beat trigger
         bi.build_decision(self._event(is_downbeat=True), dt=1/60, silence_override=False)
+        self._drain_journey(bi)
         d1 = bi.build_decision(self._event(is_beat=True), dt=1/60, silence_override=False)
         self.assertEqual(d1.trigger_kind, "beat")
 

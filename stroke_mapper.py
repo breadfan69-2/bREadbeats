@@ -64,6 +64,14 @@ class StrokeMapper:
         self._last_phase_for_velocity = self._orbit_phase
         self._journey_initial_speed_slope = 0.0
 
+        # Elastic landing / settle state
+        self._settle_active = False
+        self._settle_start_time = 0.0
+        self._settle_exit_velocity = 0.0
+        self._settle_damping = 4.5     # higher = faster decay
+        self._settle_frequency = 10.0  # oscillation freq (rad/s) – ~1 visible cycle
+        self._settle_max_amplitude = 0.12  # max angular displacement (radians)
+
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
         self._learning_enabled = bool(getattr(self.config.beat, "teaching_learning_enabled", False))
@@ -166,6 +174,7 @@ class StrokeMapper:
 
             started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
             if started_new_journey:
+                self._settle_active = False  # cancel any active settle
                 self._journey_start_angle = float(self._orbit_phase)
                 self._journey_total_rotation = self._compute_landing_rotation(
                     start_angle=self._journey_start_angle,
@@ -176,12 +185,29 @@ class StrokeMapper:
                     interval_beats=decision.interval_beats,
                 )
 
-            smooth_progress = self._s_curve_with_initial_velocity(
-                progress=progress,
-                initial_slope=self._journey_initial_speed_slope,
-            )
+            if progress >= 1.0 and not started_new_journey:
+                # ── Elastic landing: damped harmonic settle ──
+                # Momentum carry-over from exit velocity drives overshoot;
+                # damped oscillation creates one visible wobble then rest.
+                if not self._settle_active:
+                    self._settle_active = True
+                    self._settle_start_time = now
+                    self._settle_exit_velocity = self._angular_velocity
+                t = now - self._settle_start_time
+                raw_amp = abs(self._settle_exit_velocity) * 0.06
+                amp = max(0.02, min(raw_amp, self._settle_max_amplitude))
+                disp = amp * float(np.exp(-self._settle_damping * t) * np.sin(self._settle_frequency * t))
+                if abs(disp) < 1e-5 and t > 0.15:
+                    self._settle_active = False
+                    disp = 0.0
+                angle = float(self._park_angle + disp)
+            else:
+                smooth_progress = self._s_curve_with_initial_velocity(
+                    progress=progress,
+                    initial_slope=self._journey_initial_speed_slope,
+                )
+                angle = float(self._journey_start_angle + (self._journey_total_rotation * smooth_progress))
 
-            angle = float(self._journey_start_angle + (self._journey_total_rotation * smooth_progress))
             self._orbit_phase = float(angle % (2.0 * np.pi))
 
             phase_delta = self._wrapped_phase_delta(self._orbit_phase, self._last_phase_for_velocity)
@@ -196,11 +222,15 @@ class StrokeMapper:
 
             bloom_delta = float(max(0.0, decision.radius_bloom - self._park_radius))
             target_radius = float(self._park_radius + (bloom_delta * learning_mult))
-            target_radius = float(np.clip(target_radius, self._park_radius, 0.95))
+            target_radius = float(np.clip(target_radius, self._park_radius, 1.0))
 
-            radius_alpha = 0.03
+            # Reactive decay: fast "inhale" (expand), slow "exhale" (return to park)
+            if target_radius > self._actual_radius:
+                radius_alpha = 0.12  # fast attack for power hits
+            else:
+                radius_alpha = 0.02  # slow release stays full through heavy sections
             self._actual_radius += radius_alpha * (target_radius - self._actual_radius)
-            radius = float(np.clip(self._actual_radius, self._park_radius, 0.95))
+            radius = float(np.clip(self._actual_radius, self._park_radius, 1.0))
 
             center_offset_y = self._intelligence.compute_treble_lift(progress)
 
@@ -226,7 +256,7 @@ class StrokeMapper:
 
     @staticmethod
     def _s_curve_with_initial_velocity(progress: float, initial_slope: float, end_slope: float = 0.0) -> float:
-        """Cubic Hermite easing with configurable initial slope for velocity handoff."""
+        """Cubic Hermite easing with configurable initial slope and elastic back-ease landing."""
         p = float(np.clip(progress, 0.0, 1.0))
         m0 = float(np.clip(initial_slope, 0.0, 2.5))
         m1 = float(np.clip(end_slope, 0.0, 2.5))
@@ -235,7 +265,16 @@ class StrokeMapper:
         h01 = (-2.0 * p * p * p) + (3.0 * p * p)
         h11 = (p * p * p) - (p * p)
         eased = (h10 * m0) + h01 + (h11 * m1)
-        return float(np.clip(eased, 0.0, 1.0))
+
+        # Back-ease overshoot: sine bump in the final 8% of the journey.
+        # Dot swings slightly past target before the post-journey settle
+        # takes over → elastic, biological landing feel.
+        if p > 0.92:
+            t = (p - 0.92) / 0.08  # 0…1 within last 8%
+            overshoot = 0.025 * float(np.sin(t * np.pi))
+            eased += overshoot
+
+        return float(np.clip(eased, 0.0, 1.04))
 
     def _compute_initial_speed_slope(self, event: BeatEvent, interval_beats: int) -> float:
         """Map current angular velocity to a normalized easing start slope."""
