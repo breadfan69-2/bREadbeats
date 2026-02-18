@@ -234,6 +234,15 @@ class StrokeConfig:
     overall_amp_fill_auto_min_required: float = 0.05
     overall_amp_fill_auto_max_required: float = 0.98
 
+    # dBFS-based fill gate: Use absolute dBFS instead of relative peak normalization.
+    # Provides stable thresholds that don't drift with instantaneous peak changes.
+    use_dbfs_fill_gate: bool = True  # True: dBFS mode (stable), False: relative peak mode (legacy)
+    downbeat_dbfs_threshold: float = -25.0  # Downbeat: easier threshold (dB below reference)
+    beat_dbfs_threshold: float = -30.0      # Beat: moderate threshold (dB below reference)
+    syncopation_dbfs_threshold: float = -35.0  # Syncopation: harder threshold (dB below reference)
+    dbfs_reference_window_ms: float = 15000.0  # Time window (ms) for tracking max signal reference
+    dbfs_reference_decay_rate: float = 0.9995  # Per-frame decay multiplier for reference maximum
+
     # FFT-bin windows used by overall fill gate for each phase.
     # Values are bin indexes (0..N/2) from current FFT size.
     downbeat_fill_bin_low: int = 0
@@ -243,6 +252,11 @@ class StrokeConfig:
     syncopation_fill_bin_low: int = 0
     syncopation_fill_bin_high: int = 512
     downbeat_low_band_relax: float = 0.85
+
+    # Fill duration gate: require sustained fullness over consecutive frames.
+    # Values are frame counts (~16-23ms per frame at effective 43-60fps processing rate).
+    # Set to 0 or 1 to disable duration check (instant single-frame decision).
+    overall_amp_fill_sustain_frames: int = 3  # Frames of sustained fill required (~50-70ms at 60fps)
 
     # High-band presence gate for beat/downbeat stroke generation.
     # Requires upper range (mid+high) to be both filled and active.

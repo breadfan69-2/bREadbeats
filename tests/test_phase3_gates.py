@@ -363,7 +363,7 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
         self.assertTrue(bi._passes_overall_amp_fill_gate(self._event(), "beat"))
 
     def test_overall_fill_gate_blocks_when_low_fill(self):
-        bi = self._bi()
+        bi = self._bi(overall_amp_fill_sustain_frames=1)  # Test instant decision
         engine = MagicMock()
         # Many bins above active floor but below fill threshold
         spectrum = np.full(1024, 0.03)
@@ -375,7 +375,7 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
         self.assertFalse(result)
 
     def test_overall_fill_gate_passes_when_rich_spectrum(self):
-        bi = self._bi()
+        bi = self._bi(overall_amp_fill_sustain_frames=1)  # Test instant decision
         engine = MagicMock()
         engine.get_spectrum.return_value = np.ones(1024) * 0.5
         engine._band_energies = {}
@@ -385,7 +385,11 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
 
     def test_low_intensity_blocks_regardless_of_spectrum(self):
         """Intensity below (target - tolerance) → blocked."""
-        bi = self._bi(overall_amp_fill_target=0.5, overall_amp_fill_tolerance=0.1)
+        bi = self._bi(
+            overall_amp_fill_target=0.5,
+            overall_amp_fill_tolerance=0.1,
+            overall_amp_fill_sustain_frames=1  # Test instant decision
+        )
         engine = MagicMock()
         engine.get_spectrum.return_value = np.ones(1024) * 0.5
         engine._band_energies = {}
@@ -420,6 +424,43 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
 
         self.assertGreater(ratio_db, ratio_bt)
         self.assertGreater(ratio_sync, ratio_bt)
+
+    def test_sustained_duration_requires_consecutive_frames(self):
+        """Sustained duration gate requires fill to be maintained over consecutive frames."""
+        bi = self._bi(overall_amp_fill_sustain_frames=3)  # Require 3 consecutive frames
+        engine = MagicMock()
+        engine.get_spectrum.return_value = np.ones(1024) * 0.5  # Rich spectrum
+        engine._band_energies = {}
+        bi.audio_engine = engine
+        
+        evt = self._event(intensity=0.5)
+        
+        # First frame: passes instant check but not sustained (count=1)
+        result = bi._passes_overall_amp_fill_gate(evt, "beat")
+        self.assertFalse(result)
+        self.assertEqual(bi._fill_pass_consecutive["beat"], 1)
+        
+        # Second frame: still not sustained (count=2)
+        result = bi._passes_overall_amp_fill_gate(evt, "beat")
+        self.assertFalse(result)
+        self.assertEqual(bi._fill_pass_consecutive["beat"], 2)
+        
+        # Third frame: NOW sustained (count=3) → passes
+        result = bi._passes_overall_amp_fill_gate(evt, "beat")
+        self.assertTrue(result)
+        self.assertEqual(bi._fill_pass_consecutive["beat"], 3)
+        
+        # Fourth frame: still passes (count=4)
+        result = bi._passes_overall_amp_fill_gate(evt, "beat")
+        self.assertTrue(result)
+        self.assertEqual(bi._fill_pass_consecutive["beat"], 4)
+        
+        # Change to sparse spectrum → instant fail, counter reset
+        engine.get_spectrum.return_value = np.full(1024, 0.03)  # Sparse
+        engine.get_spectrum.return_value[0] = 1.0  # Peak only
+        result = bi._passes_overall_amp_fill_gate(evt, "beat")
+        self.assertFalse(result)
+        self.assertEqual(bi._fill_pass_consecutive["beat"], 0)
 
 
 # ── §20 Auto-fill adaptation ───────────────────────────────────────────────

@@ -9,7 +9,6 @@ from contextlib import contextmanager
 import time
 import json
 from datetime import datetime
-from types import SimpleNamespace
 import webbrowser
 import zipfile
 from urllib.parse import quote
@@ -566,6 +565,273 @@ class MountainRangeCanvas(pg.PlotWidget):
         # Update peak tracker line with current peak energy
         if peak_energy is not None:
             self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
+
+
+class FFTBinBarGraphCanvas(pg.PlotWidget):
+    """Exact FFT-bin bar graph visualizer (one bar per incoming FFT bin)."""
+
+    def __init__(self, parent=None, width=8, height=3):
+        super().__init__(parent)
+
+        self.setBackground('#0a0a12')
+        self.setMouseEnabled(x=False, y=False)
+        self.setMenuEnabled(False)
+        self.showGrid(x=False, y=True, alpha=0.15)
+        self.showAxis('left')
+        self.showAxis('bottom')
+        self.getAxis('left').setTextPen(pg.mkPen('#888888'))
+        self.getAxis('left').setTickPen(pg.mkPen('#666666'))
+        self.getAxis('bottom').setTextPen(pg.mkPen('#888888'))
+        self.getAxis('bottom').setTickPen(pg.mkPen('#666666'))
+        self.getAxis('left').setLabel('dBFS')
+        self.getAxis('bottom').setLabel('FFT Bin')
+
+        self._display_floor_db = -90.0
+        self._display_ceil_db = 0.0
+        self._bar_item: Optional[pg.BarGraphItem] = None
+        self._bar_count = 0
+        self._bar_x = np.array([], dtype=np.float32)
+        self._bar_floor = np.array([], dtype=np.float32)
+        self._latest_peak_db = self._display_floor_db
+        self._ghost_overlays: dict[str, dict] = {}
+        self._ghost_timer = QTimer(self)
+        self._ghost_timer.setInterval(80)
+        self._ghost_timer.timeout.connect(self._tick_ghosts)
+
+        self.setXRange(0, 1)
+        self.setYRange(self._display_floor_db, self._display_ceil_db)
+
+    def _ensure_bars(self, count: int):
+        """Rebuild bars when FFT-bin count changes."""
+        count = max(1, int(count))
+        if count == self._bar_count and self._bar_item is not None:
+            return
+
+        if self._bar_item is not None:
+            self.removeItem(self._bar_item)
+
+        self._bar_count = count
+        self._bar_x = np.arange(count, dtype=np.float32)
+        self._bar_floor = np.full(count, self._display_floor_db, dtype=np.float32)
+        heights = np.zeros(count, dtype=np.float32)
+
+        self._bar_item = pg.BarGraphItem(
+            x=self._bar_x,
+            y0=self._bar_floor,
+            height=heights,
+            width=0.9,
+            brush=pg.mkBrush(90, 200, 255, 180),
+            pen=pg.mkPen(120, 230, 255, 180),
+        )
+        self.addItem(self._bar_item)
+        self.setXRange(-0.5, count - 0.5)
+
+    def set_peak_and_flux(self, peak_value: float, flux_value: float):
+        """Compatibility no-op for shared visualizer interfaces."""
+        pass
+
+    def set_peak_indicators_visible(self, visible: bool):
+        """Compatibility no-op for shared visualizer interfaces."""
+        pass
+
+    def set_range_indicators_visible(self, visible: bool):
+        """Compatibility no-op for shared visualizer interfaces."""
+        pass
+
+    def update_from_spectrum(self, spectrum: np.ndarray, sample_rate: int):
+        """Render exact incoming FFT bins without bin interpolation/merging."""
+        if spectrum is None:
+            return
+
+        arr = np.asarray(spectrum, dtype=np.float32)
+        if arr.size == 0:
+            return
+
+        self._ensure_bars(arr.size)
+        bin_width_hz = float(sample_rate) / float(max(1, (arr.size - 1) * 2))
+        self.getAxis('bottom').setLabel('FFT Bin', units=f'Δf={bin_width_hz:.2f}Hz')
+
+        db_values = 20.0 * np.log10(np.maximum(arr, 1e-12))
+        self._latest_peak_db = float(np.max(db_values)) if db_values.size > 0 else self._display_floor_db
+        db_values = np.clip(db_values, self._display_floor_db, self._display_ceil_db)
+        heights = db_values - self._display_floor_db
+
+        if self._bar_item is not None:
+            self._bar_item.setOpts(height=heights, y0=self._bar_floor)
+
+    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
+        """Compatibility wrapper for callers that use update_spectrum."""
+        self.update_from_spectrum(spectrum, 44100)
+
+    def show_fill_ratio_ghost(self, key: str, ratio: float, label: str, color: str = '#66E0FF', duration_s: float = 5.0, dashed: bool = True) -> None:
+        """Show temporary dB-threshold line from fill ratio using live FFT peak reference."""
+        ratio_clamped = float(np.clip(ratio, 0.0, 1.0))
+        peak_db = float(np.clip(self._latest_peak_db, self._display_floor_db, self._display_ceil_db))
+        threshold_db = peak_db + (20.0 * np.log10(max(ratio_clamped, 1e-6)))
+        threshold_db = float(np.clip(threshold_db, self._display_floor_db, self._display_ceil_db))
+        self._show_ghost(
+            key=key,
+            label=f"{label}: {ratio_clamped:.3f} (~{threshold_db:.1f} dB)",
+            color=color,
+            duration_s=duration_s,
+            dashed=dashed,
+            mode='line',
+            y=threshold_db,
+        )
+
+    def show_bin_range_ghost(self, key: str, low_bin: int, high_bin: int, label: str, color: str = '#FFFFFF', duration_s: float = 5.0, dashed: bool = False) -> None:
+        """Show temporary FFT-bin range box aligned to real bin indices."""
+        if self._bar_count <= 0:
+            return
+        lo = int(np.clip(min(low_bin, high_bin), 0, self._bar_count - 1))
+        hi = int(np.clip(max(low_bin, high_bin), 0, self._bar_count - 1))
+        self._show_ghost(
+            key=key,
+            label=f"{label}: bins {lo}-{hi}",
+            color=color,
+            duration_s=duration_s,
+            dashed=dashed,
+            mode='box',
+            x0=float(lo - 0.5),
+            x1=float(hi + 0.5),
+            y0=self._display_floor_db,
+            y1=self._display_ceil_db,
+        )
+
+    def _show_ghost(
+        self,
+        *,
+        key: str,
+        label: str,
+        color: str,
+        duration_s: float,
+        dashed: bool,
+        mode: str,
+        y: float | None = None,
+        x0: float | None = None,
+        x1: float | None = None,
+        y0: float | None = None,
+        y1: float | None = None,
+    ) -> None:
+        now = time.monotonic()
+        overlay = self._ghost_overlays.get(key)
+        if overlay is None:
+            qcolor = QColor(color)
+            line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)))
+            line.setZValue(30)
+            self.addItem(line)
+
+            text = pg.TextItem('', color=qcolor, anchor=(0.0, 1.0))
+            text.setZValue(31)
+            self.addItem(text)
+
+            box = pg.QtWidgets.QGraphicsRectItem()
+            box.setZValue(29)
+            self.addItem(box)
+            box.hide()
+
+            overlay = {
+                'line': line,
+                'text': text,
+                'box': box,
+                'color': qcolor,
+                'started_at': now,
+                'duration_s': float(max(0.5, duration_s)),
+            }
+            self._ghost_overlays[key] = overlay
+
+        overlay['started_at'] = now
+        overlay['duration_s'] = float(max(0.5, duration_s))
+        overlay['dashed'] = bool(dashed)
+        overlay['mode'] = mode
+
+        text_item = overlay['text']
+        line_item = overlay['line']
+        box_item = overlay['box']
+        text_item.setText(label)
+
+        if mode == 'line' and y is not None:
+            line_item.show()
+            line_item.setPos(float(y))
+            text_item.setPos(1.0, min(self._display_ceil_db - 0.5, float(y) + 0.8))
+            box_item.hide()
+            overlay['base_rect'] = None
+        elif mode == 'box' and None not in (x0, x1, y0, y1):
+            line_item.hide()
+            text_item.setPos(float(x0) + 0.25, self._display_ceil_db - 0.5)
+            overlay['base_rect'] = QRectF(
+                min(float(x0), float(x1)),
+                min(float(y0), float(y1)),
+                max(0.001, abs(float(x1) - float(x0))),
+                max(0.2, abs(float(y1) - float(y0))),
+            )
+            box_item.show()
+
+        self._apply_ghost_style(overlay, 0.0)
+        if not self._ghost_timer.isActive():
+            self._ghost_timer.start()
+
+    def _apply_ghost_style(self, overlay: dict, progress: float) -> None:
+        eased = float(np.clip(progress, 0.0, 1.0))
+        alpha = max(0, min(230, int(230 * (1.0 - eased))))
+
+        color = QColor(overlay['color'])
+        color.setAlpha(alpha)
+        line = overlay['line']
+        line.setPen(pg.mkPen(color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
+        overlay['text'].setColor(color)
+
+        base_rect = overlay.get('base_rect')
+        box = overlay.get('box')
+        if base_rect is not None and box is not None and box.isVisible():
+            box.setRect(base_rect)
+            pen = QPen(color)
+            pen.setWidthF(0.9)
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
+            box.setPen(pen)
+            box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+
+    def _tick_ghosts(self) -> None:
+        if not self._ghost_overlays:
+            self._ghost_timer.stop()
+            return
+
+        now = time.monotonic()
+        expired: list[str] = []
+        for key, overlay in list(self._ghost_overlays.items()):
+            elapsed = max(0.0, now - float(overlay.get('started_at', now)))
+            duration = max(0.5, float(overlay.get('duration_s', 5.0)))
+            progress = elapsed / duration
+            if progress >= 1.0:
+                expired.append(key)
+                continue
+            self._apply_ghost_style(overlay, progress)
+
+        for key in expired:
+            overlay = self._ghost_overlays.pop(key, None)
+            if overlay is None:
+                continue
+            for item_key in ('line', 'text', 'box'):
+                item = overlay.get(item_key)
+                if item is not None:
+                    try:
+                        item.hide()
+                    except Exception:
+                        pass
+                    try:
+                        self.removeItem(item)
+                    except Exception:
+                        pass
+                    try:
+                        scene = item.scene()
+                        if scene is not None:
+                            scene.removeItem(item)
+                    except Exception:
+                        pass
+
+        if not self._ghost_overlays:
+            self._ghost_timer.stop()
 
 
 class PhosphorCanvas(pg.PlotWidget):
@@ -1482,507 +1748,6 @@ class NoWheelScrollArea(QScrollArea):
         event.ignore()
 
 
-class WaveformCalibrationCanvas(pg.PlotWidget):
-    """Waveform-first calibration canvas with period picking and gate overlays."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setBackground('#0d0d0d')
-        self.setMenuEnabled(False)
-        self.showGrid(x=False, y=False, alpha=0.0)
-        self.showAxis('left')
-        self.showAxis('bottom')
-        self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
-        self.getAxis('left').setTickPen(pg.mkPen('#9a9a9a'))
-        self.getAxis('bottom').setTextPen(pg.mkPen('#cfcfcf'))
-        self.getAxis('bottom').setTickPen(pg.mkPen('#9a9a9a'))
-        self.setLabel('left', 'Amplitude', units='A.U.')
-        self.setLabel('bottom', 'Time', units='ms')
-        self.enableAutoRange(x=False, y=False)
-        self.setYRange(-1.05, 1.05)
-        self.setXRange(0.0, 25.0)
-
-        self.waveform_curve = self.plot(pen=pg.mkPen('#ffd24d', width=3))
-        self.zero_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#8a8a8a', width=2))
-        self.rms_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#44ff88', width=2, style=Qt.PenStyle.DashLine))
-        self.peak_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#ff8855', width=2, style=Qt.PenStyle.DotLine))
-        self.addItem(self.zero_line)
-        self.addItem(self.rms_line)
-        self.addItem(self.peak_line)
-
-        self.period_region = pg.LinearRegionItem(
-            values=(3.0, 8.0),
-            orientation='vertical',
-            brush=pg.mkBrush(80, 180, 255, 70),
-            pen=pg.mkPen('#55aaff', width=2),
-            movable=True,
-        )
-        self.period_region.setZValue(12)
-        self.period_region.sigRegionChanged.connect(self._update_period_text)
-        self.addItem(self.period_region)
-
-        self.info_text = pg.TextItem("", color='#f2f2f2', anchor=(0.0, 0.0))
-        self.info_text.setZValue(20)
-        self.addItem(self.info_text)
-
-        self._x_max_ms = 25.0
-        self._sample_rate = 44100
-        self._period_region_initialized = False
-        self._latest_rms = 0.0
-        self._latest_peak = 0.0
-        self._latest_auto_freq_hz = 0.0
-        self._low_band_history: deque[float] = deque(maxlen=240)
-        self._high_band_history: deque[float] = deque(maxlen=240)
-        self._gate_snapshot: dict[str, object] = {}
-        self._reference_overlays: dict[str, dict] = {}
-        self._fill_ratio_overlays: dict[str, dict] = {}
-        self._time_window_overlays: dict[str, dict] = {}
-        self._reference_fade_timer = QTimer(self)
-        self._reference_fade_timer.setInterval(80)
-        self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
-
-    @staticmethod
-    def _as_float(value, default: float = 0.0) -> float:
-        if isinstance(value, (int, float, np.integer, np.floating)):
-            return float(value)
-        if isinstance(value, str):
-            try:
-                return float(value)
-            except Exception:
-                return float(default)
-        try:
-            parsed = np.asarray(value, dtype=np.float64).reshape(-1)
-            if parsed.size > 0:
-                return float(parsed[0])
-        except Exception:
-            pass
-        return float(default)
-
-    def _estimate_waveform_frequency(self, waveform: np.ndarray, sample_rate: int) -> float:
-        arr = np.asarray(waveform, dtype=np.float32)
-        if arr.size < 64 or sample_rate <= 0:
-            return 0.0
-        centered = arr - float(np.mean(arr))
-        if float(np.max(np.abs(centered))) < 1e-5:
-            return 0.0
-
-        acf = np.correlate(centered, centered, mode='full')[arr.size - 1:]
-        if acf.size < 3:
-            return 0.0
-
-        min_lag = max(1, int(sample_rate / 700.0))
-        max_lag = min(acf.size - 1, int(sample_rate / 40.0))
-        if min_lag >= max_lag:
-            return 0.0
-
-        search = acf[min_lag:max_lag + 1]
-        peak_idx = int(np.argmax(search))
-        lag = min_lag + peak_idx
-        if lag <= 0:
-            return 0.0
-        return float(sample_rate / lag)
-
-    def _band_activity(self, spectrum: np.ndarray, sample_rate: int, low_hz: float, high_hz: float) -> float:
-        if spectrum is None or len(spectrum) == 0 or sample_rate <= 0:
-            return 0.0
-        nyquist = sample_rate / 2.0
-        n_bins = len(spectrum)
-        freq_per_bin = nyquist / max(1, n_bins)
-        low_bin = max(0, int(low_hz / max(1e-9, freq_per_bin)))
-        high_bin = min(n_bins - 1, int(high_hz / max(1e-9, freq_per_bin)))
-        if high_bin < low_bin:
-            return 0.0
-        band = np.asarray(spectrum[low_bin:high_bin + 1], dtype=np.float32)
-        if band.size == 0:
-            return 0.0
-        return float(np.sqrt(np.mean(np.square(band))))
-
-    def _update_gate_snapshot(self, spectrum: np.ndarray, sample_rate: int, stroke_cfg) -> None:
-        include_mid = bool(getattr(stroke_cfg, 'high_band_include_mid', True))
-        low_activity = self._band_activity(spectrum, sample_rate, 30.0, 500.0)
-        high_low_hz = 500.0 if include_mid else 2000.0
-        high_activity = self._band_activity(spectrum, sample_rate, high_low_hz, sample_rate / 2.0)
-
-        self._low_band_history.append(low_activity)
-        self._high_band_history.append(high_activity)
-
-        def _window_stats(values: deque[float], window_size: int) -> tuple[np.ndarray, float, float, float]:
-            vals = list(values)
-            if not vals:
-                return np.array([], dtype=np.float32), 0.0, 0.0, 0.0
-            window = int(np.clip(window_size, 1, len(vals)))
-            seg = np.asarray(vals[-window:], dtype=np.float32)
-            if seg.size == 0:
-                return seg, 0.0, 0.0, 0.0
-            return seg, float(np.mean(seg)), float(np.max(seg) - np.min(seg)), float(np.var(seg))
-
-        low_window = int(getattr(stroke_cfg, 'low_band_window_frames', 18) or 18)
-        low_seg, low_mean, _low_delta, _low_var = _window_stats(self._low_band_history, max(8, low_window))
-        low_mean_th = float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20)
-        low_pass = (low_mean >= low_mean_th)
-
-        high_window = int(getattr(stroke_cfg, 'high_band_window_frames', 18) or 18)
-        high_seg, high_mean, high_delta, high_var = _window_stats(self._high_band_history, max(8, high_window))
-        high_mean_th = float(getattr(stroke_cfg, 'high_band_mean_threshold', 0.12) or 0.12)
-        high_floor_th = float(getattr(stroke_cfg, 'high_band_floor_threshold', 0.06) or 0.06)
-        high_occ_th = float(getattr(stroke_cfg, 'high_band_occupancy_threshold', 0.55) or 0.55)
-        high_delta_th = float(getattr(stroke_cfg, 'high_band_delta_threshold', 0.05) or 0.05)
-        high_var_th = float(getattr(stroke_cfg, 'high_band_variance_threshold', 0.0010) or 0.0010)
-        if high_seg.size > 0:
-            high_occ = float(np.sum(high_seg >= high_floor_th) / max(1, high_seg.size))
-        else:
-            high_occ = 0.0
-        high_pass = (high_mean >= high_mean_th) and (high_occ >= high_occ_th) and ((high_delta >= high_delta_th) or (high_var >= high_var_th))
-
-        self._gate_snapshot = {
-            'include_mid': include_mid,
-            'low_mean': low_mean,
-            'low_mean_th': low_mean_th,
-            'low_pass': bool(low_pass),
-            'high_mean': high_mean,
-            'high_occ': high_occ,
-            'high_delta': high_delta,
-            'high_var': high_var,
-            'high_mean_th': high_mean_th,
-            'high_floor_th': high_floor_th,
-            'high_occ_th': high_occ_th,
-            'high_delta_th': high_delta_th,
-            'high_var_th': high_var_th,
-            'high_pass': bool(high_pass),
-        }
-
-    def _update_period_text(self) -> None:
-        region_raw = self.period_region.getRegion()
-        if isinstance(region_raw, (list, tuple)) and len(region_raw) >= 2:
-            raw_a, raw_b = region_raw[0], region_raw[1]
-        else:
-            raw_a, raw_b = 0.0, 1.0
-        start_ms = min(self._as_float(raw_a), self._as_float(raw_b))
-        end_ms = max(self._as_float(raw_a), self._as_float(raw_b))
-        period_ms = max(0.001, end_ms - start_ms)
-        picked_freq_hz = 1000.0 / period_ms
-
-        gate = self._gate_snapshot
-        low_ok = bool(gate.get('low_pass', False))
-        high_ok = bool(gate.get('high_pass', False))
-        low_mark = 'PASS' if low_ok else 'BLOCK'
-        high_mark = 'PASS' if high_ok else 'BLOCK'
-        g = lambda key: self._as_float(gate.get(key, 0.0), 0.0)
-
-        low_color = '#66ff99' if low_ok else '#ff8080'
-        high_color = '#ffb3ff' if high_ok else '#ff8080'
-        html = (
-            "<div style='background-color: rgba(0,0,0,170); padding: 6px; border: 2px solid #55aaff; border-radius: 5px;'>"
-            f"<div style='font-size: 12pt; font-weight: 700; color: #ffffff;'>Period pick: {period_ms:.2f} ms  =&gt;  {picked_freq_hz:.1f} Hz</div>"
-            f"<div style='font-size: 10pt; font-weight: 600; color: #e8e8e8;'>Auto f0: {self._latest_auto_freq_hz:.1f} Hz&nbsp;&nbsp;RMS: {self._latest_rms:.3f}&nbsp;&nbsp;Peak: {self._latest_peak:.3f}</div>"
-            f"<div style='font-size: 10pt; font-weight: 700; color: {low_color};'>Low gate [{low_mark}] mean {g('low_mean'):.4f}/{g('low_mean_th'):.4f} &nbsp; Δ {g('low_delta'):.4f}/{g('low_delta_th'):.4f} &nbsp; var {g('low_var'):.5f}/{g('low_var_th'):.5f}</div>"
-            f"<div style='font-size: 10pt; font-weight: 700; color: {high_color};'>High gate [{high_mark}] mean {g('high_mean'):.4f}/{g('high_mean_th'):.4f} &nbsp; occ {g('high_occ'):.2f}/{g('high_occ_th'):.2f} &nbsp; Δ {g('high_delta'):.4f}/{g('high_delta_th'):.4f} &nbsp; var {g('high_var'):.5f}/{g('high_var_th'):.5f}</div>"
-            f"<div style='font-size: 9pt; font-weight: 600; color: #d9d9d9;'>High-band source: {'mid+high' if bool(gate.get('include_mid', True)) else 'high-only'}</div>"
-            "</div>"
-        )
-        self.info_text.setHtml(html)
-        self.info_text.setPos(0.5, -0.98)
-
-    def show_reference_line(self, key: str, value: float, label: str, color: str = '#FF66AA', duration_s: float = 15.0, dashed: bool = False) -> None:
-        """Show or refresh a temporary symmetric +/- amplitude guide that fades out."""
-        amp = float(np.clip(abs(value), 0.0, 1.0))
-        now = time.monotonic()
-
-        overlay = self._reference_overlays.get(key)
-        if overlay is None:
-            qcolor = QColor(color)
-            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
-            line_pos = pg.InfiniteLine(pos=amp, angle=0, movable=False, pen=pen)
-            line_neg = pg.InfiniteLine(pos=-amp, angle=0, movable=False, pen=pen)
-            line_pos.setZValue(15)
-            line_neg.setZValue(15)
-            self.addItem(line_pos)
-            self.addItem(line_neg)
-
-            text = pg.TextItem("", color=qcolor, anchor=(1.0, 0.0))
-            text.setZValue(16)
-            self.addItem(text)
-
-            overlay = {
-                'line_pos': line_pos,
-                'line_neg': line_neg,
-                'text': text,
-                'color': qcolor,
-                'dashed': bool(dashed),
-                'started_at': now,
-                'duration_s': float(max(0.5, duration_s)),
-            }
-            self._reference_overlays[key] = overlay
-
-        overlay['started_at'] = now
-        overlay['duration_s'] = float(max(0.5, duration_s))
-
-        line_pos = overlay['line_pos']
-        line_neg = overlay['line_neg']
-        text = overlay['text']
-        line_pos.setPos(amp)
-        line_neg.setPos(-amp)
-        text.setPos(self._x_max_ms - 0.2, min(1.0, amp + 0.03))
-        text.setText(f"{label}: ±{amp:.3f}")
-
-        full_color = QColor(overlay['color'])
-        full_color.setAlpha(210)
-        pen = pg.mkPen(full_color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
-        line_pos.setPen(pen)
-        line_neg.setPen(pen)
-        text.setColor(full_color)
-
-        if not self._reference_fade_timer.isActive():
-            self._reference_fade_timer.start()
-
-    def show_fill_ratio_ghost(self, key: str, ratio: float, label: str, color: str = '#FFFFFF', duration_s: float = 15.0, dashed: bool = False) -> None:
-        """Show or refresh a temporary symmetric fill-ratio band around zero.
-
-        Ratio is projected onto waveform amplitude using current visible peak, so
-        fill thresholds can be compared directly against on-screen waveform height.
-        """
-        ratio_clamped = float(np.clip(ratio, 0.0, 1.0))
-        visible_peak = float(np.clip(self._latest_peak, 0.0, 1.0))
-        amp = float(np.clip(ratio_clamped * visible_peak, 0.0, 1.0))
-        now = time.monotonic()
-
-        overlay = self._fill_ratio_overlays.get(key)
-        if overlay is None:
-            qcolor = QColor(color)
-            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
-            line_pos = pg.InfiniteLine(pos=amp, angle=0, movable=False, pen=pen)
-            line_neg = pg.InfiniteLine(pos=-amp, angle=0, movable=False, pen=pen)
-            line_pos.setZValue(15)
-            line_neg.setZValue(15)
-            self.addItem(line_pos)
-            self.addItem(line_neg)
-
-            text = pg.TextItem("", color=qcolor, anchor=(1.0, 0.0))
-            text.setZValue(16)
-            self.addItem(text)
-
-            overlay = {
-                'line_pos': line_pos,
-                'line_neg': line_neg,
-                'text': text,
-                'color': qcolor,
-                'dashed': bool(dashed),
-                'started_at': now,
-                'duration_s': float(max(0.5, duration_s)),
-            }
-            self._fill_ratio_overlays[key] = overlay
-
-        overlay['started_at'] = now
-        overlay['duration_s'] = float(max(0.5, duration_s))
-        overlay['line_pos'].setPos(amp)
-        overlay['line_neg'].setPos(-amp)
-        overlay['text'].setPos(self._x_max_ms - 0.2, min(1.0, amp + 0.03))
-        overlay['text'].setText(f"{label}: {ratio_clamped * 100.0:.0f}%")
-
-        full_color = QColor(overlay['color'])
-        full_color.setAlpha(210)
-        pen = pg.mkPen(full_color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
-        overlay['line_pos'].setPen(pen)
-        overlay['line_neg'].setPen(pen)
-        overlay['text'].setColor(full_color)
-
-        if not self._reference_fade_timer.isActive():
-            self._reference_fade_timer.start()
-
-    def show_time_window_ghost(self, key: str, duration_ms: float, label: str, color: str = '#66ccff', duration_s: float = 12.0, dashed: bool = True) -> None:
-        """Show or refresh a temporary time-window ghost on waveform view."""
-        span_ms = float(np.clip(duration_ms, 0.0, max(1.0, self._x_max_ms)))
-        now = time.monotonic()
-
-        overlay = self._time_window_overlays.get(key)
-        if overlay is None:
-            qcolor = QColor(color)
-            line = pg.InfiniteLine(
-                pos=span_ms,
-                angle=90,
-                movable=False,
-                pen=pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)),
-            )
-            line.setZValue(14)
-            self.addItem(line)
-
-            box = pg.QtWidgets.QGraphicsRectItem()
-            box.setZValue(13)
-            self.addItem(box)
-
-            text = pg.TextItem('', color=qcolor, anchor=(0.0, 0.0))
-            text.setZValue(15)
-            self.addItem(text)
-
-            overlay = {
-                'line': line,
-                'box': box,
-                'text': text,
-                'color': qcolor,
-                'dashed': bool(dashed),
-                'started_at': now,
-                'duration_s': float(max(0.5, duration_s)),
-            }
-            self._time_window_overlays[key] = overlay
-
-        overlay['started_at'] = now
-        overlay['duration_s'] = float(max(0.5, duration_s))
-
-        line = overlay['line']
-        box = overlay['box']
-        text = overlay['text']
-        line.setPos(span_ms)
-        box.setRect(QRectF(0.0, -1.0, max(0.2, span_ms), 2.0))
-        text.setText(f"{label}: {span_ms:.0f} ms")
-        text.setPos(min(self._x_max_ms - 0.5, span_ms + 0.25), -0.98)
-
-        qcolor = QColor(overlay['color'])
-        qcolor.setAlpha(185)
-        line.setPen(pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
-        fill = QColor(overlay['color'])
-        fill.setAlpha(36)
-        box.setPen(pg.mkPen(Qt.PenStyle.NoPen))
-        box.setBrush(pg.mkBrush(fill))
-        text.setColor(qcolor)
-
-        if not self._reference_fade_timer.isActive():
-            self._reference_fade_timer.start()
-
-    def _tick_reference_overlays(self) -> None:
-        """Fade and remove expired amplitude reference overlays."""
-        if not self._reference_overlays and not self._fill_ratio_overlays and not self._time_window_overlays:
-            self._reference_fade_timer.stop()
-            return
-
-        now = time.monotonic()
-        expired: list[str] = []
-        for key, overlay in self._reference_overlays.items():
-            age = now - float(overlay['started_at'])
-            duration_s = float(overlay['duration_s'])
-            if age >= duration_s:
-                self.removeItem(overlay['line_pos'])
-                self.removeItem(overlay['line_neg'])
-                self.removeItem(overlay['text'])
-                expired.append(key)
-                continue
-
-            fade = max(0.0, 1.0 - (age / duration_s))
-            alpha = int(210 * fade)
-            qcolor = QColor(overlay['color'])
-            qcolor.setAlpha(alpha)
-            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
-            overlay['line_pos'].setPen(pen)
-            overlay['line_neg'].setPen(pen)
-            overlay['text'].setColor(qcolor)
-
-        for key in expired:
-            self._reference_overlays.pop(key, None)
-
-        expired_ratio: list[str] = []
-        for key, overlay in self._fill_ratio_overlays.items():
-            age = now - float(overlay['started_at'])
-            duration_s = float(overlay['duration_s'])
-            if age >= duration_s:
-                self.removeItem(overlay['line_pos'])
-                self.removeItem(overlay['line_neg'])
-                self.removeItem(overlay['text'])
-                expired_ratio.append(key)
-                continue
-
-            fade = max(0.0, 1.0 - (age / duration_s))
-            alpha = int(210 * fade)
-            qcolor = QColor(overlay['color'])
-            qcolor.setAlpha(alpha)
-            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
-            overlay['line_pos'].setPen(pen)
-            overlay['line_neg'].setPen(pen)
-            overlay['text'].setColor(qcolor)
-
-        for key in expired_ratio:
-            self._fill_ratio_overlays.pop(key, None)
-
-        expired_time: list[str] = []
-        for key, overlay in self._time_window_overlays.items():
-            age = now - float(overlay['started_at'])
-            duration_s = float(overlay['duration_s'])
-            if age >= duration_s:
-                self.removeItem(overlay['line'])
-                self.removeItem(overlay['box'])
-                self.removeItem(overlay['text'])
-                expired_time.append(key)
-                continue
-
-            fade = max(0.0, 1.0 - (age / duration_s))
-            alpha = int(185 * fade)
-            line_color = QColor(overlay['color'])
-            line_color.setAlpha(alpha)
-            overlay['line'].setPen(
-                pg.mkPen(
-                    line_color,
-                    width=1,
-                    style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine),
-                )
-            )
-
-            fill_color = QColor(overlay['color'])
-            fill_color.setAlpha(max(0, int(36 * fade)))
-            overlay['box'].setBrush(pg.mkBrush(fill_color))
-            overlay['text'].setColor(line_color)
-
-        for key in expired_time:
-            self._time_window_overlays.pop(key, None)
-
-        if not self._reference_overlays and not self._fill_ratio_overlays and not self._time_window_overlays:
-            self._reference_fade_timer.stop()
-
-    def update_from_audio(self, waveform: np.ndarray, sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
-        if waveform is None:
-            return
-
-        arr = np.asarray(waveform, dtype=np.float32)
-        if arr.size == 0:
-            return
-
-        self._sample_rate = int(max(1, sample_rate))
-        peak_abs = float(np.max(np.abs(arr)))
-        if peak_abs > 1.0:
-            arr = arr / peak_abs
-
-        x_ms = (np.arange(arr.size, dtype=np.float32) / float(self._sample_rate)) * 1000.0
-        x_end = float(x_ms[-1]) if x_ms.size > 0 else 25.0
-        self._x_max_ms = max(2.0, x_end)
-        self.waveform_curve.setData(x=x_ms, y=arr)
-        self.setXRange(0.0, self._x_max_ms)
-
-        self._latest_rms = float(np.sqrt(np.mean(np.square(arr)))) if arr.size > 0 else 0.0
-        self._latest_peak = float(np.max(np.abs(arr))) if arr.size > 0 else 0.0
-        self._latest_auto_freq_hz = self._estimate_waveform_frequency(arr, self._sample_rate)
-
-        self.rms_line.setPos(self._latest_rms)
-        self.peak_line.setPos(self._latest_peak)
-
-        region_raw = self.period_region.getRegion()
-        if isinstance(region_raw, (list, tuple)) and len(region_raw) >= 2:
-            region_high = max(self._as_float(region_raw[0]), self._as_float(region_raw[1]))
-        else:
-            region_high = 0.0
-        if (not self._period_region_initialized) or region_high > self._x_max_ms:
-            if self._latest_auto_freq_hz > 1e-3:
-                period_ms = 1000.0 / self._latest_auto_freq_hz
-            else:
-                period_ms = min(8.0, self._x_max_ms * 0.25)
-            period_ms = float(np.clip(period_ms, 0.5, max(1.0, self._x_max_ms * 0.8)))
-            center_ms = self._x_max_ms * 0.55
-            start_ms = float(np.clip(center_ms - period_ms * 0.5, 0.0, self._x_max_ms - 0.2))
-            end_ms = float(np.clip(start_ms + period_ms, start_ms + 0.2, self._x_max_ms))
-            self.period_region.setRegion((start_ms, end_ms))
-            self._period_region_initialized = True
-
-        if spectrum is not None:
-            self._update_gate_snapshot(np.asarray(spectrum, dtype=np.float32), self._sample_rate, stroke_cfg)
-        self._update_period_text()
-
-
 class WaveformLiveCanvas(pg.PlotWidget):
     """Simple in-window waveform visualizer (no calibration overlays)."""
 
@@ -2199,495 +1964,6 @@ class WaveformLiveCanvas(pg.PlotWidget):
 
     def set_range_indicators_visible(self, visible: bool):
         return
-
-
-class FrequencyDbCalibrationCanvas(pg.PlotWidget):
-    """Frequency-vs-dB calibration canvas with gate metrics overlays."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setBackground('#0d0d0d')
-        self.setMenuEnabled(False)
-        self.showGrid(x=False, y=False, alpha=0.0)
-        self.showAxis('left')
-        self.showAxis('bottom')
-        self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
-        self.getAxis('left').setTickPen(pg.mkPen('#9a9a9a'))
-        self.getAxis('bottom').setTextPen(pg.mkPen('#cfcfcf'))
-        self.getAxis('bottom').setTickPen(pg.mkPen('#9a9a9a'))
-        self.setLabel('left', 'Level', units='dB')
-        self.setLabel('bottom', 'Frequency', units='kHz')
-        self.enableAutoRange(x=False, y=False)
-        self.setLogMode(x=True, y=False)
-        self.setXRange(np.log10(0.04), np.log10(19.9))
-        self.setYRange(-120.0, 6.0)
-
-        self.db_curve = self.plot(pen=pg.mkPen('#ffd24d', width=2))
-        self.zero_db_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#aaaaaa', width=1, style=Qt.PenStyle.DashLine))
-        self.minus40_db_line = pg.InfiniteLine(pos=-40.0, angle=0, movable=False, pen=pg.mkPen('#7f7f7f', width=1, style=Qt.PenStyle.DashLine))
-        self.addItem(self.zero_db_line)
-        self.addItem(self.minus40_db_line)
-
-        self.minus6_db_line = pg.InfiniteLine(pos=-6.0, angle=0, movable=False, pen=pg.mkPen('#dddd66', width=1, style=Qt.PenStyle.DashLine))
-        self.minus40_db_line = pg.InfiniteLine(pos=-40.0, angle=0, movable=False, pen=pg.mkPen('#7f7f7f', width=1, style=Qt.PenStyle.DashLine))
-        self.minus60_db_line = pg.InfiniteLine(pos=-60.0, angle=0, movable=False, pen=pg.mkPen('#777777', width=1, style=Qt.PenStyle.DotLine))
-        self.addItem(self.minus6_db_line)
-        self.addItem(self.minus40_db_line)
-        self.addItem(self.minus60_db_line)
-
-        self.low_mean_threshold_line = pg.InfiniteLine(pos=-80.0, angle=0, movable=False, pen=pg.mkPen('#66ff99', width=2, style=Qt.PenStyle.DashLine))
-        self.high_mean_threshold_line = pg.InfiniteLine(pos=-80.0, angle=0, movable=False, pen=pg.mkPen('#ffb3ff', width=2, style=Qt.PenStyle.DashLine))
-        self.high_floor_threshold_line = pg.InfiniteLine(pos=-80.0, angle=0, movable=False, pen=pg.mkPen('#ff88aa', width=2, style=Qt.PenStyle.DotLine))
-        self.addItem(self.low_mean_threshold_line)
-        self.addItem(self.high_mean_threshold_line)
-        self.addItem(self.high_floor_threshold_line)
-
-        self.low_band_region = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(0, 0, 0, 0), pen=pg.mkPen('#66ff99', width=1), movable=False)
-        self.high_band_region = pg.LinearRegionItem(values=(np.log10(0.50), np.log10(4.0)), orientation='vertical', brush=pg.mkBrush(0, 0, 0, 0), pen=pg.mkPen('#ff9add', width=1), movable=False)
-        self.low_band_region.setZValue(-3)
-        self.high_band_region.setZValue(-3)
-        self.addItem(self.low_band_region)
-        self.addItem(self.high_band_region)
-
-        self.beat_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(255, 80, 80, 28), pen=pg.mkPen('#ff6666', width=1), movable=False)
-        self.depth_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(80, 255, 120, 22), pen=pg.mkPen('#44cc66', width=1), movable=False)
-        self.p0_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(80, 140, 255, 22), pen=pg.mkPen('#5599ff', width=1), movable=False)
-        self.f0_band = pg.LinearRegionItem(values=(np.log10(0.08), np.log10(1.50)), orientation='vertical', brush=pg.mkBrush(80, 240, 255, 20), pen=pg.mkPen('#55ddff', width=1), movable=False)
-        for region in (self.beat_band, self.depth_band, self.p0_band, self.f0_band):
-            region.setZValue(-2)
-            self.addItem(region)
-
-        self._zscore_boundary_hz: list[float] = [30.0, 100.0, 500.0, 2000.0, 16000.0]
-        self._zscore_boundary_lines: list[pg.InfiniteLine] = []
-        for hz in self._zscore_boundary_hz:
-            line = pg.InfiniteLine(
-                pos=self._hz_to_log_khz(hz),
-                angle=90,
-                movable=False,
-                pen=pg.mkPen('#ff8a00', width=3),
-            )
-            line.setZValue(8)
-            self.addItem(line)
-            self._zscore_boundary_lines.append(line)
-
-        self.dominant_freq_line = None
-
-        self.info_text = pg.TextItem("", color='#f2f2f2', anchor=(0.0, 0.0))
-        self.info_text.setZValue(20)
-        self.addItem(self.info_text)
-
-        self._sample_rate = 44100
-        self._low_band_history: deque[float] = deque(maxlen=240)
-        self._high_band_history: deque[float] = deque(maxlen=240)
-        self._gate_snapshot: dict[str, object] = {}
-        self._dominant_freq_hz: float = 0.0
-        self._peak_db: float = -120.0
-        self._flux_ghost_overlays: dict[str, dict] = {}
-        self._flux_ghost_timer = QTimer(self)
-        self._flux_ghost_timer.setInterval(80)
-        self._flux_ghost_timer.timeout.connect(self._tick_flux_ghosts)
-        self._update_zscore_boundaries()
-
-    @staticmethod
-    def _hz_to_log_khz(hz: float) -> float:
-        khz = max(0.04, min(19.9, float(hz) / 1000.0))
-        return float(np.log10(khz))
-
-    def _set_region_hz(self, region: pg.LinearRegionItem, low_hz: float, high_hz: float) -> None:
-        low = self._hz_to_log_khz(min(low_hz, high_hz))
-        high = self._hz_to_log_khz(max(low_hz, high_hz))
-        if high <= low:
-            high = low + 1e-4
-        region.setRegion((low, high))
-
-    def _update_zscore_boundaries(self) -> None:
-        nyquist_hz = max(1.0, float(self._sample_rate) / 2.0)
-        for hz, line in zip(self._zscore_boundary_hz, self._zscore_boundary_lines):
-            khz = float(hz) / 1000.0
-            if hz > nyquist_hz or khz < 0.04 or khz > 19.9:
-                line.hide()
-                continue
-            line.setPos(self._hz_to_log_khz(hz))
-            line.show()
-
-    def set_frequency_band(self, low_ratio: float, high_ratio: float) -> None:
-        nyquist = max(1.0, float(self._sample_rate) / 2.0)
-        self._set_region_hz(self.beat_band, float(low_ratio) * nyquist, float(high_ratio) * nyquist)
-
-    def set_depth_band(self, low_hz: float, high_hz: float) -> None:
-        self._set_region_hz(self.depth_band, low_hz, high_hz)
-
-    def set_p0_band(self, low_hz: float, high_hz: float) -> None:
-        self._set_region_hz(self.p0_band, low_hz, high_hz)
-
-    def set_f0_band(self, low_hz: float, high_hz: float) -> None:
-        self._set_region_hz(self.f0_band, low_hz, high_hz)
-
-    def _band_x_range(self, band: str) -> tuple[float, float]:
-        nyquist_khz = min(19.9, max(0.04, float(self._sample_rate) / 2000.0))
-        if band == 'low':
-            return (np.log10(0.04), np.log10(0.50))
-        if band == 'high':
-            include_mid = bool(self._gate_snapshot.get('include_mid', True))
-            high_start_khz = 0.50 if include_mid else 2.0
-            high_end_khz = min(19.9, max(high_start_khz + 0.001, nyquist_khz))
-            return (np.log10(high_start_khz), np.log10(high_end_khz))
-        return (np.log10(0.04), np.log10(nyquist_khz))
-
-    def show_flux_ghost(
-        self,
-        key: str,
-        value: float,
-        label: str,
-        color: str = '#FF66AA',
-        duration_s: float = 15.0,
-        dashed: bool = False,
-        band: str = 'full',
-        range_box: bool = False,
-        mode: str = 'threshold',
-        hz_max: float | None = None,
-    ) -> None:
-        now = time.monotonic()
-        numeric_value = float(value)
-        mode_kind = str(mode or 'threshold')
-        if mode_kind == 'db_line':
-            y_db = float(np.clip(numeric_value, -120.0, 12.0))
-        elif mode_kind in ('occupancy', 'hz_line'):
-            y_db = self._as_float(self.high_floor_threshold_line.value(), -80.0)
-        else:
-            y_db = float(self._to_db(numeric_value))
-
-        overlay = self._flux_ghost_overlays.get(key)
-        if overlay is None:
-            qcolor = QColor(color)
-            line_angle = 90 if mode_kind == 'hz_line' else 0
-            line_pos = self._hz_to_log_khz(numeric_value) if mode_kind == 'hz_line' else y_db
-            line = pg.InfiniteLine(pos=line_pos, angle=line_angle, movable=False, pen=pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)))
-            line.setZValue(18)
-            self.addItem(line)
-
-            text = pg.TextItem('', color=qcolor, anchor=(0.0, 1.0))
-            text.setZValue(19)
-            self.addItem(text)
-
-            box = pg.QtWidgets.QGraphicsRectItem()
-            box.setZValue(17)
-            self.addItem(box)
-            box.hide()
-
-            overlay = {
-                'line': line,
-                'text': text,
-                'box': box,
-                'color': qcolor,
-                'dashed': bool(dashed),
-                'started_at': now,
-                'duration_s': float(max(0.5, duration_s)),
-                'mode': mode,
-                'base_rect': None,
-            }
-            self._flux_ghost_overlays[key] = overlay
-
-        overlay['started_at'] = now
-        overlay['duration_s'] = float(max(0.5, duration_s))
-        overlay['mode'] = mode
-        overlay['dashed'] = bool(dashed)
-        overlay['hz_max'] = hz_max
-
-        x_left, x_right = self._band_x_range(band)
-        if mode_kind == 'occupancy':
-            occ = float(np.clip(numeric_value, 0.0, 1.0))
-            span = max(0.001, x_right - x_left)
-            x_right = x_left + (span * occ)
-            y_low = self._as_float(self.high_floor_threshold_line.value(), -80.0)
-            y_high = 6.0
-            overlay['line'].hide()
-            overlay['base_rect'] = QRectF(min(x_left, x_right), min(y_low, y_high), max(0.001, abs(x_right - x_left)), max(0.2, abs(y_high - y_low)))
-            overlay['box'].show()
-            overlay['text'].setText(f"{label}: {occ:.3f}")
-            overlay['text'].setPos(x_left, min(5.5, y_high - 0.2))
-        elif mode_kind == 'hz_line':
-            x_hz = self._hz_to_log_khz(numeric_value)
-            overlay['line'].show()
-            overlay['line'].setPos(x_hz)
-            if hz_max is not None:
-                hz_hi = float(max(numeric_value, float(hz_max)))
-                hz_lo = float(min(numeric_value, float(hz_max)))
-                overlay['text'].setText(f"{label}: {hz_lo:.0f}-{hz_hi:.0f} Hz")
-            else:
-                overlay['text'].setText(f"{label}: {numeric_value:.0f} Hz")
-            overlay['text'].setPos(x_hz, 5.2)
-            if range_box:
-                if hz_max is not None:
-                    x_lo = self._hz_to_log_khz(float(min(numeric_value, float(hz_max))))
-                    x_hi = self._hz_to_log_khz(float(max(numeric_value, float(hz_max))))
-                    overlay['base_rect'] = QRectF(
-                        min(x_lo, x_hi),
-                        -120.0,
-                        max(0.001, abs(x_hi - x_lo)),
-                        126.0,
-                    )
-                else:
-                    overlay['base_rect'] = QRectF(
-                        x_hz - 0.002,
-                        -120.0,
-                        0.004,
-                        126.0,
-                    )
-                overlay['box'].show()
-            else:
-                overlay['base_rect'] = None
-                overlay['box'].hide()
-        else:
-            overlay['line'].show()
-            overlay['line'].setPos(y_db)
-            overlay['text'].setText(f"{label}: {numeric_value:.4f}")
-            overlay['text'].setPos(x_left, min(5.5, y_db + 1.2))
-            if range_box:
-                overlay['base_rect'] = QRectF(
-                    min(x_left, x_right),
-                    y_db - 0.2,
-                    max(0.001, abs(x_right - x_left)),
-                    0.4,
-                )
-                overlay['box'].show()
-            else:
-                overlay['base_rect'] = None
-                overlay['box'].hide()
-
-        self._apply_flux_ghost_style(overlay, 0.0)
-        if not self._flux_ghost_timer.isActive():
-            self._flux_ghost_timer.start()
-
-    def _apply_flux_ghost_style(self, overlay: dict, progress: float) -> None:
-        eased = float(np.clip(progress, 0.0, 1.0))
-        alpha = max(0, min(230, int(230 * (1.0 - eased))))
-        color = QColor(overlay['color'])
-        color.setAlpha(alpha)
-
-        if overlay['line'].isVisible():
-            overlay['line'].setPen(pg.mkPen(color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
-        overlay['text'].setColor(color)
-
-        base_rect = overlay.get('base_rect', None)
-        box = overlay.get('box', None)
-        if box is not None and base_rect is not None and box.isVisible():
-            mode_kind = str(overlay.get('mode') or '')
-            hz_range_box = mode_kind == 'hz_line' and overlay.get('hz_max') is not None
-            if hz_range_box:
-                box.setRect(base_rect)
-            else:
-                cx = base_rect.x() + (base_rect.width() / 2.0)
-                cy = base_rect.y() + (base_rect.height() / 2.0)
-                x_expand = (base_rect.width() * 0.08 * eased) + 0.0005
-                y_expand = (6.0 * eased) if mode_kind != 'occupancy' else (2.0 * eased)
-                width = max(0.001, base_rect.width() + (2.0 * x_expand))
-                height = max(0.2, base_rect.height() + (2.0 * y_expand))
-                rect = QRectF(cx - (width / 2.0), cy - (height / 2.0), width, height)
-                box.setRect(rect)
-
-            box_color = QColor('#FFFFFF')
-            box_color.setAlpha(alpha)
-            pen = QPen(box_color)
-            pen.setWidthF(0.7)
-            pen.setCosmetic(True)
-            pen.setStyle(Qt.PenStyle.SolidLine)
-            box.setPen(pen)
-            box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-
-    def _tick_flux_ghosts(self) -> None:
-        if not self._flux_ghost_overlays:
-            self._flux_ghost_timer.stop()
-            return
-
-        now = time.monotonic()
-        expired: list[str] = []
-        for key, overlay in list(self._flux_ghost_overlays.items()):
-            elapsed = max(0.0, now - float(overlay.get('started_at', now)))
-            duration = max(0.5, float(overlay.get('duration_s', 15.0)))
-            progress = elapsed / duration
-            if progress >= 1.0:
-                expired.append(key)
-                continue
-            self._apply_flux_ghost_style(overlay, progress)
-
-        for key in expired:
-            overlay = self._flux_ghost_overlays.pop(key, None)
-            if overlay is None:
-                continue
-            for item_key in ('line', 'text', 'box'):
-                item = overlay.get(item_key)
-                if item is not None:
-                    try:
-                        item.hide()
-                    except Exception:
-                        pass
-                    try:
-                        self.removeItem(item)
-                    except Exception:
-                        pass
-                    try:
-                        scene = item.scene()
-                        if scene is not None:
-                            scene.removeItem(item)
-                    except Exception:
-                        pass
-
-        if not self._flux_ghost_overlays:
-            self._flux_ghost_timer.stop()
-
-    @staticmethod
-    def _to_db(value: float, floor_db: float = -120.0) -> float:
-        v = max(float(value), 1e-12)
-        return float(np.clip(20.0 * np.log10(v), floor_db, 12.0))
-
-    @staticmethod
-    def _as_float(value, default: float = 0.0) -> float:
-        if isinstance(value, (int, float, np.integer, np.floating)):
-            return float(value)
-        try:
-            parsed = np.asarray(value, dtype=np.float64).reshape(-1)
-            if parsed.size > 0:
-                return float(parsed[0])
-        except Exception:
-            pass
-        return float(default)
-
-    def _band_activity(self, spectrum: np.ndarray, sample_rate: int, low_hz: float, high_hz: float) -> float:
-        if spectrum is None or len(spectrum) == 0 or sample_rate <= 0:
-            return 0.0
-        nyquist = sample_rate / 2.0
-        n_bins = len(spectrum)
-        freq_per_bin = nyquist / max(1, n_bins)
-        low_bin = max(0, int(low_hz / max(1e-9, freq_per_bin)))
-        high_bin = min(n_bins - 1, int(high_hz / max(1e-9, freq_per_bin)))
-        if high_bin < low_bin:
-            return 0.0
-        band = np.asarray(spectrum[low_bin:high_bin + 1], dtype=np.float32)
-        if band.size == 0:
-            return 0.0
-        return float(np.sqrt(np.mean(np.square(band))))
-
-    def _update_gate_snapshot(self, spectrum: np.ndarray, sample_rate: int, stroke_cfg) -> None:
-        include_mid = bool(getattr(stroke_cfg, 'high_band_include_mid', True))
-        low_activity = self._band_activity(spectrum, sample_rate, 30.0, 500.0)
-        high_low_hz = 500.0 if include_mid else 2000.0
-        high_activity = self._band_activity(spectrum, sample_rate, high_low_hz, sample_rate / 2.0)
-
-        self._low_band_history.append(low_activity)
-        self._high_band_history.append(high_activity)
-
-        def _window_stats(values: deque[float], window_size: int) -> tuple[np.ndarray, float, float, float]:
-            vals = list(values)
-            if not vals:
-                return np.array([], dtype=np.float32), 0.0, 0.0, 0.0
-            window = int(np.clip(window_size, 1, len(vals)))
-            seg = np.asarray(vals[-window:], dtype=np.float32)
-            if seg.size == 0:
-                return seg, 0.0, 0.0, 0.0
-            return seg, float(np.mean(seg)), float(np.max(seg) - np.min(seg)), float(np.var(seg))
-
-        low_window = int(getattr(stroke_cfg, 'low_band_window_frames', 18) or 18)
-        low_seg, low_mean, _low_delta, _low_var = _window_stats(self._low_band_history, max(8, low_window))
-        low_mean_th = float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20)
-        low_pass = (low_mean >= low_mean_th)
-
-        high_window = int(getattr(stroke_cfg, 'high_band_window_frames', 18) or 18)
-        high_seg, high_mean, high_delta, high_var = _window_stats(self._high_band_history, max(8, high_window))
-        high_mean_th = float(getattr(stroke_cfg, 'high_band_mean_threshold', 0.12) or 0.12)
-        high_floor_th = float(getattr(stroke_cfg, 'high_band_floor_threshold', 0.06) or 0.06)
-        high_occ_th = float(getattr(stroke_cfg, 'high_band_occupancy_threshold', 0.55) or 0.55)
-        high_delta_th = float(getattr(stroke_cfg, 'high_band_delta_threshold', 0.05) or 0.05)
-        high_var_th = float(getattr(stroke_cfg, 'high_band_variance_threshold', 0.0010) or 0.0010)
-        if high_seg.size > 0:
-            high_occ = float(np.sum(high_seg >= high_floor_th) / max(1, high_seg.size))
-        else:
-            high_occ = 0.0
-        high_pass = (high_mean >= high_mean_th) and (high_occ >= high_occ_th) and ((high_delta >= high_delta_th) or (high_var >= high_var_th))
-
-        self._gate_snapshot = {
-            'include_mid': include_mid,
-            'low_mean': low_mean,
-            'low_mean_th': low_mean_th,
-            'low_pass': bool(low_pass),
-            'high_mean': high_mean,
-            'high_occ': high_occ,
-            'high_delta': high_delta,
-            'high_var': high_var,
-            'high_mean_th': high_mean_th,
-            'high_occ_th': high_occ_th,
-            'high_delta_th': high_delta_th,
-            'high_var_th': high_var_th,
-            'high_pass': bool(high_pass),
-        }
-
-    def _update_info_text(self) -> None:
-        gate = self._gate_snapshot
-        low_ok = bool(gate.get('low_pass', False))
-        high_ok = bool(gate.get('high_pass', False))
-        low_mark = 'PASS' if low_ok else 'BLOCK'
-        high_mark = 'PASS' if high_ok else 'BLOCK'
-        g = lambda key: self._as_float(gate.get(key, 0.0), 0.0)
-
-        low_color = '#66ff99' if low_ok else '#ff8080'
-        high_color = '#ffb3ff' if high_ok else '#ff8080'
-        html = (
-            "<div style='background-color: rgba(0,0,0,170); padding: 6px; border: 2px solid #66c2ff; border-radius: 5px;'>"
-            f"<div style='font-size: 12pt; font-weight: 700; color: #ffffff;'>Dominant: {self._dominant_freq_hz:.1f} Hz &nbsp;&nbsp; Peak: {self._peak_db:+.1f} dB</div>"
-            f"<div style='font-size: 10pt; font-weight: 700; color: {low_color};'>Low gate [{low_mark}] mean {g('low_mean'):.4f}/{g('low_mean_th'):.4f} &nbsp; Δ {g('low_delta'):.4f}/{g('low_delta_th'):.4f} &nbsp; var {g('low_var'):.5f}/{g('low_var_th'):.5f}</div>"
-            f"<div style='font-size: 10pt; font-weight: 700; color: {high_color};'>High gate [{high_mark}] mean {g('high_mean'):.4f}/{g('high_mean_th'):.4f} &nbsp; occ {g('high_occ'):.2f}/{g('high_occ_th'):.2f} &nbsp; Δ {g('high_delta'):.4f}/{g('high_delta_th'):.4f} &nbsp; var {g('high_var'):.5f}/{g('high_var_th'):.5f}</div>"
-            f"<div style='font-size: 9pt; font-weight: 600; color: #d9d9d9;'>High-band source: {'mid+high' if bool(gate.get('include_mid', True)) else 'high-only'}</div>"
-            "</div>"
-        )
-        self.info_text.setHtml(html)
-        self.info_text.setPos(np.log10(0.045), -118.0)
-
-    def update_from_spectrum(self, spectrum: Optional[np.ndarray], sample_rate: int, stroke_cfg) -> None:
-        if spectrum is None:
-            return
-        arr = np.asarray(spectrum, dtype=np.float32)
-        if arr.size == 0:
-            return
-
-        self._sample_rate = int(max(1, sample_rate))
-        self._update_zscore_boundaries()
-        nyquist = self._sample_rate / 2.0
-        freqs_hz = np.linspace(0.0, nyquist, arr.size, dtype=np.float32)
-        freqs_khz = freqs_hz / 1000.0
-
-        db = 20.0 * np.log10(np.maximum(arr, 1e-12))
-        db = np.clip(db, -120.0, 12.0)
-
-        if arr.size > 1:
-            peak_idx = int(np.argmax(arr))
-            self._dominant_freq_hz = float(freqs_hz[peak_idx])
-            self._peak_db = float(db[peak_idx])
-        else:
-            self._dominant_freq_hz = 0.0
-            self._peak_db = -120.0
-
-        start_idx = 1 if freqs_khz.size > 1 else 0
-        valid = (freqs_khz[start_idx:] >= 0.04) & (freqs_khz[start_idx:] <= 19.9)
-        self.db_curve.setData(x=freqs_khz[start_idx:][valid], y=db[start_idx:][valid])
-        self.setXRange(np.log10(0.04), np.log10(min(19.9, max(0.04, nyquist / 1000.0))))
-
-        high_band_low_hz = 500.0 if bool(getattr(stroke_cfg, 'high_band_include_mid', True)) else 2000.0
-        low_start_khz = 0.04
-        low_end_khz = 0.50
-        high_start_khz = high_band_low_hz / 1000.0
-        high_end_khz = min(19.9, max(high_start_khz + 0.001, nyquist / 1000.0))
-        self.low_band_region.setRegion((np.log10(low_start_khz), np.log10(low_end_khz)))
-        self.high_band_region.setRegion((np.log10(high_start_khz), np.log10(high_end_khz)))
-
-        low_mean_th_db = self._to_db(float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20))
-        high_mean_th_db = self._to_db(float(getattr(stroke_cfg, 'high_band_mean_threshold', 0.12) or 0.12))
-        high_floor_th_db = self._to_db(float(getattr(stroke_cfg, 'high_band_floor_threshold', 0.06) or 0.06))
-        self.low_mean_threshold_line.setPos(low_mean_th_db)
-        self.high_mean_threshold_line.setPos(high_mean_th_db)
-        self.high_floor_threshold_line.setPos(high_floor_th_db)
-
-        self._update_gate_snapshot(arr, self._sample_rate, stroke_cfg)
-        self._update_info_text()
 
 
 class FrequencyDbLiveCanvas(pg.PlotWidget):
@@ -3016,235 +2292,6 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
             region.setVisible(visible)
 
 
-class CalibrationPopoutWindow(QMainWindow):
-    """Pop-out calibration visualizer with short-term pause/rewind/slow playback."""
-
-    def __init__(self, parent=None, on_closed=None):
-        super().__init__(parent)
-        self._on_closed = on_closed
-        self.setWindowTitle("Calibration Visualizer")
-        self.resize(980, 520)
-
-        self._history_span_s = 5.0
-        self._frame_history: deque[dict] = deque()
-        self._playback_paused = False
-        self._playback_rate = 1.0
-        self._playback_cursor_time: Optional[float] = None
-        self._last_playback_tick = time.monotonic()
-
-        container = QWidget(self)
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(6)
-
-        controls_row = QHBoxLayout()
-        controls_row.setSpacing(8)
-
-        self.pause_btn = QPushButton("Pause")
-        self.pause_btn.setCheckable(True)
-        self.pause_btn.clicked.connect(self._on_pause_toggled)
-        controls_row.addWidget(self.pause_btn)
-
-        self.rewind_btn = QPushButton("Rewind 20ms")
-        self.rewind_btn.clicked.connect(self._on_rewind_step)
-        controls_row.addWidget(self.rewind_btn)
-
-        speed_label = QLabel("Speed:")
-        speed_label.setStyleSheet("color: #ddd;")
-        controls_row.addWidget(speed_label)
-
-        mode_label = QLabel("View:")
-        mode_label.setStyleSheet("color: #ddd;")
-        controls_row.addWidget(mode_label)
-
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Waveform (Time/Amp)", "Spectrum (Freq/dB)"])
-        self.mode_combo.setCurrentIndex(1)
-        controls_row.addWidget(self.mode_combo)
-
-        self.speed_combo = QComboBox()
-        self.speed_combo.addItems(["1.0x", "0.5x", "0.25x"])
-        self.speed_combo.setCurrentIndex(0)
-        self.speed_combo.currentIndexChanged.connect(self._on_speed_changed)
-        controls_row.addWidget(self.speed_combo)
-
-        self.buffer_label = QLabel("Buffer: 0.0s")
-        self.buffer_label.setStyleSheet("color: #aaa;")
-        controls_row.addWidget(self.buffer_label)
-        controls_row.addStretch(1)
-
-        layout.addLayout(controls_row)
-
-        self.waveform_canvas = WaveformCalibrationCanvas(parent)
-        self.freqdb_canvas = FrequencyDbCalibrationCanvas(parent)
-        self.waveform_canvas.setVisible(False)
-        self.freqdb_canvas.setVisible(True)
-        layout.addWidget(self.waveform_canvas)
-        layout.addWidget(self.freqdb_canvas)
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        self.setCentralWidget(container)
-
-        self._playback_timer = QTimer(self)
-        self._playback_timer.setInterval(33)
-        self._playback_timer.timeout.connect(self._on_playback_tick)
-        self._playback_timer.start()
-
-        self._rewind_step_s = 0.020
-
-    def _snapshot_stroke_cfg(self, stroke_cfg) -> dict:
-        keys = [
-            'high_band_include_mid',
-            'low_band_window_frames',
-            'low_band_activity_threshold',
-            'high_band_window_frames',
-            'high_band_mean_threshold',
-            'high_band_floor_threshold',
-            'high_band_occupancy_threshold',
-            'high_band_delta_threshold',
-            'high_band_variance_threshold',
-        ]
-        snap: dict[str, object] = {}
-        for key in keys:
-            snap[key] = getattr(stroke_cfg, key, None)
-        return snap
-
-    def _append_frame(self, waveform: np.ndarray, sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
-        now = time.monotonic()
-        frame = {
-            't': now,
-            'waveform': np.asarray(waveform, dtype=np.float32).copy(),
-            'sample_rate': int(max(1, sample_rate)),
-            'spectrum': (np.asarray(spectrum, dtype=np.float32).copy() if spectrum is not None else None),
-            'stroke_cfg': self._snapshot_stroke_cfg(stroke_cfg),
-        }
-        self._frame_history.append(frame)
-
-        cutoff = now - self._history_span_s
-        while self._frame_history and float(self._frame_history[0]['t']) < cutoff:
-            self._frame_history.popleft()
-
-        if self._frame_history:
-            span = float(self._frame_history[-1]['t']) - float(self._frame_history[0]['t'])
-            self.buffer_label.setText(f"Buffer: {span:.1f}s")
-        else:
-            self.buffer_label.setText("Buffer: 0.0s")
-
-    def _render_frame(self, frame: dict) -> None:
-        waveform = np.asarray(frame.get('waveform', []), dtype=np.float32)
-        spectrum = frame.get('spectrum')
-        if waveform.size == 0 and spectrum is None:
-            return
-        sample_rate = int(frame.get('sample_rate', 44100))
-        cfg_obj = SimpleNamespace(**dict(frame.get('stroke_cfg', {})))
-        if waveform.size > 0:
-            self.waveform_canvas.update_from_audio(waveform, sample_rate, spectrum, cfg_obj)
-        self.freqdb_canvas.update_from_spectrum(spectrum, sample_rate, cfg_obj)
-
-    def _on_mode_changed(self, index: int) -> None:
-        show_waveform = int(index) == 0
-        self.waveform_canvas.setVisible(show_waveform)
-        self.freqdb_canvas.setVisible(not show_waveform)
-
-    def _find_frame_for_time(self, target_time: float) -> Optional[dict]:
-        if not self._frame_history:
-            return None
-        for frame in reversed(self._frame_history):
-            if float(frame['t']) <= target_time:
-                return frame
-        return self._frame_history[0]
-
-    def _on_pause_toggled(self, checked: bool) -> None:
-        self._playback_paused = bool(checked)
-        self.pause_btn.setText("Resume" if self._playback_paused else "Pause")
-        if self._playback_paused:
-            if self._playback_cursor_time is None and self._frame_history:
-                self._playback_cursor_time = float(self._frame_history[-1]['t'])
-        else:
-            self._last_playback_tick = time.monotonic()
-
-    def _on_rewind_step(self) -> None:
-        if not self._frame_history:
-            return
-        if not self._playback_paused:
-            self.pause_btn.setChecked(True)
-            self._on_pause_toggled(True)
-
-        newest_t = float(self._frame_history[-1]['t'])
-        oldest_t = float(self._frame_history[0]['t'])
-        base_t = float(self._playback_cursor_time) if self._playback_cursor_time is not None else newest_t
-        self._playback_cursor_time = max(oldest_t, base_t - self._rewind_step_s)
-        frame = self._find_frame_for_time(self._playback_cursor_time)
-        if frame is not None:
-            self._render_frame(frame)
-
-    def _on_speed_changed(self, _index: int) -> None:
-        text = self.speed_combo.currentText().strip().lower().replace('x', '')
-        try:
-            self._playback_rate = float(text)
-        except Exception:
-            self._playback_rate = 1.0
-        self._playback_rate = float(np.clip(self._playback_rate, 0.05, 1.0))
-        self._last_playback_tick = time.monotonic()
-
-    def _on_playback_tick(self) -> None:
-        if not self._frame_history:
-            return
-
-        if self._playback_paused:
-            return
-
-        now = time.monotonic()
-        dt = max(0.0, now - self._last_playback_tick)
-        self._last_playback_tick = now
-
-        if self._playback_rate >= 0.999:
-            latest = self._frame_history[-1]
-            self._playback_cursor_time = float(latest['t'])
-            self._render_frame(latest)
-            return
-
-        oldest_t = float(self._frame_history[0]['t'])
-        newest_t = float(self._frame_history[-1]['t'])
-
-        if self._playback_cursor_time is None:
-            self._playback_cursor_time = oldest_t
-
-        self._playback_cursor_time += dt * self._playback_rate
-        if self._playback_cursor_time > newest_t:
-            self._playback_cursor_time = newest_t
-        if self._playback_cursor_time < oldest_t:
-            self._playback_cursor_time = oldest_t
-
-        frame = self._find_frame_for_time(self._playback_cursor_time)
-        if frame is not None:
-            self._render_frame(frame)
-
-    def update_from_audio(self, waveform: Optional[np.ndarray], sample_rate: int, spectrum: Optional[np.ndarray], stroke_cfg) -> None:
-        if waveform is None:
-            return
-        if self._playback_paused:
-            return
-
-        self._append_frame(waveform, sample_rate, spectrum, stroke_cfg)
-
-        if self._playback_rate >= 0.999 and self._frame_history:
-            self._playback_cursor_time = float(self._frame_history[-1]['t'])
-            if self.mode_combo.currentIndex() == 0:
-                self.waveform_canvas.update_from_audio(waveform, sample_rate, spectrum, stroke_cfg)
-            else:
-                self.freqdb_canvas.update_from_spectrum(spectrum, sample_rate, stroke_cfg)
-
-    def closeEvent(self, event):
-        self._playback_timer.stop()
-        self._frame_history.clear()
-        if callable(self._on_closed):
-            try:
-                self._on_closed()
-            except Exception:
-                pass
-        super().closeEvent(event)
-
-
 class BREadbeatsWindow(QMainWindow):
     """Main application window"""
     
@@ -3255,8 +2302,6 @@ class BREadbeatsWindow(QMainWindow):
         self.setMinimumSize(400, 300)
         self.resize(1100, 950)
         self.setStyleSheet(self._get_stylesheet())
-        self.calibration_popout = None
-        
         # Set window icon (appears in taskbar and title bar)
         try:
             from pathlib import Path
@@ -3946,7 +2991,7 @@ class BREadbeatsWindow(QMainWindow):
         # Spectrum visualizer type submenu
         viz_menu = options_menu.addMenu("Spectrum Type")
         assert viz_menu is not None
-        viz_names = ["Mountain Range", "Phosphor", "Waveform", "Freq dB"]
+        viz_names = ["Mountain Range", "Phosphor", "Waveform", "Freq dB", "FFT Bins (Exact)"]
         default_viz_index = 2  # Waveform
         self.visualizer_type_combo = QComboBox()  # Hidden combo for state tracking
         self.visualizer_type_combo.addItems(viz_names)
@@ -3967,9 +3012,6 @@ class BREadbeatsWindow(QMainWindow):
         self.show_peak_indicators_action.setChecked(True)  # Peak visible by default
         self.show_peak_indicators_action.triggered.connect(self._on_show_peak_indicators_menu_toggle)
 
-        popout_calibration_action = options_menu.addAction("Pop-out Calibration Visualizer")
-        assert popout_calibration_action is not None
-        popout_calibration_action.triggered.connect(self._on_popout_calibration_visualizer)
         geometry_rest_action = options_menu.addAction("Geometry Rest State...")
         assert geometry_rest_action is not None
         geometry_rest_action.triggered.connect(self._on_options_geometry_rest_state)
@@ -4938,12 +3980,7 @@ class BREadbeatsWindow(QMainWindow):
         gate_info.setStyleSheet("color: #aaa; font-size: 11px;")
         gate_layout.addWidget(gate_info)
         def _show_waveform_amp_ref(key: str, value: float, label: str, color: str = '#FF66AA', dashed: bool = False):
-            canvas = None
-            if self.calibration_popout is not None and self.calibration_popout.isVisible():
-                if hasattr(self.calibration_popout, 'mode_combo') and self.calibration_popout.mode_combo.currentIndex() == 0:
-                    canvas = getattr(self.calibration_popout, 'waveform_canvas', None)
-            if canvas is not None and hasattr(canvas, 'show_reference_line'):
-                canvas.show_reference_line(key, float(value), label, color=color, duration_s=15.0, dashed=dashed)
+            return
 
         def _show_freqdb_ghost_ref(
             key: str,
@@ -4956,16 +3993,8 @@ class BREadbeatsWindow(QMainWindow):
             mode: str = 'threshold',
             hz_max: float | None = None,
         ) -> None:
-            ghost_targets = []
             if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
-                ghost_targets.append(self.freqdb_canvas)
-            popout = getattr(self, 'calibration_popout', None)
-            popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
-            if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in ghost_targets:
-                ghost_targets.append(popout_freqdb)
-
-            for canvas in ghost_targets:
-                canvas.show_flux_ghost(
+                self.freqdb_canvas.show_flux_ghost(
                     key,
                     float(value),
                     label,
@@ -4989,6 +4018,26 @@ class BREadbeatsWindow(QMainWindow):
 
         def _update_fill_requirement_refs() -> None:
             self._preview_fill_requirement_ghosts()
+            down_val = self._effective_fill_requirement('downbeat')
+            beat_val = self._effective_fill_requirement('beat')
+            sync_val = self._effective_fill_requirement('syncopation')
+            _show_fft_bin_fill_ref('fill_req_downbeat_ratio', down_val, '% fill for (downbeat)', color='#66E0FF', dashed=True)
+            _show_fft_bin_fill_ref('fill_req_beat_ratio', beat_val, '% fill for (beat)', color='#55CCFF', dashed=True)
+            _show_fft_bin_fill_ref('fill_req_sync_ratio', sync_val, '% fill for (synco)', color='#44B8FF', dashed=True)
+
+        def _show_fft_bin_fill_ref(key: str, ratio: float, label: str, color: str = '#66E0FF', dashed: bool = True) -> None:
+            canvas = getattr(self, 'fft_bin_canvas', None)
+            if canvas is not None and hasattr(canvas, 'show_fill_ratio_ghost'):
+                canvas.show_fill_ratio_ghost(key, float(ratio), label, color=color, duration_s=5.0, dashed=dashed)
+
+        def _show_fft_bin_range_ref(key: str, low_bin: int, high_bin: int, label: str, color: str = '#FFFFFF', dashed: bool = False) -> None:
+            canvas = getattr(self, 'fft_bin_canvas', None)
+            if canvas is not None and hasattr(canvas, 'show_bin_range_ghost'):
+                if hasattr(canvas, '_bar_count') and int(getattr(canvas, '_bar_count', 0) or 0) <= 0 and hasattr(canvas, '_ensure_bars'):
+                    fft_size = int(getattr(self.config.audio, 'fft_size', 1024) or 1024)
+                    bin_count = max(2, (fft_size // 2) + 1)
+                    canvas._ensure_bars(bin_count)
+                canvas.show_bin_range_ghost(key, int(low_bin), int(high_bin), label, color=color, duration_s=5.0, dashed=dashed)
 
 
         bass_gate_cb = QCheckBox("Require bass z-score bands for beat/sync stroke motion")
@@ -5093,6 +4142,23 @@ class BREadbeatsWindow(QMainWindow):
         )
         gate_layout.addWidget(sync_fill_slider)
 
+        fill_sustain_slider = SliderWithLabel(
+            "Sustained Fullness Required (frames)",
+            0,
+            15,
+            int(getattr(self.config.stroke, 'overall_amp_fill_sustain_frames', 3) or 3),
+            0,
+        )
+        fill_sustain_slider.setToolTip(
+            "Number of consecutive frames (~20ms each) that fill must stay above threshold before stroke fires.\n"
+            "0-1 = instant (no duration check), 3 = ~60ms sustained, 5 = ~100ms, 10 = ~200ms.\n"
+            "Higher values prevent single-frame fill spikes from triggering strokes."
+        )
+        fill_sustain_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'overall_amp_fill_sustain_frames', int(v))
+        )
+        gate_layout.addWidget(fill_sustain_slider)
+
         fill_bin_info = QLabel("Fill gate FFT-bin windows (tight range control per phase)")
         fill_bin_info.setStyleSheet("color: #999; font-size: 10px;")
         gate_layout.addWidget(fill_bin_info)
@@ -5137,6 +4203,14 @@ class BREadbeatsWindow(QMainWindow):
                     mode='hz_line',
                     range_box=True,
                     hz_max=high_hz,
+                )
+                _show_fft_bin_range_ref(
+                    ghost_key,
+                    min(low_bin, high_bin),
+                    max(low_bin, high_bin),
+                    title,
+                    color='#FFFFFF',
+                    dashed=False,
                 )
 
             def _on_low_change(v: int) -> None:
@@ -5508,16 +4582,8 @@ class BREadbeatsWindow(QMainWindow):
                         dashed=dashed,
                     )
 
-                ghost_targets = []
                 if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
-                    ghost_targets.append(self.freqdb_canvas)
-                popout = getattr(self, 'calibration_popout', None)
-                popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
-                if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in ghost_targets:
-                    ghost_targets.append(popout_freqdb)
-
-                for canvas in ghost_targets:
-                    canvas.show_flux_ghost(
+                    self.freqdb_canvas.show_flux_ghost(
                         ref_key,
                         ghost_value,
                         ref_label,
@@ -5561,16 +4627,8 @@ class BREadbeatsWindow(QMainWindow):
                         dashed=dashed,
                     )
 
-                ghost_targets = []
                 if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
-                    ghost_targets.append(self.freqdb_canvas)
-                popout = getattr(self, 'calibration_popout', None)
-                popout_freqdb = getattr(popout, 'freqdb_canvas', None) if popout is not None else None
-                if popout_freqdb is not None and hasattr(popout_freqdb, 'show_flux_ghost') and popout_freqdb not in ghost_targets:
-                    ghost_targets.append(popout_freqdb)
-
-                for canvas in ghost_targets:
-                    canvas.show_flux_ghost(
+                    self.freqdb_canvas.show_flux_ghost(
                         ref_key,
                         value,
                         ref_label,
@@ -5582,15 +4640,6 @@ class BREadbeatsWindow(QMainWindow):
                         mode=ghost_mode,
                     )
             return _handler
-
-        def _show_waveform_gate_window_ref(key: str, frames: int, label: str, color: str) -> None:
-            popout = getattr(self, 'calibration_popout', None)
-            wave_canvas = getattr(popout, 'waveform_canvas', None) if popout is not None else None
-            if wave_canvas is None or not hasattr(wave_canvas, 'show_time_window_ghost'):
-                return
-            frame_ms = float(getattr(wave_canvas, '_x_max_ms', 25.0) or 25.0)
-            approx_ms = float(max(0.0, int(frames)) * max(1.0, frame_ms))
-            wave_canvas.show_time_window_ghost(key, approx_ms, f"{label} ({int(frames)}f)", color=color, duration_s=15.0, dashed=True)
 
         low_band_window_row = QHBoxLayout()
         low_band_window_label = QLabel("Low-band gate window (frames):")
@@ -6100,6 +5149,89 @@ class BREadbeatsWindow(QMainWindow):
                 QMessageBox.warning(self, "Load Error", f"Failed to load presets:\n{e}")
 
     def _get_external_data_start_dir(self) -> str:
+        # ===== dBFS Fill Gate Mode Toggle =====
+        fill_mode_info = QLabel(
+            "Fill gate mode: dBFS uses stable absolute signal strength; Legacy uses relative peak percentage."
+        )
+        fill_mode_info.setStyleSheet("color: #aaa; font-size: 11px; margin-top: 8px;")
+        gate_layout.addWidget(fill_mode_info)
+
+        dbfs_mode_cb = QCheckBox("Use dBFS mode (stable absolute thresholds)")
+        dbfs_mode_cb.setChecked(bool(getattr(self.config.stroke, 'use_dbfs_fill_gate', True)))
+        dbfs_mode_cb.setToolTip(
+            "dBFS mode: Bins must exceed absolute signal strength in dB relative to recent maximum.\n"
+            "Legacy mode: Bins must exceed percentage of instantaneous peak (can drift with volume changes)."
+        )
+        dbfs_mode_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'use_dbfs_fill_gate', state == 2)
+        )
+        gate_layout.addWidget(dbfs_mode_cb)
+
+        # ===== dBFS Threshold Sliders (shown when dBFS mode is active) =====
+        dbfs_downbeat_slider = SliderWithLabel(
+            "Downbeat signal strength (dB)",
+            -60.0,
+            0.0,
+            float(getattr(self.config.stroke, 'downbeat_dbfs_threshold', -25.0) or -25.0),
+            1,
+        )
+        dbfs_downbeat_slider.setToolTip(
+            "dB below reference maximum required for downbeat strokes.\n"
+            "More negative = harder to trigger. Typical: -20 to -30 dB."
+        )
+        dbfs_downbeat_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'downbeat_dbfs_threshold', float(v))
+        )
+        gate_layout.addWidget(dbfs_downbeat_slider)
+
+        dbfs_beat_slider = SliderWithLabel(
+            "Beat signal strength (dB)",
+            -60.0,
+            0.0,
+            float(getattr(self.config.stroke, 'beat_dbfs_threshold', -30.0) or -30.0),
+            1,
+        )
+        dbfs_beat_slider.setToolTip(
+            "dB below reference maximum required for beat strokes.\n"
+            "More negative = harder to trigger. Typical: -25 to -35 dB."
+        )
+        dbfs_beat_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'beat_dbfs_threshold', float(v))
+        )
+        gate_layout.addWidget(dbfs_beat_slider)
+
+        dbfs_sync_slider = SliderWithLabel(
+            "Syncopation signal strength (dB)",
+            -60.0,
+            0.0,
+            float(getattr(self.config.stroke, 'syncopation_dbfs_threshold', -35.0) or -35.0),
+            1,
+        )
+        dbfs_sync_slider.setToolTip(
+            "dB below reference maximum required for syncopation strokes.\n"
+            "More negative = harder to trigger. Typical: -30 to -40 dB."
+        )
+        dbfs_sync_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'syncopation_dbfs_threshold', float(v))
+        )
+        gate_layout.addWidget(dbfs_sync_slider)
+
+        dbfs_decay_slider = SliderWithLabel(
+            "Reference decay rate",
+            0.990,
+            0.9999,
+            float(getattr(self.config.stroke, 'dbfs_reference_decay_rate', 0.9995) or 0.9995),
+            4,
+        )
+        dbfs_decay_slider.setToolTip(
+            "Per-frame decay multiplier for reference maximum.\n"
+            "0.999 = fast decay (~15s), 0.9995 = medium (~30s), 0.9999 = slow (~2min)."
+        )
+        dbfs_decay_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'dbfs_reference_decay_rate', float(v))
+        )
+        gate_layout.addWidget(dbfs_decay_slider)
+
         """Pick a sensible starting directory for user-provided files, preferring D: if available."""
         candidates = [
             Path("D:/breadbeats_datasets"),
@@ -7029,15 +6161,18 @@ Like the app?<br>
         self.phosphor_canvas = PhosphorCanvas(self, width=8, height=3)
         self.waveform_canvas = WaveformLiveCanvas(self, width=8, height=3)
         self.freqdb_canvas = FrequencyDbLiveCanvas(self, width=8, height=3)
+        self.fft_bin_canvas = FFTBinBarGraphCanvas(self, width=8, height=3)
         self.mountain_canvas.setVisible(False)
         self.phosphor_canvas.setVisible(False)
         self.waveform_canvas.setVisible(True)  # Start with waveform
         self.freqdb_canvas.setVisible(False)
+        self.fft_bin_canvas.setVisible(False)
         
         layout.addWidget(self.mountain_canvas)
         layout.addWidget(self.phosphor_canvas)
         layout.addWidget(self.waveform_canvas)
         layout.addWidget(self.freqdb_canvas)
+        layout.addWidget(self.fft_bin_canvas)
         
         return widget
     
@@ -7053,14 +6188,12 @@ Like the app?<br>
             )
     
     def _on_visualizer_type_change(self, index: int):
-        """Switch between visualizer types: 0=Mountain, 1=Phosphor, 2=Waveform, 3=Freq dB"""
+        """Switch visualizer types: 0=Mountain, 1=Phosphor, 2=Waveform, 3=Freq dB, 4=FFT Bins."""
         self.mountain_canvas.setVisible(index == 0)
         self.phosphor_canvas.setVisible(index == 1)
         self.waveform_canvas.setVisible(index == 2)
         self.freqdb_canvas.setVisible(index == 3)
-
-        if self.calibration_popout is not None and self.calibration_popout.isVisible():
-            self._set_main_visualizers_hidden_for_popout(True)
+        self.fft_bin_canvas.setVisible(index == 4)
         
         # Sync the frequency bands to the newly visible visualizer
         if hasattr(self, 'freq_range_slider'):
@@ -7068,69 +6201,18 @@ Like the app?<br>
         self._on_depth_band_change()
         if hasattr(self, 'pulse_freq_range_slider'):
             self._on_p0_band_change()
-
-    def _set_main_visualizers_hidden_for_popout(self, hidden: bool) -> None:
-        """Hide/show embedded visualizers while calibration popout is active."""
-        if hidden:
-            self.mountain_canvas.setVisible(False)
-            self.phosphor_canvas.setVisible(False)
-            self.waveform_canvas.setVisible(False)
-            self.freqdb_canvas.setVisible(False)
-            return
-
-        index = int(self.visualizer_type_combo.currentIndex()) if hasattr(self, 'visualizer_type_combo') else 2
-        self.mountain_canvas.setVisible(index == 0)
-        self.phosphor_canvas.setVisible(index == 1)
-        self.waveform_canvas.setVisible(index == 2)
-        self.freqdb_canvas.setVisible(index == 3)
     
     def _on_show_peak_indicators_toggle(self, checked: bool):
         """Toggle visibility of peak indicator bars on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'set_peak_indicators_visible'):
                 canvas.set_peak_indicators_visible(checked)
 
     def _on_show_range_indicators_toggle(self, checked: bool):
         """Toggle visibility of range indicator bands on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'set_range_indicators_visible'):
                 canvas.set_range_indicators_visible(checked)
-
-    def _on_popout_calibration_visualizer(self):
-        """Open or focus a pop-out calibration visualizer window."""
-        def _open_advanced_controls_from_popout() -> None:
-            try:
-                self._on_advanced_controls(scroll_to_flux=True)
-            except Exception as exc:
-                print(f"[UI] Advanced Controls open failed from popout: {exc}")
-            dialog = getattr(self, '_advanced_controls_dialog', None)
-            if dialog is None:
-                return
-            try:
-                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-                dialog.show()
-                dialog.raise_()
-                dialog.activateWindow()
-            except RuntimeError:
-                self._advanced_controls_dialog = None
-                self._advanced_controls_scroll = None
-                self._advanced_flux_group = None
-                self._advanced_flux_threshold_slider = None
-
-        if self.calibration_popout is not None and self.calibration_popout.isVisible():
-            self.calibration_popout.raise_()
-            self.calibration_popout.activateWindow()
-            _open_advanced_controls_from_popout()
-            return
-
-        self.calibration_popout = CalibrationPopoutWindow(self, on_closed=self._on_calibration_popout_closed)
-        self.calibration_popout.show()
-        self._set_main_visualizers_hidden_for_popout(True)
-        _open_advanced_controls_from_popout()
-
-    def _on_calibration_popout_closed(self):
-        self.calibration_popout = None
-        self._set_main_visualizers_hidden_for_popout(False)
 
     def _apply_release_learning_defaults(self) -> None:
         import sys
@@ -7306,7 +6388,7 @@ Like the app?<br>
 
     def _on_toggle_beat_band(self, checked: bool):
         """Toggle visibility of beat detection band (red) on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'beat_band'):
                 canvas.beat_band.setVisible(checked)
             if hasattr(canvas, 'beat_label'):
@@ -7314,7 +6396,7 @@ Like the app?<br>
 
     def _on_toggle_depth_band(self, checked: bool):
         """Toggle visibility of stroke depth band (green) on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'depth_band'):
                 canvas.depth_band.setVisible(checked)
             if hasattr(canvas, 'depth_label'):
@@ -7322,7 +6404,7 @@ Like the app?<br>
 
     def _on_toggle_p0_band(self, checked: bool):
         """Toggle visibility of pulse frequency band (blue) on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'p0_band'):
                 canvas.p0_band.setVisible(checked)
             if hasattr(canvas, 'pulse_label'):
@@ -7330,7 +6412,7 @@ Like the app?<br>
 
     def _on_toggle_f0_band(self, checked: bool):
         """Toggle visibility of carrier frequency band (cyan) on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas]:
+        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'f0_band'):
                 canvas.f0_band.setVisible(checked)
             if hasattr(canvas, 'carrier_label'):
@@ -8433,18 +7515,10 @@ Like the app?<br>
         beat_val = self._effective_fill_requirement('beat')
         sync_val = self._effective_fill_requirement('syncopation')
 
-        waveform_targets = []
         if hasattr(self, 'waveform_canvas') and hasattr(self.waveform_canvas, 'show_fill_ratio_ghost'):
-            waveform_targets.append(self.waveform_canvas)
-        popout = getattr(self, 'calibration_popout', None)
-        popout_waveform = getattr(popout, 'waveform_canvas', None) if popout is not None else None
-        if popout_waveform is not None and hasattr(popout_waveform, 'show_fill_ratio_ghost') and popout_waveform not in waveform_targets:
-            waveform_targets.append(popout_waveform)
-
-        for canvas in waveform_targets:
-            canvas.show_fill_ratio_ghost('fill_req_downbeat_ratio', down_val, '% fill for (downbeat)', color='#66E0FF', duration_s=15.0, dashed=True)
-            canvas.show_fill_ratio_ghost('fill_req_beat_ratio', beat_val, '% fill for (beat)', color='#55CCFF', duration_s=15.0, dashed=True)
-            canvas.show_fill_ratio_ghost('fill_req_sync_ratio', sync_val, '% fill for (synco)', color='#44B8FF', duration_s=15.0, dashed=True)
+            self.waveform_canvas.show_fill_ratio_ghost('fill_req_downbeat_ratio', down_val, '% fill for (downbeat)', color='#66E0FF', duration_s=15.0, dashed=True)
+            self.waveform_canvas.show_fill_ratio_ghost('fill_req_beat_ratio', beat_val, '% fill for (beat)', color='#55CCFF', duration_s=15.0, dashed=True)
+            self.waveform_canvas.show_fill_ratio_ghost('fill_req_sync_ratio', sync_val, '% fill for (synco)', color='#44B8FF', duration_s=15.0, dashed=True)
     
     def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""
@@ -8471,8 +7545,6 @@ Like the app?<br>
             self.phosphor_canvas.set_frequency_band(low / max_freq, high / max_freq)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_frequency_band'):
             self.freqdb_canvas.set_frequency_band(low / max_freq, high / max_freq)
-        if self.calibration_popout is not None and hasattr(self.calibration_popout, 'freqdb_canvas') and hasattr(self.calibration_popout.freqdb_canvas, 'set_frequency_band'):
-            self.calibration_popout.freqdb_canvas.set_frequency_band(low / max_freq, high / max_freq)
     
     def _on_depth_band_change(self, low=None, high=None):
         """Update stroke depth frequency band in config and spectrum overlay"""
@@ -8492,8 +7564,6 @@ Like the app?<br>
             self.phosphor_canvas.set_depth_band(low, high)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_depth_band'):
             self.freqdb_canvas.set_depth_band(low, high)
-        if self.calibration_popout is not None and hasattr(self.calibration_popout, 'freqdb_canvas') and hasattr(self.calibration_popout.freqdb_canvas, 'set_depth_band'):
-            self.calibration_popout.freqdb_canvas.set_depth_band(low, high)
     
     def _on_p0_band_change(self, low=None, high=None):
         """Update P0 TCode frequency band in config and spectrum overlay"""
@@ -8513,8 +7583,6 @@ Like the app?<br>
             self.phosphor_canvas.set_p0_band(low, high)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_p0_band'):
             self.freqdb_canvas.set_p0_band(low, high)
-        if self.calibration_popout is not None and hasattr(self.calibration_popout, 'freqdb_canvas') and hasattr(self.calibration_popout.freqdb_canvas, 'set_p0_band'):
-            self.calibration_popout.freqdb_canvas.set_p0_band(low, high)
     
     def _on_f0_band_change(self, low=None, high=None):
         """Update F0 TCode frequency band in config and spectrum overlay"""
@@ -8534,8 +7602,6 @@ Like the app?<br>
             self.phosphor_canvas.set_f0_band(low, high)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_f0_band'):
             self.freqdb_canvas.set_f0_band(low, high)
-        if self.calibration_popout is not None and hasattr(self.calibration_popout, 'freqdb_canvas') and hasattr(self.calibration_popout.freqdb_canvas, 'set_f0_band'):
-            self.calibration_popout.freqdb_canvas.set_f0_band(low, high)
     
     def _on_stroke_range_change(self, low: float, high: float):
         """Update stroke min/max in config"""
@@ -10164,38 +9230,30 @@ Like the app?<br>
                 peak, flux = self._compute_visual_metrics(spectrum)
                 waveform = self._pending_spectrum.get('waveform')
                 sample_rate = int(self._pending_spectrum.get('sample_rate', getattr(self.config.audio, 'sample_rate', 44100)))
-                popout = self.calibration_popout
-                popout_visible = popout is not None and popout.isVisible()
-                if popout_visible:
-                    if popout is not None:
-                        popout.update_from_audio(waveform, sample_rate, spectrum, self.config.stroke)
-                else:
-                    # Only update the currently visible in-window visualizer for performance
-                    if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
-                        self.mountain_canvas.update_spectrum(spectrum, peak, flux)
-                    elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
-                        self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
-                    elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible():
-                        self.waveform_canvas.update_from_audio(waveform, sample_rate)
-                    elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas is not None and self.freqdb_canvas.isVisible():
-                        self.freqdb_canvas.update_from_spectrum(spectrum, sample_rate)
+                # Only update the currently visible in-window visualizer for performance
+                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
+                    self.mountain_canvas.update_spectrum(spectrum, peak, flux)
+                elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
+                    self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
+                elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible():
+                    self.waveform_canvas.update_from_audio(waveform, sample_rate)
+                elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas is not None and self.freqdb_canvas.isVisible():
+                    self.freqdb_canvas.update_from_spectrum(spectrum, sample_rate)
+                elif hasattr(self, 'fft_bin_canvas') and self.fft_bin_canvas is not None and self.fft_bin_canvas.isVisible():
+                    self.fft_bin_canvas.update_from_spectrum(spectrum, sample_rate)
             else:
                 # Legacy format - only update visible visualizer
                 peak, flux = self._compute_visual_metrics(self._pending_spectrum)
-                popout = self.calibration_popout
-                popout_visible = popout is not None and popout.isVisible()
-                if popout_visible:
-                    if popout is not None:
-                        popout.update_from_audio(None, int(getattr(self.config.audio, 'sample_rate', 44100)), self._pending_spectrum, self.config.stroke)
-                else:
-                    if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
-                        self.mountain_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-                    elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
-                        self.phosphor_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-                    elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible() and self.audio_engine is not None:
-                        self.waveform_canvas.update_from_audio(self.audio_engine.get_waveform(), int(getattr(self.config.audio, 'sample_rate', 44100)))
-                    elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas is not None and self.freqdb_canvas.isVisible():
-                        self.freqdb_canvas.update_from_spectrum(self._pending_spectrum, int(getattr(self.config.audio, 'sample_rate', 44100)))
+                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
+                    self.mountain_canvas.update_spectrum(self._pending_spectrum, peak, flux)
+                elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
+                    self.phosphor_canvas.update_spectrum(self._pending_spectrum, peak, flux)
+                elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible() and self.audio_engine is not None:
+                    self.waveform_canvas.update_from_audio(self.audio_engine.get_waveform(), int(getattr(self.config.audio, 'sample_rate', 44100)))
+                elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas is not None and self.freqdb_canvas.isVisible():
+                    self.freqdb_canvas.update_from_spectrum(self._pending_spectrum, int(getattr(self.config.audio, 'sample_rate', 44100)))
+                elif hasattr(self, 'fft_bin_canvas') and self.fft_bin_canvas is not None and self.fft_bin_canvas.isVisible():
+                    self.fft_bin_canvas.update_from_spectrum(self._pending_spectrum, int(getattr(self.config.audio, 'sample_rate', 44100)))
             self._pending_spectrum = None
     
     def _on_status_change(self, message: str, connected: bool):

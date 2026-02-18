@@ -131,7 +131,11 @@ class BeatIntelligence:
         # ── Phase 3: Auto-fill adaptation (#20) ──
         self._auto_fill_offsets: dict[str, float] = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
         self._auto_fill_ema: dict[str, float] = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
+        self._fill_pass_consecutive: dict[str, int] = {"downbeat": 0, "beat": 0, "syncopation": 0}  # Sustained fill tracking
 
+        # ── dBFS-based fill gate: Absolute signal reference tracking ──
+        self._dbfs_reference_max: float = 1e-10  # Recent maximum signal magnitude (for dBFS calculation)
+        self._dbfs_reference_last_update: float = 0.0  # Timestamp of last reference update
 
         # ── Phase 5: Learning Adapter (#10-12, #18) ──
         self._learning_enabled: bool = False
@@ -821,8 +825,33 @@ class BeatIntelligence:
 
     # ── Phase 3 §8: Spectrum fill gate ───────────────────────────────────
 
+    def _update_dbfs_reference(self, magnitudes: np.ndarray, now: float) -> None:
+        """Update the dBFS reference maximum with decay over time."""
+        cfg = self.config.stroke
+        decay_rate = float(getattr(cfg, 'dbfs_reference_decay_rate', 0.9995))
+        
+        # Apply time-based decay
+        if self._dbfs_reference_last_update > 0.0:
+            dt = now - self._dbfs_reference_last_update
+            # Decay per frame (~60fps typical)
+            frames_elapsed = max(1, int(dt * 60.0))
+            self._dbfs_reference_max *= (decay_rate ** frames_elapsed)
+        
+        # Update with current peak if higher
+        current_peak = float(np.max(magnitudes))
+        if current_peak > self._dbfs_reference_max:
+            self._dbfs_reference_max = current_peak
+        
+        self._dbfs_reference_last_update = now
+
     def _get_spectrum_fill_ratio(self, trigger_kind: str) -> float:
-        """Compute spectrum fill ratio from live FFT for given phase (#8)."""
+        """
+        Compute spectrum fill ratio from live FFT for given phase (#8).
+        
+        Two modes:
+        - dBFS mode (use_dbfs_fill_gate=True): Absolute dBFS thresholds relative to recent max signal
+        - Legacy mode (use_dbfs_fill_gate=False): Relative percentage of instantaneous peak
+        """
         if self.audio_engine is None:
             return 1.0  # no engine, don't block
 
@@ -842,6 +871,8 @@ class BeatIntelligence:
             return 0.0
 
         cfg = self.config.stroke
+        
+        # Get bin range for this trigger type
         phase_map = {
             "downbeat": ("downbeat_fill_bin_low", "downbeat_fill_bin_high"),
             "beat": ("beat_fill_bin_low", "beat_fill_bin_high"),
@@ -858,26 +889,57 @@ class BeatIntelligence:
         if band.size == 0:
             return 0.0
 
-        norm = band / peak
-        active_floor = 0.02
-        active_mask = norm >= active_floor
-        active = norm[active_mask]
+        # Check which mode to use
+        use_dbfs = bool(getattr(cfg, 'use_dbfs_fill_gate', True))
+        
+        if use_dbfs:
+            # ═══ dBFS MODE: Absolute signal strength relative to recent maximum ═══
+            now = time.perf_counter()
+            self._update_dbfs_reference(magnitudes, now)
+            
+            # Get dBFS threshold for this trigger type
+            dbfs_map = {
+                "downbeat": float(getattr(cfg, 'downbeat_dbfs_threshold', -25.0)),
+                "beat": float(getattr(cfg, 'beat_dbfs_threshold', -30.0)),
+                "syncopation": float(getattr(cfg, 'syncopation_dbfs_threshold', -35.0)),
+            }
+            dbfs_threshold = dbfs_map.get(trigger_kind, -30.0)  # default to beat threshold
+            
+            # Convert dBFS threshold to linear scale relative to reference max
+            # dB = 20 * log10(magnitude / reference)
+            # magnitude_threshold = reference * 10^(dB / 20)
+            reference_max = max(self._dbfs_reference_max, 1e-10)
+            linear_threshold = reference_max * (10.0 ** (dbfs_threshold / 20.0))
+            
+            # Count bins above absolute threshold
+            filled = float(np.sum(band >= linear_threshold))
+            return float(filled / max(1, band.size))
+            
+        else:
+            # ═══ LEGACY MODE: Relative percentage of instantaneous peak ═══
+            norm = band / peak
+            active_floor = 0.02
+            active_mask = norm >= active_floor
+            active = norm[active_mask]
 
-        if active.size == 0:
-            return 0.0
+            if active.size == 0:
+                return 0.0
 
-        threshold = float(getattr(cfg, 'overall_amp_fill_target', 0.5))
-        filled = float(np.sum(active >= threshold))
-        return float(filled / max(1, active.size))
+            threshold = float(getattr(cfg, 'overall_amp_fill_target', 0.5))
+            filled = float(np.sum(active >= threshold))
+            return float(filled / max(1, active.size))
 
     def _passes_overall_amp_fill_gate(self, event: BeatEvent, trigger_kind: str) -> bool:
         """Overall amplitude fill gate (#8): require spectral fill for phase."""
         cfg = self.config.stroke
         if not bool(getattr(cfg, 'overall_amp_fill_gate_enabled', True)):
+            # Gate disabled: reset counters and pass
+            self._fill_pass_consecutive[trigger_kind] = 0
             return True
 
         # No audio engine: don't block
         if self.audio_engine is None:
+            self._fill_pass_consecutive[trigger_kind] = 0
             return True
 
         intensity = float(getattr(event, 'intensity', 0.0) or 0.0)
@@ -885,15 +947,31 @@ class BeatIntelligence:
         tolerance = float(getattr(cfg, 'overall_amp_fill_tolerance', 0.5))
 
         if intensity < (target - tolerance):
+            self._fill_pass_consecutive[trigger_kind] = 0
             return False
 
         fill_ratio = self._get_spectrum_fill_ratio(trigger_kind)
         required = self._get_overall_amp_fill_required(trigger_kind)
 
-        passed = fill_ratio >= required
-        self._update_auto_fill_required(trigger_kind, passed)
+        # Check instant fill pass/fail
+        instant_passed = fill_ratio >= required
+        self._update_auto_fill_required(trigger_kind, instant_passed)
 
-        return passed
+        # Update consecutive frame counter
+        if instant_passed:
+            self._fill_pass_consecutive[trigger_kind] = self._fill_pass_consecutive.get(trigger_kind, 0) + 1
+        else:
+            self._fill_pass_consecutive[trigger_kind] = 0
+
+        # Check sustain duration requirement
+        sustain_frames = max(0, int(getattr(cfg, 'overall_amp_fill_sustain_frames', 3) or 3))
+        if sustain_frames <= 1:
+            # Duration check disabled (0 or 1 = instant decision)
+            return instant_passed
+
+        # Require sustained fullness over consecutive frames
+        consecutive = self._fill_pass_consecutive.get(trigger_kind, 0)
+        return consecutive >= sustain_frames
 
     def _get_overall_amp_fill_required(self, trigger_kind: str) -> float:
         """Get fill required for phase, including auto-adapt offset (#20)."""
@@ -1286,6 +1364,11 @@ class BeatIntelligence:
         silence_active = self.update_silence_deadzone_gate(overall_amplitude)
         if silence_override is not None:
             silence_active = bool(silence_override)
+
+        # Reset fill duration tracking during silence
+        if silence_active:
+            for kind in ("downbeat", "beat", "syncopation"):
+                self._fill_pass_consecutive[kind] = 0
 
         # Phase 2: silence fade + post-silence ramp
         silence_fade, _request_tempo_reset = self._update_silence_fade(silence_active, now)
