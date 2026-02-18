@@ -115,7 +115,7 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
         self.setBackground('#0a0a12')
         self.setMouseEnabled(x=False, y=False)
         self.setMenuEnabled(False)
-        self.showGrid(x=False, y=True, alpha=0.15)
+        self.showGrid(x=False, y=True, alpha=0.08)
         self.showAxis('left')
         self.showAxis('bottom')
         self.getAxis('left').setTextPen(pg.mkPen('#888888'))
@@ -962,20 +962,20 @@ class WaveformLiveCanvas(pg.PlotWidget):
         super().__init__(parent)
         self.setBackground('#0d0d0d')
         self.setMenuEnabled(False)
-        self.showGrid(x=False, y=False, alpha=0.0)
+        self.showGrid(x=True, y=True, alpha=0.08)
         self.showAxis('left')
         self.showAxis('bottom')
-        self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
-        self.getAxis('left').setTickPen(pg.mkPen('#9a9a9a'))
-        self.getAxis('bottom').setTextPen(pg.mkPen('#cfcfcf'))
-        self.getAxis('bottom').setTickPen(pg.mkPen('#9a9a9a'))
+        self.getAxis('left').setTextPen(pg.mkPen('#ffffff'))
+        self.getAxis('left').setTickPen(pg.mkPen('#ffffff'))
+        self.getAxis('bottom').setTextPen(pg.mkPen('#ffffff'))
+        self.getAxis('bottom').setTickPen(pg.mkPen('#ffffff'))
         self.setLabel('left', 'Amplitude', units='A.U.')
         self.setLabel('bottom', 'Time', units='ms')
         self.enableAutoRange(x=False, y=False)
         self.setYRange(-1.05, 1.05)
         self.setXRange(0.0, 25.0)
 
-        self.waveform_curve = self.plot(pen=pg.mkPen('#ffd24d', width=2))
+        self.waveform_curve = self.plot(pen=pg.mkPen(120, 230, 255, 220, width=2))
         self.zero_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#7f7f7f', width=1))
         self.addItem(self.zero_line)
 
@@ -1180,13 +1180,13 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
         super().__init__(parent)
         self.setBackground('#0d0d0d')
         self.setMenuEnabled(False)
-        self.showGrid(x=False, y=False, alpha=0.0)
+        self.showGrid(x=True, y=True, alpha=0.08)
         self.showAxis('left')
         self.showAxis('bottom')
-        self.getAxis('left').setTextPen(pg.mkPen('#cfcfcf'))
-        self.getAxis('left').setTickPen(pg.mkPen('#9a9a9a'))
-        self.getAxis('bottom').setTextPen(pg.mkPen('#cfcfcf'))
-        self.getAxis('bottom').setTickPen(pg.mkPen('#9a9a9a'))
+        self.getAxis('left').setTextPen(pg.mkPen('#ffffff'))
+        self.getAxis('left').setTickPen(pg.mkPen('#ffffff'))
+        self.getAxis('bottom').setTextPen(pg.mkPen('#ffffff'))
+        self.getAxis('bottom').setTickPen(pg.mkPen('#ffffff'))
         self.setLabel('left', 'Level', units='dB')
         self.setLabel('bottom', 'Frequency', units='kHz')
         self.enableAutoRange(x=False, y=False)
@@ -1194,7 +1194,7 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
         self.setXRange(np.log10(0.04), np.log10(19.9))
         self.setYRange(-120.0, 6.0)
 
-        self.db_curve = self.plot(pen=pg.mkPen('#ffd24d', width=2))
+        self.db_curve = self.plot(pen=pg.mkPen(120, 230, 255, 220, width=2))
         self.zero_db_line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen('#aaaaaa', width=1, style=Qt.PenStyle.DashLine))
         self.addItem(self.zero_db_line)
         self.beat_band = pg.LinearRegionItem(values=(np.log10(0.04), np.log10(0.50)), orientation='vertical', brush=pg.mkBrush(255, 80, 80, 22), pen=pg.mkPen('#ff6666', width=1), movable=False)
@@ -1561,6 +1561,10 @@ class BREadbeatsWindow(QMainWindow):
         self._advanced_flux_scaling_slider = None
         self._advanced_controls_scroll = None
         self._advanced_flux_group = None
+        self._beat_detection_dialog = None
+        self._beat_detection_popout_content = None
+        self._pulse_settings_dialog = None
+        self._pulse_settings_popout_content = None
         self._tempo_tracking_dialog = None
         self._tempo_tracking_popout_content = None
         self._auto_fill_controls_dialog = None
@@ -1671,28 +1675,6 @@ class BREadbeatsWindow(QMainWindow):
         self._last_dot_beta: float = 0.0
         self._last_dot_time: float = 0.0
 
-        # Flux gauges (rolling 20s + absolute session extremes)
-        self._flux_gauge_lock = threading.Lock()
-        self._flux_window_seconds: float = 20.0
-        self._flux_samples_20s: deque[tuple[float, float]] = deque()
-        self._flux_sum_20s: float = 0.0
-        self._flux_abs_min: Optional[float] = None
-        self._flux_abs_max: Optional[float] = None
-        self._flux_latest: float = 0.0
-        self._flux_snapshot: dict[str, float] = {
-            'latest': 0.0,
-            'min_20s': 0.0,
-            'max_20s': 0.0,
-            'avg_20s': 0.0,
-            'delta_20s': 0.0,
-            'abs_peak': 0.0,
-            'abs_trough': 0.0,
-            'abs_depth': 0.0,
-        }
-        self._flux_text_update_interval_s: float = 0.40
-        self._last_flux_text_update_time: float = 0.0
-        self._flux_display_snapshot: dict[str, float] = dict(self._flux_snapshot)
-        
         # Volume ramping state for play/stop
         self._volume_ramp_active: bool = False
         self._volume_ramp_start_time: float = 0.0
@@ -2190,6 +2172,10 @@ class BREadbeatsWindow(QMainWindow):
         assert connection_action is not None
         connection_action.triggered.connect(self._on_options_connection)
 
+        beat_detection_action = options_menu.addAction("Beat Detection...")
+        assert beat_detection_action is not None
+        beat_detection_action.triggered.connect(self._on_options_beat_detection)
+
         # Device Limits option
         device_limits_action = options_menu.addAction("Device Limits...")
         assert device_limits_action is not None
@@ -2435,6 +2421,94 @@ class BREadbeatsWindow(QMainWindow):
         layout.addWidget(content)
 
         self._tempo_tracking_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _on_options_beat_detection(self):
+        """Show Beat Detection controls popout."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout
+
+        dialog = getattr(self, '_beat_detection_dialog', None)
+        if dialog is not None:
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._beat_detection_dialog = None
+                dialog = None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Beat Detection")
+        dialog.setMinimumWidth(520)
+        dialog.setMinimumHeight(640)
+        dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def _on_beat_detection_dialog_destroyed() -> None:
+            self._beat_detection_dialog = None
+
+        dialog.destroyed.connect(_on_beat_detection_dialog_destroyed)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        content = getattr(self, '_beat_detection_popout_content', None)
+        if content is None:
+            content = self._create_beat_detection_tab()
+            self._beat_detection_popout_content = content
+            self._apply_config_to_ui()
+        layout.addWidget(content)
+
+        self._beat_detection_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _on_pulse_settings_popup(self):
+        """Show Pulse settings popout."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout
+
+        dialog = getattr(self, '_pulse_settings_dialog', None)
+        if dialog is not None:
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._pulse_settings_dialog = None
+                dialog = None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Pulse Settings")
+        dialog.setMinimumWidth(520)
+        dialog.setMinimumHeight(620)
+        dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def _on_pulse_settings_dialog_destroyed() -> None:
+            self._pulse_settings_dialog = None
+
+        dialog.destroyed.connect(_on_pulse_settings_dialog_destroyed)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        content = getattr(self, '_pulse_settings_popout_content', None)
+        if content is None:
+            content = self._create_tcode_freq_tab()
+            self._pulse_settings_popout_content = content
+            self._apply_config_to_ui()
+        layout.addWidget(content)
+
+        self._pulse_settings_dialog = dialog
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -5618,102 +5692,17 @@ Like the app?<br>
         self.beta_label = QLabel("β: 0.00")
         self.beta_label.setVisible(False)
 
-        flux_group = QGroupBox("Flux Gauges")
-        flux_layout = QVBoxLayout(flux_group)
-        flux_layout.setContentsMargins(8, 8, 8, 8)
-        flux_layout.setSpacing(3)
-
-        self.flux_latest_label = QLabel("Flux Now: 0.0000")
-        self.flux_ratio_label = QLabel("Flux/Thresh: 0.00x")
-        self.flux_min_label = QLabel("Flux Min (20s): 0.0000")
-        self.flux_max_label = QLabel("Flux Max (20s): 0.0000")
-        self.flux_avg_label = QLabel("Flux Avg (20s): 0.0000")
-        self.flux_delta_label = QLabel("Flux Δ (20s): 0.0000")
-        self.flux_abs_peak_label = QLabel("Abs Peak: 0.0000")
-        self.flux_abs_trough_label = QLabel("Abs Trough: 0.0000")
-        self.flux_abs_depth_label = QLabel("Abs Depth: 0.0000")
-
-        for label in (
-            self.flux_latest_label,
-            self.flux_ratio_label,
-            self.flux_min_label,
-            self.flux_max_label,
-            self.flux_avg_label,
-            self.flux_delta_label,
-            self.flux_abs_peak_label,
-            self.flux_abs_trough_label,
-            self.flux_abs_depth_label,
-        ):
-            label.setStyleSheet("color: #CFCFCF; font-size: 11px;")
-            flux_layout.addWidget(label)
-
-        layout.addWidget(flux_group)
-
         return widget
-
-    def _update_flux_gauges(self, spectral_flux: float, sample_time: Optional[float] = None) -> None:
-        """Update rolling 20s flux gauges and absolute peak/trough trackers."""
-        try:
-            flux = float(spectral_flux)
-        except (TypeError, ValueError):
-            return
-
-        if not np.isfinite(flux):
-            return
-
-        now = float(sample_time) if sample_time is not None else time.perf_counter()
-
-        with self._flux_gauge_lock:
-            self._flux_latest = flux
-            self._flux_samples_20s.append((now, flux))
-            self._flux_sum_20s += flux
-
-            cutoff = now - self._flux_window_seconds
-            while self._flux_samples_20s and self._flux_samples_20s[0][0] < cutoff:
-                _, expired_flux = self._flux_samples_20s.popleft()
-                self._flux_sum_20s -= expired_flux
-
-            if self._flux_abs_min is None or flux < self._flux_abs_min:
-                self._flux_abs_min = flux
-            if self._flux_abs_max is None or flux > self._flux_abs_max:
-                self._flux_abs_max = flux
-
-            if self._flux_samples_20s:
-                sample_count = len(self._flux_samples_20s)
-                min_20s = min(v for _, v in self._flux_samples_20s)
-                max_20s = max(v for _, v in self._flux_samples_20s)
-                avg_20s = self._flux_sum_20s / max(1, sample_count)
-                delta_20s = self._flux_samples_20s[-1][1] - self._flux_samples_20s[0][1]
-            else:
-                min_20s = 0.0
-                max_20s = 0.0
-                avg_20s = 0.0
-                delta_20s = 0.0
-
-            abs_peak = self._flux_abs_max if self._flux_abs_max is not None else 0.0
-            abs_trough = self._flux_abs_min if self._flux_abs_min is not None else 0.0
-            self._flux_snapshot = {
-                'latest': self._flux_latest,
-                'min_20s': float(min_20s),
-                'max_20s': float(max_20s),
-                'avg_20s': float(avg_20s),
-                'delta_20s': float(delta_20s),
-                'abs_peak': float(abs_peak),
-                'abs_trough': float(abs_trough),
-                'abs_depth': float(abs_peak - abs_trough),
-            }
-
-    def _get_flux_gauge_snapshot(self) -> dict[str, float]:
-        with self._flux_gauge_lock:
-            return dict(self._flux_snapshot)
     
     def _create_settings_tabs(self) -> QTabWidget:
         """Settings tabs with all the sliders"""
         tabs = QTabWidget()
-        tabs.addTab(self._create_beat_detection_tab(), "Beat Detection")
+        if self._beat_detection_popout_content is None:
+            self._beat_detection_popout_content = self._create_beat_detection_tab()
+        if self._pulse_settings_popout_content is None:
+            self._pulse_settings_popout_content = self._create_tcode_freq_tab()
         tabs.addTab(self._create_jitter_creep_tab(), "Effects / Axis")
         self._tempo_tracking_popout_content = self._create_tempo_tracking_tab(include_advanced_controls=True, advanced_locked=True)
-        tabs.addTab(self._create_tcode_freq_tab(), "Pulse")
         return tabs
     
     def _create_presets_panel(self) -> QGroupBox:
@@ -5843,6 +5832,12 @@ Like the app?<br>
         )
         self.learning_tune_btn.clicked.connect(self._on_learning_tune_controls)
         layout.addWidget(self.learning_tune_btn)
+
+        self.pulse_settings_btn = QPushButton("Pulse\nSettings")
+        self.pulse_settings_btn.setToolTip("Open Pulse settings popout window")
+        self.pulse_settings_btn.clicked.connect(self._on_pulse_settings_popup)
+        self.pulse_settings_btn.setFixedWidth(76)
+        layout.addWidget(self.pulse_settings_btn)
 
         layout.addStretch()
 
@@ -6127,7 +6122,7 @@ Like the app?<br>
         layout = QVBoxLayout(widget)
 
         # ===== PULSE FREQUENCY =====
-        pulse_group = CollapsibleGroupBox("Pulse Frequency - blue overlay on spectrum", collapsed=True)
+        pulse_group = CollapsibleGroupBox("Pulse Frequency - blue overlay on spectrum", collapsed=False)
         pulse_layout = QVBoxLayout(pulse_group)
 
         # Pulse Freq monitor slider with visibility toggle
@@ -6166,7 +6161,7 @@ Like the app?<br>
         layout.addWidget(pulse_group)
 
         # ===== CARRIER FREQUENCY =====
-        carrier_group = CollapsibleGroupBox("Carrier Frequency", collapsed=True)
+        carrier_group = CollapsibleGroupBox("Carrier Frequency", collapsed=False)
         carrier_layout = QVBoxLayout(carrier_group)
 
         # Carrier Freq monitor slider with visibility toggle
@@ -7840,9 +7835,6 @@ Like the app?<br>
     
     def _audio_callback(self, event: BeatEvent):
         """Called from audio thread on each frame - NO direct Qt widget access for thread safety"""
-        sample_time = event.monotonic_timestamp if getattr(event, 'monotonic_timestamp', 0.0) > 0 else time.perf_counter()
-        self._update_flux_gauges(event.spectral_flux, sample_time)
-
         # Emit signal for thread-safe GUI update
         self.signals.beat_detected.emit(event)
 
@@ -8421,27 +8413,6 @@ Like the app?<br>
             self.position_canvas.update_position(alpha, beta)
             self.alpha_label.setText(f"α: {alpha:.2f}")
             self.beta_label.setText(f"β: {beta:.2f}")
-
-        flux_snapshot = self._get_flux_gauge_snapshot()
-        now_mono = time.perf_counter()
-        if now_mono - self._last_flux_text_update_time >= self._flux_text_update_interval_s:
-            self._last_flux_text_update_time = now_mono
-            self._flux_display_snapshot['latest'] = flux_snapshot['latest']
-            self._flux_display_snapshot['delta_20s'] = flux_snapshot['delta_20s']
-
-        if hasattr(self, 'flux_latest_label'):
-            flux_threshold = max(0.001, float(getattr(self.config.stroke, 'flux_threshold', 0.001)))
-            flux_ratio = flux_snapshot['latest'] / flux_threshold
-            ratio_state = "HIGH" if flux_snapshot['latest'] >= flux_threshold else "LOW"
-            self.flux_latest_label.setText(f"Flux Now: {self._flux_display_snapshot['latest']:.4f}")
-            self.flux_ratio_label.setText(f"Flux/Thresh: {flux_ratio:.2f}x ({ratio_state})")
-            self.flux_min_label.setText(f"Flux Min (20s): {flux_snapshot['min_20s']:.4f}")
-            self.flux_max_label.setText(f"Flux Max (20s): {flux_snapshot['max_20s']:.4f}")
-            self.flux_avg_label.setText(f"Flux Avg (20s): {flux_snapshot['avg_20s']:.4f}")
-            self.flux_delta_label.setText(f"Flux Δ (20s): {self._flux_display_snapshot['delta_20s']:.4f}")
-            self.flux_abs_peak_label.setText(f"Abs Peak: {flux_snapshot['abs_peak']:.4f}")
-            self.flux_abs_trough_label.setText(f"Abs Trough: {flux_snapshot['abs_trough']:.4f}")
-            self.flux_abs_depth_label.setText(f"Abs Depth: {flux_snapshot['abs_depth']:.4f}")
 
         # Sync widget states to cached values for thread-safe reading by audio thread
         # P0/F0/P1/P3 enable state MUST be synced IMMEDIATELY (every frame) for instant response
