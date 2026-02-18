@@ -982,12 +982,13 @@ class BeatIntelligence:
             "syncopation": float(getattr(cfg, 'syncopation_overall_amp_fill_required', 1.00)),
         }
         base = base_map.get(trigger_kind, base_map.get("beat", 0.90))
+        scale = float(np.clip(getattr(cfg, 'overall_amp_fill_required_scale', 1.0) or 1.0, 0.05, 20.0))
         offset = self._auto_fill_offsets.get(trigger_kind, 0.0)
 
         min_req = float(getattr(cfg, 'overall_amp_fill_auto_min_required', 0.05))
         max_req = float(getattr(cfg, 'overall_amp_fill_auto_max_required', 0.98))
 
-        return float(np.clip(base + offset, min_req, max_req))
+        return float(np.clip((base * scale) + offset, min_req, max_req))
 
     def _update_auto_fill_required(self, trigger_kind: str, gate_passed: bool) -> None:
         """Auto-fill adaptation (#20): adjust offset per phase targeting pass rate."""
@@ -1371,8 +1372,13 @@ class BeatIntelligence:
                 self._fill_pass_consecutive[kind] = 0
 
         # Phase 2: silence fade + post-silence ramp
-        silence_fade, _request_tempo_reset = self._update_silence_fade(silence_active, now)
+        silence_fade, request_tempo_reset = self._update_silence_fade(silence_active, now)
         post_silence_ramp = self._update_post_silence_ramp(silence_active, now)
+
+        # On silence reset: zero fill-gate EMA offsets so gate re-learns fresh for new section
+        if request_tempo_reset:
+            self._auto_fill_offsets = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
+            self._auto_fill_ema = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
 
         # Phase 2: readiness state machine (replaces raw _tempo_ready_for_motion)
         stroke_ready = self._update_stroke_readiness(event, now)

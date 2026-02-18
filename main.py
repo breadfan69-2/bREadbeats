@@ -1638,6 +1638,8 @@ class BREadbeatsWindow(QMainWindow):
         self._volume_ramp_from: float = 0.0
         self._volume_ramp_to: float = 1.0
         self._volume_ramp_duration: float = 1.3  # 1.3s ramp
+        # Actual tcode volume last sent (0-100), updated in audio thread, read in GUI thread
+        self._last_sent_volume_pct: float = 0.0
         
         # Advanced controls dialog singleton reference
         self._advanced_controls_dialog = None
@@ -1990,8 +1992,10 @@ class BREadbeatsWindow(QMainWindow):
         
         # Top: Connection and controls
         top_layout = QHBoxLayout()
-        top_layout.addWidget(self._create_connection_panel())
-        top_layout.addWidget(self._create_control_panel())
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(12)
+        top_layout.addWidget(self._create_connection_panel(), stretch=1)
+        top_layout.addWidget(self._create_control_panel(), stretch=5)
         main_layout.addLayout(top_layout)
         
         # Middle: Visualizers + fixed main controls row
@@ -2088,10 +2092,22 @@ class BREadbeatsWindow(QMainWindow):
         assert audio_device_action is not None
         audio_device_action.triggered.connect(self._on_options_audio_device)
         
-        # Connection option
-        connection_action = options_menu.addAction("Connection...")
-        assert connection_action is not None
-        connection_action.triggered.connect(self._on_options_connection)
+        # Connection submenu
+        connection_menu = options_menu.addMenu("Connection")
+        assert connection_menu is not None
+
+        connection_settings_action = connection_menu.addAction("Settings...")
+        assert connection_settings_action is not None
+        connection_settings_action.triggered.connect(self._on_options_connection)
+
+        self.connection_toggle_action = connection_menu.addAction("Connect")
+        assert self.connection_toggle_action is not None
+        self.connection_toggle_action.triggered.connect(self._on_connect)
+
+        self.connection_test_action = connection_menu.addAction("Test")
+        assert self.connection_test_action is not None
+        self.connection_test_action.triggered.connect(self._on_test)
+        self.connection_test_action.setEnabled(False)
 
         beat_detection_action = options_menu.addAction("Beat Detection...")
         assert beat_detection_action is not None
@@ -3197,9 +3213,6 @@ class BREadbeatsWindow(QMainWindow):
         )
         gate_info.setStyleSheet("color: #aaa; font-size: 11px;")
         gate_layout.addWidget(gate_info)
-        def _show_waveform_amp_ref(key: str, value: float, label: str, color: str = '#FF66AA', dashed: bool = False):
-            return
-
         def _show_freqdb_ghost_ref(
             key: str,
             value: float,
@@ -3229,19 +3242,11 @@ class BREadbeatsWindow(QMainWindow):
             target = float(getattr(self.config.stroke, 'overall_amp_fill_target', 0.5) or 0.5)
             tol = float(abs(getattr(self.config.stroke, 'overall_amp_fill_tolerance', 0.5) or 0.5))
             min_amp = max(0.0, target - tol)
-            _show_waveform_amp_ref('overall_amp_target', target, 'Amp target', '#66CCFF', dashed=False)
-            _show_waveform_amp_ref('overall_amp_min', min_amp, 'Amp min', '#FFAA66', dashed=True)
             _show_freqdb_ghost_ref('overall_amp_target', target, 'Amp target', '#66CCFF', dashed=False, band='full')
             _show_freqdb_ghost_ref('overall_amp_min', min_amp, 'Amp min', '#FFAA66', dashed=True, band='full')
 
         def _update_fill_requirement_refs() -> None:
             self._preview_fill_requirement_ghosts()
-            down_val = self._effective_fill_requirement('downbeat')
-            beat_val = self._effective_fill_requirement('beat')
-            sync_val = self._effective_fill_requirement('syncopation')
-            _show_fft_bin_fill_ref('fill_req_downbeat_ratio', down_val, '% fill for (downbeat)', color='#66E0FF', dashed=True)
-            _show_fft_bin_fill_ref('fill_req_beat_ratio', beat_val, '% fill for (beat)', color='#55CCFF', dashed=True)
-            _show_fft_bin_fill_ref('fill_req_sync_ratio', sync_val, '% fill for (synco)', color='#44B8FF', dashed=True)
 
         def _show_fft_bin_fill_ref(key: str, ratio: float, label: str, color: str = '#66E0FF', dashed: bool = True) -> None:
             canvas = getattr(self, 'fft_bin_canvas', None)
@@ -4818,9 +4823,7 @@ Like the app?<br>
                 getattr(self, 'tempo_timeout_slider', None),
                 getattr(self, 'phase_snap_slider', None),
                 getattr(self, 'mode_combo', None),
-                getattr(self, 'combo_power_spin', None),
                 getattr(self, 'combo_depth_spin', None),
-                getattr(self, 'combo_speed_spin', None),
                 getattr(self, 'combo_texture_spin', None),
                 getattr(self, 'combo_reaction_spin', None),
                 getattr(self, 'tempo_lock_required_cb', None),
@@ -4873,12 +4876,8 @@ Like the app?<br>
                     self.mode_combo.setCurrentIndex(0)
                 self.config.stroke.min_interval_ms = 150
                 self.config.stroke.minimum_depth = 0.0
-                if hasattr(self, 'combo_power_spin'):
-                    self.combo_power_spin.setValue(float(getattr(self.config.stroke, 'combo_power', 1.0)))
                 if hasattr(self, 'combo_depth_spin'):
                     self.combo_depth_spin.setValue(float(getattr(self.config.stroke, 'combo_depth', 1.0)))
-                if hasattr(self, 'combo_speed_spin'):
-                    self.combo_speed_spin.setValue(float(getattr(self.config.stroke, 'combo_speed', 1.0)))
                 if hasattr(self, 'combo_texture_spin'):
                     self.combo_texture_spin.setValue(float(getattr(self.config.stroke, 'combo_texture', 1.0)))
                 if hasattr(self, 'combo_reaction_spin'):
@@ -4982,7 +4981,7 @@ Like the app?<br>
     def _create_connection_panel(self) -> QWidget:
         """Connection settings panel - simplified, host/port in Options menu (no visible groupbox)"""
         group = QWidget()
-        layout = QHBoxLayout(group)  # Horizontal for compact layout
+        layout = QHBoxLayout(group)
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Hidden Host/Port widgets (needed for functionality but now in Options menu)
@@ -4996,19 +4995,8 @@ Like the app?<br>
         # Status
         self.status_label = QLabel("Disconnected")
         self.status_label.setStyleSheet("color: #f55;")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.status_label)
-        
-        layout.addStretch()
-        
-        # Reset/Test buttons
-        self.connect_btn = QPushButton("Reset")
-        self.connect_btn.clicked.connect(self._on_connect)
-        layout.addWidget(self.connect_btn)
-        
-        self.test_btn = QPushButton("Test")
-        self.test_btn.clicked.connect(self._on_test)
-        self.test_btn.setEnabled(False)
-        layout.addWidget(self.test_btn)
         
         return group
     
@@ -5049,9 +5037,9 @@ Like the app?<br>
         # Volume slider (0 - 100) - uses compact label for control panel
         self.volume_slider = SliderWithLabel("Vol", 0, 100, 100, decimals=0)
         self.volume_slider.label.setFixedWidth(30)  # Compact label for controls box
-        self.volume_slider.setFixedWidth(180)
+        self.volume_slider.setMinimumWidth(180)
         self.volume_slider.setContentsMargins(0, 0, 0, 0)
-        btn_layout.addWidget(self.volume_slider, 0, 2, 1, 2)
+        btn_layout.addWidget(self.volume_slider, 0, 2, 1, 1, Qt.AlignmentFlag.AlignHCenter)
 
         # Frequency displays - stacked vertically
         freq_display_layout = QVBoxLayout()
@@ -5059,32 +5047,31 @@ Like the app?<br>
         
         # Carrier Freq display
         self.carrier_freq_label = QLabel("Carrier Freq: off")
-        self.carrier_freq_label.setStyleSheet("color: #0af; font-size: 10px;")
+        self.carrier_freq_label.setStyleSheet("color: #bbb; font-size: 10px;")
         self.carrier_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.carrier_freq_label)
         
         # Pulse Freq display
         self.pulse_freq_label = QLabel("Pulse Freq: off")
-        self.pulse_freq_label.setStyleSheet("color: #0af; font-size: 10px;")
+        self.pulse_freq_label.setStyleSheet("color: #bbb; font-size: 10px;")
         self.pulse_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.pulse_freq_label)
         
         # Pulse Width display
         self.p1_display_label = QLabel("Pulse Width: off")
-        self.p1_display_label.setStyleSheet("color: #0af; font-size: 10px;")
+        self.p1_display_label.setStyleSheet("color: #bbb; font-size: 10px;")
         self.p1_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.p1_display_label)
         
         # Rise Time display
         self.p3_display_label = QLabel("Rise Time: off")
-        self.p3_display_label.setStyleSheet("color: #0af; font-size: 10px;")
+        self.p3_display_label.setStyleSheet("color: #bbb; font-size: 10px;")
         self.p3_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.p3_display_label)
         
         freq_display_widget = QWidget()
         freq_display_widget.setLayout(freq_display_layout)
-        freq_display_widget.setFixedWidth(110)
-        btn_layout.addWidget(freq_display_widget, 0, 4)
+        btn_layout.addWidget(freq_display_widget, 0, 3, 1, 1, Qt.AlignmentFlag.AlignHCenter)
 
         # Right-side stack: beat indicators
         right_stack = QVBoxLayout()
@@ -5115,10 +5102,10 @@ Like the app?<br>
 
         right_stack_widget = QWidget()
         right_stack_widget.setLayout(right_stack)
-        right_stack_widget.setFixedWidth(100)
-        btn_layout.addWidget(right_stack_widget, 0, 5)
+        btn_layout.addWidget(right_stack_widget, 0, 4, 1, 1, Qt.AlignmentFlag.AlignHCenter)
 
-        btn_layout.setColumnStretch(6, 1)  # Allow last column to stretch
+        for col in range(5):
+            btn_layout.setColumnStretch(col, 1)
         layout.addLayout(btn_layout)
 
         # Beat indicator timer for visual feedback duration
@@ -5557,14 +5544,6 @@ Like the app?<br>
             layout.addWidget(spin)
             return spin
 
-        self.combo_power_spin = _add_combo_spinbox(
-            "power",
-            getattr(self.config.stroke, 'combo_power', 1.0),
-            -2.00,
-            3.00,
-            0.05,
-            lambda v: setattr(self.config.stroke, 'combo_power', float(v)),
-        )
         self.combo_depth_spin = _add_combo_spinbox(
             "depth",
             getattr(self.config.stroke, 'combo_depth', 1.0),
@@ -5572,14 +5551,6 @@ Like the app?<br>
             3.00,
             0.02,
             lambda v: setattr(self.config.stroke, 'combo_depth', float(v)),
-        )
-        self.combo_speed_spin = _add_combo_spinbox(
-            "speed",
-            getattr(self.config.stroke, 'combo_speed', 1.0),
-            -2.00,
-            3.00,
-            0.02,
-            lambda v: setattr(self.config.stroke, 'combo_speed', float(v)),
         )
         self.combo_texture_spin = _add_combo_spinbox(
             "texture",
@@ -5606,10 +5577,9 @@ Like the app?<br>
 
         layout.addWidget(QLabel("Sensitivity:"))
         self.fill_gate_scale_spin = QDoubleSpinBox()
-        self.fill_gate_scale_spin.setRange(-300.0, 300.0)
-        self.fill_gate_scale_spin.setSingleStep(0.1)
+        self.fill_gate_scale_spin.setRange(1.0, 100.0)
+        self.fill_gate_scale_spin.setSingleStep(1.0)
         self.fill_gate_scale_spin.setDecimals(1)
-        self.fill_gate_scale_spin.setSuffix("%")
         self.fill_gate_scale_spin.setValue(
             self._fill_gate_scale_to_percent(
                 float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 0.5) or 0.5)
@@ -5617,8 +5587,8 @@ Like the app?<br>
         )
         self.fill_gate_scale_spin.setFixedWidth(78)
         self.fill_gate_scale_spin.setToolTip(
-            "Exponential fill-gate scaling applied proportionally to downbeat/beat/sync thresholds. "
-            "0% = 1.00x, +100% = 0.50x, -100% = 2.00x."
+            "Sensitivity scale (1-100). "
+            "Maps to the same internal fill-gate effect range as before."
         )
         self.fill_gate_scale_spin.valueChanged.connect(self._on_fill_gate_scale_change)
         layout.addWidget(self.fill_gate_scale_spin)
@@ -5641,11 +5611,16 @@ Like the app?<br>
         return group
 
     def _fill_gate_scale_to_percent(self, scale: float) -> float:
+        # Internal percent domain is still [-300, +300] for unchanged effect range.
         safe_scale = max(1e-6, float(scale))
-        return float(-np.log2(safe_scale) * 100.0)
+        percent = float(-np.log2(safe_scale) * 100.0)
+        ui_value = 1.0 + ((percent + 300.0) * (99.0 / 600.0))
+        return float(np.clip(ui_value, 1.0, 100.0))
 
     def _fill_gate_percent_to_scale(self, percent: float) -> float:
-        scale = float(np.power(2.0, -float(percent) / 100.0))
+        ui_value = float(np.clip(percent, 1.0, 100.0))
+        percent_internal = -300.0 + ((ui_value - 1.0) * (600.0 / 99.0))
+        scale = float(np.power(2.0, -percent_internal / 100.0))
         return float(np.clip(scale, 0.05, 20.0))
 
     def _on_fill_gate_scale_change(self, pct: float) -> None:
@@ -5710,9 +5685,7 @@ Like the app?<br>
             'minimum_depth': 0.0,
             'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
             'combo_size': float(getattr(self.config.stroke, 'combo_size', 1.0)),
-            'combo_power': float(getattr(self.config.stroke, 'combo_power', 1.0)),
             'combo_depth': float(getattr(self.config.stroke, 'combo_depth', 1.0)),
-            'combo_speed': float(getattr(self.config.stroke, 'combo_speed', 1.0)),
             'combo_texture': float(getattr(self.config.stroke, 'combo_texture', 1.0)),
             'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
             'overall_amp_fill_required_scale': float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0),
@@ -6454,15 +6427,20 @@ Like the app?<br>
         return float(np.clip(base_required * scale, 0.0, 1.0))
 
     def _preview_fill_requirement_ghosts(self) -> None:
-        """Preview fill-gate requirements on waveform visualizers."""
+        """Preview fill-gate requirements on dB/Hz + FFT visualizers (5s ghosts)."""
         down_val = self._effective_fill_requirement('downbeat')
         beat_val = self._effective_fill_requirement('beat')
         sync_val = self._effective_fill_requirement('syncopation')
 
-        if hasattr(self, 'waveform_canvas') and hasattr(self.waveform_canvas, 'show_fill_ratio_ghost'):
-            self.waveform_canvas.show_fill_ratio_ghost('fill_req_downbeat_ratio', down_val, '% fill for (downbeat)', color='#66E0FF', duration_s=15.0, dashed=True)
-            self.waveform_canvas.show_fill_ratio_ghost('fill_req_beat_ratio', beat_val, '% fill for (beat)', color='#55CCFF', duration_s=15.0, dashed=True)
-            self.waveform_canvas.show_fill_ratio_ghost('fill_req_sync_ratio', sync_val, '% fill for (synco)', color='#44B8FF', duration_s=15.0, dashed=True)
+        if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
+            self.freqdb_canvas.show_flux_ghost('fill_req_downbeat_ratio', down_val, '% fill for (downbeat)', color='#66E0FF', duration_s=5.0, dashed=True, band='full', range_box=True, mode='occupancy')
+            self.freqdb_canvas.show_flux_ghost('fill_req_beat_ratio', beat_val, '% fill for (beat)', color='#55CCFF', duration_s=5.0, dashed=True, band='full', range_box=True, mode='occupancy')
+            self.freqdb_canvas.show_flux_ghost('fill_req_sync_ratio', sync_val, '% fill for (synco)', color='#44B8FF', duration_s=5.0, dashed=True, band='full', range_box=True, mode='occupancy')
+
+        if hasattr(self, 'fft_bin_canvas') and hasattr(self.fft_bin_canvas, 'show_fill_ratio_ghost'):
+            self.fft_bin_canvas.show_fill_ratio_ghost('fill_req_downbeat_ratio', down_val, '% fill for (downbeat)', color='#66E0FF', duration_s=5.0, dashed=True)
+            self.fft_bin_canvas.show_fill_ratio_ghost('fill_req_beat_ratio', beat_val, '% fill for (beat)', color='#55CCFF', duration_s=5.0, dashed=True)
+            self.fft_bin_canvas.show_fill_ratio_ghost('fill_req_sync_ratio', sync_val, '% fill for (synco)', color='#44B8FF', duration_s=5.0, dashed=True)
     
     def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""
@@ -7561,6 +7539,8 @@ Like the app?<br>
                 volume_ramp_from=self._volume_ramp_from,
                 volume_ramp_to=self._volume_ramp_to,
             )
+            # Cache actual tcode volume for display (includes silence fade + post-silence ramp)
+            self._last_sent_volume_pct = float(cmd.volume) * 100.0
             self.network_engine.send_command(cmd)
     
     def _stop_engines(self):
@@ -7621,6 +7601,7 @@ Like the app?<br>
                     volume_ramp_from=self._volume_ramp_from,
                     volume_ramp_to=self._volume_ramp_to,
                 )
+                self._last_sent_volume_pct = float(cmd.volume) * 100.0
                 self.network_engine.send_command(cmd)
         elif event.is_beat and not self.is_sending:
             print("[Main] Beat detected but Play not enabled")
@@ -8120,10 +8101,18 @@ Like the app?<br>
     
     def _on_status_change(self, message: str, connected: bool):
         """Update connection status"""
-        self.status_label.setText(message)
+        self.status_label.setText("Connected" if connected else "Disconnected")
         self.status_label.setStyleSheet(f"color: {'#0f0' if connected else '#f55'};")
-        self.connect_btn.setText("Disconnect" if connected else "Connect")
-        self.test_btn.setEnabled(connected)
+        if hasattr(self, 'connection_toggle_action'):
+            self.connection_toggle_action.setText("Disconnect" if connected else "Connect")
+        if hasattr(self, 'connection_test_action'):
+            self.connection_test_action.setEnabled(connected)
+
+    def _get_effective_output_volume_percent(self) -> float:
+        """Return the actual tcode volume percent last sent (includes silence fade, ramps)."""
+        if not self.is_sending:
+            return 0.0
+        return float(self._last_sent_volume_pct)
     
     def _update_display(self):
         """Periodic display update + sync cached widget states for thread-safe audio access"""
@@ -8197,6 +8186,18 @@ Like the app?<br>
             self.carrier_freq_label.setText(self._cached_carrier_display)
             self.p1_display_label.setText(self._cached_p1_display)
             self.p3_display_label.setText(self._cached_p3_display)
+            self.pulse_freq_label.setStyleSheet(f"color: {'#0af' if new_p0_enabled else '#bbb'}; font-size: 10px;")
+            self.carrier_freq_label.setStyleSheet(f"color: {'#0af' if new_f0_enabled else '#bbb'}; font-size: 10px;")
+            self.p1_display_label.setStyleSheet(f"color: {'#0af' if new_p1_enabled else '#bbb'}; font-size: 10px;")
+            self.p3_display_label.setStyleSheet(f"color: {'#0af' if new_p3_enabled else '#bbb'}; font-size: 10px;")
+            # Show target volume when stopped (dim), actual sent tcode volume when running (bright)
+            if self.is_sending:
+                display_pct = self._last_sent_volume_pct
+                self.volume_slider.value_label.setStyleSheet("color: #0af;")
+            else:
+                display_pct = float(self.volume_slider.value())
+                self.volume_slider.value_label.setStyleSheet("color: #888;")
+            self.volume_slider.value_label.setText(f"{display_pct:.0f}")
             control_sync_names = (
                 'pulse_mode_combo', 'pulse_invert_checkbox',
                 'f0_mode_combo', 'f0_invert_checkbox',
