@@ -431,8 +431,8 @@ class StrokeMapper:
         return float((current - previous + np.pi) % (2.0 * np.pi) - np.pi)
 
     def _compute_landing_rotation(self, start_angle: float, interval_beats: int) -> float:
-        # Rotation policy: 1 turn for shorter journeys, 2 turns for 4/8 beat journeys.
-        turns = 2 if int(interval_beats) >= 4 else 1
+        # Rotation policy: 1 journey = 1 full lap for all trigger types.
+        turns = 1
         phase_to_park = float((self._park_angle - start_angle) % (2.0 * np.pi))
         rotation = float(phase_to_park + (2.0 * np.pi * max(0, turns - 1)))
         # If start is already at park and turns==1, preserve one full visible rotation.
