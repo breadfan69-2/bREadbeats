@@ -81,7 +81,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertGreater(midpoint, 0.70)
         self.assertLess(midpoint, 0.95)
 
-    def test_flux_boost_increases_bloom(self):
+    def test_flux_does_not_increase_bloom(self):
         intelligence = BeatIntelligence(Config())
         intelligence.energies.sub_bass = 0.5
 
@@ -91,7 +91,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         low_flux_bloom = intelligence.compute_radius_bloom_from_sub_bass(low_flux_event)
         high_flux_bloom = intelligence.compute_radius_bloom_from_sub_bass(high_flux_event)
 
-        self.assertGreater(high_flux_bloom, low_flux_bloom)
+        self.assertAlmostEqual(high_flux_bloom, low_flux_bloom, places=6)
 
     def test_build_decision_emits_trigger_interval_and_progress(self):
         intelligence = BeatIntelligence(Config())

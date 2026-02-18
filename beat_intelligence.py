@@ -427,8 +427,9 @@ class BeatIntelligence:
 
         # EMA smooth the blended outputs
         alpha = 0.3  # smoothing factor
+        alpha_radius = 0.1  # slower smoothing for radius to avoid mid-journey stepping
         self._learned_divisor_hint = cadence_beats  # discrete, no smoothing
-        self._learned_radius_mult += alpha * (outputs.radius_mult - self._learned_radius_mult)
+        self._learned_radius_mult += alpha_radius * (outputs.radius_mult - self._learned_radius_mult)
         self._learned_lead_ms += alpha * (outputs.lead_ms - self._learned_lead_ms)
         self._learned_sync_size_mult += alpha * (outputs.sync_size_mult - self._learned_sync_size_mult)
         self._learned_sync_speed_mult += alpha * (outputs.sync_speed_mult - self._learned_sync_speed_mult)
@@ -1279,13 +1280,6 @@ class BeatIntelligence:
         bass_fill = float(np.clip(max(sub_bass, weighted_bass), 0.0, 1.0))
         bloom = max_bloom * (bass_fill ** 1.5)
 
-        if event is not None:
-            spectral_flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
-            flux_threshold = float(getattr(self.config.stroke, "flux_threshold", 0.03) or 0.03)
-            flux_ratio = float(np.clip(spectral_flux / max(flux_threshold, 1e-6), 0.0, 2.0))
-            flux_boost = max_bloom * 0.15 * flux_ratio
-            bloom += flux_boost
-
         return float(np.clip(base_radius + bloom, base_radius, max_radius))
 
     def update_journey_progress(self, trigger_kind: str, interval_beats: int, event: BeatEvent, dt: float) -> float:
@@ -1426,9 +1420,8 @@ class BeatIntelligence:
 
         radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
 
-        # Apply learning radius multiplier
-        if learning.active:
-            radius_bloom = float(np.clip(radius_bloom * self._learned_radius_mult, 0.70, 0.95))
+        # Learning radius multiplier is applied as a snapshot inside StrokeMapper
+        # at journey start, not per-frame here, to avoid mid-arc stepping.
 
         if no_beat_timed_out:
             journey_completion = 1.0  # fully parked

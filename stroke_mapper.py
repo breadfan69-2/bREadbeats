@@ -59,6 +59,7 @@ class StrokeMapper:
         self._journey_start_angle = self._park_angle
         self._journey_total_rotation = float(2.0 * np.pi)
         self._last_journey_completion = 1.0
+        self._snapshot_bloom_delta = 0.0  # locked at journey start for smooth arc
 
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
@@ -168,13 +169,20 @@ class StrokeMapper:
                     start_angle=self._journey_start_angle,
                     interval_beats=decision.interval_beats,
                 )
+                # Snapshot bloom_delta at journey start so radius stays locked
+                # for the entire arc — no mid-journey stepping.
+                learning_mult = 1.0
+                if decision.learning.active:
+                    learning_mult = float(np.clip(decision.learning.radius_mult, 0.3, 2.5))
+                effective_bloom = float(decision.radius_bloom * learning_mult)
+                effective_bloom = float(np.clip(effective_bloom, self._park_radius, 0.95))
+                self._snapshot_bloom_delta = float(max(0.0, effective_bloom - self._park_radius))
 
             angle = float(self._journey_start_angle + (self._journey_total_rotation * smooth_progress))
             self._orbit_phase = float(angle % (2.0 * np.pi))
 
-            # S-curve pulse for bloom: expands then contracts back to park radius.
-            bloom_delta = float(max(0.0, decision.radius_bloom - self._park_radius))
-            radius = float(self._park_radius + (bloom_delta * np.sin(np.pi * smooth_progress)))
+            # S-curve pulse for bloom: uses snapshotted bloom_delta for smooth arc.
+            radius = float(self._park_radius + (self._snapshot_bloom_delta * np.sin(np.pi * smooth_progress)))
 
             center_offset_y = self._intelligence.compute_treble_lift(progress)
 
