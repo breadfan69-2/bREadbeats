@@ -184,18 +184,12 @@ class StrokeConfig:
     bass_jitter_size_influence_percent: float = 0.0     # % depth of bass-frequency influence on jitter size
     noise_primary_mode: bool = False        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
 
-    # Flux-drop detection: if recent flux drops below this fraction of older flux, force creep
-    flux_drop_ratio: float = 0.25           # 0.0-1.0, lower = less sensitive (needs bigger drop)
-
     # Low-band activity gate for beat-based stroke generation
     # Uses sub_bass + low_mid activity window in StrokeMapper.
-    # Beat strokes require:
-    #   mean >= threshold AND (delta >= threshold OR variance >= threshold)
+    # Beat strokes require low-band mean/fullness thresholds.
     # Downbeats use the same concept with a slightly relaxed threshold multiplier.
     low_band_window_frames: int = 18
     low_band_activity_threshold: float = 0.20
-    low_band_delta_threshold: float = 0.06
-    low_band_variance_threshold: float = 0.0015
     low_band_fullness_occupancy_threshold: float = 0.62
     low_band_to_high_ratio_min: float = 0.58
     mid_bass_support_enabled: bool = True
@@ -240,7 +234,6 @@ class StrokeConfig:
     syncopation_fill_bin_low: int = 0
     syncopation_fill_bin_high: int = 512
     downbeat_low_band_relax: float = 0.85
-    low_band_drop_guard_enabled: bool = True
 
     # High-band presence gate for beat/downbeat stroke generation.
     # Requires upper range (mid+high) to be both filled and active.

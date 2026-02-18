@@ -298,6 +298,31 @@ class TestStrokeMapperContract(unittest.TestCase):
         mag_high = abs(alpha_high) + abs(beta_high)
         self.assertGreater(mag_high, mag_low)
 
+    def test_creep_disabled_parks_motion_when_jitter_off(self):
+        cfg = Config()
+        cfg.creep.enabled = False
+        cfg.jitter.enabled = False
+        mapper = StrokeMapper(cfg)
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="creep",
+            interval_beats=8,
+            radius_bloom=1.0,
+            silence_active=False,
+            journey_completion=0.3,
+        )
+
+        cmd = mapper.process_beat(self._event(is_beat=False, frequency=120.0))
+
+        self.assertIsNotNone(cmd)
+        assert cmd is not None
+        self.assertAlmostEqual(cmd.alpha, 0.0, places=6)
+        self.assertAlmostEqual(cmd.beta, mapper._park_y, places=6)
+
+    def test_compute_landing_rotation_from_park_for_beat_is_non_zero(self):
+        mapper = StrokeMapper(Config())
+        rot = mapper._compute_landing_rotation(start_angle=mapper._park_angle, interval_beats=2)
+        self.assertGreater(rot, 1.0)
+
     def test_terminal_pose_lands_at_park_angle_with_smoothed_radius_downbeat(self):
         mapper = StrokeMapper(Config())
         mapper._intelligence.energies.high = 1.0

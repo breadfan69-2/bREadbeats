@@ -925,38 +925,6 @@ class BeatIntelligence:
             current_offset = float(np.clip(current_offset, -max_offset, max_offset))
             self._auto_fill_offsets[trigger_kind] = current_offset
 
-    # ── Phase 3 §16: Flux-drop guard ─────────────────────────────────────
-
-    def _check_flux_drop_guard(self, now: float) -> bool:
-        """Flux-drop guard (#16): block if low-band energy dropped sharply.
-
-        When recent tail drops below drop_ratio of full window average,
-        and no confirmed beats were recent, downgrade to creep.
-        """
-        cfg = self.config.stroke
-        if not bool(getattr(cfg, 'low_band_drop_guard_enabled', True)):
-            return False
-
-        drop_ratio = float(getattr(cfg, 'flux_drop_ratio', 0.25))
-
-        recent = list(self._recent_low_band_values)
-        if len(recent) < 30:
-            return False
-
-        full_mean = float(np.mean(recent))
-        tail_mean = float(np.mean(recent[-8:]))
-
-        if full_mean < 1e-6:
-            return False
-
-        ratio = tail_mean / full_mean
-        if ratio < drop_ratio:
-            # Only downgrade when no recent confirmed beats
-            if self._has_recent_beats(now, window_s=0.9):
-                return False
-            return True
-
-        return False
     # ── Phase 1 §4: No-beat timeout ──────────────────────────────────
 
     def _check_no_beat_timeout(self, now: float) -> bool:
@@ -1281,14 +1249,12 @@ class BeatIntelligence:
                 trigger_kind = "creep"
             elif self._is_mid_trigger_blocked(event):
                 trigger_kind = "creep"
-            # Phase 3 gates: low-band → dual-band → spectrum fill → flux-drop
+            # Phase 3 gates: low-band → dual-band → spectrum fill
             elif not self._is_low_band_full_enough(event, raw_trigger_kind, bpm):
                 trigger_kind = "creep"
             elif not self._passes_dual_band_db_gate(event):
                 trigger_kind = "creep"
             elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
-                trigger_kind = "creep"
-            elif self._check_flux_drop_guard(now):
                 trigger_kind = "creep"
 
         # No-beat timeout: force decay to park

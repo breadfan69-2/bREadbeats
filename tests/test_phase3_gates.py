@@ -501,68 +501,6 @@ class TestAutoFillAdaptation(Phase3Mixin, unittest.TestCase):
         self.assertLess(bi._auto_fill_offsets["downbeat"], 0.0)
 
 
-# ── §16 Flux-drop guard ────────────────────────────────────────────────────
-
-
-class TestFluxDropGuard(Phase3Mixin, unittest.TestCase):
-    def test_insufficient_data_does_not_trigger(self):
-        """< 30 frames → no block."""
-        bi = self._bi()
-        for _ in range(20):
-            bi._recent_low_band_values.append(0.30)
-        self.assertFalse(bi._check_flux_drop_guard(time.perf_counter()))
-
-    def test_disabled_does_not_trigger(self):
-        bi = self._bi(low_band_drop_guard_enabled=False)
-        for _ in range(40):
-            bi._recent_low_band_values.append(0.30)
-        # Zero out tail
-        for _ in range(8):
-            bi._recent_low_band_values.append(0.0)
-        self.assertFalse(bi._check_flux_drop_guard(time.perf_counter()))
-
-    def test_sharp_drop_triggers(self):
-        """When tail drops to <25% of mean, guard triggers."""
-        bi = self._bi()
-        # Fill with high values
-        for _ in range(40):
-            bi._recent_low_band_values.append(0.40)
-        # Then near-zero tail
-        for _ in range(8):
-            bi._recent_low_band_values.append(0.01)
-        # No recent beats → should trigger
-        now = time.perf_counter()
-        bi._last_any_beat_time = now - 5.0  # no recent beats
-        self.assertTrue(bi._check_flux_drop_guard(now))
-
-    def test_drop_but_recent_beats_does_not_trigger(self):
-        """Flux drop is present but recent beats protect from blocking."""
-        bi = self._bi()
-        now = time.perf_counter()
-        for _ in range(40):
-            bi._recent_low_band_values.append(0.40)
-        for _ in range(8):
-            bi._recent_low_band_values.append(0.01)
-        bi._last_any_beat_time = now - 0.3  # very recent beat
-        self.assertFalse(bi._check_flux_drop_guard(now))
-
-    def test_no_drop_does_not_trigger(self):
-        """Steady signal → no block."""
-        bi = self._bi()
-        now = time.perf_counter()
-        for _ in range(50):
-            bi._recent_low_band_values.append(0.35)
-        bi._last_any_beat_time = now - 5.0
-        self.assertFalse(bi._check_flux_drop_guard(now))
-
-    def test_zero_mean_does_not_trigger(self):
-        """All zeros → full_mean < 1e-6 → no block."""
-        bi = self._bi()
-        for _ in range(40):
-            bi._recent_low_band_values.append(0.0)
-        self.assertFalse(bi._check_flux_drop_guard(time.perf_counter()))
-
-
 # ── Integration: gate cascade ordering ──────────────────────────────────────
 
 

@@ -1617,11 +1617,9 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
             return seg, float(np.mean(seg)), float(np.max(seg) - np.min(seg)), float(np.var(seg))
 
         low_window = int(getattr(stroke_cfg, 'low_band_window_frames', 18) or 18)
-        low_seg, low_mean, low_delta, low_var = _window_stats(self._low_band_history, max(8, low_window))
+        low_seg, low_mean, _low_delta, _low_var = _window_stats(self._low_band_history, max(8, low_window))
         low_mean_th = float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20)
-        low_delta_th = float(getattr(stroke_cfg, 'low_band_delta_threshold', 0.06) or 0.06)
-        low_var_th = float(getattr(stroke_cfg, 'low_band_variance_threshold', 0.0015) or 0.0015)
-        low_pass = (low_mean >= low_mean_th) and ((low_delta >= low_delta_th) or (low_var >= low_var_th))
+        low_pass = (low_mean >= low_mean_th)
 
         high_window = int(getattr(stroke_cfg, 'high_band_window_frames', 18) or 18)
         high_seg, high_mean, high_delta, high_var = _window_stats(self._high_band_history, max(8, high_window))
@@ -1639,11 +1637,7 @@ class WaveformCalibrationCanvas(pg.PlotWidget):
         self._gate_snapshot = {
             'include_mid': include_mid,
             'low_mean': low_mean,
-            'low_delta': low_delta,
-            'low_var': low_var,
             'low_mean_th': low_mean_th,
-            'low_delta_th': low_delta_th,
-            'low_var_th': low_var_th,
             'low_pass': bool(low_pass),
             'high_mean': high_mean,
             'high_occ': high_occ,
@@ -2594,11 +2588,9 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
             return seg, float(np.mean(seg)), float(np.max(seg) - np.min(seg)), float(np.var(seg))
 
         low_window = int(getattr(stroke_cfg, 'low_band_window_frames', 18) or 18)
-        low_seg, low_mean, low_delta, low_var = _window_stats(self._low_band_history, max(8, low_window))
+        low_seg, low_mean, _low_delta, _low_var = _window_stats(self._low_band_history, max(8, low_window))
         low_mean_th = float(getattr(stroke_cfg, 'low_band_activity_threshold', 0.20) or 0.20)
-        low_delta_th = float(getattr(stroke_cfg, 'low_band_delta_threshold', 0.06) or 0.06)
-        low_var_th = float(getattr(stroke_cfg, 'low_band_variance_threshold', 0.0015) or 0.0015)
-        low_pass = (low_mean >= low_mean_th) and ((low_delta >= low_delta_th) or (low_var >= low_var_th))
+        low_pass = (low_mean >= low_mean_th)
 
         high_window = int(getattr(stroke_cfg, 'high_band_window_frames', 18) or 18)
         high_seg, high_mean, high_delta, high_var = _window_stats(self._high_band_history, max(8, high_window))
@@ -2616,11 +2608,7 @@ class FrequencyDbCalibrationCanvas(pg.PlotWidget):
         self._gate_snapshot = {
             'include_mid': include_mid,
             'low_mean': low_mean,
-            'low_delta': low_delta,
-            'low_var': low_var,
             'low_mean_th': low_mean_th,
-            'low_delta_th': low_delta_th,
-            'low_var_th': low_var_th,
             'low_pass': bool(low_pass),
             'high_mean': high_mean,
             'high_occ': high_occ,
@@ -3108,8 +3096,6 @@ class CalibrationPopoutWindow(QMainWindow):
             'high_band_include_mid',
             'low_band_window_frames',
             'low_band_activity_threshold',
-            'low_band_delta_threshold',
-            'low_band_variance_threshold',
             'high_band_window_frames',
             'high_band_mean_threshold',
             'high_band_floor_threshold',
@@ -5378,27 +5364,7 @@ class BREadbeatsWindow(QMainWindow):
         )
         flux_layout.addWidget(flux_scaling_slider)
 
-        # Low-band drop ratio slider
-        flux_drop_slider = SliderWithLabel(
-            "Low-band drop ratio (creep fallback)",
-            0.05,
-            0.50,
-            float(getattr(self.config.stroke, 'flux_drop_ratio', 0.20) or 0.20),
-            2,
-        )
-        flux_drop_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'flux_drop_ratio', v)
-        )
-        flux_layout.addWidget(flux_drop_slider)
-
-        low_drop_guard_cb = QCheckBox("Enable low-band drop guard (fallback to creep)")
-        low_drop_guard_cb.setChecked(bool(getattr(self.config.stroke, 'low_band_drop_guard_enabled', True)))
-        low_drop_guard_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'low_band_drop_guard_enabled', state == 2)
-        )
-        flux_layout.addWidget(low_drop_guard_cb)
-
-        low_band_info = QLabel("Beat gate = low-band mean high AND (delta high OR variance high).")
+        low_band_info = QLabel("Beat gate = low-band mean/fullness/ratio checks.")
         low_band_info.setStyleSheet("color: #999; font-size: 10px;")
         flux_layout.addWidget(low_band_info)
 
@@ -5541,30 +5507,6 @@ class BREadbeatsWindow(QMainWindow):
         low_band_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_activity_threshold', 'low_band_mean', 'Low mean', '#32FF32', ghost_band='low'))
         _style_ref_slider(low_band_mean_slider, '#32FF32', 'Low mean')
         flux_layout.addWidget(low_band_mean_slider)
-
-        low_band_delta_slider = SliderWithLabel(
-            "Low-band Δ threshold (norm)",
-            0.0005,
-            1.00,
-            float(getattr(self.config.stroke, 'low_band_delta_threshold', 0.06) or 0.06),
-            3,
-            step=0.001,
-        )
-        low_band_delta_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_delta_threshold', 'low_band_delta', 'Low Δ', '#55FF88', ghost_band='low', ghost_range=True))
-        _style_ref_slider(low_band_delta_slider, '#55FF88', 'Low Δ')
-        flux_layout.addWidget(low_band_delta_slider)
-
-        low_band_var_slider = SliderWithLabel(
-            "Low-band variance threshold (norm)",
-            0.00001,
-            0.2000,
-            float(getattr(self.config.stroke, 'low_band_variance_threshold', 0.0015) or 0.0015),
-            4,
-            step=0.001,
-        )
-        low_band_var_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_variance_threshold', 'low_band_var', 'Low var', '#77FFAA', ghost_band='low', ghost_range=True))
-        _style_ref_slider(low_band_var_slider, '#77FFAA', 'Low var')
-        flux_layout.addWidget(low_band_var_slider)
 
         low_band_occ_slider = SliderWithLabel(
             "Low-band fullness occupancy (0-1)",

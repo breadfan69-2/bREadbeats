@@ -175,82 +175,103 @@ class StrokeMapper:
             self._last_journey_completion = 1.0
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
+            creep_motion_disabled = (
+                decision.trigger_kind == "creep"
+                and not bool(getattr(self.config.creep, "enabled", True))
+            )
 
-            started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
-            if started_new_journey:
-                self._settle_active = False  # cancel any active settle
-                self._journey_start_angle = float(self._orbit_phase)
-                self._journey_total_rotation = self._compute_landing_rotation(
-                    start_angle=self._journey_start_angle,
-                    interval_beats=decision.interval_beats,
-                )
-                self._journey_initial_speed_slope = self._compute_initial_speed_slope(
-                    event=event,
-                    interval_beats=decision.interval_beats,
-                )
+            if creep_motion_disabled:
+                self._settle_active = False
+                self._orbit_phase = float(self._park_angle)
+                self._last_phase_for_velocity = self._orbit_phase
+                self._angular_velocity = 0.0
+                self._actual_radius = float(self._park_radius)
 
-            if progress >= 1.0 and not started_new_journey:
-                # ── Elastic landing: damped harmonic settle ──
-                # Momentum carry-over from exit velocity drives overshoot;
-                # damped oscillation creates one visible wobble then rest.
-                if not self._settle_active:
-                    self._settle_active = True
-                    self._settle_start_time = now
-                    self._settle_exit_velocity = self._angular_velocity
-                t = now - self._settle_start_time
-                raw_amp = abs(self._settle_exit_velocity) * 0.06
-                amp = max(0.02, min(raw_amp, self._settle_max_amplitude))
-                disp = amp * float(np.exp(-self._settle_damping * t) * np.sin(self._settle_frequency * t))
-                if abs(disp) < 1e-5 and t > 0.15:
-                    self._settle_active = False
-                    disp = 0.0
-                angle = float(self._park_angle + disp)
-            else:
-                smooth_progress = self._s_curve_with_initial_velocity(
-                    progress=progress,
-                    initial_slope=self._journey_initial_speed_slope,
-                )
-                angle = float(self._journey_start_angle + (self._journey_total_rotation * smooth_progress))
-
-            self._orbit_phase = float(angle % (2.0 * np.pi))
-
-            phase_delta = self._wrapped_phase_delta(self._orbit_phase, self._last_phase_for_velocity)
-            self._angular_velocity = float(phase_delta / max(dt, 1e-4))
-            self._last_phase_for_velocity = self._orbit_phase
-
-            # Continuous "Smoooooth Arc": radius is independent of journey progress.
-            # Target radius follows music/learning; actual radius lerps via EMA.
-            learning_mult = 1.0
-            if decision.learning.active:
-                learning_mult = float(np.clip(decision.learning.radius_mult, 0.3, 2.5))
-
-            bloom_delta = float(max(0.0, decision.radius_bloom - self._park_radius))
-            target_radius = float(self._park_radius + (bloom_delta * learning_mult))
-            target_radius = float(np.clip(target_radius, self._park_radius, 1.0))
-
-            # Reactive decay: fast "inhale" (expand), slow "exhale" (return to park)
-            if target_radius > self._actual_radius:
-                radius_alpha = 0.12  # fast attack for power hits
-            else:
-                radius_alpha = 0.02  # slow release stays full through heavy sections
-            self._actual_radius += radius_alpha * (target_radius - self._actual_radius)
-            radius = float(np.clip(self._actual_radius, self._park_radius, 1.0))
-
-            center_offset_y = self._intelligence.compute_treble_lift(progress)
-
-            alpha = float(radius * np.sin(angle))
-            beta = float(center_offset_y + (radius * np.cos(angle)))
-
-            if decision.trigger_kind == "creep":
+                alpha = 0.0
+                beta = self._park_y
                 jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
                 alpha += jitter_alpha
                 beta += jitter_beta
 
-            # Apply post-silence ramp to volume
-            ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
-            volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
+                ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+                volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
+                self._last_journey_completion = 1.0
+            else:
+                started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
+                if started_new_journey:
+                    self._settle_active = False  # cancel any active settle
+                    self._journey_start_angle = float(self._orbit_phase)
+                    self._journey_total_rotation = self._compute_landing_rotation(
+                        start_angle=self._journey_start_angle,
+                        interval_beats=decision.interval_beats,
+                    )
+                    self._journey_initial_speed_slope = self._compute_initial_speed_slope(
+                        event=event,
+                        interval_beats=decision.interval_beats,
+                    )
 
-            self._last_journey_completion = progress
+                if progress >= 1.0 and not started_new_journey:
+                    # ── Elastic landing: damped harmonic settle ──
+                    # Momentum carry-over from exit velocity drives overshoot;
+                    # damped oscillation creates one visible wobble then rest.
+                    if not self._settle_active:
+                        self._settle_active = True
+                        self._settle_start_time = now
+                        self._settle_exit_velocity = self._angular_velocity
+                    t = now - self._settle_start_time
+                    raw_amp = abs(self._settle_exit_velocity) * 0.06
+                    amp = max(0.02, min(raw_amp, self._settle_max_amplitude))
+                    disp = amp * float(np.exp(-self._settle_damping * t) * np.sin(self._settle_frequency * t))
+                    if abs(disp) < 1e-5 and t > 0.15:
+                        self._settle_active = False
+                        disp = 0.0
+                    angle = float(self._park_angle + disp)
+                else:
+                    smooth_progress = self._s_curve_with_initial_velocity(
+                        progress=progress,
+                        initial_slope=self._journey_initial_speed_slope,
+                    )
+                    angle = float(self._journey_start_angle + (self._journey_total_rotation * smooth_progress))
+
+                self._orbit_phase = float(angle % (2.0 * np.pi))
+
+                phase_delta = self._wrapped_phase_delta(self._orbit_phase, self._last_phase_for_velocity)
+                self._angular_velocity = float(phase_delta / max(dt, 1e-4))
+                self._last_phase_for_velocity = self._orbit_phase
+
+                # Continuous "Smoooooth Arc": radius is independent of journey progress.
+                # Target radius follows music/learning; actual radius lerps via EMA.
+                learning_mult = 1.0
+                if decision.learning.active:
+                    learning_mult = float(np.clip(decision.learning.radius_mult, 0.3, 2.5))
+
+                bloom_delta = float(max(0.0, decision.radius_bloom - self._park_radius))
+                target_radius = float(self._park_radius + (bloom_delta * learning_mult))
+                target_radius = float(np.clip(target_radius, self._park_radius, 1.0))
+
+                # Reactive decay: fast "inhale" (expand), slow "exhale" (return to park)
+                if target_radius > self._actual_radius:
+                    radius_alpha = 0.12  # fast attack for power hits
+                else:
+                    radius_alpha = 0.02  # slow release stays full through heavy sections
+                self._actual_radius += radius_alpha * (target_radius - self._actual_radius)
+                radius = float(np.clip(self._actual_radius, self._park_radius, 1.0))
+
+                center_offset_y = self._intelligence.compute_treble_lift(progress)
+
+                alpha = float(radius * np.sin(angle))
+                beta = float(center_offset_y + (radius * np.cos(angle)))
+
+                if decision.trigger_kind == "creep":
+                    jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
+                    alpha += jitter_alpha
+                    beta += jitter_beta
+
+                # Apply post-silence ramp to volume
+                ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+                volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
+
+                self._last_journey_completion = progress
 
         alpha = float(np.clip(alpha, -1.0, 1.0))
         beta = float(np.clip(beta, -1.0, 1.0))
@@ -349,4 +370,8 @@ class StrokeMapper:
         # Rotation policy: 1 turn for shorter journeys, 2 turns for 4/8 beat journeys.
         turns = 2 if int(interval_beats) >= 4 else 1
         phase_to_park = float((self._park_angle - start_angle) % (2.0 * np.pi))
-        return float(phase_to_park + (2.0 * np.pi * max(0, turns - 1)))
+        rotation = float(phase_to_park + (2.0 * np.pi * max(0, turns - 1)))
+        # If start is already at park and turns==1, preserve one full visible rotation.
+        if rotation <= 1e-6:
+            rotation = float(2.0 * np.pi)
+        return rotation
