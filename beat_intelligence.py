@@ -107,6 +107,10 @@ class BeatIntelligence:
         self._post_silence_ramp_start: float = 0.0
         self._was_silent: bool = False
 
+        # ── Phase 3: Auto-fill adaptation (#20) ──
+        self._auto_fill_offsets: dict[str, float] = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
+        self._auto_fill_ema: dict[str, float] = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
+
     def set_audio_engine(self, audio_engine) -> None:
         self.audio_engine = audio_engine
 
@@ -393,7 +397,312 @@ class BeatIntelligence:
         low_hz = float(getattr(self.config.stroke, "block_mid_trigger_low_hz", 100.0))
         high_hz = float(getattr(self.config.stroke, "block_mid_trigger_high_hz", 2000.0))
         return bool(low_hz <= freq <= high_hz)
+    # ── Phase 3 §5: Low-band fullness gate ────────────────────────────────
 
+    def _is_low_band_full_enough(self, event: BeatEvent, trigger_kind: str, bpm: float) -> bool:
+        """Low-band fullness gate (#5): require sustained low-band activity.
+
+        Uses rolling deque history to enforce minimum mean, occupancy, and
+        low/high ratio.  Downbeats get relaxed thresholds.  Falls back to
+        mid-bass support when low-band alone is insufficient.
+        """
+        cfg = self.config.stroke
+        window = int(getattr(cfg, 'low_band_window_frames', 18))
+        threshold = float(getattr(cfg, 'low_band_activity_threshold', 0.20))
+        occ_threshold = float(getattr(cfg, 'low_band_fullness_occupancy_threshold', 0.62))
+        ratio_min = float(getattr(cfg, 'low_band_to_high_ratio_min', 0.58))
+
+        if trigger_kind == "downbeat":
+            relax = float(getattr(cfg, 'downbeat_low_band_relax', 0.85))
+            threshold *= relax
+            occ_threshold *= relax
+            ratio_min *= relax
+
+        recent_low = list(self._recent_low_band_values)[-window:]
+
+        # Insufficient data: don't block
+        if len(recent_low) < 8:
+            return True
+
+        # No meaningful signal data (e.g. no audio engine): don't block
+        max_val = max(recent_low) if recent_low else 0.0
+        if max_val < 1e-6:
+            return True
+
+        mean_low = float(np.mean(recent_low))
+        if mean_low < threshold:
+            if bool(getattr(cfg, 'mid_bass_support_enabled', True)):
+                return self._mid_bass_support_passes(trigger_kind)
+            return False
+
+        # Occupancy: fraction of frames above floor
+        floor_val = 0.70 * threshold
+        above_floor = sum(1 for v in recent_low if v >= floor_val)
+        occupancy = above_floor / max(1, len(recent_low))
+        if occupancy < occ_threshold:
+            if bool(getattr(cfg, 'mid_bass_support_enabled', True)):
+                return self._mid_bass_support_passes(trigger_kind)
+            return False
+
+        # Low/high ratio: prevent treble-only content from passing
+        recent_high = list(self._recent_high_band_values)[-window:]
+        if len(recent_high) >= 8:
+            mean_high = float(np.mean(recent_high))
+            if mean_high > 1e-6 and (mean_low / mean_high) < ratio_min:
+                if bool(getattr(cfg, 'mid_bass_support_enabled', True)):
+                    return self._mid_bass_support_passes(trigger_kind)
+                return False
+
+        return True
+
+    def _mid_bass_support_passes(self, trigger_kind: str) -> bool:
+        """Mid-bass (200-400 Hz) fallback when low-band gate fails."""
+        cfg = self.config.stroke
+        mb_threshold = float(getattr(cfg, 'mid_bass_activity_threshold', 0.035))
+        mb_occ_threshold = float(getattr(cfg, 'mid_bass_occupancy_threshold', 0.45))
+        window = int(getattr(cfg, 'low_band_window_frames', 18))
+
+        recent_mb = list(self._recent_mid_bass_values)[-window:]
+        if len(recent_mb) < 8:
+            return True  # insufficient data, don't block
+
+        max_val = max(recent_mb) if recent_mb else 0.0
+        if max_val < 1e-6:
+            return True  # no signal data
+
+        mean_mb = float(np.mean(recent_mb))
+        if mean_mb < mb_threshold:
+            return False
+
+        floor_val = 0.70 * mb_threshold
+        above_floor = sum(1 for v in recent_mb if v >= floor_val)
+        occupancy = above_floor / max(1, len(recent_mb))
+        return occupancy >= mb_occ_threshold
+
+    # ── Phase 3 §6: Dual-band dB gate ────────────────────────────────────
+
+    def _passes_dual_band_db_gate(self, event: BeatEvent) -> bool:
+        """Dual-band dB gate (#6): require sub-bass AND high-band energy.
+
+        Both bands must exceed their dB minimum.  Has event-frequency
+        fallback and high-tip fullness sub-gate.
+        """
+        cfg = self.config.stroke
+        if not bool(getattr(cfg, 'dual_band_db_gate_enabled', True)):
+            return True
+
+        # Learning relax bypass
+        if (bool(getattr(self.config.beat, 'teaching_learning_enabled', False))
+                and bool(getattr(self.config.beat, 'teaching_relax_phase1_gates', False))):
+            return True
+
+        # No meaningful energy data: don't block
+        total_energy = (abs(self.energies.sub_bass) + abs(self.energies.low_mid)
+                        + abs(self.energies.mid) + abs(self.energies.high))
+        if total_energy < 1e-6:
+            return True
+
+        sub_bass_db_min = float(getattr(cfg, 'dual_band_sub_bass_db_min', -15.0))
+        high_db_min = float(getattr(cfg, 'dual_band_high_db_min', -30.0))
+
+        sub_bass_energy = max(1e-10, float(self.energies.sub_bass))
+        high_energy = max(1e-10, float(self.energies.high))
+
+        sub_bass_db = float(20.0 * np.log10(sub_bass_energy))
+        high_db = float(20.0 * np.log10(high_energy))
+
+        passes = (sub_bass_db >= sub_bass_db_min and high_db >= high_db_min)
+
+        if not passes:
+            # Event frequency fallback: infer band from event frequency
+            freq = float(getattr(event, 'frequency', 0.0) or 0.0)
+            peak_energy = float(getattr(event, 'peak_energy', 0.0) or 0.0)
+            if peak_energy > 0.01:
+                if 20.0 <= freq <= 120.0 and sub_bass_db < sub_bass_db_min:
+                    passes = (high_db >= high_db_min)
+                elif freq > 3500.0 and high_db < high_db_min:
+                    passes = (sub_bass_db >= sub_bass_db_min)
+
+        # High-tip fullness sub-gate
+        if passes and bool(getattr(cfg, 'high_tip_fullness_enabled', True)):
+            passes = self._high_tip_fullness_passes()
+
+        return passes
+
+    def _high_tip_fullness_passes(self) -> bool:
+        """High-tip fullness sub-gate for dual-band dB gate."""
+        cfg = self.config.stroke
+        occ_threshold = float(getattr(cfg, 'high_tip_occupancy_threshold', 0.50))
+        db_min = float(getattr(cfg, 'high_tip_db_min', -28.0))
+        window = int(getattr(cfg, 'low_band_window_frames', 18))
+
+        recent = list(self._recent_high_band_values)[-window:]
+        if len(recent) < 8:
+            return True  # insufficient data
+
+        max_val = max(recent) if recent else 0.0
+        if max_val < 1e-6:
+            return True  # no signal data
+
+        linear_min = 10.0 ** (db_min / 20.0)  # -28 dB → ~0.0398
+        above = sum(1 for v in recent if v >= linear_min)
+        occupancy = above / max(1, len(recent))
+        return occupancy >= occ_threshold
+
+    # ── Phase 3 §8: Spectrum fill gate ───────────────────────────────────
+
+    def _get_spectrum_fill_ratio(self, trigger_kind: str) -> float:
+        """Compute spectrum fill ratio from live FFT for given phase (#8)."""
+        if self.audio_engine is None:
+            return 1.0  # no engine, don't block
+
+        spectrum = None
+        if hasattr(self.audio_engine, 'get_spectrum'):
+            spectrum = self.audio_engine.get_spectrum()
+
+        if spectrum is None:
+            return 1.0
+
+        magnitudes = np.abs(np.asarray(spectrum, dtype=float))
+        if magnitudes.size == 0:
+            return 1.0
+
+        peak = float(np.max(magnitudes))
+        if peak < 1e-10:
+            return 0.0
+
+        cfg = self.config.stroke
+        phase_map = {
+            "downbeat": ("downbeat_fill_bin_low", "downbeat_fill_bin_high"),
+            "beat": ("beat_fill_bin_low", "beat_fill_bin_high"),
+            "syncopation": ("syncopation_fill_bin_low", "syncopation_fill_bin_high"),
+        }
+        low_key, high_key = phase_map.get(trigger_kind, ("beat_fill_bin_low", "beat_fill_bin_high"))
+        low_bin = int(getattr(cfg, low_key, 0))
+        high_bin = int(getattr(cfg, high_key, 512))
+
+        high_bin = min(high_bin + 1, magnitudes.size)
+        low_bin = max(0, min(low_bin, high_bin - 1))
+        band = magnitudes[low_bin:high_bin]
+
+        if band.size == 0:
+            return 0.0
+
+        norm = band / peak
+        active_floor = 0.02
+        active_mask = norm >= active_floor
+        active = norm[active_mask]
+
+        if active.size == 0:
+            return 0.0
+
+        threshold = float(getattr(cfg, 'overall_amp_fill_target', 0.5))
+        filled = float(np.sum(active >= threshold))
+        return float(filled / max(1, active.size))
+
+    def _passes_overall_amp_fill_gate(self, event: BeatEvent, trigger_kind: str) -> bool:
+        """Overall amplitude fill gate (#8): require spectral fill for phase."""
+        cfg = self.config.stroke
+        if not bool(getattr(cfg, 'overall_amp_fill_gate_enabled', True)):
+            return True
+
+        # No audio engine: don't block
+        if self.audio_engine is None:
+            return True
+
+        intensity = float(getattr(event, 'intensity', 0.0) or 0.0)
+        target = float(getattr(cfg, 'overall_amp_fill_target', 0.5))
+        tolerance = float(getattr(cfg, 'overall_amp_fill_tolerance', 0.5))
+
+        if intensity < (target - tolerance):
+            return False
+
+        fill_ratio = self._get_spectrum_fill_ratio(trigger_kind)
+        required = self._get_overall_amp_fill_required(trigger_kind)
+
+        passed = fill_ratio >= required
+        self._update_auto_fill_required(trigger_kind, passed)
+
+        return passed
+
+    def _get_overall_amp_fill_required(self, trigger_kind: str) -> float:
+        """Get fill required for phase, including auto-adapt offset (#20)."""
+        cfg = self.config.stroke
+        base_map = {
+            "downbeat": float(getattr(cfg, 'downbeat_overall_amp_fill_required', 0.75)),
+            "beat": float(getattr(cfg, 'beat_overall_amp_fill_required', 0.90)),
+            "syncopation": float(getattr(cfg, 'syncopation_overall_amp_fill_required', 1.00)),
+        }
+        base = base_map.get(trigger_kind, base_map.get("beat", 0.90))
+        offset = self._auto_fill_offsets.get(trigger_kind, 0.0)
+
+        min_req = float(getattr(cfg, 'overall_amp_fill_auto_min_required', 0.05))
+        max_req = float(getattr(cfg, 'overall_amp_fill_auto_max_required', 0.98))
+
+        return float(np.clip(base + offset, min_req, max_req))
+
+    def _update_auto_fill_required(self, trigger_kind: str, gate_passed: bool) -> None:
+        """Auto-fill adaptation (#20): adjust offset per phase targeting pass rate."""
+        cfg = self.config.stroke
+        if not bool(getattr(cfg, 'overall_amp_fill_auto_enabled', True)):
+            return
+
+        alpha = float(getattr(cfg, 'overall_amp_fill_auto_ema_alpha', 0.12))
+        target_rate = float(getattr(cfg, 'overall_amp_fill_auto_target_pass_rate', 0.58))
+        deadband = float(getattr(cfg, 'overall_amp_fill_auto_deadband', 0.06))
+        step = float(getattr(cfg, 'overall_amp_fill_auto_step', 0.02))
+        max_offset = float(getattr(cfg, 'overall_amp_fill_auto_max_offset', 0.35))
+
+        current_ema = self._auto_fill_ema.get(trigger_kind, 0.5)
+        sample = 1.0 if gate_passed else 0.0
+        new_ema = current_ema + alpha * (sample - current_ema)
+        self._auto_fill_ema[trigger_kind] = new_ema
+
+        error = new_ema - target_rate
+        current_offset = self._auto_fill_offsets.get(trigger_kind, 0.0)
+
+        if abs(error) > deadband:
+            if error > 0:
+                # Passing too often → tighten (increase required)
+                current_offset += step
+            else:
+                # Passing too rarely → relax (decrease required)
+                current_offset -= step
+            current_offset = float(np.clip(current_offset, -max_offset, max_offset))
+            self._auto_fill_offsets[trigger_kind] = current_offset
+
+    # ── Phase 3 §16: Flux-drop guard ─────────────────────────────────────
+
+    def _check_flux_drop_guard(self, now: float) -> bool:
+        """Flux-drop guard (#16): block if low-band energy dropped sharply.
+
+        When recent tail drops below drop_ratio of full window average,
+        and no confirmed beats were recent, downgrade to creep.
+        """
+        cfg = self.config.stroke
+        if not bool(getattr(cfg, 'low_band_drop_guard_enabled', True)):
+            return False
+
+        drop_ratio = float(getattr(cfg, 'flux_drop_ratio', 0.25))
+
+        recent = list(self._recent_low_band_values)
+        if len(recent) < 30:
+            return False
+
+        full_mean = float(np.mean(recent))
+        tail_mean = float(np.mean(recent[-8:]))
+
+        if full_mean < 1e-6:
+            return False
+
+        ratio = tail_mean / full_mean
+        if ratio < drop_ratio:
+            # Only downgrade when no recent confirmed beats
+            if self._has_recent_beats(now, window_s=0.9):
+                return False
+            return True
+
+        return False
     # ── Phase 1 §4: No-beat timeout ──────────────────────────────────
 
     def _check_no_beat_timeout(self, now: float) -> bool:
@@ -646,6 +955,15 @@ class BeatIntelligence:
             elif self._is_mid_trigger_blocked(event):
                 trigger_kind = "creep"
             elif not self._beat_hierarchy_allows(event, raw_trigger_kind, now, bpm):
+                trigger_kind = "creep"
+            # Phase 3 gates: low-band → dual-band → spectrum fill → flux-drop
+            elif not self._is_low_band_full_enough(event, raw_trigger_kind, bpm):
+                trigger_kind = "creep"
+            elif not self._passes_dual_band_db_gate(event):
+                trigger_kind = "creep"
+            elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
+                trigger_kind = "creep"
+            elif self._check_flux_drop_guard(now):
                 trigger_kind = "creep"
 
         # Record high-band beat hit for pattern gate
