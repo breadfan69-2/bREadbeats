@@ -135,242 +135,242 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
         self._ghost_overlays: dict[str, dict] = {}
         self._ghost_timer = QTimer(self)
         self._ghost_timer.setInterval(80)
-        
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, self.num_mag_levels * 0.89)
-        self.addItem(self.depth_label)
-        
-        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
-        self.beat_label.setPos(5, self.num_mag_levels * 0.97)
-        self.addItem(self.beat_label)
-        
-        self.parent_window = parent
-        self.sample_rate = 44100
-        self._fft_bins = 513  # Default for 1024 FFT; updated on first spectrum
-        self._updating = False
-        
-        # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        bar_width = 4.6  # Width of each bar (about 8% thinner)
-        bar_spacing = 0.8  # Gap between bars
-        bar_x_start = -18.0  # Start position (leftmost bar)
-        
-        # Bar 1: Actual Peak (green)
-        self.peak_actual_bar = pg.BarGraphItem(
-            x=[bar_x_start],
-            height=[0],
-            width=bar_width,
-            brush='#00FF00'
+        self._ghost_timer.timeout.connect(self._tick_ghosts)
+
+        self.setXRange(0, 1)
+        self.setYRange(self._display_floor_db, self._display_ceil_db)
+
+    def _ensure_bars(self, count: int):
+        """Rebuild bars when FFT-bin count changes."""
+        count = max(1, int(count))
+        if count == self._bar_count and self._bar_item is not None:
+            return
+
+        if self._bar_item is not None:
+            self.removeItem(self._bar_item)
+
+        self._bar_count = count
+        self._bar_x = np.arange(count, dtype=np.float32)
+        self._bar_floor = np.full(count, self._display_floor_db, dtype=np.float32)
+        heights = np.zeros(count, dtype=np.float32)
+
+        self._bar_item = pg.BarGraphItem(
+            x=self._bar_x,
+            y0=self._bar_floor,
+            height=heights,
+            width=0.9,
+            brush=pg.mkBrush(90, 200, 255, 180),
+            pen=pg.mkPen(120, 230, 255, 180),
         )
-        self.addItem(self.peak_actual_bar)
-        
-        # Bar 2: Peak Floor (yellow)
-        self.peak_floor_bar = pg.BarGraphItem(
-            x=[bar_x_start + bar_width + bar_spacing],
-            height=[0],
-            width=bar_width,
-            brush='#FFD700'
-        )
-        self.addItem(self.peak_floor_bar)
-        
-        # Bar 3: Peak Decay (orange)
-        self.peak_decay_bar = pg.BarGraphItem(
-            x=[bar_x_start + 2 * (bar_width + bar_spacing)],
-            height=[0],
-            width=bar_width,
-            brush='#FF8C00'
-        )
-        self.addItem(self.peak_decay_bar)
-        
-        # Store scale for Y axis
-        self._bar_scale = self.num_mag_levels * 0.82
-        
-    def _hz_to_bin(self, hz: float) -> float:
-        nyquist = self.sample_rate / 2
-        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
-        linear_idx = max(1.0, (hz / nyquist) * (n - 1))
-        log_max = np.log10(n - 1)
-        return (np.log10(linear_idx) / log_max) * self.num_bins if log_max > 0 else 0.0
-    
-    def _bin_to_hz(self, bin_idx: float) -> float:
-        nyquist = self.sample_rate / 2
-        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
-        log_max = np.log10(n - 1)
-        linear_idx = 10 ** ((bin_idx / self.num_bins) * log_max) if log_max > 0 else bin_idx
-        return (linear_idx / (n - 1)) * nyquist
-        
-    def _on_beat_band_changed(self):
-        if self._updating:
-            return
-        region = self.beat_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'freq_range_slider'):
-            self._updating = True
-            self.parent_window.freq_range_slider.setLow(int(low_hz))
-            self.parent_window.freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, self.num_mag_levels * 0.97)
-    
-    def _on_depth_band_changed(self):
-        if self._updating:
-            return
-        region = self.depth_band.getRegion()
-        center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, self.num_mag_levels * 0.89)
-    
-    def _on_p0_band_changed(self):
-        if self._updating:
-            return
-        region = self.p0_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_range_slider'):
-            self._updating = True
-            self.parent_window.pulse_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, self.num_mag_levels * 0.81)
-    
-    def _on_f0_band_changed(self):
-        if self._updating:
-            return
-        region = self.f0_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'f0_freq_range_slider'):
-            self._updating = True
-            self.parent_window.f0_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (float(region[0]) + float(region[1])) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, self.num_mag_levels * 0.73)
-    
-    def set_sample_rate(self, sr: int):
-        self.sample_rate = sr
-    
-    def set_frequency_band(self, low_norm: float, high_norm: float):
-        self._updating = True
-        nyquist = self.sample_rate / 2
-        low_bin = self._hz_to_bin(low_norm * nyquist)
-        high_bin = self._hz_to_bin(high_norm * nyquist)
-        self.beat_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, self.num_mag_levels * 0.97)
-        self._updating = False
-    
-    def set_depth_band(self, low_hz: float, high_hz: float):
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.depth_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, self.num_mag_levels * 0.89)
-        self._updating = False
-    
-    def set_p0_band(self, low_hz: float, high_hz: float):
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.p0_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, self.num_mag_levels * 0.81)
-        self._updating = False
-    
-    def set_f0_band(self, low_hz: float, high_hz: float):
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.f0_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, self.num_mag_levels * 0.73)
-        self._updating = False
-    
+        self.addItem(self._bar_item)
+        self.setXRange(-0.5, count - 0.5)
+
     def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Update peak indicator bars - actual peak and peak decay"""
-        if hasattr(self, 'peak_actual_bar'):
-            scale = getattr(self, '_bar_scale', self.num_mag_levels)
-            self.peak_actual_bar.setOpts(height=[min(1.0, peak_value) * scale])
-        if hasattr(self, 'peak_decay_bar'):
-            scale = getattr(self, '_bar_scale', self.num_mag_levels)
-            self.peak_decay_bar.setOpts(height=[min(1.0, flux_value) * scale])
-    
-    def set_peak_floor(self, peak_floor: float):
-        """Update peak floor bar height"""
-        if hasattr(self, 'peak_floor_bar'):
-            scale = getattr(self, '_bar_scale', self.num_mag_levels)
-            self.peak_floor_bar.setOpts(height=[peak_floor * scale])
-    
+        """Compatibility no-op for shared visualizer interfaces."""
+        pass
+
     def set_peak_indicators_visible(self, visible: bool):
-        """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
-        if hasattr(self, 'peak_actual_bar'):
-            self.peak_actual_bar.setVisible(visible)
-        if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setVisible(visible)
-        if hasattr(self, 'peak_decay_bar'):
-            self.peak_decay_bar.setVisible(visible)
+        """Compatibility no-op for shared visualizer interfaces."""
+        pass
 
     def set_range_indicators_visible(self, visible: bool):
-        """Show or hide frequency range band indicators and labels"""
-        self.beat_band.setVisible(visible)
-        self.depth_band.setVisible(visible)
-        self.p0_band.setVisible(visible)
-        self.f0_band.setVisible(visible)
-        self.beat_label.setVisible(visible)
-        self.depth_label.setVisible(visible)
-        self.pulse_label.setVisible(visible)
-        self.carrier_label.setVisible(visible)
-        
-    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
-        """Update phosphor display with new spectrum - accumulate hits with decay"""
-        if spectrum is None or len(spectrum) == 0:
+        """Compatibility no-op for shared visualizer interfaces."""
+        pass
+
+    def update_from_spectrum(self, spectrum: np.ndarray, sample_rate: int):
+        """Render exact incoming FFT bins without bin interpolation/merging."""
+        if spectrum is None:
             return
-        
-        # Cut off at Nyquist (22050 Hz at 44.1kHz sample rate)
-        cutoff_hz = 22050
-        nyquist = self.sample_rate / 2
-        cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
-        spectrum = spectrum[:cutoff_idx]
-            
-        # Track source FFT size for hz/bin conversions
-        self._fft_bins = len(spectrum)
-        # Resample to num_bins using log-frequency spacing
-        n = len(spectrum)
-        if n > 1:
-            x_old = np.arange(n)
-            x_new = np.logspace(0, np.log10(n - 1), self.num_bins)
-            x_new = np.clip(x_new, 0, n - 1)
-            spectrum = np.interp(x_new, x_old, spectrum)
-        elif len(spectrum) != self.num_bins:
-            x_old = np.linspace(0, 1, n)
-            x_new = np.linspace(0, 1, self.num_bins)
-            spectrum = np.interp(x_new, x_old, spectrum)
-        
-        # Apply log scaling and normalize to 0-1
-        spectrum = np.log10(spectrum + 1e-6)
-        spectrum = np.clip((spectrum + 6) / 6, 0, 1)
-        
-        # Apply decay to existing hitmap
-        self.hitmap *= self.decay
-        
-        # Add current spectrum to hitmap
-        # Each frequency bin adds a "hit" at its magnitude level
-        for freq_bin in range(self.num_bins):
-            mag_level = int(spectrum[freq_bin] * (self.num_mag_levels - 1))
-            mag_level = min(max(0, mag_level), self.num_mag_levels - 1)
-            self.hitmap[mag_level, freq_bin] += 0.5
-        
-        # Normalize for display
-        display_data = np.clip(self.hitmap, 0, 1)
-        
-        # Update image (transpose for correct orientation)
-        self.img_item.setImage(display_data.T, autoLevels=False, levels=(0, 1))
-        self.img_item.setRect(0, 0, self.num_bins, self.num_mag_levels)
-        
-        # Update peak indicator bars with current peak energy
-        if peak_energy is not None:
-            self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
+
+        arr = np.asarray(spectrum, dtype=np.float32)
+        if arr.size == 0:
+            return
+
+        self._ensure_bars(arr.size)
+        bin_width_hz = float(sample_rate) / float(max(1, (arr.size - 1) * 2))
+        self.getAxis('bottom').setLabel('FFT Bin', units=f'Δf={bin_width_hz:.2f}Hz')
+
+        db_values = 20.0 * np.log10(np.maximum(arr, 1e-12))
+        self._latest_peak_db = float(np.max(db_values)) if db_values.size > 0 else self._display_floor_db
+        db_values = np.clip(db_values, self._display_floor_db, self._display_ceil_db)
+        heights = db_values - self._display_floor_db
+
+        if self._bar_item is not None:
+            self._bar_item.setOpts(height=heights, y0=self._bar_floor)
+
+    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
+        """Compatibility wrapper for callers that use update_spectrum."""
+        self.update_from_spectrum(spectrum, 44100)
+
+    def show_fill_ratio_ghost(self, key: str, ratio: float, label: str, color: str = '#66E0FF', duration_s: float = 5.0, dashed: bool = True) -> None:
+        """Show temporary dB-threshold line from fill ratio using live FFT peak reference."""
+        ratio_clamped = float(np.clip(ratio, 0.0, 1.0))
+        peak_db = float(np.clip(self._latest_peak_db, self._display_floor_db, self._display_ceil_db))
+        threshold_db = peak_db + (20.0 * np.log10(max(ratio_clamped, 1e-6)))
+        threshold_db = float(np.clip(threshold_db, self._display_floor_db, self._display_ceil_db))
+        self._show_ghost(
+            key=key,
+            label=f"{label}: {ratio_clamped:.3f} (~{threshold_db:.1f} dB)",
+            color=color,
+            duration_s=duration_s,
+            dashed=dashed,
+            mode='line',
+            y=threshold_db,
+        )
+
+    def show_bin_range_ghost(self, key: str, low_bin: int, high_bin: int, label: str, color: str = '#FFFFFF', duration_s: float = 5.0, dashed: bool = False) -> None:
+        """Show temporary FFT-bin range box aligned to real bin indices."""
+        if self._bar_count <= 0:
+            return
+        lo = int(np.clip(min(low_bin, high_bin), 0, self._bar_count - 1))
+        hi = int(np.clip(max(low_bin, high_bin), 0, self._bar_count - 1))
+        self._show_ghost(
+            key=key,
+            label=f"{label}: bins {lo}-{hi}",
+            color=color,
+            duration_s=duration_s,
+            dashed=dashed,
+            mode='box',
+            x0=float(lo - 0.5),
+            x1=float(hi + 0.5),
+            y0=self._display_floor_db,
+            y1=self._display_ceil_db,
+        )
+
+    def _show_ghost(
+        self,
+        *,
+        key: str,
+        label: str,
+        color: str,
+        duration_s: float,
+        dashed: bool,
+        mode: str,
+        y: float | None = None,
+        x0: float | None = None,
+        x1: float | None = None,
+        y0: float | None = None,
+        y1: float | None = None,
+    ) -> None:
+        now = time.monotonic()
+        overlay = self._ghost_overlays.get(key)
+        if overlay is None:
+            qcolor = QColor(color)
+            line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)))
+            line.setZValue(30)
+            self.addItem(line)
+
+            text = pg.TextItem('', color=qcolor, anchor=(0.0, 1.0))
+            text.setZValue(31)
+            self.addItem(text)
+
+            box = pg.QtWidgets.QGraphicsRectItem()
+            box.setZValue(29)
+            self.addItem(box)
+            box.hide()
+
+            overlay = {
+                'line': line,
+                'text': text,
+                'box': box,
+                'color': qcolor,
+                'started_at': now,
+                'duration_s': float(max(0.5, duration_s)),
+            }
+            self._ghost_overlays[key] = overlay
+
+        overlay['started_at'] = now
+        overlay['duration_s'] = float(max(0.5, duration_s))
+        overlay['dashed'] = bool(dashed)
+        overlay['mode'] = mode
+
+        text_item = overlay['text']
+        line_item = overlay['line']
+        box_item = overlay['box']
+        text_item.setText(label)
+
+        if mode == 'line' and y is not None:
+            line_item.show()
+            line_item.setPos(float(y))
+            text_item.setPos(1.0, min(self._display_ceil_db - 0.5, float(y) + 0.8))
+            box_item.hide()
+            overlay['base_rect'] = None
+        elif mode == 'box' and None not in (x0, x1, y0, y1):
+            line_item.hide()
+            text_item.setPos(float(x0) + 0.25, self._display_ceil_db - 0.5)
+            overlay['base_rect'] = QRectF(
+                min(float(x0), float(x1)),
+                min(float(y0), float(y1)),
+                max(0.001, abs(float(x1) - float(x0))),
+                max(0.2, abs(float(y1) - float(y0))),
+            )
+            box_item.show()
+
+        self._apply_ghost_style(overlay, 0.0)
+        if not self._ghost_timer.isActive():
+            self._ghost_timer.start()
+
+    def _apply_ghost_style(self, overlay: dict, progress: float) -> None:
+        eased = float(np.clip(progress, 0.0, 1.0))
+        alpha = max(0, min(230, int(230 * (1.0 - eased))))
+
+        color = QColor(overlay['color'])
+        color.setAlpha(alpha)
+        line = overlay['line']
+        line.setPen(pg.mkPen(color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
+        overlay['text'].setColor(color)
+
+        base_rect = overlay.get('base_rect')
+        box = overlay.get('box')
+        if base_rect is not None and box is not None and box.isVisible():
+            box.setRect(base_rect)
+            pen = QPen(color)
+            pen.setWidthF(0.9)
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
+            box.setPen(pen)
+            box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+
+    def _tick_ghosts(self) -> None:
+        if not self._ghost_overlays:
+            self._ghost_timer.stop()
+            return
+
+        now = time.monotonic()
+        expired: list[str] = []
+        for key, overlay in list(self._ghost_overlays.items()):
+            elapsed = max(0.0, now - float(overlay.get('started_at', now)))
+            duration = max(0.5, float(overlay.get('duration_s', 5.0)))
+            progress = elapsed / duration
+            if progress >= 1.0:
+                expired.append(key)
+                continue
+            self._apply_ghost_style(overlay, progress)
+
+        for key in expired:
+            overlay = self._ghost_overlays.pop(key, None)
+            if overlay is None:
+                continue
+            for item_key in ('line', 'text', 'box'):
+                item = overlay.get(item_key)
+                if item is not None:
+                    try:
+                        item.hide()
+                    except Exception:
+                        pass
+                    try:
+                        self.removeItem(item)
+                    except Exception:
+                        pass
+                    try:
+                        scene = item.scene()
+                        if scene is not None:
+                            scene.removeItem(item)
+                    except Exception:
+                        pass
+
+        if not self._ghost_overlays:
+            self._ghost_timer.stop()
 
 
 def launch_projectm():
