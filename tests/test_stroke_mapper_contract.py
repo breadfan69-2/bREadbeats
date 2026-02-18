@@ -177,18 +177,20 @@ class TestStrokeMapperContract(unittest.TestCase):
         sp = mapper._s_curve(p)
         self.assertAlmostEqual(sp, p * p * (3.0 - 2.0 * p), places=6)
 
-    def test_radius_bloom_uses_s_curve_pulse_shape(self):
+    def test_radius_bloom_uses_continuous_smoothing(self):
         mapper = StrokeMapper(Config())
-        decision_bloom = 0.95
-        bloom_delta = decision_bloom - mapper._park_radius
+        target = 0.95
+        radius_alpha = 0.15
 
-        radius_start = mapper._park_radius + bloom_delta * 0.0
-        radius_mid = mapper._park_radius + bloom_delta * 1.0
-        radius_end = mapper._park_radius + bloom_delta * 0.0
+        mapper._actual_radius = mapper._park_radius
+        mapper._actual_radius += radius_alpha * (target - mapper._actual_radius)
+        first = mapper._actual_radius
+        mapper._actual_radius += radius_alpha * (target - mapper._actual_radius)
+        second = mapper._actual_radius
 
-        self.assertAlmostEqual(radius_start, mapper._park_radius, places=6)
-        self.assertGreater(radius_mid, radius_start)
-        self.assertAlmostEqual(radius_end, mapper._park_radius, places=6)
+        self.assertGreater(first, mapper._park_radius)
+        self.assertGreater(second, first)
+        self.assertLess(second, target)
 
     def test_process_beat_returns_tcode_command(self):
         mapper = StrokeMapper(Config())
@@ -200,7 +202,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         self.assertEqual(cmd.duration_ms, 25)
 
-    def test_terminal_pose_lands_at_park_with_high_treble_and_max_bloom(self):
+    def test_terminal_pose_lands_at_park_angle_with_smoothed_radius_downbeat(self):
         mapper = StrokeMapper(Config())
         mapper._intelligence.energies.high = 1.0
         mapper._intelligence.energies.mid = 1.0
@@ -219,9 +221,10 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         epsilon = 1e-6
         self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
-        self.assertLessEqual(abs(cmd.beta - 0.70), epsilon)
+        self.assertGreater(cmd.beta, 0.70)
+        self.assertLessEqual(cmd.beta, 1.0)
 
-    def test_terminal_pose_lands_at_park_for_syncopation_with_high_treble_and_max_bloom(self):
+    def test_terminal_pose_lands_at_park_angle_with_smoothed_radius_syncopation(self):
         mapper = StrokeMapper(Config())
         mapper._intelligence.energies.high = 1.0
         mapper._intelligence.energies.mid = 1.0
@@ -240,9 +243,10 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         epsilon = 1e-6
         self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
-        self.assertLessEqual(abs(cmd.beta - 0.70), epsilon)
+        self.assertGreater(cmd.beta, 0.70)
+        self.assertLessEqual(cmd.beta, 1.0)
 
-    def test_terminal_pose_lands_at_park_from_non_park_start_angle(self):
+    def test_terminal_pose_lands_at_park_angle_from_non_park_start_angle(self):
         mapper = StrokeMapper(Config())
         mapper._intelligence.energies.high = 1.0
         mapper._intelligence.energies.mid = 1.0
@@ -268,7 +272,8 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         epsilon = 1e-6
         self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
-        self.assertLessEqual(abs(cmd.beta - 0.70), epsilon)
+        self.assertGreater(cmd.beta, 0.70)
+        self.assertLessEqual(cmd.beta, 1.0)
 
 
 if __name__ == "__main__":

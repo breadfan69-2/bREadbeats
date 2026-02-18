@@ -59,7 +59,10 @@ class StrokeMapper:
         self._journey_start_angle = self._park_angle
         self._journey_total_rotation = float(2.0 * np.pi)
         self._last_journey_completion = 1.0
-        self._snapshot_bloom_delta = 0.0  # locked at journey start for smooth arc
+        self._actual_radius = self._park_radius
+        self._angular_velocity = 0.0
+        self._last_phase_for_velocity = self._orbit_phase
+        self._journey_initial_speed_slope = 0.0
 
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
@@ -160,7 +163,6 @@ class StrokeMapper:
             self._last_journey_completion = 1.0
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
-            smooth_progress = self._s_curve(progress)
 
             started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
             if started_new_journey:
@@ -169,20 +171,36 @@ class StrokeMapper:
                     start_angle=self._journey_start_angle,
                     interval_beats=decision.interval_beats,
                 )
-                # Snapshot bloom_delta at journey start so radius stays locked
-                # for the entire arc — no mid-journey stepping.
-                learning_mult = 1.0
-                if decision.learning.active:
-                    learning_mult = float(np.clip(decision.learning.radius_mult, 0.3, 2.5))
-                effective_bloom = float(decision.radius_bloom * learning_mult)
-                effective_bloom = float(np.clip(effective_bloom, self._park_radius, 0.95))
-                self._snapshot_bloom_delta = float(max(0.0, effective_bloom - self._park_radius))
+                self._journey_initial_speed_slope = self._compute_initial_speed_slope(
+                    event=event,
+                    interval_beats=decision.interval_beats,
+                )
+
+            smooth_progress = self._s_curve_with_initial_velocity(
+                progress=progress,
+                initial_slope=self._journey_initial_speed_slope,
+            )
 
             angle = float(self._journey_start_angle + (self._journey_total_rotation * smooth_progress))
             self._orbit_phase = float(angle % (2.0 * np.pi))
 
-            # S-curve pulse for bloom: uses snapshotted bloom_delta for smooth arc.
-            radius = float(self._park_radius + (self._snapshot_bloom_delta * np.sin(np.pi * smooth_progress)))
+            phase_delta = self._wrapped_phase_delta(self._orbit_phase, self._last_phase_for_velocity)
+            self._angular_velocity = float(phase_delta / max(dt, 1e-4))
+            self._last_phase_for_velocity = self._orbit_phase
+
+            # Continuous "Smoooooth Arc": radius is independent of journey progress.
+            # Target radius follows music/learning; actual radius lerps via EMA.
+            learning_mult = 1.0
+            if decision.learning.active:
+                learning_mult = float(np.clip(decision.learning.radius_mult, 0.3, 2.5))
+
+            bloom_delta = float(max(0.0, decision.radius_bloom - self._park_radius))
+            target_radius = float(self._park_radius + (bloom_delta * learning_mult))
+            target_radius = float(np.clip(target_radius, self._park_radius, 0.95))
+
+            radius_alpha = 0.03
+            self._actual_radius += radius_alpha * (target_radius - self._actual_radius)
+            radius = float(np.clip(self._actual_radius, self._park_radius, 0.95))
 
             center_offset_y = self._intelligence.compute_treble_lift(progress)
 
@@ -205,6 +223,39 @@ class StrokeMapper:
     def _s_curve(progress: float) -> float:
         p = float(np.clip(progress, 0.0, 1.0))
         return float(p * p * (3.0 - (2.0 * p)))
+
+    @staticmethod
+    def _s_curve_with_initial_velocity(progress: float, initial_slope: float, end_slope: float = 0.0) -> float:
+        """Cubic Hermite easing with configurable initial slope for velocity handoff."""
+        p = float(np.clip(progress, 0.0, 1.0))
+        m0 = float(np.clip(initial_slope, 0.0, 2.5))
+        m1 = float(np.clip(end_slope, 0.0, 2.5))
+
+        h10 = (p * p * p) - (2.0 * p * p) + p
+        h01 = (-2.0 * p * p * p) + (3.0 * p * p)
+        h11 = (p * p * p) - (p * p)
+        eased = (h10 * m0) + h01 + (h11 * m1)
+        return float(np.clip(eased, 0.0, 1.0))
+
+    def _compute_initial_speed_slope(self, event: BeatEvent, interval_beats: int) -> float:
+        """Map current angular velocity to a normalized easing start slope."""
+        bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+        if bpm <= 0.0:
+            bpm = float(getattr(event, "bpm", 0.0) or 0.0)
+        bpm = float(np.clip(bpm if bpm > 0.0 else 120.0, 40.0, 240.0))
+
+        beats_per_second = bpm / 60.0
+        target_duration_s = float(max(1e-3, float(interval_beats) / max(1e-6, beats_per_second)))
+        progress_rate = 1.0 / target_duration_s
+
+        denom = max(1e-6, self._journey_total_rotation * progress_rate)
+        slope = self._angular_velocity / denom
+        return float(np.clip(slope, 0.0, 2.5))
+
+    @staticmethod
+    def _wrapped_phase_delta(current: float, previous: float) -> float:
+        """Return wrapped phase delta in [-pi, pi] for stable velocity estimation."""
+        return float((current - previous + np.pi) % (2.0 * np.pi) - np.pi)
 
     def _compute_landing_rotation(self, start_angle: float, interval_beats: int) -> float:
         # Rotation policy: 1 turn for shorter journeys, 2 turns for 4/8 beat journeys.

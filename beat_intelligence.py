@@ -73,6 +73,9 @@ class BeatIntelligence:
         self.journey_duration_s = 0.0
         self.journey_elapsed_s = 0.0
         self.journey_active = False
+        self._journey_duration_target_s = 0.0
+        self._journey_duration_blend_frames_remaining = 0
+        self._journey_duration_blend_alpha = 0.35
 
         self.treble_lift_ema = 0.0
         self.treble_lift_attack = 0.28
@@ -1295,10 +1298,29 @@ class BeatIntelligence:
         )
 
         if trigger_started or not self.journey_active or self.active_interval_beats != interval_beats:
-            self.journey_duration_s = target_duration
+            previous_duration = float(self.journey_duration_s if self.journey_duration_s > 0.0 else target_duration)
+            self._journey_duration_target_s = float(target_duration)
+
+            ratio = previous_duration / max(1e-6, target_duration)
+            big_jump = ratio > 1.6 or ratio < (1.0 / 1.6)
+            if self.journey_active and big_jump:
+                self.journey_duration_s = previous_duration
+                self._journey_duration_blend_frames_remaining = 6
+            else:
+                self.journey_duration_s = target_duration
+                self._journey_duration_blend_frames_remaining = 0
+
             self.journey_elapsed_s = 0.0
             self.journey_active = True
             return 0.0
+
+        if self._journey_duration_blend_frames_remaining > 0:
+            self.journey_duration_s += self._journey_duration_blend_alpha * (
+                self._journey_duration_target_s - self.journey_duration_s
+            )
+            self._journey_duration_blend_frames_remaining -= 1
+            if self._journey_duration_blend_frames_remaining <= 0:
+                self.journey_duration_s = self._journey_duration_target_s
 
         step = float(np.clip(dt, 1e-4, 0.25))
         self.journey_elapsed_s = min(self.journey_duration_s, self.journey_elapsed_s + step)
