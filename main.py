@@ -7130,18 +7130,32 @@ Like the app?<br>
         self._set_main_visualizers_hidden_for_popout(False)
 
     def _apply_release_learning_defaults(self) -> None:
-        base_dir = Path(r"D:\breadbeats_datasets\blends")
-        if not base_dir.exists() or not base_dir.is_dir():
-            print(f"[Learning] Release defaults directory missing: {base_dir}")
+        import sys
+        defaults_dir: Path | None = None
+
+        # 1. PyInstaller frozen bundle
+        candidates: list[Path] = []
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            candidates.append(Path(sys._MEIPASS) / "defaults" / "learning")
+        # 2. Alongside the EXE
+        if getattr(sys, 'frozen', False):
+            candidates.append(Path(sys.executable).parent / "defaults" / "learning")
+        # 3. Repo-relative (dev / source run)
+        candidates.append(Path(__file__).resolve().parent / "defaults" / "learning")
+
+        for c in candidates:
+            if c.exists():
+                defaults_dir = c
+                break
+
+        if defaults_dir is None:
+            print("[Learning] No bundled defaults/learning/ folder found — skipping.")
             return
 
-        def _by_mtime_desc(path: Path) -> float:
-            try:
-                return path.stat().st_mtime
-            except Exception:
-                return 0.0
+        # Find profile and rule_fit by glob (deterministic naming preferred)
+        profile_candidates = sorted(defaults_dir.glob("profile*.json"))
+        rule_fit_candidates = sorted(defaults_dir.glob("rule_fit*.json"))
 
-        profile_candidates = sorted(base_dir.glob("profile*.json"), key=_by_mtime_desc, reverse=True)
         selected_profile = profile_candidates[0] if profile_candidates else None
         selected_rule_fit: Path | None = None
 
@@ -7184,15 +7198,17 @@ Like the app?<br>
                         except Exception:
                             pass
 
+                # Profile may embed rule_fit path — resolve relative to profile location
                 raw_rule_fit = model_cfg.get("rule_fit") or learning_cfg.get("teaching_rule_fit_path") or payload.get("rule_fit")
                 if isinstance(raw_rule_fit, str) and raw_rule_fit.strip():
                     candidate = Path(raw_rule_fit.strip())
                     if not candidate.is_absolute():
                         candidate = selected_profile.parent / candidate
-                    selected_rule_fit = candidate
+                    if candidate.exists():
+                        selected_rule_fit = candidate
 
+        # Fallback: glob for rule_fit in defaults_dir
         if selected_rule_fit is None:
-            rule_fit_candidates = sorted(base_dir.glob("rule_fit*.json"), key=_by_mtime_desc, reverse=True)
             selected_rule_fit = rule_fit_candidates[0] if rule_fit_candidates else None
 
         if selected_profile is not None:
@@ -7203,9 +7219,10 @@ Like the app?<br>
         self.config.beat.teaching_learning_enabled = True
         self.config.beat.teaching_use_fitted_rules = True
 
+        source = "frozen" if getattr(sys, 'frozen', False) else "bundled"
         profile_label = selected_profile.name if selected_profile is not None else "(none)"
         rule_fit_label = selected_rule_fit.name if selected_rule_fit is not None else "(none)"
-        print(f"[Learning] Release defaults: profile={profile_label}, rule_fit={rule_fit_label}")
+        print(f"[Learning] Release defaults applied — source={source} profile={profile_label}, rule_fit={rule_fit_label}")
 
     def _apply_learning_config_to_mapper(self) -> None:
         mapper_live = self.stroke_mapper
@@ -9453,6 +9470,7 @@ Like the app?<br>
             # Re-instantiate StrokeMapper with current config (for live mode switching)
             self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
             self._apply_geometry_rest_to_mapper()
+            self._apply_learning_config_to_mapper()
             # Warmup gate: allow audio analysis to settle and beat pickup before motion
             self._play_warmup_active = True
             self._play_warmup_started_at = time.time()
@@ -9519,6 +9537,7 @@ Like the app?<br>
 
         self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
         self._apply_geometry_rest_to_mapper()
+        self._apply_learning_config_to_mapper()
 
         # Network engine is already started on program launch via _auto_connect_tcp
         # Only create if somehow missing

@@ -72,6 +72,9 @@ class StrokeMapper:
         self._learning_rule_fit_path = str(getattr(self.config.beat, "teaching_rule_fit_path", "") or "")
         self._learning_model: Optional[dict] = None
 
+        # Push initial learning config to intelligence
+        self._sync_learning_to_intelligence()
+
     def configure_geometry_rest_state(self, y_offset: float, sink_start_intensity: float = 0.25) -> None:
         self._park_y = 0.70
         self._intelligence.set_park_y(self._park_y)
@@ -101,6 +104,20 @@ class StrokeMapper:
             self._try_load_learning_model()
         else:
             self._learning_model = None
+
+        # Forward to BeatIntelligence
+        self._sync_learning_to_intelligence()
+
+    def _sync_learning_to_intelligence(self) -> None:
+        """Forward learning config and model path to BeatIntelligence."""
+        self._intelligence.configure_learning(
+            enabled=self._learning_enabled,
+            use_fitted_rules=self._learning_use_fitted_rules,
+            strength=self._learning_strength,
+            min_confidence=self._learning_min_confidence,
+            no_motion_bias=self._learning_no_motion_bias,
+            rule_fit_path=self._learning_rule_fit_path,
+        )
 
     def _try_load_learning_model(self) -> None:
         path_text = str(self._learning_rule_fit_path or "").strip()

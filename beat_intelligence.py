@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -19,6 +23,18 @@ class BandEnergies:
 
 
 @dataclass
+class LearningOutputs:
+    """Bounded modifier outputs from the learning adapter."""
+    divisor_hint: int = 1              # beats-between-strokes hint from cadence_rule
+    radius_mult: float = 1.0           # scale arc radius
+    lead_ms: float = 0.0               # predictive arc timing offset
+    sync_size_mult: float = 1.0        # syncopation arc size multiplier
+    sync_speed_mult: float = 1.0       # syncopation arc speed multiplier
+    gate_bias: float = 0.0             # gate strictness bias (-1..+1)
+    active: bool = False               # whether learning produced valid output
+
+
+@dataclass
 class BeatDecision:
     trigger_kind: str
     interval_beats: int
@@ -28,6 +44,8 @@ class BeatDecision:
     silence_fade: float = 1.0          # 1.0 = full volume, 0.0 = fully faded
     post_silence_ramp: float = 1.0     # 1.0 = full volume, <1 = ramping back in
     request_tempo_reset: bool = False  # edge-triggered: silence threshold crossed
+    motion_mode: str = "creep_micro"   # advisory: "full_stroke" or "creep_micro"
+    learning: LearningOutputs = field(default_factory=LearningOutputs)
 
 
 class BeatIntelligence:
@@ -111,11 +129,323 @@ class BeatIntelligence:
         self._auto_fill_offsets: dict[str, float] = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
         self._auto_fill_ema: dict[str, float] = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
 
+        # ── Phase 4: Motion Mode Resolver (#9) ──
+        self._motion_mode: str = "creep_micro"  # start quiet
+        self._mode_switch_time: float = 0.0
+
+        # ── Phase 5: Learning Adapter (#10-12, #18) ──
+        self._learning_enabled: bool = False
+        self._learning_use_fitted_rules: bool = False
+        self._learning_strength: float = 0.55
+        self._learning_min_confidence: float = 0.12
+        self._learning_no_motion_bias: float = 1.0
+        self._learning_model: Optional[dict] = None
+        self._learning_model_loaded: bool = False
+        self._learning_norm_mean: dict[str, float] = {}
+        self._learning_norm_std: dict[str, float] = {}
+        self._learning_feature_columns: list[str] = []
+        self._learning_cadence_rule: dict = {}
+        self._learning_outputs: LearningOutputs = LearningOutputs()
+        # Blended output fields (EMA-smoothed)
+        self._learned_divisor_hint: int = 1
+        self._learned_radius_mult: float = 1.0
+        self._learned_lead_ms: float = 0.0
+        self._learned_sync_size_mult: float = 1.0
+        self._learned_sync_speed_mult: float = 1.0
+        self._learned_gate_bias: float = 0.0
+
+        # ── Phase 6: BPM Stabilization (#13) ──
+        self._last_locked_bpm: float = 120.0       # last BPM when tempo_locked was True
+        self._stabilized_bpm: float = 120.0         # EMA-smoothed BPM output
+        self._bpm_jump_ratio_limit: float = 1.5     # max allowed jump ratio per update
+
+        # ── Phase 6: Bass Jitter Stub (#15) ──
+        self._bass_jitter_enabled: bool = False      # feature flag, no runtime influence yet
+        self._bass_jitter_drive: float = 1.0         # speed multiplier from bass frequency
+        self._bass_jitter_ema: float = 1.0           # EMA-smoothed jitter drive
+
     def set_audio_engine(self, audio_engine) -> None:
         self.audio_engine = audio_engine
 
     def set_park_y(self, park_y: float) -> None:
         self.park_y = 0.70 if park_y is None else float(park_y)
+
+    # ── Phase 5: Learning Adapter ────────────────────────────────────
+
+    def configure_learning(
+        self,
+        *,
+        enabled: bool,
+        use_fitted_rules: bool,
+        strength: float,
+        min_confidence: float,
+        no_motion_bias: float,
+        rule_fit_path: str = "",
+    ) -> None:
+        """Push learning config from StrokeMapper / GUI into BeatIntelligence."""
+        self._learning_enabled = bool(enabled)
+        self._learning_use_fitted_rules = bool(use_fitted_rules)
+        self._learning_strength = float(np.clip(strength, 0.0, 1.0))
+        self._learning_min_confidence = float(np.clip(min_confidence, 0.0, 1.0))
+        self._learning_no_motion_bias = float(np.clip(no_motion_bias, 0.25, 3.0))
+
+        if self._learning_enabled and self._learning_use_fitted_rules:
+            self._try_load_learning_model(rule_fit_path)
+        else:
+            self._learning_model = None
+            self._learning_model_loaded = False
+
+    def _try_load_learning_model(self, path_text: str = "") -> None:
+        """Load rule_fit JSON with schema validation (#12)."""
+        path_text = str(path_text or "").strip()
+        if not path_text:
+            self._learning_model = None
+            self._learning_model_loaded = False
+            return
+
+        try:
+            path = Path(path_text)
+            if not path.exists() or not path.is_file():
+                self._learning_model = None
+                self._learning_model_loaded = False
+                return
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("status") != "ok":
+                self._learning_model = None
+                self._learning_model_loaded = False
+                return
+
+            # Validate required schema fields
+            feature_cols = payload.get("feature_columns", [])
+            norm = payload.get("normalization", {})
+            models = payload.get("models", {})
+            if not feature_cols or not isinstance(norm, dict) or not isinstance(models, dict):
+                self._learning_model = None
+                self._learning_model_loaded = False
+                return
+
+            norm_mean = norm.get("mean", {})
+            norm_std = norm.get("std", {})
+            if not isinstance(norm_mean, dict) or not isinstance(norm_std, dict):
+                self._learning_model = None
+                self._learning_model_loaded = False
+                return
+
+            self._learning_model = payload
+            self._learning_feature_columns = list(feature_cols)
+            self._learning_norm_mean = {str(k): float(v) for k, v in norm_mean.items()}
+            self._learning_norm_std = {str(k): float(v) for k, v in norm_std.items()}
+            self._learning_cadence_rule = payload.get("cadence_rule", {}) or {}
+            self._learning_model_loaded = True
+
+            targets = payload.get("target_columns", list(models.keys()))
+            print(f"[Learning] Loaded rule_fit: {len(feature_cols)} features → {len(targets)} targets")
+        except Exception as exc:
+            print(f"[Learning] Failed to load rule_fit: {exc}")
+            self._learning_model = None
+            self._learning_model_loaded = False
+
+    def _build_runtime_feature_values(self, event: BeatEvent) -> dict[str, float]:
+        """Map current BeatEvent + BandEnergies to the 13 model features (#10)."""
+        peak = float(getattr(event, "peak_energy", 0.0) or 0.0)
+        raw_rms = float(getattr(event, "raw_rms", 0.0) or 0.0)
+        flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
+
+        energy_mean = raw_rms if raw_rms > 0 else peak
+        log_energy = float(math.log(max(1e-10, energy_mean)))
+
+        sub = float(self.energies.sub_bass)
+        low = float(self.energies.low_mid)
+        mid = float(self.energies.mid)
+        high = float(self.energies.high)
+
+        # Derived features
+        low_high_ratio = sub / max(high, 1e-10)
+        energy_norm = float(np.clip(energy_mean / 0.05, 0.0, 1.0))  # rough normalization
+
+        # Spectral features: use event fields if available, fallback to estimates
+        centroid = float(getattr(event, "spectral_centroid_hz", 0.0) or 0.0)
+        bandwidth = float(getattr(event, "spectral_bandwidth_hz", 0.0) or 0.0)
+        rolloff = float(getattr(event, "spectral_rolloff_hz", 0.0) or 0.0)
+        flatness = float(getattr(event, "spectral_flatness", 0.0) or 0.0)
+
+        # Estimate missing spectral features from band energies
+        if centroid <= 0.0:
+            centroid = 80.0 + 3000.0 * float(np.clip(high / max(sub + low + 1e-10, 1e-10), 0.0, 1.0))
+        if bandwidth <= 0.0:
+            bandwidth = 200.0 + 4000.0 * float(np.clip((mid + high) / max(sub + low + mid + high + 1e-10, 1e-10), 0.0, 1.0))
+        if rolloff <= 0.0:
+            rolloff = 1000.0 + 6000.0 * float(np.clip(high / max(sub + mid + 1e-10, 1e-10), 0.0, 1.0))
+        if flatness <= 0.0:
+            flatness = 0.35 + 0.50 * (1.0 - energy_norm)
+
+        return {
+            "rms": energy_mean,
+            "log_energy": log_energy,
+            "spectral_flux": flux,
+            "flux_delta": 0.0,  # delta not tracked per-frame yet
+            "sub_bass_energy": sub,
+            "low_mid_energy": low,
+            "mid_energy": mid,
+            "high_energy": high,
+            "low_high_ratio": low_high_ratio,
+            "spectral_centroid_hz": centroid,
+            "spectral_bandwidth_hz": bandwidth,
+            "spectral_rolloff_hz": rolloff,
+            "spectral_flatness": flatness,
+        }
+
+    def _predict_learning_targets(self, features: dict[str, float]) -> dict[str, float]:
+        """Run one z-score normalized linear inference pass (#11).
+
+        Returns dict of target_name → raw predicted value, or {} on failure.
+        """
+        model = self._learning_model
+        if model is None or not self._learning_model_loaded:
+            return {}
+
+        try:
+            cols = self._learning_feature_columns
+            mean = self._learning_norm_mean
+            std = self._learning_norm_std
+            models = model.get("models", {})
+
+            # Z-score normalize features
+            x_norm = np.array([
+                (features.get(c, mean.get(c, 0.0)) - mean.get(c, 0.0))
+                / max(std.get(c, 1e-8), 1e-8)
+                for c in cols
+            ], dtype=float)
+
+            result: dict[str, float] = {}
+            for target_name, spec in models.items():
+                intercept = float(spec.get("intercept", 0.0))
+                coefs = spec.get("coefficients", {})
+                coef_vec = np.array([float(coefs.get(c, 0.0)) for c in cols], dtype=float)
+                result[target_name] = float(intercept + np.dot(coef_vec, x_norm))
+
+            return result
+        except Exception:
+            return {}
+
+    def _derive_cadence_beats(self, features: dict[str, float]) -> int:
+        """Derive beats_between_strokes from cadence_rule + weighted RMS/flux."""
+        rule = self._learning_cadence_rule
+        if not rule:
+            return 1
+
+        quiet_thresh = float(rule.get("quiet_threshold", -0.4))
+        mid_thresh = float(rule.get("mid_threshold", 0.08))
+        mapping = rule.get("mapping", {})
+
+        # Use z-score normalized RMS for cadence decision
+        rms = features.get("rms", 0.0)
+        rms_mean = self._learning_norm_mean.get("rms", 0.02)
+        rms_std = max(self._learning_norm_std.get("rms", 0.025), 1e-8)
+        z_rms = (rms - rms_mean) / rms_std
+
+        if z_rms < quiet_thresh:
+            return int(mapping.get("quiet", 4))
+        elif z_rms < mid_thresh:
+            return int(mapping.get("mid", 2))
+        else:
+            return int(mapping.get("loud", 1))
+
+    def _update_learning_adapter(self, event: BeatEvent) -> LearningOutputs:
+        """Runtime teaching blend (#18): extract features, predict, blend outputs.
+
+        Only runs on beat events when learning is enabled. Outputs are bounded
+        modifiers, never direct command writers.
+        """
+        outputs = LearningOutputs()
+
+        if not self._learning_enabled or not self._learning_model_loaded:
+            self._learning_outputs = outputs
+            return outputs
+
+        is_beat = bool(
+            getattr(event, "is_beat", False)
+            or getattr(event, "is_downbeat", False)
+            or getattr(event, "is_syncopated", False)
+        )
+        if not is_beat:
+            return self._learning_outputs  # return last valid outputs
+
+        # Check confidence: need acf_confidence above threshold
+        acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+        if acf_conf < self._learning_min_confidence:
+            return self._learning_outputs
+
+        features = self._build_runtime_feature_values(event)
+        predictions = self._predict_learning_targets(features)
+        if not predictions:
+            return self._learning_outputs
+
+        strength = self._learning_strength
+        no_motion_bias = self._learning_no_motion_bias
+
+        # Clamp raw predictions to valid ranges
+        arc_size = float(np.clip(predictions.get("arc_size", 0.5), 0.0, 1.0))
+        arc_dur_frac = float(np.clip(predictions.get("arc_duration_frac", 1.0), 0.1, 4.0))
+        jitter_mix = float(np.clip(predictions.get("jitter_mix", 0.0), 0.0, 1.0))
+        creep_mix = float(np.clip(predictions.get("creep_mix", 0.5), 0.0, 1.0))
+        gate_strict = float(np.clip(predictions.get("gate_strictness", 0.5), 0.0, 1.0))
+        burst_prob = float(np.clip(predictions.get("burst_prob", 0.2), 0.0, 1.0))
+
+        # Derive cadence hint
+        cadence_beats = self._derive_cadence_beats(features)
+
+        # Apply strength blending (0 = no influence, 1 = full)
+        # Blend toward neutral defaults at low strength
+        radius_mult = 1.0 + strength * (arc_size * 2.0 - 1.0)  # map 0..1 → 0..2, blend
+        radius_mult = float(np.clip(radius_mult, 0.3, 2.5))
+
+        sync_size_mult = 1.0 + strength * (arc_size - 0.5)
+        sync_size_mult = float(np.clip(sync_size_mult, 0.5, 2.0))
+
+        sync_speed_mult = 1.0 + strength * (1.0 / max(arc_dur_frac, 0.1) - 1.0)
+        sync_speed_mult = float(np.clip(sync_speed_mult, 0.3, 3.0))
+
+        # creep_mix drives no-motion holdback: higher creep = less motion
+        gate_bias = strength * (gate_strict - 0.5) * 2.0 * no_motion_bias
+        gate_bias = float(np.clip(gate_bias, -1.0, 1.0))
+
+        # lead_ms from jitter_mix: mix drives anticipation
+        lead_ms = strength * jitter_mix * 50.0  # 0..50ms predictive offset
+        lead_ms = float(np.clip(lead_ms, 0.0, 100.0))
+
+        outputs = LearningOutputs(
+            divisor_hint=cadence_beats,
+            radius_mult=radius_mult,
+            lead_ms=lead_ms,
+            sync_size_mult=sync_size_mult,
+            sync_speed_mult=sync_speed_mult,
+            gate_bias=gate_bias,
+            active=True,
+        )
+
+        # EMA smooth the blended outputs
+        alpha = 0.3  # smoothing factor
+        self._learned_divisor_hint = cadence_beats  # discrete, no smoothing
+        self._learned_radius_mult += alpha * (outputs.radius_mult - self._learned_radius_mult)
+        self._learned_lead_ms += alpha * (outputs.lead_ms - self._learned_lead_ms)
+        self._learned_sync_size_mult += alpha * (outputs.sync_size_mult - self._learned_sync_size_mult)
+        self._learned_sync_speed_mult += alpha * (outputs.sync_speed_mult - self._learned_sync_speed_mult)
+        self._learned_gate_bias += alpha * (outputs.gate_bias - self._learned_gate_bias)
+
+        # Write back smoothed values
+        outputs = LearningOutputs(
+            divisor_hint=self._learned_divisor_hint,
+            radius_mult=float(np.clip(self._learned_radius_mult, 0.3, 2.5)),
+            lead_ms=float(np.clip(self._learned_lead_ms, 0.0, 100.0)),
+            sync_size_mult=float(np.clip(self._learned_sync_size_mult, 0.5, 2.0)),
+            sync_speed_mult=float(np.clip(self._learned_sync_speed_mult, 0.3, 3.0)),
+            gate_bias=float(np.clip(self._learned_gate_bias, -1.0, 1.0)),
+            active=True,
+        )
+        self._learning_outputs = outputs
+        return outputs
 
     # ── Phase 2 §17: Readiness state machine ─────────────────────────
 
@@ -397,6 +727,46 @@ class BeatIntelligence:
         low_hz = float(getattr(self.config.stroke, "block_mid_trigger_low_hz", 100.0))
         high_hz = float(getattr(self.config.stroke, "block_mid_trigger_high_hz", 2000.0))
         return bool(low_hz <= freq <= high_hz)
+    # ── Phase 4 §9: Motion Mode Resolver ─────────────────────────────────
+
+    def _update_motion_mode(self, now: float) -> str:
+        """Advisory mode resolver (#9): FULL_STROKE / CREEP_MICRO.
+
+        Uses RMS envelope against amplitude thresholds with 500ms dwell
+        to prevent rapid toggling.  The output is advisory — consumed
+        for debug telemetry and future cadence influence only.
+        """
+        cfg = self.config.stroke
+        gate_high = float(getattr(cfg, 'amplitude_gate_high', 0.08))
+        gate_low = float(getattr(cfg, 'amplitude_gate_low', 0.04))
+        dwell_bias = float(getattr(cfg, 'full_stroke_dwell_bias', 0.0))
+        dwell_s = 0.5  # 500ms dwell before switching
+
+        rms = self.rms_envelope
+
+        if self._motion_mode == "creep_micro":
+            # Need RMS above high threshold (+ bias) to switch up
+            if rms >= (gate_high + dwell_bias):
+                if self._mode_switch_time <= 0.0:
+                    self._mode_switch_time = now
+                elif (now - self._mode_switch_time) >= dwell_s:
+                    self._motion_mode = "full_stroke"
+                    self._mode_switch_time = 0.0
+            else:
+                self._mode_switch_time = 0.0
+        else:  # full_stroke
+            # Need RMS below low threshold (- bias) to switch down
+            if rms < (gate_low - dwell_bias):
+                if self._mode_switch_time <= 0.0:
+                    self._mode_switch_time = now
+                elif (now - self._mode_switch_time) >= dwell_s:
+                    self._motion_mode = "creep_micro"
+                    self._mode_switch_time = 0.0
+            else:
+                self._mode_switch_time = 0.0
+
+        return self._motion_mode
+
     # ── Phase 3 §5: Low-band fullness gate ────────────────────────────────
 
     def _is_low_band_full_enough(self, event: BeatEvent, trigger_kind: str, bpm: float) -> bool:
@@ -827,14 +1197,75 @@ class BeatIntelligence:
             return 4
         return 8
 
-    @staticmethod
-    def effective_bpm(event: BeatEvent) -> float:
+    def effective_bpm(self, event: BeatEvent) -> float:
+        """Return stabilized BPM (#13): last-locked memory + jump-ratio limiter."""
         bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
         if bpm <= 0.0:
             bpm = float(getattr(event, "bpm", 0.0) or 0.0)
         if bpm <= 0.0:
             bpm = 120.0
-        return float(np.clip(bpm, 40.0, 240.0))
+        bpm = float(np.clip(bpm, 40.0, 240.0))
+
+        tempo_locked = bool(getattr(event, "tempo_locked", False))
+        if tempo_locked:
+            self._last_locked_bpm = bpm
+
+        # Stabilize: cap jump ratio relative to last locked BPM
+        bpm = self._cap_bpm_to_last_locked(bpm)
+        bpm = self._stabilize_unlocked_bpm(bpm, tempo_locked)
+        return bpm
+
+    def _cap_bpm_to_last_locked(self, raw_bpm: float) -> float:
+        """Limit BPM jumps to within jump_ratio_limit of last locked BPM (#13)."""
+        ref = self._last_locked_bpm
+        if ref <= 0.0:
+            return raw_bpm
+        ratio = raw_bpm / max(ref, 1e-6)
+        limit = self._bpm_jump_ratio_limit
+        if ratio > limit:
+            return float(ref * limit)
+        if ratio < 1.0 / limit:
+            return float(ref / limit)
+        return raw_bpm
+
+    def _stabilize_unlocked_bpm(self, raw_bpm: float, tempo_locked: bool) -> float:
+        """EMA-smooth BPM when tempo is unlocked (#13).
+
+        When locked, snap to raw BPM immediately.
+        When unlocked, slowly drift toward raw via EMA to avoid jitter.
+        """
+        if tempo_locked:
+            self._stabilized_bpm = raw_bpm
+            return raw_bpm
+        alpha = 0.15  # slow smoothing when unlocked
+        self._stabilized_bpm += alpha * (raw_bpm - self._stabilized_bpm)
+        return float(np.clip(self._stabilized_bpm, 40.0, 240.0))
+
+    def _update_bass_jitter_drive(self, event: BeatEvent) -> float:
+        """Map bass frequency 30–220 Hz to jitter speed multiplier (#15).
+
+        Behind feature flag — no runtime influence yet.
+        Returns EMA-smoothed speed multiplier in [0.5, 2.0].
+        """
+        if not self._bass_jitter_enabled:
+            return 1.0
+
+        freq = float(getattr(event, "frequency", 0.0) or 0.0)
+        if freq <= 0.0:
+            return self._bass_jitter_ema
+
+        # Map 30–220 Hz to 0.0–1.0 (clamped)
+        lo, hi = 30.0, 220.0
+        t = float(np.clip((freq - lo) / max(hi - lo, 1e-6), 0.0, 1.0))
+
+        # Map linear t to speed multiplier: low bass (30 Hz) → slow (0.5), high bass (220 Hz) → fast (2.0)
+        raw_mult = 0.5 + t * 1.5  # 0.5..2.0
+
+        # EMA smooth
+        alpha = 0.2
+        self._bass_jitter_ema += alpha * (raw_mult - self._bass_jitter_ema)
+        self._bass_jitter_drive = float(np.clip(self._bass_jitter_ema, 0.5, 2.0))
+        return self._bass_jitter_drive
 
     def compute_radius_bloom_from_sub_bass(self, event: BeatEvent | None = None) -> float:
         base_radius = 0.70
@@ -930,6 +1361,15 @@ class BeatIntelligence:
         # Phase 2: readiness state machine (replaces raw _tempo_ready_for_motion)
         stroke_ready = self._update_stroke_readiness(event, now)
 
+        # Phase 4: motion mode resolver
+        motion_mode = self._update_motion_mode(now)
+
+        # Phase 5: learning adapter
+        learning = self._update_learning_adapter(event)
+
+        # Phase 6: bass jitter drive (behind feature flag, no runtime influence yet)
+        self._update_bass_jitter_drive(event)
+
         raw_trigger_kind = self.classify_trigger(event)
         trigger_kind = raw_trigger_kind
 
@@ -979,7 +1419,16 @@ class BeatIntelligence:
             no_beat_timed_out = True
 
         interval_beats = self.interval_beats_for_trigger(trigger_kind)
+
+        # Apply learning divisor hint to interval_beats (cadence_rule)
+        if learning.active and self._learned_divisor_hint > 1:
+            interval_beats = max(interval_beats, self._learned_divisor_hint)
+
         radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
+
+        # Apply learning radius multiplier
+        if learning.active:
+            radius_bloom = float(np.clip(radius_bloom * self._learned_radius_mult, 0.70, 0.95))
 
         if no_beat_timed_out:
             journey_completion = 1.0  # fully parked
@@ -998,4 +1447,6 @@ class BeatIntelligence:
             silence_fade=float(silence_fade),
             post_silence_ramp=float(post_silence_ramp),
             request_tempo_reset=bool(request_tempo_reset),
+            motion_mode=motion_mode,
+            learning=learning,
         )
