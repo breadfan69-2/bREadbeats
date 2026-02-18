@@ -1468,7 +1468,7 @@ class BREadbeatsWindow(QMainWindow):
         
         self.setWindowTitle("bREadbeats")
         self.setMinimumSize(400, 300)
-        self.resize(1100, 950)
+        self.resize(825, 475)
         self.setStyleSheet(self._get_stylesheet())
         # Set window icon (appears in taskbar and title bar)
         try:
@@ -1653,7 +1653,7 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
         self._auto_align_stable_since: float = 0.0      # time.time() when stability started
         self._auto_align_is_stable: bool = False         # currently in stable state
-        self._auto_align_required_seconds: float = 1.2   # seconds of stability before first alignment
+        self._auto_align_required_seconds: float = 0.2   # seconds of stability before first alignment
         self._auto_align_last_adjust_time: float = 0.0   # time.time() of last ±1 BPM adjustment
         self._auto_align_cooldown: float = 0.3            # seconds between each ±1 BPM step
         self._last_sensed_bpm: float = 0.0
@@ -3009,8 +3009,9 @@ class BREadbeatsWindow(QMainWindow):
         
         dialog = QDialog(self)
         dialog.setWindowTitle("Trigger Settings")
-        dialog.setMinimumWidth(450)
+        dialog.setMinimumWidth(563)
         dialog.setMinimumHeight(400)
+        dialog.resize(563, 400)
         dialog.setModal(False)
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         dialog.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, False)
@@ -4801,76 +4802,95 @@ Like the app?<br>
             self._enforce_fixed_effect_axis_values()
             beats_to_index = {4: 0, 3: 1, 6: 2}
             with self._signals_blocked(
-                self.detection_type_combo,
-                self.sensitivity_slider,
-                self.peak_floor_slider,
-                self.peak_decay_slider,
-                self.rise_sens_slider,
-                self.flux_mult_slider,
-                self.audio_gain_slider,
-                self.silence_reset_slider,
-                self.freq_range_slider,
-                self.metrics_global_cb,
-                self.tempo_tracking_checkbox,
-                self.time_sig_combo,
-                self.stability_threshold_slider,
-                self.tempo_timeout_slider,
-                self.phase_snap_slider,
-                self.mode_combo,
-                self.combo_power_spin,
-                self.combo_depth_spin,
-                self.combo_speed_spin,
-                self.combo_texture_spin,
-                self.combo_reaction_spin,
-                self.tempo_lock_required_cb,
-                self.fill_gate_scale_spin,
-                self.jitter_effect_action,
-                self.slow_fill_effect_action,
-                self.host_edit,
-                self.port_spin,
-                self.pulse_freq_range_slider,
-                self.tcode_freq_range_slider,
-                self.freq_weight_slider,
-                self.f0_freq_range_slider,
-                self.f0_tcode_range_slider,
-                self.f0_weight_slider,
-                self.volume_slider,
+                getattr(self, 'detection_type_combo', None),
+                getattr(self, 'sensitivity_slider', None),
+                getattr(self, 'peak_floor_slider', None),
+                getattr(self, 'peak_decay_slider', None),
+                getattr(self, 'rise_sens_slider', None),
+                getattr(self, 'flux_mult_slider', None),
+                getattr(self, 'audio_gain_slider', None),
+                getattr(self, 'silence_reset_slider', None),
+                getattr(self, 'freq_range_slider', None),
+                getattr(self, 'metrics_global_cb', None),
+                getattr(self, 'tempo_tracking_checkbox', None),
+                getattr(self, 'time_sig_combo', None),
+                getattr(self, 'stability_threshold_slider', None),
+                getattr(self, 'tempo_timeout_slider', None),
+                getattr(self, 'phase_snap_slider', None),
+                getattr(self, 'mode_combo', None),
+                getattr(self, 'combo_power_spin', None),
+                getattr(self, 'combo_depth_spin', None),
+                getattr(self, 'combo_speed_spin', None),
+                getattr(self, 'combo_texture_spin', None),
+                getattr(self, 'combo_reaction_spin', None),
+                getattr(self, 'tempo_lock_required_cb', None),
+                getattr(self, 'fill_gate_scale_spin', None),
+                getattr(self, 'jitter_effect_action', None),
+                getattr(self, 'slow_fill_effect_action', None),
+                getattr(self, 'host_edit', None),
+                getattr(self, 'port_spin', None),
+                getattr(self, 'pulse_freq_range_slider', None),
+                getattr(self, 'tcode_freq_range_slider', None),
+                getattr(self, 'freq_weight_slider', None),
+                getattr(self, 'f0_freq_range_slider', None),
+                getattr(self, 'f0_tcode_range_slider', None),
+                getattr(self, 'f0_weight_slider', None),
+                getattr(self, 'volume_slider', None),
             ):
                 # Beat detection tab
-                self.detection_type_combo.setCurrentIndex(self.config.beat.detection_type - 1)
-                self.sensitivity_slider.setValue(self.config.beat.sensitivity)
-                self.peak_floor_slider.setValue(self.config.beat.peak_floor)
-                self.peak_decay_slider.setValue(self.config.beat.peak_decay)
-                self.rise_sens_slider.setValue(self.config.beat.rise_sensitivity)
-                self.flux_mult_slider.setValue(self.config.beat.flux_multiplier)
-                self.audio_gain_slider.setValue(self.config.audio.gain)
-                self.silence_reset_slider.setValue(self.config.beat.silence_reset_ms)
-                self.freq_range_slider.setLow(self.config.beat.freq_low)
-                self.freq_range_slider.setHigh(self.config.beat.freq_high)
+                if all(hasattr(self, name) for name in (
+                    'detection_type_combo', 'sensitivity_slider', 'peak_floor_slider',
+                    'peak_decay_slider', 'rise_sens_slider', 'flux_mult_slider',
+                    'audio_gain_slider', 'silence_reset_slider', 'freq_range_slider'
+                )):
+                    self.detection_type_combo.setCurrentIndex(self.config.beat.detection_type - 1)
+                    self.sensitivity_slider.setValue(self.config.beat.sensitivity)
+                    self.peak_floor_slider.setValue(self.config.beat.peak_floor)
+                    self.peak_decay_slider.setValue(self.config.beat.peak_decay)
+                    self.rise_sens_slider.setValue(self.config.beat.rise_sensitivity)
+                    self.flux_mult_slider.setValue(self.config.beat.flux_multiplier)
+                    self.audio_gain_slider.setValue(self.config.audio.gain)
+                    self.silence_reset_slider.setValue(self.config.beat.silence_reset_ms)
+                    self.freq_range_slider.setLow(self.config.beat.freq_low)
+                    self.freq_range_slider.setHigh(self.config.beat.freq_high)
 
                 # Auto-adjust global toggle
-                self.metrics_global_cb.setChecked(self.config.auto_adjust.metrics_global_enabled)
+                if hasattr(self, 'metrics_global_cb'):
+                    self.metrics_global_cb.setChecked(self.config.auto_adjust.metrics_global_enabled)
 
                 # Tempo tracking settings
-                self.tempo_tracking_checkbox.setChecked(self.config.beat.tempo_tracking_enabled)
-                self.time_sig_combo.setCurrentIndex(beats_to_index.get(self.config.beat.beats_per_measure, 0))
-                self.stability_threshold_slider.setValue(self.config.beat.stability_threshold)
-                self.tempo_timeout_slider.setValue(self.config.beat.tempo_timeout_ms)
-                self.phase_snap_slider.setValue(self.config.beat.phase_snap_weight)
-                self.mode_combo.setCurrentIndex(0)
+                if hasattr(self, 'tempo_tracking_checkbox'):
+                    self.tempo_tracking_checkbox.setChecked(self.config.beat.tempo_tracking_enabled)
+                if hasattr(self, 'time_sig_combo'):
+                    self.time_sig_combo.setCurrentIndex(beats_to_index.get(self.config.beat.beats_per_measure, 0))
+                if hasattr(self, 'stability_threshold_slider'):
+                    self.stability_threshold_slider.setValue(self.config.beat.stability_threshold)
+                if hasattr(self, 'tempo_timeout_slider'):
+                    self.tempo_timeout_slider.setValue(self.config.beat.tempo_timeout_ms)
+                if hasattr(self, 'phase_snap_slider'):
+                    self.phase_snap_slider.setValue(self.config.beat.phase_snap_weight)
+                if hasattr(self, 'mode_combo'):
+                    self.mode_combo.setCurrentIndex(0)
                 self.config.stroke.min_interval_ms = 150
                 self.config.stroke.minimum_depth = 0.0
-                self.combo_power_spin.setValue(float(getattr(self.config.stroke, 'combo_power', 1.0)))
-                self.combo_depth_spin.setValue(float(getattr(self.config.stroke, 'combo_depth', 1.0)))
-                self.combo_speed_spin.setValue(float(getattr(self.config.stroke, 'combo_speed', 1.0)))
-                self.combo_texture_spin.setValue(float(getattr(self.config.stroke, 'combo_texture', 1.0)))
-                self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
-                self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
-                self.fill_gate_scale_spin.setValue(
-                    self._fill_gate_scale_to_percent(
-                        float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0)
+                if hasattr(self, 'combo_power_spin'):
+                    self.combo_power_spin.setValue(float(getattr(self.config.stroke, 'combo_power', 1.0)))
+                if hasattr(self, 'combo_depth_spin'):
+                    self.combo_depth_spin.setValue(float(getattr(self.config.stroke, 'combo_depth', 1.0)))
+                if hasattr(self, 'combo_speed_spin'):
+                    self.combo_speed_spin.setValue(float(getattr(self.config.stroke, 'combo_speed', 1.0)))
+                if hasattr(self, 'combo_texture_spin'):
+                    self.combo_texture_spin.setValue(float(getattr(self.config.stroke, 'combo_texture', 1.0)))
+                if hasattr(self, 'combo_reaction_spin'):
+                    self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
+                if hasattr(self, 'tempo_lock_required_cb'):
+                    self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
+                if hasattr(self, 'fill_gate_scale_spin'):
+                    self.fill_gate_scale_spin.setValue(
+                        self._fill_gate_scale_to_percent(
+                            float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0)
+                        )
                     )
-                )
                 advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
                 if advanced_flux_slider is not None:
                     advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
@@ -4904,41 +4924,53 @@ Like the app?<br>
                     auto_fill_max_req.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_max_required', 0.98) or 0.98))
 
                 # Effects menu toggles
-                self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
-                self.slow_fill_effect_action.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
+                if hasattr(self, 'jitter_effect_action'):
+                    self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
+                if hasattr(self, 'slow_fill_effect_action'):
+                    self.slow_fill_effect_action.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
 
                 # Connection settings
-                self.host_edit.setText(self.config.connection.host)
-                self.port_spin.setValue(self.config.connection.port)
+                if hasattr(self, 'host_edit'):
+                    self.host_edit.setText(self.config.connection.host)
+                if hasattr(self, 'port_spin'):
+                    self.port_spin.setValue(self.config.connection.port)
 
                 # Other tab (pulse freq settings)
-                self.pulse_freq_range_slider.setLow(self.config.pulse_freq.monitor_freq_min)
-                self.pulse_freq_range_slider.setHigh(self.config.pulse_freq.monitor_freq_max)
-                self.tcode_freq_range_slider.setLow(self.config.pulse_freq.tcode_min)
-                self.tcode_freq_range_slider.setHigh(self.config.pulse_freq.tcode_max)
-                self.freq_weight_slider.setValue(self.config.pulse_freq.freq_weight)
+                if all(hasattr(self, name) for name in ('pulse_freq_range_slider', 'tcode_freq_range_slider', 'freq_weight_slider')):
+                    self.pulse_freq_range_slider.setLow(self.config.pulse_freq.monitor_freq_min)
+                    self.pulse_freq_range_slider.setHigh(self.config.pulse_freq.monitor_freq_max)
+                    self.tcode_freq_range_slider.setLow(self.config.pulse_freq.tcode_min)
+                    self.tcode_freq_range_slider.setHigh(self.config.pulse_freq.tcode_max)
+                    self.freq_weight_slider.setValue(self.config.pulse_freq.freq_weight)
 
                 # Carrier freq (F0) settings
-                self.f0_freq_range_slider.setLow(self.config.carrier_freq.monitor_freq_min)
-                self.f0_freq_range_slider.setHigh(self.config.carrier_freq.monitor_freq_max)
-                self.f0_tcode_range_slider.setLow(self.config.carrier_freq.tcode_min)
-                self.f0_tcode_range_slider.setHigh(self.config.carrier_freq.tcode_max)
-                self.f0_weight_slider.setValue(self.config.carrier_freq.freq_weight)
+                if all(hasattr(self, name) for name in ('f0_freq_range_slider', 'f0_tcode_range_slider', 'f0_weight_slider')):
+                    self.f0_freq_range_slider.setLow(self.config.carrier_freq.monitor_freq_min)
+                    self.f0_freq_range_slider.setHigh(self.config.carrier_freq.monitor_freq_max)
+                    self.f0_tcode_range_slider.setLow(self.config.carrier_freq.tcode_min)
+                    self.f0_tcode_range_slider.setHigh(self.config.carrier_freq.tcode_max)
+                    self.f0_weight_slider.setValue(self.config.carrier_freq.freq_weight)
 
                 # Volume (config stores 0-1, slider shows 0-100)
-                self.volume_slider.setValue(int(self.config.volume * 100))
+                if hasattr(self, 'volume_slider'):
+                    self.volume_slider.setValue(int(self.config.volume * 100))
 
             # Set active visualizer sample rates and update frequency bands
-            self._on_freq_band_change()  # Update beat detection band (red)
+            if hasattr(self, 'freq_range_slider'):
+                self._on_freq_band_change()  # Update beat detection band (red)
             
             # Apply mode-dependent limits after sliders are set
-            self._on_mode_change(0)  # Mode temporarily pinned to circle
+            if hasattr(self, 'mode_combo'):
+                self._on_mode_change(0)  # Mode temporarily pinned to circle
             self._on_depth_band_change()  # Update stroke depth band (green)
-            self._on_p0_band_change()  # Update P0 TCode band (blue)
-            self._on_f0_band_change()  # Update F0 TCode band (cyan)
+            if hasattr(self, 'pulse_freq_range_slider'):
+                self._on_p0_band_change()  # Update P0 TCode band (blue)
+            if hasattr(self, 'f0_freq_range_slider'):
+                self._on_f0_band_change()  # Update F0 TCode band (cyan)
 
             # Apply tempo tracking side effects after values are in place
-            self._on_tempo_tracking_toggle(2 if self.config.beat.tempo_tracking_enabled else 0)
+            if hasattr(self, 'tempo_tracking_checkbox'):
+                self._on_tempo_tracking_toggle(2 if self.config.beat.tempo_tracking_enabled else 0)
 
             # Log level menu (persisted)
             self._sync_log_level_menu(getattr(self.config, 'log_level', get_log_level()))
@@ -4991,18 +5023,6 @@ Like the app?<br>
         self._populate_audio_devices()
         self.device_combo.setVisible(False)
         
-        # Hidden preset buttons (still functional via Options menu)
-        self.preset_mic_btn = QPushButton("🎤 Mic (Reactive)")
-        self.preset_mic_btn.setVisible(False)
-        self.preset_mic_btn.clicked.connect(self._set_device_preset_mic)
-        
-        self.preset_loopback_btn = QPushButton("🔊 System Audio")
-        self.preset_loopback_btn.setVisible(False)
-        self.preset_loopback_btn.clicked.connect(self._set_device_preset_loopback)
-        
-        # Connect device changes to update button states
-        self.device_combo.currentIndexChanged.connect(self._update_preset_button_states)
-        
         # Controls row - all on one row now
         btn_layout = QGridLayout()
         btn_layout.setSpacing(8)
@@ -5039,25 +5059,25 @@ Like the app?<br>
         
         # Carrier Freq display
         self.carrier_freq_label = QLabel("Carrier Freq: off")
-        self.carrier_freq_label.setStyleSheet("color: #0af; font-size: 11px; font-weight: bold;")
+        self.carrier_freq_label.setStyleSheet("color: #0af; font-size: 10px;")
         self.carrier_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.carrier_freq_label)
         
         # Pulse Freq display
         self.pulse_freq_label = QLabel("Pulse Freq: off")
-        self.pulse_freq_label.setStyleSheet("color: #f80; font-size: 11px; font-weight: bold;")
+        self.pulse_freq_label.setStyleSheet("color: #0af; font-size: 10px;")
         self.pulse_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.pulse_freq_label)
         
         # Pulse Width display
         self.p1_display_label = QLabel("Pulse Width: off")
-        self.p1_display_label.setStyleSheet("color: #fa0; font-size: 10px;")
+        self.p1_display_label.setStyleSheet("color: #0af; font-size: 10px;")
         self.p1_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.p1_display_label)
         
         # Rise Time display
         self.p3_display_label = QLabel("Rise Time: off")
-        self.p3_display_label.setStyleSheet("color: #af0; font-size: 10px;")
+        self.p3_display_label.setStyleSheet("color: #0af; font-size: 10px;")
         self.p3_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.p3_display_label)
         
@@ -5066,20 +5086,9 @@ Like the app?<br>
         freq_display_widget.setFixedWidth(110)
         btn_layout.addWidget(freq_display_widget, 0, 4)
 
-        # Right-side stack: traffic light / BPM / beat indicators
+        # Right-side stack: beat indicators
         right_stack = QVBoxLayout()
         right_stack.setSpacing(2)
-
-        # Traffic light indicator (top of right stack)
-        self.metric_traffic_light = TrafficLightWidget()
-        self.metric_traffic_light.setToolTip("Green=All Locked, Yellow=Some Settled, Red=Adjusting")
-        right_stack.addWidget(self.metric_traffic_light, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # BPM display (middle of right stack)
-        self.bpm_label = QLabel("BPM: --")
-        self.bpm_label.setStyleSheet("color: #0a0; font-size: 14px; font-weight: bold;")
-        self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        right_stack.addWidget(self.bpm_label)
 
         # Beat & Downbeat & Metronome Sync indicators (bottom of right stack)
         beat_row = QHBoxLayout()
@@ -5220,93 +5229,6 @@ Like the app?<br>
             self.device_combo.setCurrentIndex(loopback_idx)
         elif combo_idx > 0:
             self.device_combo.setCurrentIndex(0)
-    
-    def _set_device_preset_mic(self):
-        """Filter to show only microphone/input devices"""
-        import sounddevice as sd
-        devices = sd.query_devices()
-        
-        # Find first non-loopback input device (regular microphone)
-        loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
-        
-        for combo_idx, device_idx in self.audio_device_map.items():
-            # Skip if this is marked as loopback
-            if self.audio_device_is_loopback.get(combo_idx, False):
-                continue
-            
-            # Check if this device has input channels and is not a loopback device
-            if device_idx < len(devices):
-                dev = devices[device_idx]
-                if dev['max_input_channels'] > 0:
-                    dev_name = dev['name'].lower()
-                    # Skip if it matches loopback keywords
-                    if not any(keyword in dev_name for keyword in loopback_keywords):
-                        self.device_combo.setCurrentIndex(combo_idx)
-                        self.device_combo.currentIndexChanged.emit(combo_idx)
-                        print(f"[Main] Switched to Microphone mode (Device {device_idx}: {dev['name']})")
-                        self._update_preset_button_states()
-                        return
-        
-        print("[Main] No microphone device found")
-    
-    def _set_device_preset_loopback(self):
-        """Filter to show only system audio/playback loopback devices"""
-        # First, try to find a marked loopback device (WASAPI output)
-        for combo_idx, device_idx in self.audio_device_map.items():
-            if self.audio_device_is_loopback.get(combo_idx, False):
-                self.device_combo.setCurrentIndex(combo_idx)
-                self.device_combo.currentIndexChanged.emit(combo_idx)
-                print(f"[Main] Switched to System Audio mode (WASAPI Loopback Device {device_idx})")
-                self._update_preset_button_states()
-                return
-        
-        # Fallback: look for devices with loopback keywords
-        import sounddevice as sd
-        devices = sd.query_devices()
-        loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
-        
-        for combo_idx, device_idx in self.audio_device_map.items():
-            if device_idx < len(devices):
-                dev = devices[device_idx]
-                if dev['max_input_channels'] > 0:
-                    if any(keyword in dev['name'].lower() for keyword in loopback_keywords):
-                        self.device_combo.setCurrentIndex(combo_idx)
-                        self.device_combo.currentIndexChanged.emit(combo_idx)
-                        print(f"[Main] Switched to System Audio mode (Device {device_idx}: {dev['name']})")
-                        self._update_preset_button_states()
-                        return
-        
-        print("[Main] No system audio/loopback device found. Enable 'Stereo Mix' or 'What U Hear' in sound settings")
-    
-    def _update_preset_button_states(self):
-        """Update button colors based on current device selection"""
-        current_combo_idx = self.device_combo.currentIndex()
-        current_device_idx = self.audio_device_map.get(current_combo_idx)
-        
-        # Check if current device is marked as loopback or has loopback keywords
-        is_loopback = self.audio_device_is_loopback.get(current_combo_idx, False)
-        
-        if not is_loopback and current_device_idx is not None:
-            import sounddevice as sd
-            devices = sd.query_devices()
-            if current_device_idx < len(devices):
-                dev_name = devices[current_device_idx]['name'].lower()
-                loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
-                is_loopback = any(keyword in dev_name for keyword in loopback_keywords)
-        
-        # Check if current device is a regular microphone (input, not loopback)
-        is_mic = current_device_idx is not None and not is_loopback
-        if is_mic and current_device_idx is not None:
-            import sounddevice as sd
-            devices = sd.query_devices()
-            if current_device_idx < len(devices):
-                dev = devices[current_device_idx]
-                # Must be input device
-                is_mic = dev['max_input_channels'] > 0
-        
-        # Update button colors: dark turquoise = active, white = inactive
-        self.preset_mic_btn.setStyleSheet("color: #008b8b; font-weight: bold;" if is_mic else "color: #fff;")
-        self.preset_loopback_btn.setStyleSheet("color: #008b8b; font-weight: bold;" if is_loopback else "color: #fff;")
     
     def _create_spectrum_panel(self) -> QWidget:
         """Spectrum visualizer panel"""
@@ -6316,6 +6238,15 @@ Like the app?<br>
         detect_group = QGroupBox("Detection")
         detect_layout = QVBoxLayout(detect_group)
         detect_layout.addLayout(type_layout)
+
+        # Global auto-adjust toggle moved to top Detection group
+        self.metrics_global_cb = QCheckBox("Enable Auto-Adjust")
+        self.metrics_global_cb.setChecked(self.config.auto_adjust.metrics_global_enabled)
+        self.metrics_global_cb.setToolTip("Master toggle for all auto-adjust controls")
+        self.metrics_global_cb.setStyleSheet("font-weight: bold; font-size: 10px;")
+        self.metrics_global_cb.stateChanged.connect(self._on_metrics_global_toggle)
+        detect_layout.addWidget(self.metrics_global_cb)
+
         layout.addWidget(detect_group)
 
         # Everything below detection type lives inside one windowshade section
@@ -6324,14 +6255,6 @@ Like the app?<br>
 
         # ===== AUTO-ADJUST (METRIC-BASED AUTO-RANGING) =====
         metric_layout = auto_levels_layout
-        
-        # Global enable/disable checkbox for all metrics
-        self.metrics_global_cb = QCheckBox("Enable Auto-Adjust")
-        self.metrics_global_cb.setChecked(self.config.auto_adjust.metrics_global_enabled)
-        self.metrics_global_cb.setToolTip("Master toggle for all auto-adjust controls")
-        self.metrics_global_cb.setStyleSheet("font-weight: bold; font-size: 10px;")
-        self.metrics_global_cb.stateChanged.connect(self._on_metrics_global_toggle)
-        metric_layout.addWidget(self.metrics_global_cb)
         
         # Butterworth filter (mandatory for metrics)
         self.butterworth_checkbox = QCheckBox("Butterworth bandpass filter")
@@ -6415,7 +6338,7 @@ Like the app?<br>
         
         self.auto_align_seconds_spin = QDoubleSpinBox()
         self.auto_align_seconds_spin.setRange(0.1, 8.0)
-        self.auto_align_seconds_spin.setValue(1.2)
+        self.auto_align_seconds_spin.setValue(0.2)
         self.auto_align_seconds_spin.setSingleStep(0.1)
         self.auto_align_seconds_spin.setDecimals(2)
         self.auto_align_seconds_spin.setSuffix("s")
@@ -6452,11 +6375,6 @@ Like the app?<br>
         self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
         self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
         beat_slider_row.addWidget(self.freq_range_slider)
-        self.beat_band_toggle = QCheckBox("Show")
-        self.beat_band_toggle.setToolTip("Show/hide red overlay on spectrum")
-        self.beat_band_toggle.setChecked(False)
-        self.beat_band_toggle.stateChanged.connect(lambda state: self._on_toggle_beat_band(state == 2))
-        beat_slider_row.addWidget(self.beat_band_toggle)
         levels_layout.addLayout(beat_slider_row)
         
         # Audio amplification/gain: boost weak signals (0.15=quiet, 5.0=loud)
@@ -6549,6 +6467,7 @@ Like the app?<br>
     def _on_freq_band_change(self, low=None, high=None):
         """Update frequency band in config and spectrum overlay"""
         # Handle both range slider (low, high params) and direct calls
+        user_changed_slider = low is not None and high is not None
         if low is None:
             low = self.freq_range_slider.low() or 0.0
             high = self.freq_range_slider.high() or 22050.0
@@ -6567,6 +6486,10 @@ Like the app?<br>
         max_freq = sr / 2
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_frequency_band'):
             self.freqdb_canvas.set_frequency_band(low / max_freq, high / max_freq)
+
+        # On user slider change, show 5s ghost range on dB/Hz and FFT-bin visualizers.
+        if user_changed_slider:
+            self._show_pulse_frequency_ghosts('beat_detect', low, high, 'Beat detect', '#FF6666')
     
     def _on_depth_band_change(self, low=None, high=None):
         """Update stroke depth frequency band in config and spectrum overlay"""
@@ -8112,11 +8035,9 @@ Like the app?<br>
             if hasattr(self, 'audio_engine') and self.audio_engine is not None:
                 tempo_info = self.audio_engine.get_tempo_info()
                 if tempo_info['bpm'] > 0:
-                    confidence = tempo_info['confidence']
                     # Use event.is_downbeat (frozen at construction time) instead of
                     # polling get_tempo_info() which races with audio thread clearing the flag
                     is_downbeat = getattr(event, 'is_downbeat', False)
-                    stability = tempo_info.get('stability', 0.0)
                     
                     # Light up downbeat indicator (cyan/blue for downbeat)
                     if is_downbeat:
@@ -8128,26 +8049,8 @@ Like the app?<br>
                         # Record downbeat for sensitivity metric
                         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
                             pass  # downbeat recording removed
-                    
-                    # Format BPM display — show ACF info when metronome is active
-                    acf_active = tempo_info.get('acf_active', False)
-                    if acf_active:
-                        bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
-                        acf_c = tempo_info.get('acf_confidence', 0.0)
-                        if acf_c < 0.15:
-                            bpm_display += " (~)"
-                    else:
-                        bpm_display = f"BPM: {tempo_info['bpm']:.1f}"
-                        if confidence < 0.5:
-                            bpm_display += " (~)"
-                        elif stability < 0.5:
-                            bpm_display += " (~)"
-                    if hasattr(self, 'bpm_label') and self.bpm_label is not None:
-                        self.bpm_label.setText(bpm_display)
         # Show reset in GUI and console if tempo was reset
         if hasattr(event, 'tempo_reset') and event.tempo_reset:
-            if hasattr(self, 'bpm_label') and self.bpm_label is not None:
-                self.bpm_label.setText("BPM: ---")
             print("[GUI] Beat counter/tempo reset due to silence.")
     
     def _turn_off_beat_indicator(self):
@@ -8230,12 +8133,27 @@ Like the app?<br>
             self.alpha_label.setText(f"α: {alpha:.2f}")
             self.beta_label.setText(f"β: {beta:.2f}")
 
-        # Sync widget states to cached values for thread-safe reading by audio thread
-        # P0/F0/P1/P3 enable state MUST be synced IMMEDIATELY (every frame) for instant response
-        new_p0_enabled = self.pulse_enabled_checkbox.isChecked()
-        new_f0_enabled = self.f0_enabled_checkbox.isChecked()
-        new_p1_enabled = self.p1_enabled_checkbox.isChecked()
-        new_p3_enabled = self.p3_enabled_checkbox.isChecked()
+        # Sync widget states to cached values for thread-safe reading by audio thread.
+        # Some controls may not exist yet (e.g., optional dialogs/tabs not instantiated),
+        # so fall back to cached state instead of raising per-frame AttributeError.
+        control_toggle_names = (
+            'pulse_enabled_checkbox',
+            'f0_enabled_checkbox',
+            'p1_enabled_checkbox',
+            'p3_enabled_checkbox',
+        )
+        controls_toggle_ready = all(hasattr(self, name) for name in control_toggle_names)
+        if controls_toggle_ready:
+            # P0/F0/P1/P3 enable state MUST be synced immediately (every frame) for instant response
+            new_p0_enabled = self.pulse_enabled_checkbox.isChecked()
+            new_f0_enabled = self.f0_enabled_checkbox.isChecked()
+            new_p1_enabled = self.p1_enabled_checkbox.isChecked()
+            new_p3_enabled = self.p3_enabled_checkbox.isChecked()
+        else:
+            new_p0_enabled = bool(getattr(self, '_cached_p0_enabled', False))
+            new_f0_enabled = bool(getattr(self, '_cached_f0_enabled', False))
+            new_p1_enabled = bool(getattr(self, '_cached_p1_enabled', False))
+            new_p3_enabled = bool(getattr(self, '_cached_p3_enabled', False))
         
         # Handle P0/C0 checkboxes being unchecked (enabled→disabled transition)
         # Simply stop sending the axis — do NOT send 0 value, which still affects device
@@ -8279,32 +8197,42 @@ Like the app?<br>
             self.carrier_freq_label.setText(self._cached_carrier_display)
             self.p1_display_label.setText(self._cached_p1_display)
             self.p3_display_label.setText(self._cached_p3_display)
-            # Sync other combo/checkbox states for audio thread (throttled is fine)
-            self._cached_pulse_mode = self.pulse_mode_combo.currentIndex()
-            self._cached_pulse_invert = self.pulse_invert_checkbox.isChecked()
-            self._cached_f0_mode = self.f0_mode_combo.currentIndex()
-            self._cached_f0_invert = self.f0_invert_checkbox.isChecked()
-            # Sync TCode Sent slider values for thread-safe access
-            self._cached_tcode_freq_min = int(self.tcode_freq_range_slider.low())
-            self._cached_tcode_freq_max = int(self.tcode_freq_range_slider.high())
-            self._cached_f0_tcode_min = int(self.f0_tcode_range_slider.low())
-            self._cached_f0_tcode_max = int(self.f0_tcode_range_slider.high())
-            # Sync P1 (Pulse Width) widget states
-            self._cached_p1_mode = self.p1_mode_combo.currentIndex()
-            self._cached_p1_invert = self.p1_invert_checkbox.isChecked()
-            self._cached_p1_tcode_min = int(self.p1_tcode_range_slider.low())
-            self._cached_p1_tcode_max = int(self.p1_tcode_range_slider.high())
-            self.config.pulse_width.monitor_freq_min = self.p1_monitor_range_slider.low()
-            self.config.pulse_width.monitor_freq_max = self.p1_monitor_range_slider.high()
-            self.config.pulse_width.weight = self.p1_weight_slider.value()
-            # Sync P3 (Rise Time) widget states
-            self._cached_p3_mode = self.p3_mode_combo.currentIndex()
-            self._cached_p3_invert = self.p3_invert_checkbox.isChecked()
-            self._cached_p3_tcode_min = int(self.p3_tcode_range_slider.low())
-            self._cached_p3_tcode_max = int(self.p3_tcode_range_slider.high())
-            self.config.rise_time.monitor_freq_min = self.p3_monitor_range_slider.low()
-            self.config.rise_time.monitor_freq_max = self.p3_monitor_range_slider.high()
-            self.config.rise_time.weight = self.p3_weight_slider.value()
+            control_sync_names = (
+                'pulse_mode_combo', 'pulse_invert_checkbox',
+                'f0_mode_combo', 'f0_invert_checkbox',
+                'tcode_freq_range_slider', 'f0_tcode_range_slider',
+                'p1_mode_combo', 'p1_invert_checkbox',
+                'p1_tcode_range_slider', 'p1_monitor_range_slider', 'p1_weight_slider',
+                'p3_mode_combo', 'p3_invert_checkbox',
+                'p3_tcode_range_slider', 'p3_monitor_range_slider', 'p3_weight_slider',
+            )
+            if all(hasattr(self, name) for name in control_sync_names):
+                # Sync other combo/checkbox states for audio thread (throttled is fine)
+                self._cached_pulse_mode = self.pulse_mode_combo.currentIndex()
+                self._cached_pulse_invert = self.pulse_invert_checkbox.isChecked()
+                self._cached_f0_mode = self.f0_mode_combo.currentIndex()
+                self._cached_f0_invert = self.f0_invert_checkbox.isChecked()
+                # Sync TCode Sent slider values for thread-safe access
+                self._cached_tcode_freq_min = int(self.tcode_freq_range_slider.low())
+                self._cached_tcode_freq_max = int(self.tcode_freq_range_slider.high())
+                self._cached_f0_tcode_min = int(self.f0_tcode_range_slider.low())
+                self._cached_f0_tcode_max = int(self.f0_tcode_range_slider.high())
+                # Sync P1 (Pulse Width) widget states
+                self._cached_p1_mode = self.p1_mode_combo.currentIndex()
+                self._cached_p1_invert = self.p1_invert_checkbox.isChecked()
+                self._cached_p1_tcode_min = int(self.p1_tcode_range_slider.low())
+                self._cached_p1_tcode_max = int(self.p1_tcode_range_slider.high())
+                self.config.pulse_width.monitor_freq_min = self.p1_monitor_range_slider.low()
+                self.config.pulse_width.monitor_freq_max = self.p1_monitor_range_slider.high()
+                self.config.pulse_width.weight = self.p1_weight_slider.value()
+                # Sync P3 (Rise Time) widget states
+                self._cached_p3_mode = self.p3_mode_combo.currentIndex()
+                self._cached_p3_invert = self.p3_invert_checkbox.isChecked()
+                self._cached_p3_tcode_min = int(self.p3_tcode_range_slider.low())
+                self._cached_p3_tcode_max = int(self.p3_tcode_range_slider.high())
+                self.config.rise_time.monitor_freq_min = self.p3_monitor_range_slider.low()
+                self.config.rise_time.monitor_freq_max = self.p3_monitor_range_slider.high()
+                self.config.rise_time.weight = self.p3_weight_slider.value()
             
             # Update peak floor bars on all visualizers
             peak_floor = self.config.beat.peak_floor
@@ -8360,50 +8288,38 @@ Like the app?<br>
                     # Check if stable long enough to start aligning
                     if (self._auto_align_is_stable and 
                             (now - self._auto_align_stable_since) >= adaptive_required_seconds):
-                        current_target = self.target_bpm_spin.value()
-                        diff = sensed_bpm - current_target
-                        
-                        # Only align if difference >= 1 BPM AND cooldown elapsed
-                        if abs(diff) >= 1.0 and (now - self._auto_align_last_adjust_time) >= adaptive_cooldown:
-                            step_bpm = 1
-                            if acf_conf >= 0.55 and abs(diff) >= 4.0:
-                                step_bpm = 2
-                            if acf_conf >= 0.70 and abs(diff) >= 8.0:
-                                step_bpm = 3
-                            if diff > 0:
-                                new_target = min(int(current_target) + step_bpm, int(sensed_bpm))
-                            else:
-                                new_target = max(int(current_target) - step_bpm, int(np.ceil(sensed_bpm)))
+                        target_bpm_spin = getattr(self, 'target_bpm_spin', None)
+                        if target_bpm_spin is not None:
+                            current_target = target_bpm_spin.value()
+                            diff = sensed_bpm - current_target
                             
-                            if new_target != int(current_target):
-                                self.target_bpm_spin.setValue(new_target)
-                                self._auto_align_last_adjust_time = now
-                                stable_elapsed = now - self._auto_align_stable_since
-                                print(
-                                    f"[Auto-align] Target BPM: {int(current_target)} -> {new_target} "
-                                    f"(sensed: {sensed_bpm:.1f}, conf: {acf_conf:.2f}, stable for {stable_elapsed:.1f}s, step: {step_bpm})"
-                                )
+                            # Only align if difference >= 1 BPM AND cooldown elapsed
+                            if abs(diff) >= 1.0 and (now - self._auto_align_last_adjust_time) >= adaptive_cooldown:
+                                step_bpm = 1
+                                if acf_conf >= 0.55 and abs(diff) >= 4.0:
+                                    step_bpm = 2
+                                if acf_conf >= 0.70 and abs(diff) >= 8.0:
+                                    step_bpm = 3
+                                if diff > 0:
+                                    new_target = min(int(current_target) + step_bpm, int(sensed_bpm))
+                                else:
+                                    new_target = max(int(current_target) - step_bpm, int(np.ceil(sensed_bpm)))
+                                
+                                if new_target != int(current_target):
+                                    target_bpm_spin.setValue(new_target)
+                                    self._auto_align_last_adjust_time = now
+                                    stable_elapsed = now - self._auto_align_stable_since
+                                    print(
+                                        f"[Auto-align] Target BPM: {int(current_target)} -> {new_target} "
+                                        f"(sensed: {sensed_bpm:.1f}, conf: {acf_conf:.2f}, stable for {stable_elapsed:.1f}s, step: {step_bpm})"
+                                    )
                 else:
                     # Invalid BPM, reset stability
                     self._auto_align_is_stable = False
                     self._auto_align_stable_since = 0.0
             
-            # ===== TRAFFIC LIGHT UPDATE =====
-            if hasattr(self, 'metric_traffic_light'):
-                states = self.audio_engine.get_metric_states()
-                if not states:
-                    # No metrics enabled
-                    self.metric_traffic_light.all_off()
-                else:
-                    any_adjusting = any(s == 'ADJUSTING' for s in states.values())
-                    any_settled = any(s == 'SETTLED' for s in states.values())
-                    all_settled = all(s == 'SETTLED' for s in states.values())
-                    # Red = actively adjusting, Yellow = some settled, Green = all settled/locked
-                    self.metric_traffic_light.set_state(
-                        green=all_settled,
-                        yellow=any_settled and not all_settled,
-                        red=any_adjusting
-                    )
+            # Keep metric state polling active even though traffic-light UI is removed.
+            self.audio_engine.get_metric_states()
 
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""

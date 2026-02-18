@@ -19,44 +19,57 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
     phase_advance_slider = _optional_window_attr(window, "phase_advance_slider")
     if phase_advance_slider is None:
         phase_advance_slider = _optional_window_attr(window, "_advanced_phase_advance_slider")
-    pulse_freq_range_slider = _require_window_attr(window, "pulse_freq_range_slider")
-    tcode_freq_range_slider = _require_window_attr(window, "tcode_freq_range_slider")
-    freq_weight_slider = _require_window_attr(window, "freq_weight_slider")
-    f0_freq_range_slider = _require_window_attr(window, "f0_freq_range_slider")
-    f0_tcode_range_slider = _require_window_attr(window, "f0_tcode_range_slider")
-    f0_weight_slider = _require_window_attr(window, "f0_weight_slider")
-    volume_slider = _require_window_attr(window, "volume_slider")
-    tempo_tracking_checkbox = _require_window_attr(window, "tempo_tracking_checkbox")
-    time_sig_combo = _require_window_attr(window, "time_sig_combo")
-    stability_threshold_slider = _require_window_attr(window, "stability_threshold_slider")
-    tempo_timeout_slider = _require_window_attr(window, "tempo_timeout_slider")
-    phase_snap_slider = _require_window_attr(window, "phase_snap_slider")
-    metrics_global_cb = _require_window_attr(window, "metrics_global_cb")
+    pulse_freq_range_slider = _optional_window_attr(window, "pulse_freq_range_slider")
+    tcode_freq_range_slider = _optional_window_attr(window, "tcode_freq_range_slider")
+    freq_weight_slider = _optional_window_attr(window, "freq_weight_slider")
+    f0_freq_range_slider = _optional_window_attr(window, "f0_freq_range_slider")
+    f0_tcode_range_slider = _optional_window_attr(window, "f0_tcode_range_slider")
+    f0_weight_slider = _optional_window_attr(window, "f0_weight_slider")
+    volume_slider = _optional_window_attr(window, "volume_slider")
+    tempo_tracking_checkbox = _optional_window_attr(window, "tempo_tracking_checkbox")
+    time_sig_combo = _optional_window_attr(window, "time_sig_combo")
+    stability_threshold_slider = _optional_window_attr(window, "stability_threshold_slider")
+    tempo_timeout_slider = _optional_window_attr(window, "tempo_timeout_slider")
+    phase_snap_slider = _optional_window_attr(window, "phase_snap_slider")
+    metrics_global_cb = _optional_window_attr(window, "metrics_global_cb")
 
     if phase_advance_slider is not None and hasattr(phase_advance_slider, "value"):
         config.stroke.phase_advance = phase_advance_slider.value()
 
-    config.pulse_freq.monitor_freq_min = pulse_freq_range_slider.low()
-    config.pulse_freq.monitor_freq_max = pulse_freq_range_slider.high()
-    config.pulse_freq.tcode_min = int(tcode_freq_range_slider.low())
-    config.pulse_freq.tcode_max = int(tcode_freq_range_slider.high())
-    config.pulse_freq.freq_weight = freq_weight_slider.value()
+    if pulse_freq_range_slider is not None and hasattr(pulse_freq_range_slider, "low") and hasattr(pulse_freq_range_slider, "high"):
+        config.pulse_freq.monitor_freq_min = pulse_freq_range_slider.low()
+        config.pulse_freq.monitor_freq_max = pulse_freq_range_slider.high()
+    if tcode_freq_range_slider is not None and hasattr(tcode_freq_range_slider, "low") and hasattr(tcode_freq_range_slider, "high"):
+        config.pulse_freq.tcode_min = int(tcode_freq_range_slider.low())
+        config.pulse_freq.tcode_max = int(tcode_freq_range_slider.high())
+    if freq_weight_slider is not None and hasattr(freq_weight_slider, "value"):
+        config.pulse_freq.freq_weight = freq_weight_slider.value()
 
-    config.carrier_freq.monitor_freq_min = f0_freq_range_slider.low()
-    config.carrier_freq.monitor_freq_max = f0_freq_range_slider.high()
-    config.carrier_freq.tcode_min = int(f0_tcode_range_slider.low())
-    config.carrier_freq.tcode_max = int(f0_tcode_range_slider.high())
-    config.carrier_freq.freq_weight = f0_weight_slider.value()
+    if f0_freq_range_slider is not None and hasattr(f0_freq_range_slider, "low") and hasattr(f0_freq_range_slider, "high"):
+        config.carrier_freq.monitor_freq_min = f0_freq_range_slider.low()
+        config.carrier_freq.monitor_freq_max = f0_freq_range_slider.high()
+    if f0_tcode_range_slider is not None and hasattr(f0_tcode_range_slider, "low") and hasattr(f0_tcode_range_slider, "high"):
+        config.carrier_freq.tcode_min = int(f0_tcode_range_slider.low())
+        config.carrier_freq.tcode_max = int(f0_tcode_range_slider.high())
+    if f0_weight_slider is not None and hasattr(f0_weight_slider, "value"):
+        config.carrier_freq.freq_weight = f0_weight_slider.value()
 
-    config.volume = volume_slider.value() / 100.0
+    if volume_slider is not None and hasattr(volume_slider, "value"):
+        config.volume = volume_slider.value() / 100.0
     config.alpha_weight = 1.0
     config.beta_weight = 1.0
 
-    config.beat.tempo_tracking_enabled = tempo_tracking_checkbox.isChecked()
-    beats_map = {0: 4, 1: 3, 2: 6}
-    config.beat.beats_per_measure = beats_map.get(time_sig_combo.currentIndex(), 4)
-    config.beat.stability_threshold = stability_threshold_slider.value()
-    config.beat.tempo_timeout_ms = int(tempo_timeout_slider.value())
-    config.beat.phase_snap_weight = phase_snap_slider.value()
+    if tempo_tracking_checkbox is not None and hasattr(tempo_tracking_checkbox, "isChecked"):
+        config.beat.tempo_tracking_enabled = tempo_tracking_checkbox.isChecked()
+    if time_sig_combo is not None and hasattr(time_sig_combo, "currentIndex"):
+        beats_map = {0: 4, 1: 3, 2: 6}
+        config.beat.beats_per_measure = beats_map.get(time_sig_combo.currentIndex(), 4)
+    if stability_threshold_slider is not None and hasattr(stability_threshold_slider, "value"):
+        config.beat.stability_threshold = stability_threshold_slider.value()
+    if tempo_timeout_slider is not None and hasattr(tempo_timeout_slider, "value"):
+        config.beat.tempo_timeout_ms = int(tempo_timeout_slider.value())
+    if phase_snap_slider is not None and hasattr(phase_snap_slider, "value"):
+        config.beat.phase_snap_weight = phase_snap_slider.value()
 
-    config.auto_adjust.metrics_global_enabled = metrics_global_cb.isChecked()
+    if metrics_global_cb is not None and hasattr(metrics_global_cb, "isChecked"):
+        config.auto_adjust.metrics_global_enabled = metrics_global_cb.isChecked()
