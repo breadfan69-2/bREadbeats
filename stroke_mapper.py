@@ -347,7 +347,11 @@ class StrokeMapper:
         return float(np.clip(eased, 0.0, 1.04))
 
     def _compute_initial_speed_slope(self, event: BeatEvent, interval_beats: int) -> float:
-        """Map current angular velocity to a normalized easing start slope."""
+        """Map current angular velocity to a normalized easing start slope.
+
+        Short journeys (1-2 beats) use a lower slope cap to prevent
+        whip-like starts when inheriting velocity from a fast arc.
+        """
         bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
         if bpm <= 0.0:
             bpm = float(getattr(event, "bpm", 0.0) or 0.0)
@@ -359,7 +363,10 @@ class StrokeMapper:
 
         denom = max(1e-6, self._journey_total_rotation * progress_rate)
         slope = self._angular_velocity / denom
-        return float(np.clip(slope, 0.0, 2.5))
+
+        # Cap slope based on journey length: short arcs must not whip-start
+        max_slope = 1.2 if int(interval_beats) <= 2 else 2.0
+        return float(np.clip(slope, 0.0, max_slope))
 
     @staticmethod
     def _wrapped_phase_delta(current: float, previous: float) -> float:

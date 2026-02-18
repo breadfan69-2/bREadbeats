@@ -69,6 +69,11 @@ class BeatIntelligence:
         self.active_interval_beats = 8
         self.last_trigger_kind = "creep"
 
+        # Creep-entry hysteresis: require consecutive creep frames before
+        # actually switching to creep mode (prevents momentary gate blips)
+        self._creep_consecutive_frames: int = 0
+        self._creep_hysteresis_threshold: int = 18  # ~0.3s at 60fps
+
         self.journey_duration_s = 0.0
         self.journey_elapsed_s = 0.0
         self.journey_active = False
@@ -98,7 +103,7 @@ class BeatIntelligence:
         self._tempo_reset_motion_hold_until: float = 0.0
 
         # ── Phase 1: No-beat timeout (#4) ──
-        self._no_beat_timeout_s: float = 2.0
+        self._no_beat_timeout_s: float = 3.0
 
         # ── Phase 2: ReadinessState (#17) ──
         self._stroke_ready: bool = False
@@ -1133,24 +1138,21 @@ class BeatIntelligence:
             or (trigger_kind == "beat" and bool(getattr(event, "is_beat", False)))
         )
 
-        # ── Priority interrupt logic with force overrides ──
+        # ── Priority interrupt logic ──
+        # Only FASTER strokes (lower priority number) can interrupt SLOWER ones.
+        # A downbeat cannot interrupt a beat arc; a beat cannot interrupt
+        # a syncopation arc.  When music intensifies the system naturally
+        # upgrades from downbeat→beat→syncopation.  Slower arc types
+        # simply expire on their own when music quiets.
         incoming_pri = self._TRIGGER_PRIORITY.get(trigger_kind, 3)
         active_pri = self._TRIGGER_PRIORITY.get(self.last_trigger_kind, 3)
-        force_override = bool(
-            (trigger_kind == "syncopation" and bool(getattr(event, "is_syncopated", False)))
-            or (trigger_kind == "beat" and bool(getattr(event, "is_beat", False)))
-        )
         should_start = False
 
-        if force_override:
-            # Immediate restart for beat/syncopation triggers, even if current
-            # journey is active. Velocity-handoff math handles continuity.
+        if not self.journey_active:
             should_start = True
-        elif not self.journey_active:
+        elif is_new_beat and incoming_pri < active_pri:
+            # Faster stroke type interrupts slower one (e.g. beat interrupts downbeat)
             should_start = True
-        elif is_new_beat:
-            # Beat-family event: interrupt if equal or higher priority
-            should_start = incoming_pri <= active_pri
         elif trigger_kind == "creep" and self.last_trigger_kind == "creep" and not self.journey_active:
             should_start = True
 
@@ -1236,26 +1238,47 @@ class BeatIntelligence:
 
         bpm = self.effective_bpm(event)
 
-        # ── Priority interrupt: beat-family events always run the gate chain.
-        # If a beat-family journey is active but incoming is equal/higher
-        # priority, the gate chain decides whether the new trigger fires.
+        # ── Priority interrupt: beat-family events run the gate chain.
         # Creep frames during an active beat-family journey keep the current kind.
+        # When a beat-family event FAILS gates during an active journey, the
+        # active journey is preserved (not killed to creep) — it finishes
+        # naturally on its own timing.
         if raw_trigger_kind == "creep" and self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
             trigger_kind = self.last_trigger_kind
+            self._creep_consecutive_frames = 0
         elif raw_trigger_kind in ("syncopation", "beat", "downbeat") and not silence_active:
+            gate_passed = True
             if not stroke_ready:
-                trigger_kind = "creep"
+                gate_passed = False
             elif not self._strict_bass_motion_allowed(event, raw_trigger_kind):
-                trigger_kind = "creep"
+                gate_passed = False
             elif self._is_mid_trigger_blocked(event):
-                trigger_kind = "creep"
+                gate_passed = False
             # Phase 3 gates: low-band → dual-band → spectrum fill
             elif not self._is_low_band_full_enough(event, raw_trigger_kind, bpm):
-                trigger_kind = "creep"
+                gate_passed = False
             elif not self._passes_dual_band_db_gate(event):
-                trigger_kind = "creep"
+                gate_passed = False
             elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
+                gate_passed = False
+
+            if gate_passed:
+                self._creep_consecutive_frames = 0
+            elif self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
+                # Gate failed but a beat-family journey is running — let it finish
+                trigger_kind = self.last_trigger_kind
+            else:
                 trigger_kind = "creep"
+
+        # Creep hysteresis: only enter creep after sustained non-beat frames
+        if trigger_kind == "creep" and raw_trigger_kind == "creep":
+            self._creep_consecutive_frames += 1
+            if self._creep_consecutive_frames < self._creep_hysteresis_threshold and self.journey_active:
+                # Not enough consecutive creep frames yet — hold current journey
+                trigger_kind = self.last_trigger_kind
+        else:
+            if trigger_kind != "creep":
+                self._creep_consecutive_frames = 0
 
         # No-beat timeout: force decay to park
         no_beat_timed_out = False

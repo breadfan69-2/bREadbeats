@@ -164,7 +164,7 @@ class TestNoBeatTimeout(Phase1Mixin, unittest.TestCase):
     def test_timeout_triggers_after_gap(self):
         bi = BeatIntelligence(Config())
         now = time.perf_counter()
-        bi._last_any_beat_time = now - 3.0  # 3s ago
+        bi._last_any_beat_time = now - 3.1  # 3.1s ago (well past 3.0s timeout)
         self.assertTrue(bi._check_no_beat_timeout(now))
 
     def test_timeout_does_not_trigger_when_recent(self):

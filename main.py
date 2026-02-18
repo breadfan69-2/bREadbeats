@@ -3313,6 +3313,8 @@ class BREadbeatsWindow(QMainWindow):
         self._tempo_tracking_popout_content = None
         self._auto_fill_controls_dialog = None
         self._auto_fill_controls_widgets = {}
+        self._motion_readiness_dialog = None
+        self._motion_readiness_controls_widgets = {}
         
         # Setup UI
         self._setup_ui()
@@ -3453,6 +3455,8 @@ class BREadbeatsWindow(QMainWindow):
         self._tempo_tracking_dialog = None
         self._auto_fill_controls_dialog = None
         self._auto_fill_controls_widgets = {}
+        self._motion_readiness_dialog = None
+        self._motion_readiness_controls_widgets = {}
         
         # Auto-align target BPM tracking (wall-clock time-based)
         self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
@@ -4000,6 +4004,10 @@ class BREadbeatsWindow(QMainWindow):
         assert auto_fill_action is not None
         auto_fill_action.triggered.connect(self._on_options_auto_fill_adaptation)
 
+        motion_readiness_action = developer_controls_menu.addAction("Motion Readiness...")
+        assert motion_readiness_action is not None
+        motion_readiness_action.triggered.connect(self._on_options_motion_readiness)
+
         # Reports menu (top-level for easy findability)
         reports_menu = menubar.addMenu("Reports")
         assert reports_menu is not None
@@ -4403,6 +4411,112 @@ class BREadbeatsWindow(QMainWindow):
             'max_required': max_required_slider,
         }
         self._auto_fill_controls_dialog = dialog
+
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _on_options_motion_readiness(self):
+        """Show Developer Controls popout for readiness gating behavior."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QSpinBox, QCheckBox
+
+        dialog = getattr(self, '_motion_readiness_dialog', None)
+        if dialog is not None:
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            except RuntimeError:
+                self._motion_readiness_dialog = None
+                self._motion_readiness_controls_widgets = {}
+                dialog = None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Motion Readiness")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(300)
+        dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def _on_motion_readiness_dialog_destroyed() -> None:
+            self._motion_readiness_dialog = None
+            self._motion_readiness_controls_widgets = {}
+
+        dialog.destroyed.connect(_on_motion_readiness_dialog_destroyed)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        info = QLabel(
+            "Tune readiness fallback gating for beat-family motion.\n"
+            "Lower confidence threshold + longer grace/finish = more fluid motion."
+        )
+        info.setStyleSheet("color: #bbb; font-size: 11px;")
+        layout.addWidget(info)
+
+        relaxed_conf_slider = SliderWithLabel(
+            "Metronome Relaxed Confidence",
+            0.00,
+            1.00,
+            float(getattr(self.config.beat, 'teaching_metronome_relaxed_confidence', 0.14) or 0.14),
+            2,
+        )
+        relaxed_conf_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'teaching_metronome_relaxed_confidence', float(v))
+        )
+        layout.addWidget(relaxed_conf_slider)
+
+        grace_ms_slider = SliderWithLabel(
+            "Stroke Ready Grace (ms)",
+            0.0,
+            3000.0,
+            float(getattr(self.config.beat, 'teaching_stroke_ready_grace_ms', 450.0) or 450.0),
+            0,
+        )
+        grace_ms_slider.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'teaching_stroke_ready_grace_ms', float(v))
+        )
+        layout.addWidget(grace_ms_slider)
+
+        finish_row = QHBoxLayout()
+        finish_label = QLabel("Stroke Finish Beats")
+        finish_label.setStyleSheet("color: #ddd;")
+        finish_spin = QSpinBox()
+        finish_spin.setRange(0, 64)
+        finish_spin.setValue(int(getattr(self.config.beat, 'teaching_stroke_finish_beats', 4) or 4))
+        finish_spin.valueChanged.connect(
+            lambda v: setattr(self.config.beat, 'teaching_stroke_finish_beats', int(v))
+        )
+        finish_row.addWidget(finish_label)
+        finish_row.addStretch()
+        finish_row.addWidget(finish_spin)
+        layout.addLayout(finish_row)
+
+        relax_phase1_cb = QCheckBox("Relax Phase-1 gates during learning")
+        relax_phase1_cb.setChecked(bool(getattr(self.config.beat, 'teaching_relax_phase1_gates', False)))
+        relax_phase1_cb.setToolTip(
+            "When enabled, learning mode can bypass mid-trigger and dual-band gate strictness."
+        )
+        relax_phase1_cb.stateChanged.connect(
+            lambda state: setattr(self.config.beat, 'teaching_relax_phase1_gates', state == 2)
+        )
+        layout.addWidget(relax_phase1_cb)
+
+        layout.addStretch()
+
+        dialog.finished.connect(lambda _r: save_config(self.config))
+
+        self._motion_readiness_controls_widgets = {
+            'relaxed_confidence': relaxed_conf_slider,
+            'stroke_ready_grace_ms': grace_ms_slider,
+            'stroke_finish_beats': finish_spin,
+            'relax_phase1_gates': relax_phase1_cb,
+        }
+        self._motion_readiness_dialog = dialog
 
         dialog.show()
         dialog.raise_()
@@ -6489,6 +6603,8 @@ Like the app?<br>
                 self.config.jitter.intensity = max(8.0, min(10.0, float(self.config.jitter.intensity)))
                 self.jitter_amplitude_slider.setValue(self.config.jitter.amplitude)
                 self.jitter_intensity_slider.setValue(self.config.jitter.intensity)
+                self.creep_enabled.setChecked(self.config.creep.enabled)
+                self.creep_speed_slider.setValue(max(0.0, min(2.0, float(self.config.creep.speed))))
 
                 # Axis weights tab
                 self.alpha_weight_slider.setValue(self.config.alpha_weight)
@@ -7558,8 +7674,8 @@ Like the app?<br>
             'jitter_enabled': self.jitter_enabled.isChecked(),
             'jitter_amplitude': self.jitter_amplitude_slider.value(),
             'jitter_intensity': self.jitter_intensity_slider.value(),
-            'creep_enabled': bool(getattr(self.config.creep, 'enabled', True)),
-            'creep_speed': float(getattr(self.config.creep, 'speed', 0.02)),
+            'creep_enabled': self.creep_enabled.isChecked(),
+            'creep_speed': self.creep_speed_slider.value(),
 
             # Axis Weights Tab
             'alpha_weight': self.alpha_weight_slider.value(),
@@ -7677,8 +7793,8 @@ Like the app?<br>
         self.jitter_enabled.setChecked(preset_data['jitter_enabled'])
         self.jitter_amplitude_slider.setValue(preset_data['jitter_amplitude'])
         self.jitter_intensity_slider.setValue(preset_data['jitter_intensity'])
-        self.config.creep.enabled = bool(preset_data.get('creep_enabled', getattr(self.config.creep, 'enabled', True)))
-        self.config.creep.speed = float(preset_data.get('creep_speed', getattr(self.config.creep, 'speed', 0.02)))
+        self.creep_enabled.setChecked(bool(preset_data.get('creep_enabled', getattr(self.config.creep, 'enabled', True))))
+        self.creep_speed_slider.setValue(float(preset_data.get('creep_speed', getattr(self.config.creep, 'speed', 0.02))))
         
         # Axis Weights Tab
         self.alpha_weight_slider.setValue(preset_data['alpha_weight'])
@@ -8810,6 +8926,16 @@ Like the app?<br>
         self.jitter_intensity_slider = SliderWithLabel("Circle Speed", 8.0, 10.0, jitter_speed_default)
         self.jitter_intensity_slider.valueChanged.connect(lambda v: setattr(self.config.jitter, 'intensity', v))
         effects_layout.addWidget(self.jitter_intensity_slider)
+
+        self.creep_enabled = QCheckBox("Creep")
+        self.creep_enabled.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
+        self.creep_enabled.stateChanged.connect(lambda s: setattr(self.config.creep, 'enabled', s == 2))
+        effects_layout.addWidget(self.creep_enabled)
+
+        creep_speed_default = max(0.0, min(2.0, float(getattr(self.config.creep, 'speed', 0.02))))
+        self.creep_speed_slider = SliderWithLabel("Creep Speed", 0.0, 2.0, creep_speed_default, 3)
+        self.creep_speed_slider.valueChanged.connect(lambda v: setattr(self.config.creep, 'speed', v))
+        effects_layout.addWidget(self.creep_speed_slider)
 
         layout.addWidget(effects_group)
 

@@ -213,8 +213,8 @@ class StrokeConfig:
     overall_amp_fill_target: float = 0.5
     overall_amp_fill_tolerance: float = 0.5
     downbeat_overall_amp_fill_required: float = 0.75
-    beat_overall_amp_fill_required: float = 0.90
-    syncopation_overall_amp_fill_required: float = 1.00
+    beat_overall_amp_fill_required: float = 0.70
+    syncopation_overall_amp_fill_required: float = 0.60
     overall_amp_fill_required_scale: float = 0.5
     overall_amp_fill_auto_enabled: bool = True
     overall_amp_fill_auto_target_pass_rate: float = 0.58
