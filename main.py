@@ -27,9 +27,9 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QCheckBox,
-    QSpinBox, QDoubleSpinBox, QLineEdit, QTabWidget, QFrame,
-    QGridLayout, QMenuBar, QMenu, QMessageBox, QFileDialog,
-    QSplashScreen, QScrollArea, QSplitter, QInputDialog, QSizePolicy
+    QSpinBox, QDoubleSpinBox, QLineEdit, QFrame,
+    QGridLayout, QMenuBar, QMenu, QMessageBox,
+    QSplashScreen, QScrollArea, QInputDialog, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QPixmap
@@ -484,49 +484,6 @@ class PositionCanvas(pg.PlotWidget):
         
         # Update position marker
         self.position_scatter.setData([x_display], [y_display])
-
-
-class PresetButton(QPushButton):
-    """Custom button that emits different signals for left-click (load) vs right-click (save)"""
-    
-    left_clicked = pyqtSignal()
-    right_clicked = pyqtSignal()
-    
-    def __init__(self, label: str):
-        super().__init__(label)
-        self.setFixedWidth(104)  # Fixed width for consistent layout even with custom names (1.6x wider for full text display)
-        self.has_preset = False
-        self.is_active = False
-        self._update_style()
-    
-    def set_has_preset(self, has: bool):
-        """Mark this button as having a saved preset"""
-        self.has_preset = has
-        self._update_style()
-    
-    def set_active(self, active: bool):
-        """Mark this button as the currently loaded preset"""
-        self.is_active = active
-        self._update_style()
-    
-    def _update_style(self):
-        """Update button appearance based on state"""
-        if self.is_active:
-            # Currently loaded preset - dark turquoise border
-            self.setStyleSheet("background-color: #2f5f5f; border: 2px solid #008b8b; font-weight: bold;")
-        elif self.has_preset:
-            # Has saved preset - subtle blue
-            self.setStyleSheet("background-color: #4a5a6a; font-weight: bold;")
-        else:
-            # Empty slot - dark default
-            self.setStyleSheet("background-color: #424242;")
-    
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.left_clicked.emit()
-        elif event.button() == Qt.MouseButton.RightButton:
-            self.right_clicked.emit()
-        super().mousePressEvent(event)
 
 
 class RangeSlider(QWidget):
@@ -1588,9 +1545,6 @@ class BREadbeatsWindow(QMainWindow):
         self._on_toggle_beat_band(False)
         self._on_toggle_depth_band(False)
         
-        # Load presets from disk
-        self._load_presets_from_disk()
-
         self._register_app_run_startup()
         self._schedule_startup_notices()
 
@@ -2040,11 +1994,7 @@ class BREadbeatsWindow(QMainWindow):
         top_layout.addWidget(self._create_control_panel())
         main_layout.addLayout(top_layout)
         
-        # Middle: Visualizers + fixed control rows above splitter handle, tabs below
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setChildrenCollapsible(False)
-
-        # Top half of splitter: Visualizers + locked rows (Main Controls / Presets)
+        # Middle: Visualizers + fixed main controls row
         top_pane = QWidget()
         top_pane_layout = QVBoxLayout(top_pane)
         top_pane_layout.setContentsMargins(0, 0, 0, 0)
@@ -2065,41 +2015,7 @@ class BREadbeatsWindow(QMainWindow):
         main_controls_layout.setContentsMargins(0, 0, 0, 0)
         main_controls_layout.addWidget(self._create_main_controls_panel())
         top_pane_layout.addWidget(main_controls_widget, stretch=0)
-
-        # Fixed row: Presets + projectM launcher (locked, never squishes)
-        bottom_widget = QWidget()
-        bottom_widget.setFixedHeight(64)
-        bottom_layout = QHBoxLayout(bottom_widget)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.addWidget(self._create_presets_panel())
-        bottom_layout.addStretch()
-
-        self.projectm_btn = QPushButton("Whip the Llama")
-        self.projectm_btn.setToolTip("Launch projectM music visualizer (if installed)")
-        self.projectm_btn.clicked.connect(self._on_launch_projectm)
-        self.projectm_btn.setMaximumWidth(120)
-        bottom_layout.addWidget(self.projectm_btn)
-        top_pane_layout.addWidget(bottom_widget, stretch=0)
-
-        splitter.addWidget(top_pane)
-
-        # Bottom half of splitter: tabs only (absorbs compression)
-        tabs_widget = QWidget()
-        tabs_widget.setMinimumHeight(60)
-        tabs_layout = QVBoxLayout(tabs_widget)
-        tabs_layout.setContentsMargins(0, 0, 0, 0)
-        tabs_layout.setSpacing(0)
-        legacy_hint_label = QLabel("drag up/resize window for V1 controls")
-        legacy_hint_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        legacy_hint_label.setStyleSheet("color: #aaa; font-size: 11px;")
-        tabs_layout.addWidget(legacy_hint_label)
-        tabs_layout.addWidget(self._create_settings_tabs())
-        splitter.addWidget(tabs_widget)
-
-        # Set initial splitter proportions (~70% top pane, ~30% tabs)
-        splitter.setStretchFactor(0, 5)
-        splitter.setStretchFactor(1, 2)
-        main_layout.addWidget(splitter, stretch=1)
+        main_layout.addWidget(top_pane, stretch=1)
     
     def _create_menu_bar(self):
         """Create menu bar with top-level menus for app controls, options, and help."""
@@ -2109,11 +2025,6 @@ class BREadbeatsWindow(QMainWindow):
         # Menu (main menu with preset load and About)
         main_menu = menubar.addMenu("Menu")
         assert main_menu is not None
-        
-        # Load Presets action
-        load_presets_action = main_menu.addAction("Load Presets...")
-        assert load_presets_action is not None
-        load_presets_action.triggered.connect(self._on_load_presets)
         
         # Separator
         main_menu.addSeparator()
@@ -4413,26 +4324,6 @@ class BREadbeatsWindow(QMainWindow):
         
         dialog.show()  # Use show() instead of exec() for non-modal
     
-    def _on_load_presets(self):
-        """Open file dialog to load a presets .json file"""
-        start_dir = self._get_external_data_start_dir()
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load Presets",
-            start_dir,
-            "JSON Files (*.json);;All Files (*)"
-        )
-        if file_path:
-            try:
-                with open(file_path, 'r') as f:
-                    import json
-                    data = json.load(f)
-                # Apply loaded presets to config
-                self._apply_preset_data(data)
-                print(f"[Config] Loaded presets from {file_path}")
-            except Exception as e:
-                QMessageBox.warning(self, "Load Error", f"Failed to load presets:\n{e}")
-
     def _get_external_data_start_dir(self) -> str:
         # ===== dBFS Fill Gate Mode Toggle =====
         fill_mode_info = QLabel(
@@ -5718,45 +5609,6 @@ Like the app?<br>
 
         return widget
     
-    def _create_settings_tabs(self) -> QTabWidget:
-        """Settings tabs with all the sliders"""
-        tabs = QTabWidget()
-        if self._beat_detection_popout_content is None:
-            self._beat_detection_popout_content = self._create_beat_detection_tab()
-        if self._pulse_settings_popout_content is None:
-            self._pulse_settings_popout_content = self._create_tcode_freq_tab()
-        self._tempo_tracking_popout_content = self._create_tempo_tracking_tab(include_advanced_controls=True, advanced_locked=True)
-        return tabs
-    
-    def _create_presets_panel(self) -> QGroupBox:
-        """Presets panel - always displayed below all tabs"""
-        group = QGroupBox("Presets")
-        layout = QHBoxLayout(group)
-        layout.setContentsMargins(5, 5, 5, 5)
-        
-        self.custom_beat_presets = {}
-        self.learned_profile_slots: dict[str, dict] = {}
-        self._revert_settings = None  # Stores settings before preset load for revert
-        self.preset_buttons = []
-        for i in range(5):
-            btn = PresetButton("empty")
-            btn.setToolTip("Reserved preset slot")
-            btn.setEnabled(False)
-            btn.set_has_preset(False)
-            btn.set_active(False)
-            self.preset_buttons.append(btn)
-            layout.addWidget(btn)
-        
-        # Revert button - restores settings from before last preset load
-        self.revert_btn = QPushButton("↩")  # Circular go-back arrow
-        self.revert_btn.setFixedWidth(52)  # Half width of preset buttons (104/2)
-        self.revert_btn.setToolTip("Preset slots are fixed and not user-configurable")
-        self.revert_btn.clicked.connect(self._revert_preset)
-        self.revert_btn.setEnabled(False)  # Disabled until a preset is loaded
-        layout.addWidget(self.revert_btn)
-        
-        return group
-
     def _create_main_controls_panel(self) -> QGroupBox:
         """Main stroke controls panel."""
         group = QGroupBox("Main Controls")
@@ -6086,11 +5938,12 @@ Like the app?<br>
         self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
         
         # Deactivate all preset buttons
-        for btn in self.preset_buttons:
+        for btn in getattr(self, 'preset_buttons', []):
             btn.set_active(False)
         
         # Disable revert button (already reverted)
-        self.revert_btn.setEnabled(False)
+        if hasattr(self, 'revert_btn'):
+            self.revert_btn.setEnabled(False)
         self._revert_settings = None
         
         print("[Config] Reverted to previous settings")
