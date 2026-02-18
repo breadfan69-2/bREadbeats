@@ -52,6 +52,8 @@ next_agent_motion_control_proposals_*.txt
 PORT_V1_STROKEMODES_PLAN.md
 chathistory.txt
 claude2.txt
+claude3.txt
+UI_LABEL_FRIENDLIFICATION.md
 build.log
 *finaldebug.txt
 scripts/*.beta.txt
