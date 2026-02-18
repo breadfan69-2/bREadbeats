@@ -25,6 +25,9 @@ class BeatDecision:
     radius_bloom: float
     silence_active: bool
     journey_completion: float
+    silence_fade: float = 1.0          # 1.0 = full volume, 0.0 = fully faded
+    post_silence_ramp: float = 1.0     # 1.0 = full volume, <1 = ramping back in
+    request_tempo_reset: bool = False  # edge-triggered: silence threshold crossed
 
 
 class BeatIntelligence:
@@ -83,11 +86,151 @@ class BeatIntelligence:
         # ── Phase 1: No-beat timeout (#4) ──
         self._no_beat_timeout_s: float = 2.0
 
+        # ── Phase 2: ReadinessState (#17) ──
+        self._stroke_ready: bool = False
+        self._stroke_ready_reason: str = "cold_start"
+        self._readiness_green_count: int = 0
+        self._readiness_yellow_count: int = 0
+        self._readiness_grace_until: float = 0.0
+        self._readiness_block_streak: int = 0
+        self._readiness_finish_beats_remaining: int = 0
+
+        # ── Phase 2: SilenceDecayState (#19) ──
+        self._silence_fade: float = 1.0            # 1.0 = full volume, 0.0 = muted
+        self._consecutive_silent_count: int = 0
+        self._silence_reset_armed: bool = False
+        self._silence_fade_rate: float = 0.02       # fade per frame (~60fps → ~0.8s full fade)
+        self._silence_reset_threshold_frames: int = 180  # ~3s at 60fps
+
+        # ── Phase 2: Post-silence ramp (#14) ──
+        self._post_silence_ramp_active: bool = False
+        self._post_silence_ramp_start: float = 0.0
+        self._was_silent: bool = False
+
     def set_audio_engine(self, audio_engine) -> None:
         self.audio_engine = audio_engine
 
     def set_park_y(self, park_y: float) -> None:
         self.park_y = 0.70 if park_y is None else float(park_y)
+
+    # ── Phase 2 §17: Readiness state machine ─────────────────────────
+
+    def _update_stroke_readiness(self, event: BeatEvent, now: float) -> bool:
+        """Evaluate stroke readiness with hysteresis and grace period.
+
+        Returns True if motion should be allowed.
+        Brief confidence dips don't kill motion; sustained loss does.
+        """
+        grace_ms = float(getattr(self.config.beat, "teaching_stroke_ready_grace_ms", 450.0) or 450.0)
+        _raw_finish = getattr(self.config.beat, "teaching_stroke_finish_beats", 4)
+        finish_beats = int(_raw_finish) if _raw_finish is not None else 4
+
+        # Raw readiness check (same logic as _tempo_ready_for_motion)
+        raw_ready = self._tempo_ready_for_motion(event)
+
+        if raw_ready:
+            self._readiness_green_count += 1
+            self._readiness_yellow_count = 0
+            self._readiness_block_streak = 0
+            self._readiness_grace_until = now + (grace_ms / 1000.0)
+            self._readiness_finish_beats_remaining = finish_beats
+
+            if self._readiness_green_count >= 1:
+                self._stroke_ready = True
+                self._stroke_ready_reason = "green"
+        else:
+            self._readiness_yellow_count += 1
+            self._readiness_green_count = 0
+
+            # Grace period: hold readiness through brief dips
+            if now < self._readiness_grace_until:
+                self._stroke_ready_reason = "grace"
+                # Still ready, but tick down finish beats on beat events
+                is_beat_event = bool(
+                    getattr(event, "is_beat", False)
+                    or getattr(event, "is_downbeat", False)
+                    or getattr(event, "is_syncopated", False)
+                )
+                if is_beat_event and self._readiness_finish_beats_remaining > 0:
+                    self._readiness_finish_beats_remaining -= 1
+            elif self._readiness_finish_beats_remaining > 0:
+                # Past grace but allow N more beat strokes
+                self._stroke_ready_reason = "finishing"
+                is_beat_event = bool(
+                    getattr(event, "is_beat", False)
+                    or getattr(event, "is_downbeat", False)
+                    or getattr(event, "is_syncopated", False)
+                )
+                if is_beat_event:
+                    self._readiness_finish_beats_remaining -= 1
+            else:
+                self._readiness_block_streak += 1
+                if self._readiness_block_streak >= 3:
+                    self._stroke_ready = False
+                    self._stroke_ready_reason = "blocked"
+
+        return self._stroke_ready
+
+    # ── Phase 2 §19: Silence fade-out tracker ────────────────────────
+
+    def _update_silence_fade(self, silence_active: bool, now: float) -> tuple[float, bool]:
+        """Track prolonged silence: emit fade scalar and tempo-reset request.
+
+        Returns (fade_scalar 0..1, request_tempo_reset bool).
+        """
+        request_reset = False
+
+        if silence_active:
+            self._consecutive_silent_count += 1
+            # Gradual fade
+            self._silence_fade = max(0.0, self._silence_fade - self._silence_fade_rate)
+            # Tempo reset after prolonged silence (once per silence episode)
+            if (self._consecutive_silent_count >= self._silence_reset_threshold_frames
+                    and not self._silence_reset_armed):
+                self._silence_reset_armed = True
+                request_reset = True
+        else:
+            if self._consecutive_silent_count > 0:
+                # Transition from silent → active
+                self._was_silent = True
+            self._consecutive_silent_count = 0
+            self._silence_reset_armed = False
+            # Restore fade (quick recovery)
+            self._silence_fade = min(1.0, self._silence_fade + self._silence_fade_rate * 3.0)
+
+        return float(self._silence_fade), request_reset
+
+    # ── Phase 2 §14: Post-silence volume ramp ────────────────────────
+
+    def _update_post_silence_ramp(self, silence_active: bool, now: float) -> float:
+        """Return volume multiplier for post-silence ramp-in.
+
+        When audio resumes after silence, start volume reduced and linearly
+        ramp back to 1.0 over configured duration.
+        """
+        reduction = float(getattr(self.config.stroke, "post_silence_vol_reduction", 0.15) or 0.15)
+        ramp_seconds = float(getattr(self.config.stroke, "post_silence_ramp_seconds", 3.0) or 3.0)
+        ramp_seconds = max(0.1, ramp_seconds)
+
+        if not silence_active and self._was_silent:
+            # Kick off ramp
+            self._post_silence_ramp_active = True
+            self._post_silence_ramp_start = now
+            self._was_silent = False
+
+        if self._post_silence_ramp_active:
+            elapsed = now - self._post_silence_ramp_start
+            if elapsed >= ramp_seconds:
+                self._post_silence_ramp_active = False
+                return 1.0
+            t = float(np.clip(elapsed / ramp_seconds, 0.0, 1.0))
+            return float((1.0 - reduction) + (reduction * t))
+
+        if silence_active:
+            self._was_silent = True
+            return 1.0  # fade tracker handles volume during silence
+
+        return 1.0
 
     # ── Phase 1 §2: FluxTracker ──────────────────────────────────────
 
@@ -471,6 +614,13 @@ class BeatIntelligence:
         if silence_override is not None:
             silence_active = bool(silence_override)
 
+        # Phase 2: silence fade + post-silence ramp
+        silence_fade, request_tempo_reset = self._update_silence_fade(silence_active, now)
+        post_silence_ramp = self._update_post_silence_ramp(silence_active, now)
+
+        # Phase 2: readiness state machine (replaces raw _tempo_ready_for_motion)
+        stroke_ready = self._update_stroke_readiness(event, now)
+
         raw_trigger_kind = self.classify_trigger(event)
         trigger_kind = raw_trigger_kind
 
@@ -489,7 +639,7 @@ class BeatIntelligence:
 
         # Tempo/bass/hierarchy gates apply to newly detected beat-family events.
         if raw_trigger_kind in ("syncopation", "beat", "downbeat") and not silence_active:
-            if not self._tempo_ready_for_motion(event):
+            if not stroke_ready:
                 trigger_kind = "creep"
             elif not self._strict_bass_motion_allowed(event, raw_trigger_kind):
                 trigger_kind = "creep"
@@ -527,4 +677,7 @@ class BeatIntelligence:
             radius_bloom=radius_bloom,
             silence_active=bool(silence_active),
             journey_completion=journey_completion,
+            silence_fade=float(silence_fade),
+            post_silence_ramp=float(post_silence_ramp),
+            request_tempo_reset=bool(request_tempo_reset),
         )

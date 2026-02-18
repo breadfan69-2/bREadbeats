@@ -134,9 +134,11 @@ class StrokeMapper:
         self._last_trigger_kind = decision.trigger_kind
 
         if decision.silence_active:
+            # Apply silence fade (gradual, not binary)
+            fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
             alpha = 0.0
             beta = self._park_y
-            volume = 0.0
+            volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
             self._last_journey_completion = 1.0
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
@@ -161,7 +163,9 @@ class StrokeMapper:
 
             alpha = float(radius * np.sin(angle))
             beta = float(center_offset_y + (radius * np.cos(angle)))
-            volume = float(np.clip(self.get_volume(), 0.0, 1.0))
+            # Apply post-silence ramp to volume
+            ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+            volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
 
             self._last_journey_completion = progress
 
