@@ -150,6 +150,15 @@ class StrokeConfig:
     geometry_y_offset: float = 0.50  # Below-center rest Y offset used when intensity is near 0
     geometry_sink_start_intensity: float = 0.25  # Intensity where sink-to-rest lerp begins
 
+    # Beat-type-specific orbital geometry: each type blooms from a different center
+    # All park at (0, 0.70) and bloom to max (0, 1.0), but with different radius ranges
+    orbit_geometry: dict = field(default_factory=lambda: {
+        "downbeat": {"center_y": 0.3, "park_radius": 0.40, "max_radius": 0.70},
+        "beat": {"center_y": 0.1, "park_radius": 0.60, "max_radius": 0.90},
+        "syncopation": {"center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0},
+        "creep": {"center_y": 0.4, "park_radius": 0.30, "max_radius": 0.60},
+    })
+
     # Rhythmic phrasing: explode on solid beats, then return to park on-beat.
     rhythmic_phrasing_enabled: bool = True
     rhythmic_phrase_min_intensity: float = 0.18

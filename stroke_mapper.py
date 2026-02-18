@@ -55,6 +55,7 @@ class StrokeMapper:
         self._active_interval_beats = 8
         self._last_trigger_kind = "creep"
         self._park_radius = 0.70
+        self._max_radius = 1.0
         self._park_angle = 0.0
         self._journey_start_angle = self._park_angle
         self._journey_total_rotation = float(2.0 * np.pi)
@@ -174,18 +175,26 @@ class StrokeMapper:
         if decision.silence_active:
             # Apply silence fade (gradual, not binary) with radius exhale.
             # Do NOT hard-snap back to park on silence entry.
+            # Use geometry from last active trigger kind
+            geom = self.config.stroke.orbit_geometry.get(self._last_trigger_kind, {
+                "center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0
+            })
+            type_park_radius = float(geom["park_radius"])
+            type_max_radius = float(geom["max_radius"])
+            type_center_y = float(geom["center_y"])
+
             fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
             self._orbit_phase = float(self._park_angle)
             self._last_phase_for_velocity = self._orbit_phase
             self._angular_velocity = 0.0
 
-            held_radius = float(np.clip(max(self._actual_radius, self._radius_hold_value), self._park_radius, 1.0))
-            target_radius = float(self._park_radius + ((held_radius - self._park_radius) * fade))
+            held_radius = float(np.clip(max(self._actual_radius, self._radius_hold_value), type_park_radius, type_max_radius))
+            target_radius = float(type_park_radius + ((held_radius - type_park_radius) * fade))
             self._actual_radius += 0.08 * (target_radius - self._actual_radius)
-            radius = float(np.clip(self._actual_radius, self._park_radius, 1.0))
+            radius = float(np.clip(self._actual_radius, type_park_radius, type_max_radius))
 
             alpha = 0.0
-            beta = float(self._park_y + (radius - self._park_radius))
+            beta = float(type_center_y + (radius * np.cos(0.0)))
             volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
             self._last_journey_completion = 1.0
         else:
@@ -196,21 +205,28 @@ class StrokeMapper:
             )
 
             if creep_motion_disabled:
+                # Creep disabled: use creep geometry to park
+                geom = self.config.stroke.orbit_geometry.get("creep", {
+                    "center_y": 0.4, "park_radius": 0.30, "max_radius": 0.60
+                })
+                type_park_radius = float(geom["park_radius"])
+                type_max_radius = float(geom["max_radius"])
+                type_center_y = float(geom["center_y"])
+
                 self._settle_active = False
                 if not self._radius_hold_active:
                     self._radius_hold_active = True
                     self._radius_hold_start_time = now
-                    self._radius_hold_value = float(np.clip(self._actual_radius, self._park_radius, 1.0))
+                    self._radius_hold_value = type_park_radius
+                    self._actual_radius = type_park_radius  # Snap to park immediately
                 self._orbit_phase = float(self._park_angle)
                 self._last_phase_for_velocity = self._orbit_phase
                 self._angular_velocity = 0.0
 
-                target_radius = float(np.clip(self._radius_hold_value, self._park_radius, 1.0))
-                self._actual_radius += 0.08 * (target_radius - self._actual_radius)
-                radius = float(np.clip(self._actual_radius, self._park_radius, 1.0))
+                radius = type_park_radius  # Park at type-specific radius
 
                 alpha = 0.0
-                beta = float(self._park_y + (radius - self._park_radius))
+                beta = float(type_center_y + (radius * np.cos(0.0)))
                 jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
                 alpha += jitter_alpha
                 beta += jitter_beta
@@ -233,19 +249,30 @@ class StrokeMapper:
                         interval_beats=decision.interval_beats,
                     )
 
+                # Get beat-type-specific orbit geometry
+                geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
+                    "center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0
+                })
+                type_park_radius = float(geom["park_radius"])
+                type_max_radius = float(geom["max_radius"])
+                type_center_y = float(geom["center_y"])
+
                 learning_mult = 1.0
                 if decision.learning.active:
                     learning_mult = float(np.clip(decision.learning.radius_mult, 0.3, 2.5))
 
-                bloom_delta = float(max(0.0, decision.radius_bloom - self._park_radius))
-                bloom_target_radius = float(self._park_radius + (bloom_delta * learning_mult))
-                bloom_target_radius = float(np.clip(bloom_target_radius, self._park_radius, 1.0))
+                # Map global radius_bloom (0.70→1.0) to type-specific range (park→max)
+                normalized_bloom = float(np.clip((decision.radius_bloom - 0.70) / 0.30, 0.0, 1.0))
+                type_bloom = float(type_park_radius + normalized_bloom * (type_max_radius - type_park_radius))
+                bloom_target_radius = float(type_park_radius + ((type_bloom - type_park_radius) * learning_mult))
+                bloom_target_radius = float(np.clip(bloom_target_radius, type_park_radius, type_max_radius))
 
                 if progress >= 1.0 and not started_new_journey:
                     if not self._radius_hold_active:
                         self._radius_hold_active = True
                         self._radius_hold_start_time = now
-                        self._radius_hold_value = float(np.clip(max(self._actual_radius, bloom_target_radius), self._park_radius, 1.0))
+                        # Use bloom_target_radius directly - allows return to park for smaller beat types
+                        self._radius_hold_value = bloom_target_radius
                     # ── Elastic landing: damped harmonic settle ──
                     # Momentum carry-over from exit velocity drives overshoot;
                     # damped oscillation creates one visible wobble then rest.
@@ -294,11 +321,11 @@ class StrokeMapper:
                 # Continuous "Smoooooth Arc": radius is independent of journey progress.
                 # Target radius follows music/learning; actual radius lerps via EMA.
                 if self._radius_hold_active:
-                    target_radius = float(np.clip(self._radius_hold_value, self._park_radius, 1.0))
+                    target_radius = float(np.clip(self._radius_hold_value, type_park_radius, type_max_radius))
                     radius_alpha = 0.12 if target_radius > self._actual_radius else 0.04
                 else:
                     if self._lazy_glide_active:
-                        target_radius = float(np.clip(max(self._actual_radius, bloom_target_radius), self._park_radius, 1.0))
+                        target_radius = float(np.clip(max(self._actual_radius, bloom_target_radius), type_park_radius, type_max_radius))
                         radius_alpha = 0.08 if target_radius > self._actual_radius else 0.01
                     else:
                         target_radius = bloom_target_radius
@@ -307,12 +334,16 @@ class StrokeMapper:
                         else:
                             radius_alpha = 0.02
                 self._actual_radius += radius_alpha * (target_radius - self._actual_radius)
-                radius = float(np.clip(self._actual_radius, self._park_radius, 1.0))
+                radius = float(np.clip(self._actual_radius, type_park_radius, type_max_radius))
 
-                center_offset_y = self._intelligence.compute_treble_lift(progress)
+                if decision.trigger_kind == "creep":
+                    treble_lift = self._intelligence.compute_treble_lift(progress)
+                else:
+                    treble_lift = 0.0
 
+                # Apply beat-type-specific orbital center
                 alpha = float(radius * np.sin(angle))
-                beta = float(center_offset_y + (radius * np.cos(angle)))
+                beta = float(type_center_y + treble_lift + (radius * np.cos(angle)))
 
                 if decision.trigger_kind == "creep":
                     jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)

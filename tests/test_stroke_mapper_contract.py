@@ -316,7 +316,8 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertIsNotNone(cmd)
         assert cmd is not None
         self.assertAlmostEqual(cmd.alpha, 0.0, places=6)
-        self.assertAlmostEqual(cmd.beta, mapper._park_y, places=6)
+        # Creep parks at center_y (0.4) + park_radius (0.30) = 0.70
+        self.assertAlmostEqual(cmd.beta, 0.70, places=6)
 
     def test_compute_landing_rotation_from_park_for_beat_is_non_zero(self):
         mapper = StrokeMapper(Config())
