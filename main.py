@@ -106,467 +106,6 @@ class SignalBridge(QObject):
     status_changed = pyqtSignal(str, bool)
 
 
-class MountainRangeCanvas(pg.PlotWidget):
-    """Mountain range spectrum visualizer - glowing blue filled peaks"""
-    
-    def __init__(self, parent=None, width=8, height=3):
-        super().__init__(parent)
-        
-        # Dark theme
-        self.setBackground('#0a0a12')
-        self.setMouseEnabled(x=False, y=False)
-        self.setMenuEnabled(False)
-        self.showGrid(x=False, y=False, alpha=0)
-        self.showAxis('left')
-        self.getAxis('left').setTextPen(pg.mkPen('#888888'))
-        self.getAxis('left').setTickPen(pg.mkPen('#666666'))
-        self.hideAxis('bottom')
-        
-        # Spectrum dimensions
-        self.num_bins = 256
-        self._display_floor_db = -72.0
-        self._display_ceil_db = 0.0
-        self._display_span = self._display_ceil_db - self._display_floor_db
-        
-        # Frequency values for x-axis (will be updated with sample rate)
-        self.freq_values = np.linspace(0, self.num_bins, self.num_bins)
-        
-        # Set view range (left margin includes peak indicator bars at negative X)
-        self.setXRange(-16, self.num_bins)
-        self.setYRange(0, self._display_span)
-
-        self._carrier_label_y = self._display_span * 0.73
-        self._pulse_label_y = self._display_span * 0.81
-        self._depth_label_y = self._display_span * 0.89
-        self._beat_label_y = self._display_span * 0.97
-        
-        # Main spectrum curve (mountain peaks) - cyan fill with bright outline
-        self.spectrum_curve = pg.PlotCurveItem(
-            pen=pg.mkPen(QColor(100, 200, 255, 255), width=2),  # Bright cyan outline
-            fillLevel=0,
-            brush=pg.mkBrush(QColor(0, 120, 200, 120))  # Semi-transparent cyan fill
-        )
-        self.addItem(self.spectrum_curve)
-        
-        # Glow effect - slightly larger, more transparent version behind
-        self.glow_curve = pg.PlotCurveItem(
-            pen=pg.mkPen(QColor(0, 150, 255, 80), width=6),
-            fillLevel=0,
-            brush=pg.mkBrush(QColor(0, 80, 180, 40))
-        )
-        self.addItem(self.glow_curve)
-        self.glow_curve.setZValue(-1)  # Behind the main curve
-        
-        # Peak markers for beat detection visualization
-        self.peak_scatter = pg.ScatterPlotItem(
-            pen=pg.mkPen(None),
-            brush=pg.mkBrush(255, 255, 255, 200),
-            size=6
-        )
-        self.addItem(self.peak_scatter)
-        
-        # 4 Frequency band indicators (vertical regions with different heights)
-        # Band heights: beat=100%, stroke=92%, pulse=84%, carrier=76%
-        # Band 1: Beat Detection (red) - full height (tallest)
-        self.beat_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                              brush=pg.mkBrush(255, 50, 50, 40),
-                                              pen=pg.mkPen('#FF3232', width=1),
-                                              movable=True, span=(0, 1.0))
-        self.beat_band.setBounds([0, self.num_bins])
-        self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
-        self.addItem(self.beat_band)
-        
-        # Band 2: Stroke Depth (green) - 92% height
-        self.depth_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                               brush=pg.mkBrush(50, 255, 50, 35),
-                                               pen=pg.mkPen('#32FF32', width=1),
-                                               movable=True, span=(0, 0.92))
-        self.depth_band.setBounds([0, self.num_bins])
-        self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
-        self.addItem(self.depth_band)
-        
-        # Band 3: Pulse/P0 TCode (blue) - 84% height
-        self.p0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                            brush=pg.mkBrush(50, 100, 255, 35),
-                                            pen=pg.mkPen('#3264FF', width=1),
-                                            movable=True, span=(0, 0.84))
-        self.p0_band.setBounds([0, self.num_bins])
-        self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
-        self.addItem(self.p0_band)
-        
-        # Band 4: Carrier/F0 TCode (cyan) - 76% height (shortest)
-        self.f0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                            brush=pg.mkBrush(0, 200, 255, 35),
-                                            pen=pg.mkPen('#00C8FF', width=1),
-                                            movable=True, span=(0, 0.76))
-        self.f0_band.setBounds([0, self.num_bins])
-        self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
-        self.addItem(self.f0_band)
-        
-        # Labels placed at top of each respective band
-        # Each label sits just inside the upper limit of its own box
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, self._carrier_label_y)
-        self.addItem(self.carrier_label)
-        
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, self._pulse_label_y)
-        self.addItem(self.pulse_label)
-        
-        self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
-        self.depth_label.setPos(5, self._depth_label_y)
-        self.addItem(self.depth_label)
-        
-        self.beat_label = pg.TextItem("beat", color='#FF3232', anchor=(0.5, 1))
-        self.beat_label.setPos(5, self._beat_label_y)
-        self.addItem(self.beat_label)
-        
-        # Reference to parent window
-        self.parent_window = parent
-        self.sample_rate = 44100
-        self._fft_bins = 513  # Default for 1024 FFT; updated on first spectrum
-        self._updating = False
-        
-        # Peak indicator vertical bars on left side (3 thin bars: actual peak, peak floor, peak decay)
-        # These are positioned at negative X to be off to the left of the main spectrum display
-        bar_width = 4.4  # Width of each bar (10% wider for parity)
-        bar_spacing = 0.8  # Gap between bars
-        bar_x_start = -15.0  # Start position (leftmost bar)
-        
-        # Bar 1: Actual Peak (green) - current band energy level
-        self.peak_actual_bar = pg.BarGraphItem(
-            x=[bar_x_start],
-            y0=[0],
-            height=[0],
-            width=bar_width,
-            brush='#00FF00'  # Green
-        )
-        self.addItem(self.peak_actual_bar)
-        
-        # Bar 2: Peak Floor (yellow) - threshold setting
-        self.peak_floor_bar = pg.BarGraphItem(
-            x=[bar_x_start + bar_width + bar_spacing],
-            y0=[0],
-            height=[0],
-            width=bar_width,
-            brush='#FFD700'  # Gold/Yellow
-        )
-        self.addItem(self.peak_floor_bar)
-        
-        # Bar 3: Peak Decay (orange) - decayed peak tracker
-        self.peak_decay_bar = pg.BarGraphItem(
-            x=[bar_x_start + 2 * (bar_width + bar_spacing)],
-            y0=[0],
-            height=[0],
-            width=bar_width,
-            brush='#FF8C00'  # Dark orange
-        )
-        self.addItem(self.peak_decay_bar)
-        
-        # Store bar x positions for updates
-        self._bar_x_actual = bar_x_start
-        self._bar_x_floor = bar_x_start + bar_width + bar_spacing
-        self._bar_x_decay = bar_x_start + 2 * (bar_width + bar_spacing)
-        self._bar_width = bar_width
-        
-        # Smoothing buffer for smoother animation
-        self._smooth_spectrum = np.full(self.num_bins, -120.0)
-        self._smoothing = 0.3  # 0 = no smoothing, 1 = max smoothing
-
-        # Temporary horizontal reference overlays (slider-guides)
-        self._reference_overlays: dict[str, dict] = {}
-        self._reference_fade_timer = QTimer(self)
-        self._reference_fade_timer.setInterval(80)
-        self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
-
-    def _db_to_display(self, db_value: float) -> float:
-        """Map dB value into the canvas display range."""
-        return float(np.clip(db_value - self._display_floor_db, 0.0, self._display_span))
-
-    def _threshold_to_display(self, value: float) -> float:
-        """Map positive threshold-like values into display Y using dB mapping."""
-        threshold_db = float(np.clip(20.0 * np.log10(max(float(value), 1e-6)), -120.0, 0.0))
-        return self._db_to_display(threshold_db)
-
-    def show_reference_line(self, key: str, value: float, label: str, color: str = '#FF66AA', duration_s: float = 10.0, dashed: bool = False) -> None:
-        """Show or refresh a temporary horizontal guide line that fades out."""
-        y = self._threshold_to_display(value)
-        now = time.monotonic()
-
-        overlay = self._reference_overlays.get(key)
-        if overlay is None:
-            qcolor = QColor(color)
-            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
-            line = pg.InfiniteLine(pos=y, angle=0, movable=False, pen=pen)
-            line.setZValue(20)
-            self.addItem(line)
-
-            text = pg.TextItem("", color=qcolor, anchor=(1.0, 0.0))
-            text.setZValue(21)
-            self.addItem(text)
-
-            overlay = {
-                'line': line,
-                'text': text,
-                'color': qcolor,
-                'dashed': bool(dashed),
-                'started_at': now,
-                'duration_s': float(max(0.5, duration_s)),
-            }
-            self._reference_overlays[key] = overlay
-
-        overlay['started_at'] = now
-        overlay['duration_s'] = float(max(0.5, duration_s))
-
-        line = overlay['line']
-        text = overlay['text']
-        line.setPos(y)
-        text.setPos(self.num_bins - 2, min(self._display_span - 0.5, y + 0.35))
-        text.setText(f"{label}: {float(value):.4f}")
-
-        full_color = QColor(overlay['color'])
-        full_color.setAlpha(210)
-        line.setPen(pg.mkPen(full_color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
-        text.setColor(full_color)
-
-        if not self._reference_fade_timer.isActive():
-            self._reference_fade_timer.start()
-
-    def _tick_reference_overlays(self) -> None:
-        """Fade and remove expired reference overlays."""
-        if not self._reference_overlays:
-            self._reference_fade_timer.stop()
-            return
-
-        now = time.monotonic()
-        expired: list[str] = []
-
-        for key, overlay in self._reference_overlays.items():
-            age = now - float(overlay['started_at'])
-            duration_s = float(overlay['duration_s'])
-            if age >= duration_s:
-                self.removeItem(overlay['line'])
-                self.removeItem(overlay['text'])
-                expired.append(key)
-                continue
-
-            fade = max(0.0, 1.0 - (age / duration_s))
-            alpha = int(210 * fade)
-            qcolor = QColor(overlay['color'])
-            qcolor.setAlpha(alpha)
-            overlay['line'].setPen(pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
-            overlay['text'].setColor(qcolor)
-
-        for key in expired:
-            self._reference_overlays.pop(key, None)
-
-        if not self._reference_overlays:
-            self._reference_fade_timer.stop()
-        
-    def _hz_to_bin(self, hz: float) -> float:
-        """Convert Hz to log-spaced bin index"""
-        nyquist = self.sample_rate / 2
-        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
-        linear_idx = max(1.0, (hz / nyquist) * (n - 1))
-        log_max = np.log10(n - 1)
-        return (np.log10(linear_idx) / log_max) * self.num_bins if log_max > 0 else 0.0
-    
-    def _bin_to_hz(self, bin_idx: float) -> float:
-        """Convert log-spaced bin index to Hz"""
-        nyquist = self.sample_rate / 2
-        n = self._fft_bins if hasattr(self, '_fft_bins') and self._fft_bins > 1 else self.num_bins
-        log_max = np.log10(n - 1)
-        linear_idx = 10 ** ((bin_idx / self.num_bins) * log_max) if log_max > 0 else bin_idx
-        return (linear_idx / (n - 1)) * nyquist
-        
-    def _on_beat_band_changed(self):
-        if self._updating:
-            return
-        region = self.beat_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'freq_range_slider'):
-            self._updating = True
-            self.parent_window.freq_range_slider.setLow(int(low_hz))
-            self.parent_window.freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.beat_label.setPos(center_bin, self._beat_label_y)
-    
-    def _on_depth_band_changed(self):
-        if self._updating:
-            return
-        region = self.depth_band.getRegion()
-        center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.depth_label.setPos(center_bin, self._depth_label_y)
-    
-    def _on_p0_band_changed(self):
-        if self._updating:
-            return
-        region = self.p0_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'pulse_freq_range_slider'):
-            self._updating = True
-            self.parent_window.pulse_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.pulse_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.pulse_label.setPos(center_bin, self._pulse_label_y)
-    
-    def _on_f0_band_changed(self):
-        if self._updating:
-            return
-        region = self.f0_band.getRegion()
-        low_hz = self._bin_to_hz(float(region[0]))  # type: ignore
-        high_hz = self._bin_to_hz(float(region[1]))  # type: ignore
-        if self.parent_window and hasattr(self.parent_window, 'f0_freq_range_slider'):
-            self._updating = True
-            self.parent_window.f0_freq_range_slider.setLow(int(low_hz))
-            self.parent_window.f0_freq_range_slider.setHigh(int(high_hz))
-            self._updating = False
-        center_bin = (region[0] + region[1]) / 2  # type: ignore
-        self.carrier_label.setPos(center_bin, self._carrier_label_y)
-    
-    def set_sample_rate(self, sr: int):
-        self.sample_rate = sr
-    
-    def set_frequency_band(self, low_norm: float, high_norm: float):
-        self._updating = True
-        nyquist = self.sample_rate / 2
-        low_bin = self._hz_to_bin(low_norm * nyquist)
-        high_bin = self._hz_to_bin(high_norm * nyquist)
-        self.beat_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.beat_label.setPos(center_bin, self._beat_label_y)
-        self._updating = False
-    
-    def set_depth_band(self, low_hz: float, high_hz: float):
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.depth_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.depth_label.setPos(center_bin, self._depth_label_y)
-        self._updating = False
-    
-    def set_p0_band(self, low_hz: float, high_hz: float):
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.p0_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.pulse_label.setPos(center_bin, self._pulse_label_y)
-        self._updating = False
-    
-    def set_f0_band(self, low_hz: float, high_hz: float):
-        self._updating = True
-        low_bin = self._hz_to_bin(low_hz)
-        high_bin = self._hz_to_bin(high_hz)
-        self.f0_band.setRegion((low_bin, high_bin))
-        center_bin = (low_bin + high_bin) / 2
-        self.carrier_label.setPos(center_bin, self._carrier_label_y)
-        self._updating = False
-    
-    def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Update peak indicator bars - actual peak and peak decay (tracked peak)"""
-        peak_db = float(np.clip(20 * np.log10(max(peak_value, 1e-6)), -120, 0))
-        flux_db = float(np.clip(20 * np.log10(max(flux_value, 1e-6)), -120, 0))
-        peak_h = self._db_to_display(peak_db)
-        flux_h = self._db_to_display(flux_db)
-        if hasattr(self, 'peak_actual_bar'):
-            # Update actual peak bar (green) - current band energy level
-            self.peak_actual_bar.setOpts(y0=[0], height=[peak_h])
-        if hasattr(self, 'peak_decay_bar'):
-            # Update peak decay bar (orange) - this shows the decayed/tracked peak
-            # flux_value here represents the tracked/decayed peak from audio engine
-            self.peak_decay_bar.setOpts(y0=[0], height=[flux_h])
-    
-    def set_peak_floor(self, peak_floor: float):
-        """Update peak floor bar height"""
-        if hasattr(self, 'peak_floor_bar'):
-            peak_floor_db = float(np.clip(20 * np.log10(max(peak_floor, 1e-6)), -120, 0))
-            self.peak_floor_bar.setOpts(y0=[0], height=[self._db_to_display(peak_floor_db)])
-    
-    def set_peak_indicators_visible(self, visible: bool):
-        """Show or hide peak indicator bars (peak_actual, peak_floor, peak_decay)"""
-        if hasattr(self, 'peak_actual_bar'):
-            self.peak_actual_bar.setVisible(visible)
-        if hasattr(self, 'peak_floor_bar'):
-            self.peak_floor_bar.setVisible(visible)
-        if hasattr(self, 'peak_decay_bar'):
-            self.peak_decay_bar.setVisible(visible)
-
-    def set_range_indicators_visible(self, visible: bool):
-        """Show or hide frequency range band indicators and labels"""
-        self.beat_band.setVisible(visible)
-        self.depth_band.setVisible(visible)
-        self.p0_band.setVisible(visible)
-        self.f0_band.setVisible(visible)
-        self.beat_label.setVisible(visible)
-        self.depth_label.setVisible(visible)
-        self.pulse_label.setVisible(visible)
-        self.carrier_label.setVisible(visible)
-        
-    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
-        """Update mountain range with new spectrum data"""
-        if spectrum is None or len(spectrum) == 0:
-            return
-        
-        # Cut off at Nyquist (22050 Hz at 44.1kHz sample rate)
-        cutoff_hz = 22050
-        nyquist = self.sample_rate / 2
-        cutoff_idx = int((cutoff_hz / nyquist) * len(spectrum))
-        spectrum = spectrum[:cutoff_idx]
-            
-        # Track source FFT size for hz/bin conversions
-        self._fft_bins = len(spectrum)
-        # Resample to num_bins using log-frequency spacing
-        n = len(spectrum)
-        if n > 1:
-            x_old = np.arange(n)
-            x_new = np.logspace(0, np.log10(n - 1), self.num_bins)
-            x_new = np.clip(x_new, 0, n - 1)
-            spectrum = np.interp(x_new, x_old, spectrum)
-        elif len(spectrum) != self.num_bins:
-            x_old = np.linspace(0, 1, n)
-            x_new = np.linspace(0, 1, self.num_bins)
-            spectrum = np.interp(x_new, x_old, spectrum)
-        
-        # Convert magnitude to dB for display
-        spectrum = 20 * np.log10(spectrum + 1e-6)
-        
-        # Smooth the spectrum for less jittery animation
-        self._smooth_spectrum = self._smoothing * self._smooth_spectrum + (1 - self._smoothing) * spectrum
-        
-        # Update curves (display domain: 0 = floor dB at bottom, span = 0 dB near top)
-        display_spectrum = np.clip(self._smooth_spectrum - self._display_floor_db, 0.0, self._display_span)
-        x = np.arange(self.num_bins)
-        self.spectrum_curve.setData(x, display_spectrum)
-        self.glow_curve.setData(x, np.clip(self._smooth_spectrum + 1.5 - self._display_floor_db, 0.0, self._display_span))
-        
-        # Find and mark peaks (local maxima above threshold)
-        if peak_energy and peak_energy > 0.3:
-            peaks = []
-            peak_vals = []
-            for i in range(2, self.num_bins - 2):
-                if (self._smooth_spectrum[i] > self._smooth_spectrum[i-1] and 
-                    self._smooth_spectrum[i] > self._smooth_spectrum[i+1] and
-                    self._smooth_spectrum[i] > -40):
-                    peaks.append(i)
-                    peak_vals.append(self._db_to_display(float(self._smooth_spectrum[i])))
-            if peaks:
-                self.peak_scatter.setData(peaks, peak_vals)
-            else:
-                self.peak_scatter.setData([], [])
-        else:
-            self.peak_scatter.setData([], [])
-        
-        # Update peak tracker line with current peak energy
-        if peak_energy is not None:
-            self.set_peak_and_flux(peak_energy, spectral_flux or 0.0)
-
-
 class FFTBinBarGraphCanvas(pg.PlotWidget):
     """Exact FFT-bin bar graph visualizer (one bar per incoming FFT bin)."""
 
@@ -596,338 +135,6 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
         self._ghost_overlays: dict[str, dict] = {}
         self._ghost_timer = QTimer(self)
         self._ghost_timer.setInterval(80)
-        self._ghost_timer.timeout.connect(self._tick_ghosts)
-
-        self.setXRange(0, 1)
-        self.setYRange(self._display_floor_db, self._display_ceil_db)
-
-    def _ensure_bars(self, count: int):
-        """Rebuild bars when FFT-bin count changes."""
-        count = max(1, int(count))
-        if count == self._bar_count and self._bar_item is not None:
-            return
-
-        if self._bar_item is not None:
-            self.removeItem(self._bar_item)
-
-        self._bar_count = count
-        self._bar_x = np.arange(count, dtype=np.float32)
-        self._bar_floor = np.full(count, self._display_floor_db, dtype=np.float32)
-        heights = np.zeros(count, dtype=np.float32)
-
-        self._bar_item = pg.BarGraphItem(
-            x=self._bar_x,
-            y0=self._bar_floor,
-            height=heights,
-            width=0.9,
-            brush=pg.mkBrush(90, 200, 255, 180),
-            pen=pg.mkPen(120, 230, 255, 180),
-        )
-        self.addItem(self._bar_item)
-        self.setXRange(-0.5, count - 0.5)
-
-    def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Compatibility no-op for shared visualizer interfaces."""
-        pass
-
-    def set_peak_indicators_visible(self, visible: bool):
-        """Compatibility no-op for shared visualizer interfaces."""
-        pass
-
-    def set_range_indicators_visible(self, visible: bool):
-        """Compatibility no-op for shared visualizer interfaces."""
-        pass
-
-    def update_from_spectrum(self, spectrum: np.ndarray, sample_rate: int):
-        """Render exact incoming FFT bins without bin interpolation/merging."""
-        if spectrum is None:
-            return
-
-        arr = np.asarray(spectrum, dtype=np.float32)
-        if arr.size == 0:
-            return
-
-        self._ensure_bars(arr.size)
-        bin_width_hz = float(sample_rate) / float(max(1, (arr.size - 1) * 2))
-        self.getAxis('bottom').setLabel('FFT Bin', units=f'Δf={bin_width_hz:.2f}Hz')
-
-        db_values = 20.0 * np.log10(np.maximum(arr, 1e-12))
-        self._latest_peak_db = float(np.max(db_values)) if db_values.size > 0 else self._display_floor_db
-        db_values = np.clip(db_values, self._display_floor_db, self._display_ceil_db)
-        heights = db_values - self._display_floor_db
-
-        if self._bar_item is not None:
-            self._bar_item.setOpts(height=heights, y0=self._bar_floor)
-
-    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
-        """Compatibility wrapper for callers that use update_spectrum."""
-        self.update_from_spectrum(spectrum, 44100)
-
-    def show_fill_ratio_ghost(self, key: str, ratio: float, label: str, color: str = '#66E0FF', duration_s: float = 5.0, dashed: bool = True) -> None:
-        """Show temporary dB-threshold line from fill ratio using live FFT peak reference."""
-        ratio_clamped = float(np.clip(ratio, 0.0, 1.0))
-        peak_db = float(np.clip(self._latest_peak_db, self._display_floor_db, self._display_ceil_db))
-        threshold_db = peak_db + (20.0 * np.log10(max(ratio_clamped, 1e-6)))
-        threshold_db = float(np.clip(threshold_db, self._display_floor_db, self._display_ceil_db))
-        self._show_ghost(
-            key=key,
-            label=f"{label}: {ratio_clamped:.3f} (~{threshold_db:.1f} dB)",
-            color=color,
-            duration_s=duration_s,
-            dashed=dashed,
-            mode='line',
-            y=threshold_db,
-        )
-
-    def show_bin_range_ghost(self, key: str, low_bin: int, high_bin: int, label: str, color: str = '#FFFFFF', duration_s: float = 5.0, dashed: bool = False) -> None:
-        """Show temporary FFT-bin range box aligned to real bin indices."""
-        if self._bar_count <= 0:
-            return
-        lo = int(np.clip(min(low_bin, high_bin), 0, self._bar_count - 1))
-        hi = int(np.clip(max(low_bin, high_bin), 0, self._bar_count - 1))
-        self._show_ghost(
-            key=key,
-            label=f"{label}: bins {lo}-{hi}",
-            color=color,
-            duration_s=duration_s,
-            dashed=dashed,
-            mode='box',
-            x0=float(lo - 0.5),
-            x1=float(hi + 0.5),
-            y0=self._display_floor_db,
-            y1=self._display_ceil_db,
-        )
-
-    def _show_ghost(
-        self,
-        *,
-        key: str,
-        label: str,
-        color: str,
-        duration_s: float,
-        dashed: bool,
-        mode: str,
-        y: float | None = None,
-        x0: float | None = None,
-        x1: float | None = None,
-        y0: float | None = None,
-        y1: float | None = None,
-    ) -> None:
-        now = time.monotonic()
-        overlay = self._ghost_overlays.get(key)
-        if overlay is None:
-            qcolor = QColor(color)
-            line = pg.InfiniteLine(pos=0.0, angle=0, movable=False, pen=pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine)))
-            line.setZValue(30)
-            self.addItem(line)
-
-            text = pg.TextItem('', color=qcolor, anchor=(0.0, 1.0))
-            text.setZValue(31)
-            self.addItem(text)
-
-            box = pg.QtWidgets.QGraphicsRectItem()
-            box.setZValue(29)
-            self.addItem(box)
-            box.hide()
-
-            overlay = {
-                'line': line,
-                'text': text,
-                'box': box,
-                'color': qcolor,
-                'started_at': now,
-                'duration_s': float(max(0.5, duration_s)),
-            }
-            self._ghost_overlays[key] = overlay
-
-        overlay['started_at'] = now
-        overlay['duration_s'] = float(max(0.5, duration_s))
-        overlay['dashed'] = bool(dashed)
-        overlay['mode'] = mode
-
-        text_item = overlay['text']
-        line_item = overlay['line']
-        box_item = overlay['box']
-        text_item.setText(label)
-
-        if mode == 'line' and y is not None:
-            line_item.show()
-            line_item.setPos(float(y))
-            text_item.setPos(1.0, min(self._display_ceil_db - 0.5, float(y) + 0.8))
-            box_item.hide()
-            overlay['base_rect'] = None
-        elif mode == 'box' and None not in (x0, x1, y0, y1):
-            line_item.hide()
-            text_item.setPos(float(x0) + 0.25, self._display_ceil_db - 0.5)
-            overlay['base_rect'] = QRectF(
-                min(float(x0), float(x1)),
-                min(float(y0), float(y1)),
-                max(0.001, abs(float(x1) - float(x0))),
-                max(0.2, abs(float(y1) - float(y0))),
-            )
-            box_item.show()
-
-        self._apply_ghost_style(overlay, 0.0)
-        if not self._ghost_timer.isActive():
-            self._ghost_timer.start()
-
-    def _apply_ghost_style(self, overlay: dict, progress: float) -> None:
-        eased = float(np.clip(progress, 0.0, 1.0))
-        alpha = max(0, min(230, int(230 * (1.0 - eased))))
-
-        color = QColor(overlay['color'])
-        color.setAlpha(alpha)
-        line = overlay['line']
-        line.setPen(pg.mkPen(color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)))
-        overlay['text'].setColor(color)
-
-        base_rect = overlay.get('base_rect')
-        box = overlay.get('box')
-        if base_rect is not None and box is not None and box.isVisible():
-            box.setRect(base_rect)
-            pen = QPen(color)
-            pen.setWidthF(0.9)
-            pen.setCosmetic(True)
-            pen.setStyle(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine)
-            box.setPen(pen)
-            box.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-
-    def _tick_ghosts(self) -> None:
-        if not self._ghost_overlays:
-            self._ghost_timer.stop()
-            return
-
-        now = time.monotonic()
-        expired: list[str] = []
-        for key, overlay in list(self._ghost_overlays.items()):
-            elapsed = max(0.0, now - float(overlay.get('started_at', now)))
-            duration = max(0.5, float(overlay.get('duration_s', 5.0)))
-            progress = elapsed / duration
-            if progress >= 1.0:
-                expired.append(key)
-                continue
-            self._apply_ghost_style(overlay, progress)
-
-        for key in expired:
-            overlay = self._ghost_overlays.pop(key, None)
-            if overlay is None:
-                continue
-            for item_key in ('line', 'text', 'box'):
-                item = overlay.get(item_key)
-                if item is not None:
-                    try:
-                        item.hide()
-                    except Exception:
-                        pass
-                    try:
-                        self.removeItem(item)
-                    except Exception:
-                        pass
-                    try:
-                        scene = item.scene()
-                        if scene is not None:
-                            scene.removeItem(item)
-                    except Exception:
-                        pass
-
-        if not self._ghost_overlays:
-            self._ghost_timer.stop()
-
-
-class PhosphorCanvas(pg.PlotWidget):
-    """Digital Phosphor FFT visualizer - persistence display with decay"""
-    
-    def __init__(self, parent=None, width=8, height=3):
-        super().__init__(parent)
-        
-        # Dark theme
-        self.setBackground('#0a0a12')
-        self.setMouseEnabled(x=False, y=False)
-        self.setMenuEnabled(False)
-        self.showGrid(x=False, y=False, alpha=0)
-        self.hideAxis('left')
-        self.hideAxis('bottom')
-        
-        # Phosphor dimensions
-        self.num_bins = 256  # Frequency bins (X axis)
-        self.num_mag_levels = 100  # Magnitude levels (Y axis)
-        
-        # Hitmap for phosphor persistence (mag_levels x freq_bins)
-        self.hitmap = np.zeros((self.num_mag_levels, self.num_bins), dtype=np.float32)
-        
-        # Create ImageItem for phosphor display
-        self.img_item = pg.ImageItem()
-        self.addItem(self.img_item)
-        
-        # Colormap: plasma-like (black -> purple -> orange -> yellow)
-        colors = [
-            (0, 0, 0),        # Black (no hits)
-            (20, 0, 40),      # Dark purple
-            (80, 0, 100),     # Purple
-            (150, 30, 80),    # Magenta
-            (200, 80, 30),    # Orange
-            (255, 180, 0),    # Yellow-orange
-            (255, 255, 100),  # Bright yellow (hottest)
-        ]
-        positions = [0.0, 0.1, 0.25, 0.4, 0.6, 0.8, 1.0]
-        self.colormap = pg.ColorMap(positions, colors)
-        lut = self.colormap.getLookupTable(0.0, 1.0, 256)
-        self.img_item.setLookupTable(lut)  # type: ignore
-        
-        # Set view range (left margin includes peak indicator bars at negative X)
-        self.setXRange(-19, self.num_bins)
-        self.setYRange(0, self.num_mag_levels)
-        
-        # Decay factor: lower = longer persistence
-        self.decay = 0.92
-        
-        # 4 Frequency band indicators (vertical regions with different heights)
-        # Band heights: beat=100%, stroke=92%, pulse=84%, carrier=76%
-        # Band 1: Beat Detection (red) - full height (tallest)
-        self.beat_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                              brush=pg.mkBrush(255, 50, 50, 40),
-                                              pen=pg.mkPen('#FF3232', width=1),
-                                              movable=True, span=(0, 1.0))
-        self.beat_band.setBounds([0, self.num_bins])
-        self.beat_band.sigRegionChanged.connect(self._on_beat_band_changed)
-        self.addItem(self.beat_band)
-        
-        # Band 2: Stroke Depth (green) - 92% height
-        self.depth_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                               brush=pg.mkBrush(50, 255, 50, 35),
-                                               pen=pg.mkPen('#32FF32', width=1),
-                                               movable=True, span=(0, 0.92))
-        self.depth_band.setBounds([0, self.num_bins])
-        self.depth_band.sigRegionChanged.connect(self._on_depth_band_changed)
-        self.addItem(self.depth_band)
-        
-        # Band 3: Pulse/P0 TCode (blue) - 84% height
-        self.p0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                            brush=pg.mkBrush(50, 100, 255, 35),
-                                            pen=pg.mkPen('#3264FF', width=1),
-                                            movable=True, span=(0, 0.84))
-        self.p0_band.setBounds([0, self.num_bins])
-        self.p0_band.sigRegionChanged.connect(self._on_p0_band_changed)
-        self.addItem(self.p0_band)
-        
-        # Band 4: Carrier/F0 TCode (cyan) - 76% height (shortest)
-        self.f0_band = pg.LinearRegionItem(values=(0, 128), orientation='vertical',
-                                            brush=pg.mkBrush(0, 200, 255, 35),
-                                            pen=pg.mkPen('#00C8FF', width=1),
-                                            movable=True, span=(0, 0.76))
-        self.f0_band.setBounds([0, self.num_bins])
-        self.f0_band.sigRegionChanged.connect(self._on_f0_band_changed)
-        self.addItem(self.f0_band)
-        
-        # Labels placed at top of each respective band
-        # Each label sits just inside the upper limit of its own box
-        self.carrier_label = pg.TextItem("carrier", color='#00C8FF', anchor=(0.5, 1))
-        self.carrier_label.setPos(5, self.num_mag_levels * 0.73)
-        self.addItem(self.carrier_label)
-        
-        self.pulse_label = pg.TextItem("pulse", color='#3264FF', anchor=(0.5, 1))
-        self.pulse_label.setPos(5, self.num_mag_levels * 0.81)
-        self.addItem(self.pulse_label)
         
         self.depth_label = pg.TextItem("stroke", color='#32FF32', anchor=(0.5, 1))
         self.depth_label.setPos(5, self.num_mag_levels * 0.89)
@@ -2991,8 +2198,8 @@ class BREadbeatsWindow(QMainWindow):
         # Spectrum visualizer type submenu
         viz_menu = options_menu.addMenu("Spectrum Type")
         assert viz_menu is not None
-        viz_names = ["Mountain Range", "Phosphor", "Waveform", "Freq dB", "FFT Bins (Exact)"]
-        default_viz_index = 2  # Waveform
+        viz_names = ["Waveform", "Freq dB", "FFT Bins (Exact)"]
+        default_viz_index = 0  # Waveform
         self.visualizer_type_combo = QComboBox()  # Hidden combo for state tracking
         self.visualizer_type_combo.addItems(viz_names)
         self.visualizer_type_combo.setCurrentIndex(default_viz_index)
@@ -4572,16 +3779,6 @@ class BREadbeatsWindow(QMainWindow):
                 setattr(self.config.stroke, attr_name, value)
                 resolved = ghost_value_resolver(value) if callable(ghost_value_resolver) else value
                 ghost_value = self.freqdb_canvas._as_float(resolved, value) if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, '_as_float') else float(value)
-                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None:
-                    self.mountain_canvas.show_reference_line(
-                        ref_key,
-                        ghost_value,
-                        ref_label,
-                        color=ref_color,
-                        duration_s=15.0,
-                        dashed=dashed,
-                    )
-
                 if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
                     self.freqdb_canvas.show_flux_ghost(
                         ref_key,
@@ -4617,16 +3814,6 @@ class BREadbeatsWindow(QMainWindow):
             def _handler(v: float):
                 value = float(v)
                 setattr(self.config.beat, attr_name, value)
-                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None:
-                    self.mountain_canvas.show_reference_line(
-                        ref_key,
-                        value,
-                        ref_label,
-                        color=ref_color,
-                        duration_s=15.0,
-                        dashed=dashed,
-                    )
-
                 if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'show_flux_ghost'):
                     self.freqdb_canvas.show_flux_ghost(
                         ref_key,
@@ -5767,10 +4954,6 @@ Like the app?<br>
                 self.volume_slider.setValue(int(self.config.volume * 100))
 
             # Set active visualizer sample rates and update frequency bands
-            if hasattr(self, 'mountain_canvas'):
-                self.mountain_canvas.set_sample_rate(self.config.audio.sample_rate)
-            if hasattr(self, 'phosphor_canvas'):
-                self.phosphor_canvas.set_sample_rate(self.config.audio.sample_rate)
             self._on_freq_band_change()  # Update beat detection band (red)
             
             # Apply mode-dependent limits after sliders are set
@@ -6157,19 +5340,13 @@ Like the app?<br>
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Create active visualizers (only one visible at a time)
-        self.mountain_canvas = MountainRangeCanvas(self, width=8, height=3)
-        self.phosphor_canvas = PhosphorCanvas(self, width=8, height=3)
         self.waveform_canvas = WaveformLiveCanvas(self, width=8, height=3)
         self.freqdb_canvas = FrequencyDbLiveCanvas(self, width=8, height=3)
         self.fft_bin_canvas = FFTBinBarGraphCanvas(self, width=8, height=3)
-        self.mountain_canvas.setVisible(False)
-        self.phosphor_canvas.setVisible(False)
         self.waveform_canvas.setVisible(True)  # Start with waveform
         self.freqdb_canvas.setVisible(False)
         self.fft_bin_canvas.setVisible(False)
-        
-        layout.addWidget(self.mountain_canvas)
-        layout.addWidget(self.phosphor_canvas)
+
         layout.addWidget(self.waveform_canvas)
         layout.addWidget(self.freqdb_canvas)
         layout.addWidget(self.fft_bin_canvas)
@@ -6188,12 +5365,10 @@ Like the app?<br>
             )
     
     def _on_visualizer_type_change(self, index: int):
-        """Switch visualizer types: 0=Mountain, 1=Phosphor, 2=Waveform, 3=Freq dB, 4=FFT Bins."""
-        self.mountain_canvas.setVisible(index == 0)
-        self.phosphor_canvas.setVisible(index == 1)
-        self.waveform_canvas.setVisible(index == 2)
-        self.freqdb_canvas.setVisible(index == 3)
-        self.fft_bin_canvas.setVisible(index == 4)
+        """Switch visualizer types: 0=Waveform, 1=Freq dB, 2=FFT Bins."""
+        self.waveform_canvas.setVisible(index == 0)
+        self.freqdb_canvas.setVisible(index == 1)
+        self.fft_bin_canvas.setVisible(index == 2)
         
         # Sync the frequency bands to the newly visible visualizer
         if hasattr(self, 'freq_range_slider'):
@@ -6204,13 +5379,13 @@ Like the app?<br>
     
     def _on_show_peak_indicators_toggle(self, checked: bool):
         """Toggle visibility of peak indicator bars on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
+        for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'set_peak_indicators_visible'):
                 canvas.set_peak_indicators_visible(checked)
 
     def _on_show_range_indicators_toggle(self, checked: bool):
         """Toggle visibility of range indicator bands on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
+        for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'set_range_indicators_visible'):
                 canvas.set_range_indicators_visible(checked)
 
@@ -6388,7 +5563,7 @@ Like the app?<br>
 
     def _on_toggle_beat_band(self, checked: bool):
         """Toggle visibility of beat detection band (red) on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
+        for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'beat_band'):
                 canvas.beat_band.setVisible(checked)
             if hasattr(canvas, 'beat_label'):
@@ -6396,7 +5571,7 @@ Like the app?<br>
 
     def _on_toggle_depth_band(self, checked: bool):
         """Toggle visibility of stroke depth band (green) on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
+        for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'depth_band'):
                 canvas.depth_band.setVisible(checked)
             if hasattr(canvas, 'depth_label'):
@@ -6404,7 +5579,7 @@ Like the app?<br>
 
     def _on_toggle_p0_band(self, checked: bool):
         """Toggle visibility of pulse frequency band (blue) on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
+        for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'p0_band'):
                 canvas.p0_band.setVisible(checked)
             if hasattr(canvas, 'pulse_label'):
@@ -6412,7 +5587,7 @@ Like the app?<br>
 
     def _on_toggle_f0_band(self, checked: bool):
         """Toggle visibility of carrier frequency band (cyan) on all visualizers"""
-        for canvas in [self.mountain_canvas, self.phosphor_canvas, self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
+        for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'f0_band'):
                 canvas.f0_band.setVisible(checked)
             if hasattr(canvas, 'carrier_label'):
@@ -7539,10 +6714,6 @@ Like the app?<br>
         # Update spectrum overlay
         sr = self.config.audio.sample_rate
         max_freq = sr / 2
-        if hasattr(self, 'mountain_canvas'):
-            self.mountain_canvas.set_frequency_band(low / max_freq, high / max_freq)
-        if hasattr(self, 'phosphor_canvas'):
-            self.phosphor_canvas.set_frequency_band(low / max_freq, high / max_freq)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_frequency_band'):
             self.freqdb_canvas.set_frequency_band(low / max_freq, high / max_freq)
     
@@ -7558,10 +6729,6 @@ Like the app?<br>
         self.config.stroke.depth_freq_high = high
         
         # Update spectrum overlay (green band)
-        if hasattr(self, 'mountain_canvas'):
-            self.mountain_canvas.set_depth_band(low, high)
-        if hasattr(self, 'phosphor_canvas'):
-            self.phosphor_canvas.set_depth_band(low, high)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_depth_band'):
             self.freqdb_canvas.set_depth_band(low, high)
     
@@ -7577,10 +6744,6 @@ Like the app?<br>
         self.config.pulse_freq.monitor_freq_max = high
         
         # Update spectrum overlay (blue band)
-        if hasattr(self, 'mountain_canvas'):
-            self.mountain_canvas.set_p0_band(low, high)
-        if hasattr(self, 'phosphor_canvas'):
-            self.phosphor_canvas.set_p0_band(low, high)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_p0_band'):
             self.freqdb_canvas.set_p0_band(low, high)
     
@@ -7596,10 +6759,6 @@ Like the app?<br>
         self.config.carrier_freq.monitor_freq_max = high
         
         # Update spectrum overlay (cyan band for F0)
-        if hasattr(self, 'mountain_canvas'):
-            self.mountain_canvas.set_f0_band(low, high)
-        if hasattr(self, 'phosphor_canvas'):
-            self.phosphor_canvas.set_f0_band(low, high)
         if hasattr(self, 'freqdb_canvas') and hasattr(self.freqdb_canvas, 'set_f0_band'):
             self.freqdb_canvas.set_f0_band(low, high)
     
@@ -9231,11 +8390,7 @@ Like the app?<br>
                 waveform = self._pending_spectrum.get('waveform')
                 sample_rate = int(self._pending_spectrum.get('sample_rate', getattr(self.config.audio, 'sample_rate', 44100)))
                 # Only update the currently visible in-window visualizer for performance
-                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
-                    self.mountain_canvas.update_spectrum(spectrum, peak, flux)
-                elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
-                    self.phosphor_canvas.update_spectrum(spectrum, peak, flux)
-                elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible():
+                if hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible():
                     self.waveform_canvas.update_from_audio(waveform, sample_rate)
                 elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas is not None and self.freqdb_canvas.isVisible():
                     self.freqdb_canvas.update_from_spectrum(spectrum, sample_rate)
@@ -9244,11 +8399,7 @@ Like the app?<br>
             else:
                 # Legacy format - only update visible visualizer
                 peak, flux = self._compute_visual_metrics(self._pending_spectrum)
-                if hasattr(self, 'mountain_canvas') and self.mountain_canvas is not None and self.mountain_canvas.isVisible():
-                    self.mountain_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-                elif hasattr(self, 'phosphor_canvas') and self.phosphor_canvas is not None and self.phosphor_canvas.isVisible():
-                    self.phosphor_canvas.update_spectrum(self._pending_spectrum, peak, flux)
-                elif hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible() and self.audio_engine is not None:
+                if hasattr(self, 'waveform_canvas') and self.waveform_canvas is not None and self.waveform_canvas.isVisible() and self.audio_engine is not None:
                     self.waveform_canvas.update_from_audio(self.audio_engine.get_waveform(), int(getattr(self.config.audio, 'sample_rate', 44100)))
                 elif hasattr(self, 'freqdb_canvas') and self.freqdb_canvas is not None and self.freqdb_canvas.isVisible():
                     self.freqdb_canvas.update_from_spectrum(self._pending_spectrum, int(getattr(self.config.audio, 'sample_rate', 44100)))
@@ -9370,7 +8521,7 @@ Like the app?<br>
             
             # Update peak floor bars on all visualizers
             peak_floor = self.config.beat.peak_floor
-            for canvas_name in ['mountain_canvas', 'phosphor_canvas']:
+            for canvas_name in ['waveform_canvas', 'freqdb_canvas', 'fft_bin_canvas']:
                 if hasattr(self, canvas_name):
                     canvas = getattr(self, canvas_name)
                     if hasattr(canvas, 'set_peak_floor'):
