@@ -2357,6 +2357,7 @@ class BREadbeatsWindow(QMainWindow):
 
         def _on_beat_detection_dialog_destroyed() -> None:
             self._beat_detection_dialog = None
+            self._beat_detection_popout_content = None
 
         dialog.destroyed.connect(_on_beat_detection_dialog_destroyed)
 
@@ -2364,6 +2365,12 @@ class BREadbeatsWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
 
         content = getattr(self, '_beat_detection_popout_content', None)
+        if content is not None:
+            try:
+                _ = content.parent()
+            except RuntimeError:
+                content = None
+                self._beat_detection_popout_content = None
         if content is None:
             content = self._create_beat_detection_tab()
             self._beat_detection_popout_content = content
@@ -2379,13 +2386,23 @@ class BREadbeatsWindow(QMainWindow):
         """Show Pulse settings popout."""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout
 
+        def _focus_pulse_dialog(target_dialog) -> None:
+            try:
+                target_dialog.activateWindow()
+                target_dialog.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+                if hasattr(self, 'pulse_enabled_checkbox'):
+                    self.pulse_enabled_checkbox.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+            except RuntimeError:
+                pass
+
         dialog = getattr(self, '_pulse_settings_dialog', None)
         if dialog is not None:
             try:
                 dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
                 dialog.show()
                 dialog.raise_()
-                dialog.activateWindow()
+                _focus_pulse_dialog(dialog)
+                QTimer.singleShot(0, lambda d=dialog: _focus_pulse_dialog(d))
                 return
             except RuntimeError:
                 self._pulse_settings_dialog = None
@@ -2401,6 +2418,7 @@ class BREadbeatsWindow(QMainWindow):
 
         def _on_pulse_settings_dialog_destroyed() -> None:
             self._pulse_settings_dialog = None
+            self._pulse_settings_popout_content = None
 
         dialog.destroyed.connect(_on_pulse_settings_dialog_destroyed)
 
@@ -2408,6 +2426,12 @@ class BREadbeatsWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
 
         content = getattr(self, '_pulse_settings_popout_content', None)
+        if content is not None:
+            try:
+                _ = content.parent()
+            except RuntimeError:
+                content = None
+                self._pulse_settings_popout_content = None
         if content is None:
             content = self._create_tcode_freq_tab()
             self._pulse_settings_popout_content = content
@@ -2417,7 +2441,8 @@ class BREadbeatsWindow(QMainWindow):
         self._pulse_settings_dialog = dialog
         dialog.show()
         dialog.raise_()
-        dialog.activateWindow()
+        _focus_pulse_dialog(dialog)
+        QTimer.singleShot(0, lambda d=dialog: _focus_pulse_dialog(d))
 
     def _on_options_geometry_rest_state(self):
         """Show Geometry Rest State controls."""
@@ -2647,7 +2672,7 @@ class BREadbeatsWindow(QMainWindow):
 
     def _on_options_motion_readiness(self):
         """Show Developer Controls popout for readiness gating behavior."""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QSpinBox, QCheckBox
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QSpinBox, QCheckBox, QGroupBox, QPushButton
 
         dialog = getattr(self, '_motion_readiness_dialog', None)
         if dialog is not None:
@@ -2655,7 +2680,6 @@ class BREadbeatsWindow(QMainWindow):
                 dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
                 dialog.show()
                 dialog.raise_()
-                dialog.activateWindow()
                 return
             except RuntimeError:
                 self._motion_readiness_dialog = None
@@ -2667,7 +2691,9 @@ class BREadbeatsWindow(QMainWindow):
         dialog.setMinimumWidth(500)
         dialog.setMinimumHeight(300)
         dialog.setModal(False)
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         def _on_motion_readiness_dialog_destroyed() -> None:
@@ -2687,6 +2713,9 @@ class BREadbeatsWindow(QMainWindow):
         info.setStyleSheet("color: #bbb; font-size: 11px;")
         layout.addWidget(info)
 
+        readiness_group = QGroupBox("Readiness")
+        readiness_layout = QVBoxLayout(readiness_group)
+
         relaxed_conf_slider = SliderWithLabel(
             "Metronome Relaxed Confidence",
             0.00,
@@ -2697,7 +2726,7 @@ class BREadbeatsWindow(QMainWindow):
         relaxed_conf_slider.valueChanged.connect(
             lambda v: setattr(self.config.beat, 'teaching_metronome_relaxed_confidence', float(v))
         )
-        layout.addWidget(relaxed_conf_slider)
+        readiness_layout.addWidget(relaxed_conf_slider)
 
         grace_ms_slider = SliderWithLabel(
             "Stroke Ready Grace (ms)",
@@ -2709,7 +2738,7 @@ class BREadbeatsWindow(QMainWindow):
         grace_ms_slider.valueChanged.connect(
             lambda v: setattr(self.config.beat, 'teaching_stroke_ready_grace_ms', float(v))
         )
-        layout.addWidget(grace_ms_slider)
+        readiness_layout.addWidget(grace_ms_slider)
 
         finish_row = QHBoxLayout()
         finish_label = QLabel("Stroke Finish Beats")
@@ -2723,7 +2752,7 @@ class BREadbeatsWindow(QMainWindow):
         finish_row.addWidget(finish_label)
         finish_row.addStretch()
         finish_row.addWidget(finish_spin)
-        layout.addLayout(finish_row)
+        readiness_layout.addLayout(finish_row)
 
         relax_phase1_cb = QCheckBox("Relax Phase-1 gates during learning")
         relax_phase1_cb.setChecked(bool(getattr(self.config.beat, 'teaching_relax_phase1_gates', False)))
@@ -2733,7 +2762,7 @@ class BREadbeatsWindow(QMainWindow):
         relax_phase1_cb.stateChanged.connect(
             lambda state: setattr(self.config.beat, 'teaching_relax_phase1_gates', state == 2)
         )
-        layout.addWidget(relax_phase1_cb)
+        readiness_layout.addWidget(relax_phase1_cb)
 
         ignore_traffic_cb = QCheckBox("Use metronome-only readiness (legacy permissive)")
         ignore_traffic_cb.setChecked(bool(getattr(self.config.beat, 'teaching_ignore_traffic_lights', False)))
@@ -2744,7 +2773,55 @@ class BREadbeatsWindow(QMainWindow):
         ignore_traffic_cb.stateChanged.connect(
             lambda state: setattr(self.config.beat, 'teaching_ignore_traffic_lights', state == 2)
         )
-        layout.addWidget(ignore_traffic_cb)
+        readiness_layout.addWidget(ignore_traffic_cb)
+
+        layout.addWidget(readiness_group)
+
+        tuning_group = QGroupBox("Tuning")
+        tuning_layout = QVBoxLayout(tuning_group)
+
+        strength_slider = SliderWithLabel(
+            "Advance", 0.0, 1.0,
+            float(getattr(self.config.beat, 'teaching_learning_strength', 0.55) or 0.55), 2
+        )
+        tuning_layout.addWidget(strength_slider)
+
+        holdback_slider = SliderWithLabel(
+            "Restraint", 0.0, 1.0,
+            float(getattr(self.config.beat, 'teaching_min_confidence', 0.12) or 0.12), 2
+        )
+        tuning_layout.addWidget(holdback_slider)
+
+        no_motion_bias_slider = SliderWithLabel(
+            "Quiet Bias", 0.25, 3.0,
+            float(getattr(self.config.beat, 'teaching_no_motion_bias', 1.0) or 1.0), 2
+        )
+        tuning_layout.addWidget(no_motion_bias_slider)
+
+        direction_hint = QLabel("⬅️ less         more ➡️")
+        direction_hint.setStyleSheet("color: #d0d0d0; font-size: 14px; font-weight: 500;")
+        direction_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tuning_layout.addWidget(direction_hint)
+
+        settle_hint = QLabel("Move one, wait for adjust")
+        settle_hint.setStyleSheet("color: #c7c7c7; font-size: 12px;")
+        settle_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tuning_layout.addWidget(settle_hint)
+
+        tuning_apply_btn = QPushButton("Apply Tuning")
+        tuning_apply_btn.setStyleSheet("font-weight: 500;")
+
+        def _apply_tuning_settings() -> None:
+            self.config.beat.teaching_learning_strength = float(strength_slider.value())
+            self.config.beat.teaching_min_confidence = float(holdback_slider.value())
+            self.config.beat.teaching_no_motion_bias = float(no_motion_bias_slider.value())
+            self._apply_learning_config_to_mapper()
+            save_config(self.config)
+
+        tuning_apply_btn.clicked.connect(_apply_tuning_settings)
+        tuning_layout.addWidget(tuning_apply_btn)
+
+        layout.addWidget(tuning_group)
 
         layout.addStretch()
 
@@ -2755,12 +2832,15 @@ class BREadbeatsWindow(QMainWindow):
             'stroke_ready_grace_ms': grace_ms_slider,
             'stroke_finish_beats': finish_spin,
             'relax_phase1_gates': relax_phase1_cb,
+            'tuning_strength': strength_slider,
+            'tuning_holdback': holdback_slider,
+            'tuning_quiet_bias': no_motion_bias_slider,
+            'tuning_apply': tuning_apply_btn,
         }
         self._motion_readiness_dialog = dialog
 
         dialog.show()
         dialog.raise_()
-        dialog.activateWindow()
     
     def _on_device_limits(self, first_run: bool = False):
         """Show Device Limits dialog for value-to-real-units conversion.
@@ -5349,13 +5429,6 @@ Like the app?<br>
         )
         self.fill_gate_scale_spin.valueChanged.connect(self._on_fill_gate_scale_change)
         layout.addWidget(self.fill_gate_scale_spin)
-
-        self.learning_tune_btn = QPushButton("Tuning")
-        self.learning_tune_btn.setToolTip(
-            "Open simple fit-rule tuning sliders: learning strength, motion holdback threshold, and quiet-part stillness bias."
-        )
-        self.learning_tune_btn.clicked.connect(self._on_learning_tune_controls)
-        layout.addWidget(self.learning_tune_btn)
 
         self.pulse_settings_btn = QPushButton("Pulse\nSettings")
         self.pulse_settings_btn.setToolTip("Open Pulse settings popout window")
