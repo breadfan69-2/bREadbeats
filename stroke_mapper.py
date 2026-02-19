@@ -305,9 +305,9 @@ class StrokeMapper:
                 )
 
             if creep_motion_disabled and decision.trigger_kind == "creep":
-                # Creep disabled: use creep geometry to park
+                # Creep disabled: park at creep geometry center with bass jitter
                 geom = self.config.stroke.orbit_geometry.get("creep", {
-                    "center_y": 0.4, "park_radius": 0.30, "max_radius": 0.60
+                    "center_y": 0.10, "park_radius": 0.30, "max_radius": 0.60
                 })
                 type_park_radius = float(geom["park_radius"])
                 type_max_radius = float(geom["max_radius"])
@@ -325,20 +325,19 @@ class StrokeMapper:
 
                 radius = type_park_radius  # Park at type-specific radius
 
-                self._base_center_y = self._base_center_target(
-                    trigger_kind=decision.trigger_kind,
-                    progress=1.0,
-                    silence_active=False,
+                # Use the creep geometry center_y directly (not baseline)
+                self._base_center_y = type_center_y
+                # Bass jitter active at park so the dot bounces with bass
+                jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
+                    event=event, dt=dt,
                 )
-                self._reactive_bounce_y = self._compute_reactive_bounce_y(
-                    event=event,
-                    dt=dt,
-                    wait_state=True,
-                )
+                treble_bump = float(self._intelligence.compute_treble_lift(0.0))
+                self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
+
                 total_center_y = float(self._base_center_y + self._reactive_bounce_y)
                 orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
 
-                alpha = float(orbit_radius * np.cos(self._park_angle))
+                alpha = float(orbit_radius * np.cos(self._park_angle)) + float(jitter_alpha * 0.3)
                 beta = float(total_center_y + (orbit_radius * np.sin(self._park_angle)))
 
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))

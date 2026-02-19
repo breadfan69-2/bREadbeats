@@ -154,7 +154,7 @@ class StrokeConfig:
         "beat": {"center_y": 0.1, "park_radius": 0.70, "max_radius": 0.90},
         "syncopation": {"center_y": 0.0, "park_radius": 0.70, "max_radius": 0.90},
         "start": {"center_y": 0.2, "park_radius": 0.70, "max_radius": 0.92},
-        "creep": {"center_y": 0.4, "park_radius": 0.70, "max_radius": 0.90},
+        "creep": {"center_y": 0.10, "park_radius": 0.70, "max_radius": 0.90},
     })
 
     # Stroke timing cadence:
