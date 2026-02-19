@@ -187,7 +187,7 @@ class StrokeConfig:
     noise_burst_scale: float = 0.35         # Final burst downscale applied after magnitude/energy (0.0-0.5)
     downbeat_jitter_vector_percent: float = 50.0  # % of current jitter vector added to downbeat arc points
     bass_jitter_speed_influence_percent: float = 100.0  # % depth of bass-frequency influence on jitter speed
-    bass_jitter_size_influence_percent: float = 0.0     # % depth of bass-frequency influence on jitter size
+    bass_jitter_size_influence_percent: float = 100.0  # % depth of bass-frequency influence on jitter size (inverted: high bass = small)
     noise_primary_mode: bool = False        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
 
     # Low-band activity gate for beat-based stroke generation
@@ -485,7 +485,7 @@ def migrate_config(config: Config, loaded_version) -> None:
         if getattr(config.stroke, 'bass_jitter_speed_influence_percent', None) is None:
             config.stroke.bass_jitter_speed_influence_percent = 100.0
         if getattr(config.stroke, 'bass_jitter_size_influence_percent', None) is None:
-            config.stroke.bass_jitter_size_influence_percent = 0.0
+            config.stroke.bass_jitter_size_influence_percent = 100.0
 
         if getattr(config.device_limits, 'p0_c0_sending_enabled', True) is None:
             config.device_limits.p0_c0_sending_enabled = True

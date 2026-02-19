@@ -1458,7 +1458,7 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
 
 class BREadbeatsWindow(QMainWindow):
     """Main application window"""
-    FIXED_JITTER_AMPLITUDE = 0.024
+    FIXED_JITTER_AMPLITUDE = 0.012
     FIXED_JITTER_INTENSITY = 9.5
     FIXED_CREEP_SPEED = 0.25
     FIXED_AXIS_WEIGHT = 1.0

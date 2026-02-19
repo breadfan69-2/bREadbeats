@@ -385,12 +385,13 @@ class StrokeMapper:
         bass_mult = 0.5 + (1.5 * norm_smooth)  # 0.5..2.0
 
         speed_inf = float(getattr(self.config.stroke, "bass_jitter_speed_influence_percent", 100.0) or 100.0)
-        size_inf = float(getattr(self.config.stroke, "bass_jitter_size_influence_percent", 0.0) or 0.0)
+        size_inf = float(getattr(self.config.stroke, "bass_jitter_size_influence_percent", 100.0) or 100.0)
         speed_blend = float(np.clip(speed_inf / 100.0, 0.0, 2.0))
         size_blend = float(np.clip(size_inf / 100.0, 0.0, 2.0))
 
         speed_mult = 1.0 + ((bass_mult - 1.0) * speed_blend)
-        size_mult = 1.0 + ((bass_mult - 1.0) * size_blend)
+        # Inverted size: high bass → smaller circles, low bass → bigger circles
+        size_mult = 1.0 + ((1.0 / bass_mult - 1.0) * size_blend)
 
         jitter_speed = max(0.0, base_speed * speed_mult)
         jitter_amp = max(0.0, base_amp * size_mult)
