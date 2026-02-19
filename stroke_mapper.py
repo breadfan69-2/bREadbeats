@@ -81,6 +81,10 @@ class StrokeMapper:
         self._exit_spiral_duration_s = 0.60
         self._journey_relink_active = False
         self._journey_relink_start_radius = 0.90
+        self._startup_momentum_min = 0.30
+        self._startup_ramp_beats = 4.0
+        self._startup_beats_seen = 0.0
+        self._journey_startup_momentum = 1.0
 
         # Smooth landing / settle state (exponential lerp, no oscillation)
         self._settle_active = False
@@ -284,6 +288,19 @@ class StrokeMapper:
                         event=event,
                         interval_beats=decision.interval_beats,
                     )
+                    if self._startup_beats_seen < self._startup_ramp_beats:
+                        startup_ratio = float(np.clip(
+                            self._startup_beats_seen / max(self._startup_ramp_beats, 1e-6),
+                            0.0,
+                            1.0,
+                        ))
+                        self._journey_startup_momentum = float(
+                            self._startup_momentum_min
+                            + ((1.0 - self._startup_momentum_min) * startup_ratio)
+                        )
+                        self._startup_beats_seen += 1.0
+                    else:
+                        self._journey_startup_momentum = 1.0
 
                     # Latch geometry at journey start so mid-journey trigger
                     # reclassification cannot reshape a running arc.
@@ -381,7 +398,22 @@ class StrokeMapper:
                         initial_slope=self._journey_initial_speed_slope,
                         lazy_glide=self._lazy_glide_active,
                     )
-                    raw_angle = float(self._journey_start_angle + (self._journey_total_rotation * smooth_progress))
+                    startup_momentum = float(np.clip(
+                        self._journey_startup_momentum,
+                        self._startup_momentum_min,
+                        1.0,
+                    ))
+                    startup_progress_scale = float(
+                        startup_momentum + ((1.0 - startup_momentum) * np.clip(progress, 0.0, 1.0))
+                    )
+                    smooth_progress_scaled = float(np.clip(
+                        smooth_progress * startup_progress_scale,
+                        0.0,
+                        1.0,
+                    ))
+                    raw_angle = float(
+                        self._journey_start_angle + (self._journey_total_rotation * smooth_progress_scaled)
+                    )
                     angle = raw_angle
 
                     if self._lazy_glide_active:
@@ -411,7 +443,7 @@ class StrokeMapper:
                 else:
                     if self._journey_cold_start:
                         first_pass_progress = float(np.clip(
-                            (self._journey_total_rotation * smooth_progress) / (2.0 * np.pi),
+                            (self._journey_total_rotation * smooth_progress_scaled) / (2.0 * np.pi),
                             0.0,
                             1.0,
                         ))
@@ -427,7 +459,7 @@ class StrokeMapper:
 
                     if self._journey_relink_active:
                         first_pass_progress = float(np.clip(
-                            (self._journey_total_rotation * smooth_progress) / (2.0 * np.pi),
+                            (self._journey_total_rotation * smooth_progress_scaled) / (2.0 * np.pi),
                             0.0,
                             1.0,
                         ))
