@@ -1479,6 +1479,7 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
+        self.config.creep.enabled = False
         self._enforce_fixed_effect_axis_values()
         
         # Initialize engines to None early (required before learning-config apply)
@@ -2133,12 +2134,6 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_effect_action.setCheckable(True)
         self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
         self.jitter_effect_action.triggered.connect(self._on_effects_jitter_toggle)
-
-        self.slow_fill_effect_action = effects_menu.addAction("Slow Fill")
-        assert self.slow_fill_effect_action is not None
-        self.slow_fill_effect_action.setCheckable(True)
-        self.slow_fill_effect_action.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
-        self.slow_fill_effect_action.triggered.connect(self._on_effects_slow_fill_toggle)
 
         developer_controls_menu = options_menu.addMenu("Developer Controls")
         assert developer_controls_menu is not None
@@ -3174,7 +3169,7 @@ class BREadbeatsWindow(QMainWindow):
         scroll_layout.addWidget(syncope_group)
 
         # ===== Amplitude Gate Controls =====
-        gate_group = QGroupBox("Amplitude Gate (Stroke vs Creep)")
+        gate_group = QGroupBox("Amplitude Gate")
         gate_layout = QVBoxLayout(gate_group)
 
         gate_info = QLabel(
@@ -4268,11 +4263,10 @@ class BREadbeatsWindow(QMainWindow):
         axis_box.setStyleSheet("QGroupBox { border: 1px solid #555; padding: 4px; margin-top: 2px; }")
         axb_layout = QVBoxLayout(axis_box)
         axb_layout.setSpacing(2)
-        axb_layout.addWidget(QLabel("[Options→Effects] Check Jitter / Slow Fill toggles:"))
-        axis_reset_btn = QPushButton("Enable Both")
+        axb_layout.addWidget(QLabel("[Options→Effects] Check Jitter toggle:"))
+        axis_reset_btn = QPushButton("Enable Jitter")
         axis_reset_btn.clicked.connect(lambda: (
             setattr(self.config.jitter, 'enabled', True),
-            setattr(self.config.creep, 'enabled', True),
             self._sync_effects_menu_actions()
         ))
         axb_layout.addWidget(axis_reset_btn)
@@ -4285,7 +4279,7 @@ class BREadbeatsWindow(QMainWindow):
         g3_layout = QVBoxLayout(group3)
         g3_layout.setSpacing(4)
         g3_layout.addWidget(QLabel("• [Beat Detection] Lower audio amplification,\n  sensitivity, flux multiplier"))
-        g3_layout.addWidget(QLabel("• [Options→Effects] Disable Jitter or Slow Fill"))
+        g3_layout.addWidget(QLabel("• [Options→Effects] Disable Jitter"))
         g3_layout.addWidget(QLabel("• [Tempo Tracking] Check spectral flux control"))
         scroll_layout.addWidget(group3)
         
@@ -4425,6 +4419,7 @@ class BREadbeatsWindow(QMainWindow):
         if 'creep' in data:
             for k, v in data['creep'].items():
                 safe_set(self.config.creep, k, v)
+        self.config.creep.enabled = False
         
         # Audio
         if 'audio' in data:
@@ -4600,7 +4595,6 @@ Like the app?<br>
                 getattr(self, 'tempo_lock_required_cb', None),
                 getattr(self, 'fill_gate_scale_spin', None),
                 getattr(self, 'jitter_effect_action', None),
-                getattr(self, 'slow_fill_effect_action', None),
                 getattr(self, 'host_edit', None),
                 getattr(self, 'port_spin', None),
                 getattr(self, 'pulse_freq_range_slider', None),
@@ -4696,8 +4690,6 @@ Like the app?<br>
                 # Effects menu toggles
                 if hasattr(self, 'jitter_effect_action'):
                     self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
-                if hasattr(self, 'slow_fill_effect_action'):
-                    self.slow_fill_effect_action.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
 
                 # Connection settings
                 if hasattr(self, 'host_edit'):
@@ -5219,16 +5211,10 @@ Like the app?<br>
     def _on_effects_jitter_toggle(self, checked: bool):
         self.config.jitter.enabled = bool(checked)
 
-    def _on_effects_slow_fill_toggle(self, checked: bool):
-        self.config.creep.enabled = bool(checked)
-
     def _sync_effects_menu_actions(self):
         if hasattr(self, 'jitter_effect_action'):
             with self._signals_blocked(self.jitter_effect_action):
                 self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
-        if hasattr(self, 'slow_fill_effect_action'):
-            with self._signals_blocked(self.slow_fill_effect_action):
-                self.slow_fill_effect_action.setChecked(bool(getattr(self.config.creep, 'enabled', True)))
 
     def _on_toggle_beat_band(self, checked: bool):
         """Toggle visibility of beat detection band (red) on all visualizers"""
@@ -5581,7 +5567,7 @@ Like the app?<br>
         
         # Jitter / Creep Tab
         self.config.jitter.enabled = bool(preset_data.get('jitter_enabled', getattr(self.config.jitter, 'enabled', True)))
-        self.config.creep.enabled = bool(preset_data.get('creep_enabled', getattr(self.config.creep, 'enabled', True)))
+        self.config.creep.enabled = False
         self._enforce_fixed_effect_axis_values()
         self._sync_effects_menu_actions()
         

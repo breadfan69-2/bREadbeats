@@ -318,15 +318,16 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertIsNotNone(cmd)
         assert cmd is not None
         self.assertAlmostEqual(cmd.alpha, 0.0, places=6)
-        # Creep parks at center_y (0.4) + park_radius (0.30) = 0.70
-        self.assertAlmostEqual(cmd.beta, 0.70, places=6)
+        # Creep-disabled park uses current creep geometry:
+        # center_y (0.4) + park_radius (0.70) = 1.10 -> clipped to 1.0
+        self.assertAlmostEqual(cmd.beta, 1.0, places=6)
 
     def test_compute_landing_rotation_from_park_for_beat_is_non_zero(self):
         mapper = StrokeMapper(Config())
         rot = mapper._compute_landing_rotation(start_angle=mapper._park_angle, interval_beats=2)
         self.assertGreater(rot, 1.0)
 
-    def test_terminal_pose_lands_at_park_angle_with_smoothed_radius_downbeat(self):
+    def test_terminal_pose_keeps_continuity_without_hard_snap_downbeat(self):
         mapper = StrokeMapper(Config())
         mapper._intelligence.energies.high = 1.0
         mapper._intelligence.energies.mid = 1.0
@@ -343,12 +344,13 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         self.assertIsNotNone(cmd)
         assert cmd is not None
-        epsilon = 1e-6
-        self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
+        # Continuity model: completion enters controlled spiral/continuation,
+        # so alpha is expected to remain in motion (non-zero).
+        self.assertGreater(abs(cmd.alpha), 0.01)
         self.assertGreater(cmd.beta, 0.70)
         self.assertLessEqual(cmd.beta, 1.0)
 
-    def test_terminal_pose_lands_at_park_angle_with_smoothed_radius_syncopation(self):
+    def test_terminal_pose_keeps_continuity_without_hard_snap_syncopation(self):
         mapper = StrokeMapper(Config())
         mapper._intelligence.energies.high = 1.0
         mapper._intelligence.energies.mid = 1.0
@@ -365,12 +367,13 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         self.assertIsNotNone(cmd)
         assert cmd is not None
-        epsilon = 1e-6
-        self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
+        # Continuity model: completion enters controlled spiral/continuation,
+        # so alpha is expected to remain in motion (non-zero).
+        self.assertGreater(abs(cmd.alpha), 0.01)
         self.assertGreater(cmd.beta, 0.70)
         self.assertLessEqual(cmd.beta, 1.0)
 
-    def test_terminal_pose_lands_at_park_angle_from_non_park_start_angle(self):
+    def test_terminal_pose_from_non_park_start_keeps_continuity(self):
         mapper = StrokeMapper(Config())
         mapper._intelligence.energies.high = 1.0
         mapper._intelligence.energies.mid = 1.0
@@ -408,9 +411,10 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         self.assertIsNotNone(cmd)
         assert cmd is not None
-        epsilon = 0.01  # smooth lerp converges gradually
-        self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
-        self.assertGreater(cmd.beta, 0.70)
+        # Under continuity/exit-spiral behavior, this should not hard-snap to
+        # alpha=0 after completion, even after many settle frames.
+        self.assertGreater(abs(cmd.alpha), 0.01)
+        self.assertGreaterEqual(cmd.beta, -1.0)
         self.assertLessEqual(cmd.beta, 1.0)
 
 

@@ -53,7 +53,7 @@
     "center_jitter_flux_delta_threshold": 0.02,
     "center_jitter_flux_avg_threshold": 0.07,
     "teaching_learning_enabled": true,
-    "teaching_learning_strength": 0.14,
+    "teaching_learning_strength": 0.2,
     "teaching_min_confidence": 0.16,
     "teaching_use_fitted_rules": true,
     "teaching_rule_fit_path": "D:\\breadbeats_datasets\\blends\\rule_fit.tranquilizer_blend.json",
@@ -203,7 +203,7 @@
     "size": 0.012
   },
   "creep": {
-    "enabled": true,
+    "enabled": false,
     "speed": 0.25
   },
   "connection": {
