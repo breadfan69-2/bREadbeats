@@ -9,11 +9,9 @@ import pyaudiowpatch as pyaudio
 import threading
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Optional
 import time
 
-from audio_session_reporter import AudioSessionReporter
 from logging_utils import log_event
 
 # Scipy for Butterworth bandpass filter
@@ -184,15 +182,9 @@ class AudioEngine:
         self,
         config: Config,
         beat_callback: Callable[[BeatEvent], None],
-        report_dir: Optional[Path] = None,
     ):
         self.config = config
         self.beat_callback = beat_callback
-        if report_dir is None:
-            from config_persistence import get_config_dir
-
-            report_dir = get_config_dir()
-        self._audio_reporter = AudioSessionReporter(report_dir)
         
         # Audio stream (PyAudio)
         self.pyaudio = None
@@ -692,12 +684,6 @@ class AudioEngine:
             peak_high_total_s=f"{payload['peak_high_total_s']:.3f}",
             trough_low_total_s=f"{payload['trough_low_total_s']:.3f}",
         )
-
-        if bool(getattr(self.config, 'report_generation_enabled', True)):
-            try:
-                self._audio_reporter.save_session(payload)
-            except Exception as e:
-                log_event("WARN", "Audio", "Failed to save session report", error=e)
 
     def _init_butterworth_filter(self):
         """Initialize Butterworth bandpass filter for bass detection"""

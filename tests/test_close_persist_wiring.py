@@ -111,6 +111,14 @@ class TestClosePersistWiring(unittest.TestCase):
         with self.assertRaisesRegex(AttributeError, "missing required control: f0_weight_slider"):
             persist_runtime_ui_to_config(window, cfg)
 
+    def test_missing_phase_advance_controls_raises_clear_error(self):
+        cfg = Config()
+        window = _WindowStub()
+        delattr(window, "phase_advance_slider")
+
+        with self.assertRaisesRegex(AttributeError, "missing required control: phase_advance_slider"):
+            persist_runtime_ui_to_config(window, cfg)
+
 
 if __name__ == "__main__":
     unittest.main()
