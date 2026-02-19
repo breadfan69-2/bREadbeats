@@ -543,7 +543,7 @@ def migrate_config(config: Config, loaded_version) -> None:
     config.jitter.amplitude = config.jitter.size
 
     try:
-        tip_low = float(getattr(config.stroke, 'high_tip_freq_low_hz', getattr(config.stroke, 'high_tip_freq_hz', 3500.0) or 3500.0))
+        tip_low = float(getattr(config.stroke, 'high_tip_freq_low_hz', 3500.0) or 3500.0)
     except Exception:
         tip_low = 3500.0
     try:

@@ -296,7 +296,9 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         mag_low = abs(alpha_low) + abs(beta_low)
         mag_high = abs(alpha_high) + abs(beta_high)
-        self.assertGreater(mag_high, mag_low)
+        # Inverted size mapping: high bass frequency yields smaller circles
+        # as size influence increases.
+        self.assertLess(mag_high, mag_low)
 
     def test_creep_disabled_parks_motion_when_jitter_off(self):
         cfg = Config()
