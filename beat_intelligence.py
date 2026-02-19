@@ -73,7 +73,7 @@ class BeatIntelligence:
         # Creep-entry hysteresis: require consecutive creep frames before
         # actually switching to creep mode (prevents momentary gate blips)
         self._creep_consecutive_frames: int = 0
-        self._creep_hysteresis_threshold: int = 18  # ~0.3s at 60fps
+        self._creep_hysteresis_threshold: int = 30  # ~0.5s at 60fps – slower drop to creep
 
         self.journey_duration_s = 0.0
         self.journey_elapsed_s = 0.0
@@ -152,6 +152,7 @@ class BeatIntelligence:
         self._learning_outputs: LearningOutputs = LearningOutputs()
         # Blended output fields (EMA-smoothed)
         self._learned_divisor_hint: int = 1
+        self._committed_divisor_hint: int = 1   # only applied at journey start
         self._learned_radius_mult: float = 1.0
         self._learned_lead_ms: float = 0.0
         self._learned_sync_size_mult: float = 1.0
@@ -165,7 +166,7 @@ class BeatIntelligence:
         self._phrase_flux_baseline: float = 0.0  # mean flux when phrase entered
         self._phrase_flux_drop_ratio: float = 0.35  # cancel if flux drops below 35% of baseline
         self._phrase_renew_ratio: float = 0.55       # renew if flux still >= 55% at measure end
-        self._phrase_measure_beats: int = 4          # beats per phrase commitment (one measure)
+        self._phrase_measure_beats: int = 8          # beats per phrase commitment (two measures for stability)
 
         # ── Phase 6: BPM Stabilization (#13) ──
         self._last_locked_bpm: float = 120.0       # last BPM when tempo_locked was True
@@ -1094,6 +1095,23 @@ class BeatIntelligence:
         return "creep"
 
     def _tempo_ready_for_motion(self, event: BeatEvent) -> bool:
+        # Legacy permissive mode: ignore traffic-light style strictness and
+        # use metronome presence + relaxed confidence as readiness gate.
+        if bool(getattr(self.config.beat, "teaching_ignore_traffic_lights", False)):
+            relaxed = float(getattr(self.config.beat, "teaching_metronome_relaxed_confidence", 0.14) or 0.14)
+            relaxed = float(np.clip(relaxed, 0.0, 1.0))
+            acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+            metro_bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+            if not np.isfinite(acf_conf):
+                acf_conf = 0.0
+            if not np.isfinite(metro_bpm):
+                metro_bpm = 0.0
+            if metro_bpm <= 0.0:
+                return False
+            if bool(getattr(event, "tempo_locked", False)):
+                return True
+            return acf_conf >= relaxed
+
         if not bool(getattr(self.config.beat, "tempo_lock_required", True)):
             return True
         if bool(getattr(event, "tempo_locked", False)):
@@ -1123,7 +1141,7 @@ class BeatIntelligence:
     @staticmethod
     def interval_beats_for_trigger(trigger_kind: str) -> int:
         if trigger_kind == "syncopation":
-            return 1
+            return 2          # was 1; doubled to prevent half-beat jerking
         if trigger_kind == "beat":
             return 2
         if trigger_kind == "downbeat":
@@ -1229,35 +1247,67 @@ class BeatIntelligence:
         )
 
         # ── Priority interrupt logic ──
-        # Only FASTER strokes (lower priority number) can interrupt SLOWER ones.
-        # A downbeat cannot interrupt a beat arc; a beat cannot interrupt
-        # a syncopation arc.  When music intensifies the system naturally
-        # upgrades from downbeat→beat→syncopation.  Slower arc types
-        # simply expire on their own when music quiets.
+        # KEY: Interrupts only happen ON actual beat events (is_new_beat=True)
+        # Never interrupt mid-frame based on classifier changes alone.
         incoming_pri = self._TRIGGER_PRIORITY.get(trigger_kind, 3)
         active_pri = self._TRIGGER_PRIORITY.get(self.last_trigger_kind, 3)
         should_start = False
+        is_interrupt = False   # True when restarting over an active journey
 
         if not self.journey_active:
+            # Always start if no journey is running
             should_start = True
-        elif is_new_beat and incoming_pri < active_pri:
-            # Faster stroke type interrupts slower one (e.g. beat interrupts downbeat)
-            should_start = True
-        elif is_new_beat and self._lazy_glide_active and incoming_pri <= active_pri and trigger_kind != "creep":
-            # During lazy glide, a newly arriving beat should snap back
-            # into high-energy momentum-preserving travel immediately.
-            should_start = True
+        elif is_new_beat:
+            # Only consider interrupts on real beat events
+            if incoming_pri < active_pri:
+                # Higher priority always interrupts (synco > beat > downbeat)
+                should_start = True
+                is_interrupt = True
+            elif self.last_trigger_kind in ("creep", "syncopation") and trigger_kind in ("beat", "downbeat", "syncopation"):
+                # Creep & syncopation freely interruptible by any beat event
+                should_start = True
+                is_interrupt = True
+            elif self.last_trigger_kind == "downbeat" and trigger_kind in ("beat", "syncopation"):
+                # Downbeat can turn into beat/synco once past halfway
+                completion = float(np.clip(
+                    self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0
+                ))
+                if completion >= 0.50:
+                    should_start = True
+                    is_interrupt = True
+            elif self._lazy_glide_active and incoming_pri <= active_pri and trigger_kind != "creep":
+                # During lazy glide, snap back to high-energy immediately
+                should_start = True
+                is_interrupt = True
         elif trigger_kind == "creep" and self.last_trigger_kind == "creep" and not self.journey_active:
+            # Creep continuation when no journey active
             should_start = True
 
         if should_start:
             self._journey_start_intensity = float(getattr(event, 'intensity', 0.0) or 0.0)
-            self.journey_duration_s = target_duration
-            self._journey_duration_target_s = target_duration
+
+            # When interrupting an active arc, time the new journey so
+            # it arrives at the next beat rather than using the full
+            # interval duration.  Clamped to [40%..100%] of normal so
+            # arcs never feel rushed or overly slow.
+            if is_interrupt:
+                now_ts = float(getattr(event, 'monotonic_timestamp', 0.0) or 0.0)
+                if now_ts <= 0.0:
+                    now_ts = time.perf_counter()
+                next_beat_s = self._seconds_until_next_beat(event=event, bpm=bpm, now=now_ts)
+                clamped = float(np.clip(next_beat_s, target_duration * 0.40, target_duration))
+                self.journey_duration_s = clamped
+            else:
+                self.journey_duration_s = target_duration
+
+            self._journey_duration_target_s = self.journey_duration_s
             self._journey_duration_blend_frames_remaining = 0
             self.journey_elapsed_s = 0.0
             self.journey_active = True
             self._lazy_glide_active = False
+            # Latch pending learning divisor: cadence changes only take
+            # effect at journey boundaries, never mid-arc.
+            self._committed_divisor_hint = self._learned_divisor_hint
             return 0.0
 
         if self._journey_duration_blend_frames_remaining > 0:
@@ -1437,21 +1487,20 @@ class BeatIntelligence:
                 self._creep_consecutive_frames = 0
 
         # ── Phrase Commitment: musical phrase locking ──
-        # When switching from slow gear (creep/downbeat) to fast gear
-        # (beat/syncopation), commit for a full measure (4 beats).
-        # This prevents sporadic jumps and creates consistent high-energy
-        # "performances" for the duration of the musical phrase.
+        # When switching from slow gear (creep) to fast gear (beat), 
+        # commit for a period to prevent sporadic jumps. But allow
+        # natural musical transitions (downbeat ↔ beat ↔ syncopation).
         is_beat_event = bool(
             getattr(event, "is_beat", False)
             or getattr(event, "is_downbeat", False)
             or getattr(event, "is_syncopated", False)
         )
 
-        # Detect new phrase entry: slow→fast gear switch
+        # Detect new phrase entry: creep→beat transition only
         if (not self._phrase_committed
-                and trigger_kind in ("beat", "syncopation")
+                and trigger_kind == "beat"
                 and not silence_active
-                and self.last_trigger_kind in ("creep", "downbeat")):
+                and self.last_trigger_kind == "creep"):
             self._phrase_committed = True
             self._phrase_beats_remaining = self._phrase_measure_beats
             self._phrase_gear = trigger_kind
@@ -1472,8 +1521,8 @@ class BeatIntelligence:
                 # Hard flux drop — cancel phrase commitment immediately
                 self._phrase_committed = False
                 self._phrase_beats_remaining = 0
-            elif trigger_kind in ("creep", "downbeat") and not silence_active:
-                # Override: don't allow slow gear during committed phrase
+            elif trigger_kind == "creep" and not silence_active:
+                # Override: don't allow creep during committed phrase
                 trigger_kind = "beat"
 
         # Intensity-Lock: at measure end, renew if still pumping
@@ -1507,9 +1556,12 @@ class BeatIntelligence:
 
         interval_beats = self.interval_beats_for_trigger(trigger_kind)
 
-        # Apply learning divisor hint to interval_beats (cadence_rule)
-        if learning.active and self._learned_divisor_hint > 1:
-            interval_beats = max(interval_beats, self._learned_divisor_hint)
+        # Apply learning divisor hint only at journey boundaries.
+        # _committed_divisor_hint is latched from _learned_divisor_hint
+        # inside update_journey_progress when a new journey actually starts,
+        # so cadence changes never cause mid-arc discontinuities.
+        if learning.active and self._committed_divisor_hint > 1:
+            interval_beats = max(interval_beats, self._committed_divisor_hint)
 
         radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
 
@@ -1521,8 +1573,13 @@ class BeatIntelligence:
         else:
             journey_completion = self.update_journey_progress(trigger_kind, interval_beats, event, dt)
 
-        self.active_interval_beats = interval_beats
-        self.last_trigger_kind = trigger_kind
+        # Only update the active trigger kind / interval when a journey
+        # actually (re)started.  This keeps the running arc's priority
+        # identity locked so a same-or-lower-priority event can't poison
+        # it on a non-restarting frame.
+        if journey_completion <= 1e-9 or no_beat_timed_out:
+            self.active_interval_beats = interval_beats
+            self.last_trigger_kind = trigger_kind
 
         return BeatDecision(
             trigger_kind=trigger_kind,

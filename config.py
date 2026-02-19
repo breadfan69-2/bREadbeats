@@ -85,10 +85,10 @@ class BeatDetectionConfig:
     center_jitter_flux_avg_threshold: float = 0.25    # Recent-average flux threshold to hold center+jitter reset
 
     # Teaching/learning runtime adapter (audio -> motion-control suggestions)
-    teaching_learning_enabled: bool = True      # Enable adaptive motion suggestions from recent beat-window features
+    teaching_learning_enabled: bool = False     # DISABLED: old models incompatible with new orbital geometry
     teaching_learning_strength: float = 0.55    # Blend strength for adaptive suggestions (0=off, 1=full)
     teaching_min_confidence: float = 0.12       # Minimum confidence required before adaptive suggestions apply
-    teaching_use_fitted_rules: bool = True      # Enable loading fitted rule model (rule_fit.json) for runtime suggestions
+    teaching_use_fitted_rules: bool = False     # DISABLED: old rule_fit models incompatible with new orbital geometry
     teaching_rule_fit_path: str = ""            # Optional explicit path to rule_fit.json (empty=auto-discover)
     teaching_no_motion_bias: float = 1.0        # Multiplier for hold-still behavior in quiet/unscripted moments
     teaching_apply_in_circle_mode: bool = False # Keep SIMPLE_CIRCLE behavior legacy by default unless explicitly enabled

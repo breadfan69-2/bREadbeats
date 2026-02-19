@@ -2742,6 +2742,17 @@ class BREadbeatsWindow(QMainWindow):
         )
         layout.addWidget(relax_phase1_cb)
 
+        ignore_traffic_cb = QCheckBox("Use metronome-only readiness (legacy permissive)")
+        ignore_traffic_cb.setChecked(bool(getattr(self.config.beat, 'teaching_ignore_traffic_lights', False)))
+        ignore_traffic_cb.setToolTip(
+            "When enabled, readiness uses metronome BPM + relaxed confidence only, "
+            "ignoring stricter lock-style gating."
+        )
+        ignore_traffic_cb.stateChanged.connect(
+            lambda state: setattr(self.config.beat, 'teaching_ignore_traffic_lights', state == 2)
+        )
+        layout.addWidget(ignore_traffic_cb)
+
         layout.addStretch()
 
         dialog.finished.connect(lambda _r: save_config(self.config))
@@ -7761,22 +7772,42 @@ Like the app?<br>
     def _on_beat(self, event: BeatEvent):
         """Handle beat event in GUI thread"""
         # ===== METRONOME SYNC INDICATOR (updates every frame, not just on beat) =====
-        acf_conf = getattr(event, 'acf_confidence', 0.0)
-        metro_bpm = getattr(event, 'metronome_bpm', 0.0)
+        acf_conf_raw = getattr(event, 'acf_confidence', 0.0)
+        metro_bpm_raw = getattr(event, 'metronome_bpm', 0.0)
+        try:
+            acf_conf = float(acf_conf_raw)
+        except (TypeError, ValueError):
+            acf_conf = 0.0
+        try:
+            metro_bpm = float(metro_bpm_raw)
+        except (TypeError, ValueError):
+            metro_bpm = 0.0
+
+        if not np.isfinite(acf_conf):
+            acf_conf = 0.0
+        if not np.isfinite(metro_bpm):
+            metro_bpm = 0.0
+
         if hasattr(self, 'metronome_sync_indicator') and self.metronome_sync_indicator is not None:
-            if metro_bpm <= 0 or acf_conf < 0.05:
-                self.metronome_sync_indicator.setStyleSheet("color: #333; font-size: 20px;")  # Off
-            elif acf_conf < 0.25:
-                self.metronome_sync_indicator.setStyleSheet("color: #cc0; font-size: 20px;")  # Yellow: locking
-            else:
-                self.metronome_sync_indicator.setStyleSheet("color: #0f0; font-size: 20px;")  # Green: locked
+            try:
+                if metro_bpm <= 0 or acf_conf < 0.05:
+                    self.metronome_sync_indicator.setStyleSheet("color: #333; font-size: 20px;")  # Off
+                elif acf_conf < 0.25:
+                    self.metronome_sync_indicator.setStyleSheet("color: #cc0; font-size: 20px;")  # Yellow: locking
+                else:
+                    self.metronome_sync_indicator.setStyleSheet("color: #0f0; font-size: 20px;")  # Green: locked
+            except RuntimeError:
+                pass
 
         # Update metronome BPM display (small label next to target BPM controls)
         if hasattr(self, 'bpm_actual_label'):
-            if metro_bpm > 0:
-                self.bpm_actual_label.setText(f"Metro: {metro_bpm:.0f} BPM")
-            else:
-                self.bpm_actual_label.setText("Metro: -- BPM")
+            try:
+                if metro_bpm > 0:
+                    self.bpm_actual_label.setText(f"Metro: {metro_bpm:.0f} BPM")
+                else:
+                    self.bpm_actual_label.setText("Metro: -- BPM")
+            except RuntimeError:
+                pass
 
         if event.is_beat:
             # Track beat time for auto-adjustment feature

@@ -118,6 +118,44 @@ class TestReadinessState(Phase2Mixin, unittest.TestCase):
         )
         self.assertEqual(decision.trigger_kind, "creep")
 
+    def test_legacy_metronome_only_mode_allows_motion_with_relaxed_confidence(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = True
+        cfg.beat.teaching_ignore_traffic_lights = True
+        cfg.beat.teaching_metronome_relaxed_confidence = 0.14
+        bi = BeatIntelligence(cfg)
+
+        decision = bi.build_decision(
+            self._event(
+                is_downbeat=True,
+                tempo_locked=False,
+                acf_confidence=0.20,
+                metronome_bpm=120.0,
+            ),
+            dt=1 / 60,
+            silence_override=False,
+        )
+        self.assertEqual(decision.trigger_kind, "downbeat")
+
+    def test_legacy_metronome_only_mode_still_requires_metronome_bpm(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = True
+        cfg.beat.teaching_ignore_traffic_lights = True
+        cfg.beat.teaching_metronome_relaxed_confidence = 0.14
+        bi = BeatIntelligence(cfg)
+
+        decision = bi.build_decision(
+            self._event(
+                is_downbeat=True,
+                tempo_locked=False,
+                acf_confidence=0.80,
+                metronome_bpm=0.0,
+            ),
+            dt=1 / 60,
+            silence_override=False,
+        )
+        self.assertEqual(decision.trigger_kind, "creep")
+
 
 # ── §19 SilenceDecayState ──────────────────────────────────────────────
 

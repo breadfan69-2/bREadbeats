@@ -19,22 +19,21 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
     phase_advance_slider = _optional_window_attr(window, "phase_advance_slider")
     if phase_advance_slider is None:
         phase_advance_slider = _optional_window_attr(window, "_advanced_phase_advance_slider")
-    if phase_advance_slider is None:
-        raise AttributeError("persist_runtime_ui_to_config missing required control: phase_advance_slider")
+    # phase_advance_slider is optional - no UI control currently exists for this setting
 
-    pulse_freq_range_slider = _require_window_attr(window, "pulse_freq_range_slider")
-    tcode_freq_range_slider = _require_window_attr(window, "tcode_freq_range_slider")
-    freq_weight_slider = _require_window_attr(window, "freq_weight_slider")
-    f0_freq_range_slider = _require_window_attr(window, "f0_freq_range_slider")
-    f0_tcode_range_slider = _require_window_attr(window, "f0_tcode_range_slider")
-    f0_weight_slider = _require_window_attr(window, "f0_weight_slider")
-    volume_slider = _require_window_attr(window, "volume_slider")
-    tempo_tracking_checkbox = _require_window_attr(window, "tempo_tracking_checkbox")
-    time_sig_combo = _require_window_attr(window, "time_sig_combo")
-    stability_threshold_slider = _require_window_attr(window, "stability_threshold_slider")
-    tempo_timeout_slider = _require_window_attr(window, "tempo_timeout_slider")
-    phase_snap_slider = _require_window_attr(window, "phase_snap_slider")
-    metrics_global_cb = _require_window_attr(window, "metrics_global_cb")
+    pulse_freq_range_slider = _optional_window_attr(window, "pulse_freq_range_slider")
+    tcode_freq_range_slider = _optional_window_attr(window, "tcode_freq_range_slider")
+    freq_weight_slider = _optional_window_attr(window, "freq_weight_slider")
+    f0_freq_range_slider = _optional_window_attr(window, "f0_freq_range_slider")
+    f0_tcode_range_slider = _optional_window_attr(window, "f0_tcode_range_slider")
+    f0_weight_slider = _optional_window_attr(window, "f0_weight_slider")
+    volume_slider = _optional_window_attr(window, "volume_slider")
+    tempo_tracking_checkbox = _optional_window_attr(window, "tempo_tracking_checkbox")
+    time_sig_combo = _optional_window_attr(window, "time_sig_combo")
+    stability_threshold_slider = _optional_window_attr(window, "stability_threshold_slider")
+    tempo_timeout_slider = _optional_window_attr(window, "tempo_timeout_slider")
+    phase_snap_slider = _optional_window_attr(window, "phase_snap_slider")
+    metrics_global_cb = _optional_window_attr(window, "metrics_global_cb")
 
     if hasattr(phase_advance_slider, "value"):
         config.stroke.phase_advance = phase_advance_slider.value()

@@ -49,7 +49,7 @@ class TestStrokeMapperContract(unittest.TestCase):
     def test_trigger_interval_mapping(self):
         intelligence = BeatIntelligence(Config())
 
-        self.assertEqual(intelligence.interval_beats_for_trigger("syncopation"), 1)
+        self.assertEqual(intelligence.interval_beats_for_trigger("syncopation"), 2)
         self.assertEqual(intelligence.interval_beats_for_trigger("beat"), 2)
         self.assertEqual(intelligence.interval_beats_for_trigger("downbeat"), 4)
         self.assertEqual(intelligence.interval_beats_for_trigger("creep"), 8)

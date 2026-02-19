@@ -95,29 +95,31 @@ class TestClosePersistWiring(unittest.TestCase):
 
         self.assertFalse(cfg.auto_adjust.metrics_global_enabled)
 
-    def test_missing_required_control_raises_clear_error(self):
+    def test_missing_control_graceful_fallback(self):
         cfg = Config()
         window = _WindowStub()
         delattr(window, "phase_snap_slider")
 
-        with self.assertRaisesRegex(AttributeError, "missing required control: phase_snap_slider"):
-            persist_runtime_ui_to_config(window, cfg)
+        # Should succeed without error since all controls are now optional
+        persist_runtime_ui_to_config(window, cfg)
 
-    def test_missing_required_control_in_middle_raises_clear_error(self):
+    def test_missing_multiple_controls_graceful_fallback(self):
         cfg = Config()
         window = _WindowStub()
         delattr(window, "f0_weight_slider")
+        delattr(window, "volume_slider")
+        delattr(window, "metrics_global_cb")
 
-        with self.assertRaisesRegex(AttributeError, "missing required control: f0_weight_slider"):
-            persist_runtime_ui_to_config(window, cfg)
+        # Should succeed without error since all controls are now optional
+        persist_runtime_ui_to_config(window, cfg)
 
-    def test_missing_phase_advance_controls_raises_clear_error(self):
+    def test_missing_phase_advance_controls_succeeds(self):
         cfg = Config()
         window = _WindowStub()
         delattr(window, "phase_advance_slider")
 
-        with self.assertRaisesRegex(AttributeError, "missing required control: phase_advance_slider"):
-            persist_runtime_ui_to_config(window, cfg)
+        # Should succeed without error since phase_advance_slider is optional
+        persist_runtime_ui_to_config(window, cfg)
 
 
 if __name__ == "__main__":
