@@ -52,6 +52,9 @@ class StrokeMapper:
         self._park_y = 0.70
         self._baseline_center_y = 0.70
         self._min_radius = 0.05
+        self._base_center_y = self._baseline_center_y
+        self._reactive_bounce_y = 0.0
+        self._journey_start_total_center_y = self._baseline_center_y
 
         self._orbit_phase = 0.0
         self._active_interval_beats = 8
@@ -64,7 +67,7 @@ class StrokeMapper:
         self._journey_center_y = self._baseline_center_y
         self._journey_park_radius = self._park_radius
         self._journey_max_radius = self._max_radius
-        self._park_angle = 0.0
+        self._park_angle = float(np.pi / 2.0)
         self._journey_start_angle = self._park_angle
         self._journey_start_alpha = self.state.alpha
         self._journey_start_beta = self.state.beta
@@ -232,9 +235,22 @@ class StrokeMapper:
             self._angular_velocity = float(idle_angular_speed)
             self._last_phase_for_velocity = self._orbit_phase
 
+            self._base_center_y = self._base_center_target(
+                trigger_kind=self._last_trigger_kind,
+                progress=1.0,
+                silence_active=True,
+            )
+            self._reactive_bounce_y = self._compute_reactive_bounce_y(
+                event=event,
+                dt=dt,
+                wait_state=True,
+            )
+            total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+            orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
+
             angle = float(self._orbit_phase)
-            alpha = float(radius * np.sin(angle))
-            beta = float(type_center_y + (radius * np.cos(angle)))
+            alpha = float(orbit_radius * np.cos(angle))
+            beta = float(total_center_y + (orbit_radius * np.sin(angle)))
             volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
             self._last_journey_completion = 1.0
         else:
@@ -273,11 +289,21 @@ class StrokeMapper:
 
                 radius = type_park_radius  # Park at type-specific radius
 
-                alpha = 0.0
-                beta = float(type_center_y + (radius * np.cos(0.0)))
-                jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
-                alpha += jitter_alpha
-                beta += jitter_beta
+                self._base_center_y = self._base_center_target(
+                    trigger_kind=decision.trigger_kind,
+                    progress=1.0,
+                    silence_active=False,
+                )
+                self._reactive_bounce_y = self._compute_reactive_bounce_y(
+                    event=event,
+                    dt=dt,
+                    wait_state=True,
+                )
+                total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+                orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
+
+                alpha = float(orbit_radius * np.cos(self._park_angle))
+                beta = float(total_center_y + (orbit_radius * np.sin(self._park_angle)))
 
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
@@ -309,6 +335,8 @@ class StrokeMapper:
                     self._settle_active = False  # cancel any active settle
                     self._radius_hold_active = False
 
+                    self._journey_start_total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+
                     # Latch geometry at journey start so mid-journey trigger
                     # reclassification cannot reshape a running arc.
                     geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
@@ -323,7 +351,7 @@ class StrokeMapper:
                     inherited_angle, inherited_radius = self._infer_orbit_from_position(
                         alpha=self._journey_start_alpha,
                         beta=self._journey_start_beta,
-                        center_y=self._journey_center_y,
+                        center_y=self._journey_start_total_center_y,
                     )
                     self._journey_start_angle = inherited_angle
                     self._journey_start_radius = float(np.clip(inherited_radius, self._min_radius, 1.0))
@@ -530,26 +558,31 @@ class StrokeMapper:
                 self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
                 radius = self._actual_radius
 
-                if decision.trigger_kind == "creep":
-                    treble_lift = self._intelligence.compute_treble_lift(progress)
+                base_target_center = self._base_center_target(
+                    trigger_kind=decision.trigger_kind,
+                    progress=progress,
+                    silence_active=False,
+                )
+                if progress < 1.0:
+                    center_blend = self._s_curve(progress)
+                    self._base_center_y = float(
+                        ((1.0 - center_blend) * self._journey_start_total_center_y)
+                        + (center_blend * base_target_center)
+                    )
                 else:
-                    treble_lift = 0.0
+                    self._base_center_y = float(base_target_center)
 
-                # Apply beat-type-specific orbital center
-                alpha = float(radius * np.sin(angle))
-                beta = float(type_center_y + treble_lift + (radius * np.cos(angle)))
+                wait_state = bool(decision.trigger_kind == "creep" and progress >= 1.0)
+                self._reactive_bounce_y = self._compute_reactive_bounce_y(
+                    event=event,
+                    dt=dt,
+                    wait_state=wait_state,
+                )
+                total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+                orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
 
-                if decision.trigger_kind == "start":
-                    p = float(np.clip(progress, 0.0, 1.0))
-                    swoop_t = float(np.clip(p / 0.25, 0.0, 1.0))
-                    swoop_blend = self._s_curve(swoop_t)
-                    alpha = float((1.0 - swoop_blend) * self._journey_start_alpha + (swoop_blend * alpha))
-                    beta = float((1.0 - swoop_blend) * self._journey_start_beta + (swoop_blend * beta))
-
-                if decision.trigger_kind == "creep":
-                    jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
-                    alpha += jitter_alpha
-                    beta += jitter_beta
+                alpha = float(orbit_radius * np.cos(angle))
+                beta = float(total_center_y + (orbit_radius * np.sin(angle)))
 
                 # Apply post-silence ramp to volume
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
@@ -559,8 +592,6 @@ class StrokeMapper:
                 if decision.trigger_kind == "start" and progress >= 1.0:
                     self._hold_start_pose_until_reactive = True
 
-        alpha = float(np.clip(alpha, -1.0, 1.0))
-        beta = float(np.clip(beta, -1.0, 1.0))
         self.state.alpha = alpha
         self.state.beta = beta
 
@@ -632,6 +663,25 @@ class StrokeMapper:
         bpm = met_bpm if met_bpm > 0.0 else 120.0
         beat_period_s = 60.0 / max(1e-6, bpm)
         return float(predicted_next - now) <= float(1.25 * beat_period_s)
+
+    def _base_center_target(self, trigger_kind: str, progress: float, silence_active: bool) -> float:
+        if silence_active:
+            return self._baseline_center_y
+        if trigger_kind == "start":
+            p = float(np.clip(progress, 0.0, 1.0))
+            return float(self._baseline_center_y * (1.0 - p))
+        if trigger_kind in ("beat", "downbeat", "syncopation"):
+            return 0.0
+        return self._baseline_center_y
+
+    def _compute_reactive_bounce_y(self, event: BeatEvent, dt: float, wait_state: bool) -> float:
+        if not wait_state:
+            return 0.0
+
+        jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
+        _ = jitter_alpha
+        treble_bump = float(self._intelligence.compute_treble_lift(0.0))
+        return float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 
     @staticmethod
     def _s_curve(progress: float) -> float:
@@ -748,11 +798,16 @@ class StrokeMapper:
 
     @staticmethod
     def _infer_orbit_from_position(alpha: float, beta: float, center_y: float) -> tuple[float, float]:
-        """Infer phase/radius using current orientation: alpha=r*sin(theta), beta=center+r*cos(theta)."""
+        """Infer phase/radius using current orientation: alpha=r*cos(theta), beta=center+r*sin(theta)."""
         dy = float(beta - center_y)
         radius = float(np.hypot(alpha, dy))
-        angle = float(np.arctan2(alpha, dy))
+        angle = float(np.arctan2(dy, alpha))
         return angle, radius
+
+    @staticmethod
+    def _radius_cap_for_center(center_y: float) -> float:
+        """Maximum radius that keeps a perfect circle fully inside normalized Y bounds [-1, 1]."""
+        return float(max(0.0, min(1.0 - center_y, 1.0 + center_y)))
 
     def _compute_landing_rotation(self, start_angle: float, interval_beats: int) -> float:
         # Rotation policy: 1 journey = 1 full lap for all trigger types.

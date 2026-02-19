@@ -231,7 +231,7 @@ class TestStrokeMapperContract(unittest.TestCase):
             interval_beats=8,
             radius_bloom=0.70,
             silence_active=False,
-            journey_completion=0.5,
+            journey_completion=1.0,
         )
         mapper.process_beat(self._event(is_beat=False, frequency=220.0))
         self.assertGreater(mapper._bass_jitter_phase, phase_before)
@@ -261,7 +261,7 @@ class TestStrokeMapperContract(unittest.TestCase):
             interval_beats=8,
             radius_bloom=0.70,
             silence_active=False,
-            journey_completion=0.5,
+            journey_completion=1.0,
         )
 
         cfg_high = Config()
@@ -272,7 +272,7 @@ class TestStrokeMapperContract(unittest.TestCase):
             interval_beats=8,
             radius_bloom=0.70,
             silence_active=False,
-            journey_completion=0.5,
+            journey_completion=1.0,
         )
 
         event = self._event(is_beat=False, frequency=220.0)
@@ -347,7 +347,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         # Continuity model: completion enters controlled spiral/continuation,
         # so alpha is expected to remain in motion (non-zero).
         self.assertGreater(abs(cmd.alpha), 0.01)
-        self.assertGreater(cmd.beta, 0.70)
+        self.assertGreaterEqual(cmd.beta, -1.0)
         self.assertLessEqual(cmd.beta, 1.0)
 
     def test_terminal_pose_keeps_continuity_without_hard_snap_syncopation(self):
@@ -370,7 +370,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         # Continuity model: completion enters controlled spiral/continuation,
         # so alpha is expected to remain in motion (non-zero).
         self.assertGreater(abs(cmd.alpha), 0.01)
-        self.assertGreater(cmd.beta, 0.70)
+        self.assertGreaterEqual(cmd.beta, -1.0)
         self.assertLessEqual(cmd.beta, 1.0)
 
     def test_terminal_pose_from_non_park_start_keeps_continuity(self):
@@ -457,6 +457,31 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertIsNotNone(cmd)
         assert cmd is not None
         self.assertGreater(cmd.beta, 0.70)
+
+    def test_base_center_target_migrates_start_over_full_journey(self):
+        mapper = StrokeMapper(Config())
+
+        self.assertAlmostEqual(mapper._base_center_target("start", 0.0, False), 0.70, places=6)
+        self.assertAlmostEqual(mapper._base_center_target("start", 0.5, False), 0.35, places=6)
+        self.assertAlmostEqual(mapper._base_center_target("start", 1.0, False), 0.0, places=6)
+
+    def test_base_center_target_is_zero_for_active_journeys(self):
+        mapper = StrokeMapper(Config())
+
+        self.assertAlmostEqual(mapper._base_center_target("beat", 0.25, False), 0.0, places=6)
+        self.assertAlmostEqual(mapper._base_center_target("downbeat", 0.5, False), 0.0, places=6)
+        self.assertAlmostEqual(mapper._base_center_target("syncopation", 0.75, False), 0.0, places=6)
+
+    def test_reactive_bounce_applies_only_in_wait_state(self):
+        cfg = Config()
+        cfg.jitter.enabled = True
+        cfg.jitter.amplitude = 0.2
+        cfg.jitter.intensity = 2.0
+        mapper = StrokeMapper(cfg)
+
+        event = self._event(is_beat=False, frequency=120.0)
+        self.assertAlmostEqual(mapper._compute_reactive_bounce_y(event, 1.0 / 60.0, False), 0.0, places=7)
+        self.assertNotEqual(mapper._compute_reactive_bounce_y(event, 1.0 / 60.0, True), 0.0)
 
 
 if __name__ == "__main__":
