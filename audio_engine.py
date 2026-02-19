@@ -8,8 +8,8 @@ import numpy as np
 import pyaudiowpatch as pyaudio
 import threading
 from collections import deque
-from dataclasses import dataclass
-from typing import Callable, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 import time
 
 from logging_utils import log_event
@@ -119,7 +119,7 @@ class BeatEvent:
     tempo_locked: bool = False  # True if consecutive downbeats match predicted pattern (locked tempo)
     phase_error_ms: float = 0.0  # How far off from predicted downbeat timing (milliseconds)
     beat_band: str = 'sub_bass'   # Which multi-band z-score sub-band is currently primary
-    fired_bands: list = None      # Which z-score bands actually fired on THIS beat (per-beat, not global)
+    fired_bands: list = field(default_factory=list)      # Which z-score bands actually fired on THIS beat (per-beat, not global)
     metronome_bpm: float = 0.0    # Current internal metronome BPM (for stroke timing)
     acf_confidence: float = 0.0   # ACF peak confidence (0-1, for UI sync indicator)
     is_syncopated: bool = False   # True if an off-beat "and" onset was detected near this beat
@@ -187,7 +187,7 @@ class AudioEngine:
         self.beat_callback = beat_callback
         
         # Audio stream (PyAudio)
-        self.pyaudio = None
+        self.pyaudio: Optional[Any] = None
         self.stream = None
         self.running = False
         
@@ -751,22 +751,26 @@ class AudioEngine:
     
     def _start_loopback_capture(self, device_index=None):
         """Start WASAPI loopback capture (system audio)"""
-        wasapi_info = self.pyaudio.get_host_api_info_by_type(pyaudio.paWASAPI)
+        pa = self.pyaudio
+        if pa is None:
+            raise RuntimeError("PyAudio is not initialized")
+
+        wasapi_info = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
         
         if device_index is not None:
             # Use specified device - find its loopback version
-            device_info = self.pyaudio.get_device_info_by_index(device_index)
+            device_info = pa.get_device_info_by_index(device_index)
             if not device_info.get("isLoopbackDevice", False):
                 # Find the loopback version of this output device
-                for loopback in self.pyaudio.get_loopback_device_info_generator():
+                for loopback in pa.get_loopback_device_info_generator():
                     if device_info["name"] in loopback["name"]:
                         device_info = loopback
                         break
         else:
             # Use default output device's loopback
-            device_info = self.pyaudio.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            device_info = pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
             if not device_info.get("isLoopbackDevice", False):
-                for loopback in self.pyaudio.get_loopback_device_info_generator():
+                for loopback in pa.get_loopback_device_info_generator():
                     if device_info["name"] in loopback["name"]:
                         device_info = loopback
                         break
@@ -779,7 +783,7 @@ class AudioEngine:
         self.config.audio.channels = device_info['maxInputChannels']
         
         # Open stream
-        self.stream = self.pyaudio.open(
+        self.stream = pa.open(
             format=pyaudio.paFloat32,
             channels=self.config.audio.channels,
             rate=self.config.audio.sample_rate,
@@ -794,12 +798,16 @@ class AudioEngine:
     
     def _start_input_capture(self, device_index):
         """Start regular input capture (microphone)"""
+        pa = self.pyaudio
+        if pa is None:
+            raise RuntimeError("PyAudio is not initialized")
+
         if device_index is None:
             # Find default input device
-            wasapi_info = self.pyaudio.get_host_api_info_by_type(pyaudio.paWASAPI)
+            wasapi_info = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
             device_index = wasapi_info.get("defaultInputDevice", 0)
         
-        device_info = self.pyaudio.get_device_info_by_index(device_index)
+        device_info = pa.get_device_info_by_index(device_index)
         
         log_event("INFO", "AudioEngine", "Using input device", device=device_info['name'])
         log_event("INFO", "AudioEngine", "Input format", channels=device_info['maxInputChannels'], sample_rate=int(device_info['defaultSampleRate']))
@@ -809,7 +817,7 @@ class AudioEngine:
         self.config.audio.channels = min(device_info['maxInputChannels'], 2)  # Use up to 2 channels
         
         # Open stream
-        self.stream = self.pyaudio.open(
+        self.stream = pa.open(
             format=pyaudio.paFloat32,
             channels=self.config.audio.channels,
             rate=self.config.audio.sample_rate,
@@ -1875,7 +1883,7 @@ class AudioEngine:
                 bands=band_info
             )
         
-        return is_beat
+        return bool(is_beat)
     
     def _update_tempo_tracking(self, current_time: float, energy: float = 0.0):
         """Update tempo estimate with beat-based interval tracking (madmom-inspired)"""
@@ -1960,7 +1968,7 @@ class AudioEngine:
                     intervals_arr = np.array(self.beat_intervals)
                     cv = np.std(intervals_arr) / np.mean(intervals_arr) if np.mean(intervals_arr) > 0 else 1.0
                     # Convert CV to a 0-1 stability score (0 = chaotic, 1 = perfect)
-                    self.beat_stability = max(0.0, 1.0 - (cv / self.stability_threshold))
+                    self.beat_stability = float(max(0.0, 1.0 - (cv / self.stability_threshold)))
                     
                     # Only commit to stable_tempo when stability is high enough
                     if cv < self.stability_threshold:
@@ -2681,9 +2689,7 @@ if __name__ == "__main__":
     config = Config()
     engine = AudioEngine(config, on_beat)
     
-    log_event("INFO", "AudioEngine", "Available devices")
-    for d in engine.list_devices():
-        log_event("INFO", "AudioEngine", "Device", index=d['index'], name=d['name'], inputs=d['inputs'])
+    log_event("INFO", "AudioEngine", "Standalone run: skipping device enumeration helper")
         
     log_event("INFO", "AudioEngine", "Starting audio capture (Ctrl+C to stop)...")
     engine.start()
