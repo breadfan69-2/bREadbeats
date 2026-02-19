@@ -5348,10 +5348,10 @@ Like the app?<br>
     
     def _create_main_controls_panel(self) -> QGroupBox:
         """Main stroke controls panel."""
-        group = QGroupBox("Main Controls")
+        group = QGroupBox("")
         layout = QHBoxLayout(group)
         layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(8)
+        layout.setSpacing(10)
 
         # Temporary pin: stroke mode selector hidden during main development.
         self.mode_combo = QComboBox()
@@ -5360,37 +5360,62 @@ Like the app?<br>
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.hide()
 
-        layout.addWidget(QLabel("Tempo lock required:"))
+        tempo_widget = QWidget()
+        tempo_layout = QVBoxLayout(tempo_widget)
+        tempo_layout.setContentsMargins(0, 0, 0, 0)
+        tempo_layout.setSpacing(4)
         self.tempo_lock_required_cb = QCheckBox()
         self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
         self.tempo_lock_required_cb.toggled.connect(self._on_tempo_lock_required_toggle)
-        layout.addWidget(self.tempo_lock_required_cb)
+        tempo_layout.addWidget(self.tempo_lock_required_cb, alignment=Qt.AlignmentFlag.AlignHCenter)
+        tempo_label = QLabel("Tempo lock required")
+        tempo_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        tempo_layout.addWidget(tempo_label)
+        tempo_layout.addStretch(1)
 
-        layout.addWidget(QLabel("Sensitivity:"))
-        self.fill_gate_scale_spin = QDoubleSpinBox()
-        self.fill_gate_scale_spin.setRange(1.0, 100.0)
-        self.fill_gate_scale_spin.setSingleStep(1.0)
-        self.fill_gate_scale_spin.setDecimals(1)
-        self.fill_gate_scale_spin.setValue(
+        self.fill_gate_scale_spin = SliderWithLabel(
+            "Sensitivity",
+            1.0,
+            100.0,
             self._fill_gate_scale_to_percent(
                 float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 0.5) or 0.5)
-            )
+            ),
+            1,
+            step=1.0,
         )
-        self.fill_gate_scale_spin.setFixedWidth(78)
+        self.fill_gate_scale_spin.setMinimumWidth(260)
         self.fill_gate_scale_spin.setToolTip(
             "Sensitivity scale (1-100). "
             "Maps to the same internal fill-gate effect range as before."
         )
         self.fill_gate_scale_spin.valueChanged.connect(self._on_fill_gate_scale_change)
-        layout.addWidget(self.fill_gate_scale_spin)
 
-        self.pulse_settings_btn = QPushButton("Pulse\nSettings")
+        self.pulse_settings_btn = QPushButton("Pulse\nFreq")
         self.pulse_settings_btn.setToolTip("Open Pulse settings popout window")
         self.pulse_settings_btn.clicked.connect(self._on_pulse_settings_popup)
         self.pulse_settings_btn.setFixedWidth(76)
-        layout.addWidget(self.pulse_settings_btn)
 
-        layout.addStretch()
+        self.main_silence_close_slider = SliderWithLabel(
+            "volume/motion threshold",
+            0.001,
+            0.300,
+            float(getattr(self.config.stroke, 'silence_close_threshold', 0.048) or 0.048),
+            3,
+        )
+        self.main_silence_close_slider.setToolTip(
+            "Silence gate close (RMS): motion resumes when signal is above this threshold."
+        )
+        self.main_silence_close_slider.setMinimumWidth(260)
+        self.main_silence_close_slider.valueChanged.connect(self._on_main_silence_close_change)
+
+        for widget in (
+            tempo_widget,
+            self.pulse_settings_btn,
+            self.fill_gate_scale_spin,
+            self.main_silence_close_slider,
+        ):
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            layout.addWidget(widget, stretch=1)
 
         return group
 
@@ -5417,6 +5442,17 @@ Like the app?<br>
 
     def _on_tempo_lock_required_toggle(self, checked: bool) -> None:
         setattr(self.config.beat, 'tempo_lock_required', bool(checked))
+
+    def _on_main_silence_close_change(self, value: float) -> None:
+        close_v = float(value)
+        open_v = float(getattr(self.config.stroke, 'silence_threshold', 0.04) or 0.04)
+        if close_v <= open_v:
+            close_v = open_v + 0.001
+            if hasattr(self, 'main_silence_close_slider'):
+                self.main_silence_close_slider.blockSignals(True)
+                self.main_silence_close_slider.setValue(close_v)
+                self.main_silence_close_slider.blockSignals(False)
+        setattr(self.config.stroke, 'silence_close_threshold', close_v)
 
     def _capture_current_settings(self) -> dict:
         """Capture all current UI settings for revert functionality"""
