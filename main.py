@@ -4669,9 +4669,6 @@ Like the app?<br>
                 getattr(self, 'tempo_timeout_slider', None),
                 getattr(self, 'phase_snap_slider', None),
                 getattr(self, 'mode_combo', None),
-                getattr(self, 'combo_depth_spin', None),
-                getattr(self, 'combo_texture_spin', None),
-                getattr(self, 'combo_reaction_spin', None),
                 getattr(self, 'tempo_lock_required_cb', None),
                 getattr(self, 'fill_gate_scale_spin', None),
                 getattr(self, 'jitter_effect_action', None),
@@ -4721,12 +4718,6 @@ Like the app?<br>
                     self.mode_combo.setCurrentIndex(0)
                 self.config.stroke.min_interval_ms = 150
                 self.config.stroke.minimum_depth = 0.0
-                if hasattr(self, 'combo_depth_spin'):
-                    self.combo_depth_spin.setValue(float(getattr(self.config.stroke, 'combo_depth', 1.0)))
-                if hasattr(self, 'combo_texture_spin'):
-                    self.combo_texture_spin.setValue(float(getattr(self.config.stroke, 'combo_texture', 1.0)))
-                if hasattr(self, 'combo_reaction_spin'):
-                    self.combo_reaction_spin.setValue(float(getattr(self.config.stroke, 'combo_reaction', 1.0)))
                 if hasattr(self, 'tempo_lock_required_cb'):
                     self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
                 if hasattr(self, 'fill_gate_scale_spin'):
@@ -5368,43 +5359,6 @@ Like the app?<br>
         self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.hide()
-
-        def _add_combo_spinbox(title: str, value: float, min_val: float, max_val: float, step: float, handler):
-            layout.addWidget(QLabel(f"{title}:"))
-            spin = QDoubleSpinBox()
-            spin.setRange(min_val, max_val)
-            spin.setSingleStep(step)
-            spin.setDecimals(2)
-            spin.setValue(float(value))
-            spin.setFixedWidth(68)
-            spin.valueChanged.connect(handler)
-            layout.addWidget(spin)
-            return spin
-
-        self.combo_depth_spin = _add_combo_spinbox(
-            "depth",
-            getattr(self.config.stroke, 'combo_depth', 1.0),
-            -2.00,
-            3.00,
-            0.02,
-            lambda v: setattr(self.config.stroke, 'combo_depth', float(v)),
-        )
-        self.combo_texture_spin = _add_combo_spinbox(
-            "texture",
-            getattr(self.config.stroke, 'combo_texture', 1.0),
-            -2.00,
-            3.00,
-            0.02,
-            lambda v: setattr(self.config.stroke, 'combo_texture', float(v)),
-        )
-        self.combo_reaction_spin = _add_combo_spinbox(
-            "reaction",
-            getattr(self.config.stroke, 'combo_reaction', 1.0),
-            -2.00,
-            3.00,
-            0.02,
-            lambda v: setattr(self.config.stroke, 'combo_reaction', float(v)),
-        )
 
         layout.addWidget(QLabel("Tempo lock required:"))
         self.tempo_lock_required_cb = QCheckBox()
