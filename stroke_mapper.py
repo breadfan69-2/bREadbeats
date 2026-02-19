@@ -58,6 +58,9 @@ class StrokeMapper:
         self._max_radius = 1.0
         self._journey_fixed_radius = self._park_radius
         self._journey_learning_mult = 1.0  # frozen at journey start; never re-read mid-arc
+        self._journey_center_y = 0.0
+        self._journey_park_radius = self._park_radius
+        self._journey_max_radius = self._max_radius
         self._park_angle = 0.0
         self._journey_start_angle = self._park_angle
         self._journey_total_rotation = float(2.0 * np.pi)
@@ -263,13 +266,28 @@ class StrokeMapper:
                         interval_beats=decision.interval_beats,
                     )
 
-                # Get beat-type-specific orbit geometry
-                geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
-                    "center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0
-                })
-                type_park_radius = float(geom["park_radius"])
-                type_max_radius = float(geom["max_radius"])
-                type_center_y = float(geom["center_y"])
+                    # Latch geometry at journey start so mid-journey trigger
+                    # reclassification cannot reshape a running arc.
+                    geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
+                        "center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0
+                    })
+                    self._journey_center_y = float(geom["center_y"])
+                    self._journey_park_radius = float(geom["park_radius"])
+                    self._journey_max_radius = float(geom["max_radius"])
+
+                # Use latched geometry while a journey/settle is in-flight.
+                # Only refresh from live trigger kind when fully parked.
+                if (progress < 1.0) or (self._last_journey_completion < 1.0) or self._settle_active:
+                    type_center_y = float(self._journey_center_y)
+                    type_park_radius = float(self._journey_park_radius)
+                    type_max_radius = float(self._journey_max_radius)
+                else:
+                    geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
+                        "center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0
+                    })
+                    type_center_y = float(geom["center_y"])
+                    type_park_radius = float(geom["park_radius"])
+                    type_max_radius = float(geom["max_radius"])
 
                 # Learning bloom factor disabled: keep radius multiplier neutral.
                 if started_new_journey:
@@ -345,11 +363,10 @@ class StrokeMapper:
                 # Never snap radius – always lerp for buttery transitions.
                 if self._radius_hold_active:
                     target_radius = float(np.clip(self._radius_hold_value, type_park_radius, type_max_radius))
-                    radius_alpha = 0.12 if target_radius > self._actual_radius else 0.04
                 else:
                     target_radius = float(np.clip(self._journey_fixed_radius, type_park_radius, type_max_radius))
-                    radius_alpha = 0.10  # smooth lerp instead of snap
-                self._actual_radius += radius_alpha * (target_radius - self._actual_radius)
+                ease = 0.05
+                self._actual_radius += (target_radius - self._actual_radius) * ease
                 radius = float(np.clip(self._actual_radius, type_park_radius, type_max_radius))
 
                 if decision.trigger_kind == "creep":
@@ -493,16 +510,26 @@ class StrokeMapper:
     ) -> float:
         """Legacy cubic Hermite easing (kept for test compatibility)."""
         p = float(np.clip(progress, 0.0, 1.0))
+        p_eval = p
+
+        if (not lazy_glide) and (0.90 < p < 1.0):
+            # Arrival-only micro "time stretch" before +Y crossing.
+            # This slows progress by up to ~2% without touching arc geometry
+            # or adding departure damping.
+            t = (p - 0.90) / 0.10
+            p_eval = float(np.clip(p - (0.020 * np.sin(np.pi * t)), 0.0, 1.0))
+
         m0 = float(np.clip(initial_slope, 0.0, 2.5))
         m1 = float(np.clip(end_slope, 0.0, 2.5))
-        h10 = (p * p * p) - (2.0 * p * p) + p
-        h01 = (-2.0 * p * p * p) + (3.0 * p * p)
-        h11 = (p * p * p) - (p * p)
+        h10 = (p_eval * p_eval * p_eval) - (2.0 * p_eval * p_eval) + p_eval
+        h01 = (-2.0 * p_eval * p_eval * p_eval) + (3.0 * p_eval * p_eval)
+        h11 = (p_eval * p_eval * p_eval) - (p_eval * p_eval)
         eased = (h10 * m0) + h01 + (h11 * m1)
         if (not lazy_glide) and p > 0.92:
             t = (p - 0.92) / 0.08
             overshoot = 0.025 * float(np.sin(t * np.pi))
             eased += overshoot
+
         return float(np.clip(eased, 0.0, 1.04))
 
     def _compute_initial_speed_slope(self, event: BeatEvent, interval_beats: int) -> float:
