@@ -376,7 +376,9 @@ class TestStrokeMapperContract(unittest.TestCase):
         mapper._journey_start_angle = mapper._orbit_phase
         mapper._last_journey_completion = 1.0
 
-        completions = iter((0.0, 1.0))
+        # Journey start then many settle frames to let smooth lerp converge
+        n_settle = 120
+        completions = iter([0.0] + [1.0] * n_settle)
 
         mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
             trigger_kind="downbeat",
@@ -386,13 +388,25 @@ class TestStrokeMapperContract(unittest.TestCase):
             journey_completion=next(completions),
         )
 
-        mapper.process_beat(self._event(is_downbeat=True, raw_rms=0.2, peak_energy=0.8))
+        # Use properly-spaced monotonic timestamps so the settle’s
+        # dt accumulation converges (simulating real 60 fps frames).
+        t0 = time.perf_counter()
+        frame_dt = 1.0 / 60.0
 
-        cmd = mapper.process_beat(self._event(is_downbeat=True, raw_rms=0.2, peak_energy=0.8))
+        # Start journey
+        mapper.process_beat(self._event(is_downbeat=True, raw_rms=0.2, peak_energy=0.8,
+                                        monotonic_timestamp=t0))
+
+        # Settle frames (smooth exponential lerp toward park)
+        for i in range(1, n_settle + 1):
+            cmd = mapper.process_beat(self._event(
+                is_downbeat=True, raw_rms=0.2, peak_energy=0.8,
+                monotonic_timestamp=t0 + i * frame_dt,
+            ))
 
         self.assertIsNotNone(cmd)
         assert cmd is not None
-        epsilon = 1e-6
+        epsilon = 0.01  # smooth lerp converges gradually
         self.assertLessEqual(abs(cmd.alpha - 0.0), epsilon)
         self.assertGreater(cmd.beta, 0.70)
         self.assertLessEqual(cmd.beta, 1.0)

@@ -156,15 +156,6 @@ class StrokeConfig:
         "creep": {"center_y": 0.4, "park_radius": 0.30, "max_radius": 0.60},
     })
 
-    # Rhythmic phrasing: explode on solid beats, then return to park on-beat.
-    rhythmic_phrasing_enabled: bool = True
-    rhythmic_phrase_min_intensity: float = 0.18
-    rhythmic_phrase_energy_low: float = 0.28
-    rhythmic_phrase_energy_high: float = 0.70
-    rhythmic_phrase_ease_mode: str = "sine"  # "sine" | "linear"
-    rhythmic_phrase_explode_radius_min: float = 0.30
-    rhythmic_phrase_explode_radius_max: float = 0.95
-
     # Stroke timing cadence:
     # - 1 beat/stroke only allowed at very slow tempo (< single_stroke_bpm_cutoff)
     # - otherwise auto-select 2/4/8 beats per stroke from BPM cutoffs
@@ -174,7 +165,6 @@ class StrokeConfig:
     bpm_cutoff_4_to_8: float = 180.0         # BPM at/above this moves 4 -> 8 beats/stroke
     beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
     cadence_cutoff_bias_bpm: float = 0.0     # +/- BPM shift applied to cadence cutoffs (0 = disabled)
-    continuation_arcs_enabled: bool = False  # Continue arc chaining between beats (legacy behavior)
 
     # Thump: legacy setting, replaced by landing durations
     thump_enabled: bool = False             # Kept for preset compatibility, not used in UI
@@ -290,7 +280,15 @@ class JitterConfig:
     """Jitter - micro-circles when no beat detected"""
     enabled: bool = True
     intensity: float = 9.5            # Speed of jitter movement
-    amplitude: float = 0.024          # Circle size
+    size: float = 0.024               # Circle size
+
+    @property
+    def amplitude(self) -> float:
+        return float(self.size)
+
+    @amplitude.setter
+    def amplitude(self, value: float) -> None:
+        self.size = float(value)
 
 @dataclass
 class CreepConfig:
@@ -465,6 +463,12 @@ def apply_dict_to_dataclass(target, data) -> None:
 
         setattr(target, key, value)
 
+    if hasattr(target, 'size') and hasattr(target, 'amplitude') and isinstance(data, dict):
+        if 'size' in data:
+            target.amplitude = target.size
+        else:
+            target.size = target.amplitude
+
 
 def migrate_config(config: Config, loaded_version) -> None:
     """Upgrade older config structures to the current schema.
@@ -531,6 +535,13 @@ def migrate_config(config: Config, loaded_version) -> None:
     except Exception:
         burst_scale = 0.35
     config.stroke.noise_burst_scale = max(0.0, min(0.5, burst_scale))
+
+    try:
+        jitter_size = float(getattr(config.jitter, 'size', getattr(config.jitter, 'amplitude', 0.024)))
+    except Exception:
+        jitter_size = 0.024
+    config.jitter.size = max(0.0, min(0.2, jitter_size))
+    config.jitter.amplitude = config.jitter.size
 
     try:
         tip_low = float(getattr(config.stroke, 'high_tip_freq_low_hz', getattr(config.stroke, 'high_tip_freq_hz', 3500.0) or 3500.0))

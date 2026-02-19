@@ -70,13 +70,20 @@ class StrokeMapper:
         self._journey_initial_speed_slope = 0.0
         self._lazy_glide_active = False
 
-        # Elastic landing / settle state
+        # Smooth landing / settle state (exponential lerp, no oscillation)
         self._settle_active = False
-        self._settle_start_time = 0.0
-        self._settle_exit_velocity = 0.0
-        self._settle_damping = 4.5     # higher = faster decay
-        self._settle_frequency = 10.0  # oscillation freq (rad/s) – ~1 visible cycle
-        self._settle_max_amplitude = 0.12  # max angular displacement (radians)
+        self._settle_elapsed = 0.0
+        self._settle_start_angle = self._park_angle
+        self._settle_decay_rate = 3.0  # lower = longer, smoother glide to park
+
+        # Mid-journey crossfade state: buttery blend from old trajectory
+        # into new one when a beat fires before the previous journey ends.
+        self._crossfade_active = False
+        self._crossfade_elapsed = 0.0
+        self._crossfade_duration = 0.35   # seconds – long enough to feel smooth
+        self._crossfade_from_angle = 0.0  # angle at moment of transition
+        self._crossfade_from_center_y = 0.0
+        self._crossfade_from_radius = self._park_radius
 
         # Bass-reactive jitter state (applied on creep only)
         self._bass_jitter_phase = 0.0
@@ -238,6 +245,24 @@ class StrokeMapper:
             else:
                 started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
                 if started_new_journey:
+                    # Snapshot current pose for crossfade blending.
+                    # If the previous journey hadn't finished (or settle
+                    # was still gliding), we crossfade from where we are
+                    # into the new trajectory for a buttery transition.
+                    mid_journey = (self._last_journey_completion < 0.98)
+                    mid_settle = self._settle_active
+                    if mid_journey or mid_settle:
+                        self._crossfade_active = True
+                        self._crossfade_elapsed = 0.0
+                        self._crossfade_from_angle = float(self._orbit_phase)
+                        self._crossfade_from_radius = float(self._actual_radius)
+                        # Capture outgoing center_y
+                        old_geom = self.config.stroke.orbit_geometry.get(
+                            self._last_trigger_kind,
+                            {"center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0},
+                        )
+                        self._crossfade_from_center_y = float(old_geom["center_y"])
+
                     self._settle_active = False  # cancel any active settle
                     self._radius_hold_active = False
                     self._journey_start_angle = float(self._orbit_phase)
@@ -280,21 +305,21 @@ class StrokeMapper:
                         self._radius_hold_start_time = now
                         # Hold at the same radius used throughout the journey.
                         self._radius_hold_value = float(np.clip(self._journey_fixed_radius, type_park_radius, type_max_radius))
-                    # ── Elastic landing: damped harmonic settle ──
-                    # Momentum carry-over from exit velocity drives overshoot;
-                    # damped oscillation creates one visible wobble then rest.
+                    # ── Smooth landing: long exponential lerp toward park ──
+                    # No oscillation – just a buttery-smooth glide to rest.
+                    # Uses accumulated dt for frame-rate-independent decay.
                     if not self._settle_active:
                         self._settle_active = True
-                        self._settle_start_time = now
-                        self._settle_exit_velocity = self._angular_velocity
-                    t = now - self._settle_start_time
-                    raw_amp = abs(self._settle_exit_velocity) * 0.06
-                    amp = max(0.02, min(raw_amp, self._settle_max_amplitude))
-                    disp = amp * float(np.exp(-self._settle_damping * t) * np.sin(self._settle_frequency * t))
-                    if abs(disp) < 1e-5 and t > 0.15:
+                        self._settle_elapsed = 0.0
+                        self._settle_start_angle = float(self._orbit_phase)
+                    self._settle_elapsed += dt
+                    blend = 1.0 - float(np.exp(-self._settle_decay_rate * self._settle_elapsed))
+                    # Lerp from where the journey ended toward park angle
+                    angle_diff = self._wrapped_phase_delta(self._park_angle, self._settle_start_angle)
+                    angle = float(self._settle_start_angle + angle_diff * blend)
+                    if blend > 0.995 and self._settle_elapsed > 0.3:
                         self._settle_active = False
-                        disp = 0.0
-                    angle = float(self._park_angle + disp)
+                        angle = float(self._park_angle)
                 else:
                     effective_progress = progress
                     if self._lazy_glide_active and progress > 0.70:
@@ -302,7 +327,7 @@ class StrokeMapper:
                         stretched_tail = float(tail_t * tail_t)
                         effective_progress = float(0.70 + (0.30 * stretched_tail))
 
-                    smooth_progress = self._s_curve_with_initial_velocity(
+                    smooth_progress = self._sine_ease_with_velocity(
                         progress=effective_progress,
                         initial_slope=self._journey_initial_speed_slope,
                         lazy_glide=self._lazy_glide_active,
@@ -327,13 +352,13 @@ class StrokeMapper:
 
                 # Continuous "Smoooooth Arc": radius is independent of journey progress.
                 # Target radius follows music/learning; actual radius lerps via EMA.
+                # Never snap radius – always lerp for buttery transitions.
                 if self._radius_hold_active:
                     target_radius = float(np.clip(self._radius_hold_value, type_park_radius, type_max_radius))
                     radius_alpha = 0.12 if target_radius > self._actual_radius else 0.04
                 else:
                     target_radius = float(np.clip(self._journey_fixed_radius, type_park_radius, type_max_radius))
-                    self._actual_radius = target_radius
-                    radius_alpha = 0.0
+                    radius_alpha = 0.10  # smooth lerp instead of snap
                 self._actual_radius += radius_alpha * (target_radius - self._actual_radius)
                 radius = float(np.clip(self._actual_radius, type_park_radius, type_max_radius))
 
@@ -345,6 +370,34 @@ class StrokeMapper:
                 # Apply beat-type-specific orbital center
                 alpha = float(radius * np.sin(angle))
                 beta = float(type_center_y + treble_lift + (radius * np.cos(angle)))
+
+                # ── Mid-journey crossfade ──
+                # When a new journey fired before the old one finished,
+                # blend from the snapshot pose into the new trajectory.
+                # Uses exponential ease-in so the blend itself is buttery.
+                if self._crossfade_active:
+                    self._crossfade_elapsed += dt
+                    t_norm = float(np.clip(
+                        self._crossfade_elapsed / max(self._crossfade_duration, 1e-4),
+                        0.0, 1.0,
+                    ))
+                    # Sine ease-in: starts slow (preserves old motion feel),
+                    # then accelerates into the new trajectory.
+                    blend = 0.5 * (1.0 - float(np.cos(np.pi * t_norm)))
+
+                    # Blend angle (in Cartesian to avoid wrap discontinuities)
+                    old_x = self._crossfade_from_radius * float(np.sin(self._crossfade_from_angle))
+                    old_y = self._crossfade_from_center_y + (
+                        self._crossfade_from_radius * float(np.cos(self._crossfade_from_angle))
+                    )
+                    alpha = float(old_x + blend * (alpha - old_x))
+                    beta = float(old_y + blend * (beta - old_y))
+
+                    # Fade the snapshot radius toward the new radius
+                    self._crossfade_from_radius += 0.08 * (radius - self._crossfade_from_radius)
+
+                    if t_norm >= 1.0:
+                        self._crossfade_active = False
 
                 if decision.trigger_kind == "creep":
                     jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
@@ -420,30 +473,74 @@ class StrokeMapper:
         return float(p * p * (3.0 - (2.0 * p)))
 
     @staticmethod
+    def _sine_ease_with_velocity(
+        progress: float,
+        initial_slope: float,
+        lazy_glide: bool = False,
+    ) -> float:
+        """Sine-based easing with velocity continuity for buttery-smooth motion.
+
+        Core curve: 0.5 * (1 - cos(pi * p)), providing:
+        - Smooth acceleration from rest at departure
+        - Peak angular speed at mid-journey
+        - Gradual deceleration to near-zero velocity at arrival
+        - No dead time: always moving until p=1.0
+
+        +Y axis crossing modulation: a very minute deceleration as
+        the dot crosses the +Y axis (start/end), with a minor
+        re-acceleration bump on departure.  Helps keep timing tight.
+
+        Velocity carry-over: initial_slope blends inherited angular
+        momentum into the first ~25% of the journey, fading to zero
+        so landing is always gentle.
+        """
+        p = float(np.clip(progress, 0.0, 1.0))
+        m0 = float(np.clip(initial_slope, 0.0, 2.5))
+
+        # ── Base: cosine interpolation (sine ease-in-out) ──
+        eased = 0.5 * (1.0 - float(np.cos(np.pi * p)))
+
+        # ── Velocity carry-over from prior journey / settle ──
+        # Blend inherited momentum into early phase; fades by p≈0.25
+        # so mid-journey and landing remain pure sine.
+        if m0 > 1e-3:
+            carry_window = 0.25
+            carry_fade = float(np.clip(1.0 - (p / carry_window), 0.0, 1.0))
+            carry_fade = carry_fade * carry_fade          # quadratic fade-out
+            carry = m0 * p * carry_fade * 0.25
+            eased += carry
+
+        # ── +Y axis crossing modulation ──
+        # Departure (p≈0): tiny extra slowdown, then minor re-acceleration.
+        # Arrival  (p≈1): gentle extra deceleration for velvety landing.
+        if p < 0.12:
+            t = p / 0.12
+            eased += 0.012 * float(np.sin(np.pi * t))     # post-departure bump
+        elif p > 0.88:
+            t = (p - 0.88) / 0.12
+            eased -= 0.012 * float(np.sin(np.pi * t))     # pre-arrival cushion
+
+        return float(np.clip(eased, 0.0, 1.02))
+
+    @staticmethod
     def _s_curve_with_initial_velocity(
         progress: float,
         initial_slope: float,
         end_slope: float = 0.0,
         lazy_glide: bool = False,
     ) -> float:
-        """Cubic Hermite easing with configurable initial slope and elastic back-ease landing."""
+        """Legacy cubic Hermite easing (kept for test compatibility)."""
         p = float(np.clip(progress, 0.0, 1.0))
         m0 = float(np.clip(initial_slope, 0.0, 2.5))
         m1 = float(np.clip(end_slope, 0.0, 2.5))
-
         h10 = (p * p * p) - (2.0 * p * p) + p
         h01 = (-2.0 * p * p * p) + (3.0 * p * p)
         h11 = (p * p * p) - (p * p)
         eased = (h10 * m0) + h01 + (h11 * m1)
-
-        # Back-ease overshoot: sine bump in the final 8% of the journey.
-        # Dot swings slightly past target before the post-journey settle
-        # takes over → elastic, biological landing feel.
         if (not lazy_glide) and p > 0.92:
-            t = (p - 0.92) / 0.08  # 0…1 within last 8%
+            t = (p - 0.92) / 0.08
             overshoot = 0.025 * float(np.sin(t * np.pi))
             eased += overshoot
-
         return float(np.clip(eased, 0.0, 1.04))
 
     def _compute_initial_speed_slope(self, event: BeatEvent, interval_beats: int) -> float:
