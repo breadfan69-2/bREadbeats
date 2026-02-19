@@ -7189,7 +7189,7 @@ Like the app?<br>
                     self.play_btn.setEnabled(ui_state.play_enabled)
                     # Enable TCode sending immediately on Start (V0=0 until Play is pressed)
                     set_transport_sending(self.network_engine, True)
-                    send_zero_volume_immediate(self.network_engine, duration_ms=100)
+                    send_zero_volume_immediate(self.network_engine, duration_ms=160)
                 except Exception as e:
                     print(f"[Main] Start failed: {e}")
                     self._stop_engines()
@@ -7208,7 +7208,7 @@ Like the app?<br>
                 self._sync_transport_buttons()
 
                 # Send zero-volume command before stopping (always, not just when is_sending)
-                send_zero_volume_immediate(self.network_engine, duration_ms=100)
+                send_zero_volume_immediate(self.network_engine, duration_ms=160)
                 set_transport_sending(self.network_engine, False)
                 self._stop_engines()
                 # Note: Auto-range state is preserved across stop/start - no reset here
@@ -7261,7 +7261,7 @@ Like the app?<br>
             self._play_warmup_active = True
             self._play_warmup_started_at = time.time()
             self._play_warmup_seen_beat = False
-            send_zero_volume_immediate(self.network_engine, duration_ms=250)
+            send_zero_volume_immediate(self.network_engine, duration_ms=1750)
             # Start volume ramp from 0 to set value over 1.3s
             ramp_state = begin_volume_ramp(time.time())
             self._volume_ramp_active = ramp_state.active
