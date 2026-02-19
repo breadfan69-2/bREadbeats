@@ -1489,7 +1489,6 @@ class BREadbeatsWindow(QMainWindow):
         self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
         self._apply_release_learning_defaults()
         self._apply_learning_config_to_mapper()
-        self._apply_first_launch_auto_control_defaults()
         # Apply persisted log level early so downstream modules inherit
         set_log_level(getattr(self.config, 'log_level', 'INFO'))
         self.signals = SignalBridge()
@@ -1526,7 +1525,6 @@ class BREadbeatsWindow(QMainWindow):
         self._on_toggle_beat_band(False)
         self._on_toggle_depth_band(False)
         
-        self._register_app_run_startup()
         self._schedule_startup_notices()
 
         # Connect signals
@@ -4563,36 +4561,6 @@ Like the app?<br>
             label.setOpenExternalLinks(True)
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         msg.exec()
-
-    def _register_app_run_startup(self):
-        try:
-            count = int(getattr(self.config, 'app_run_count', 0))
-        except Exception:
-            count = 0
-        self.config.app_run_count = max(0, count) + 1
-        save_config(self.config)
-
-    def _apply_first_launch_auto_control_defaults(self):
-        """Force auto controls ON for first launch only."""
-        try:
-            run_count = int(getattr(self.config, 'app_run_count', 0) or 0)
-        except Exception:
-            run_count = 0
-
-        if run_count > 0:
-            return
-
-        self.config.auto_adjust.metrics_global_enabled = True
-        enabled = dict(getattr(self.config.auto_adjust, 'enabled_params', {}) or {})
-        enabled.update({
-            'audio_amp': True,
-            'peak_floor': True,
-            'peak_decay': True,
-            'rise_sens': True,
-            'sensitivity': True,
-            'flux_mult': True,
-        })
-        self.config.auto_adjust.enabled_params = enabled
 
     def _schedule_startup_notices(self):
         # First-run device limits prompt eligibility
