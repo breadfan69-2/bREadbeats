@@ -88,7 +88,7 @@ class StrokeMapper:
         self._journey_startup_momentum = 1.0
         self._hold_start_pose_until_reactive = False
         self._idle_radius = 0.05
-        self._silence_decay_per_beat = 0.95
+        self._silence_decay_per_beat = 0.40
         self._idle_loops_per_beat = 0.125
 
         # Smooth landing / settle state (exponential lerp, no oscillation)
@@ -304,7 +304,10 @@ class StrokeMapper:
 
                     self._settle_active = False  # cancel any active settle
                     self._radius_hold_active = False
-                    self._journey_start_angle = float(self._orbit_phase)
+                    if decision.trigger_kind == "start":
+                        self._journey_start_angle = float(self._park_angle)
+                    else:
+                        self._journey_start_angle = float(self._orbit_phase)
                     self._journey_start_radius = float(np.clip(self._actual_radius, self._idle_radius, 1.0))
                     self._journey_total_rotation = self._compute_landing_rotation(
                         start_angle=self._journey_start_angle,
@@ -366,7 +369,7 @@ class StrokeMapper:
                 if started_new_journey:
                     self._journey_fixed_radius = bloom_target_radius
                     if decision.trigger_kind == "start":
-                        self._actual_radius = self._journey_start_radius
+                        self._actual_radius = 0.0
                     else:
                         self._actual_radius = self._journey_fixed_radius
 
@@ -470,11 +473,8 @@ class StrokeMapper:
                     exit_t = float(np.clip(self._exit_spiral_progress, 0.0, 1.0))
                     radius = float(0.90 + ((0.70 - 0.90) * self._s_curve(exit_t)))
                 elif decision.trigger_kind == "start":
-                    radius_blend = self._s_curve(float(np.clip(smooth_progress_scaled, 0.0, 1.0)))
-                    radius = float(
-                        self._journey_start_radius
-                        + ((self._journey_fixed_radius - self._journey_start_radius) * radius_blend)
-                    )
+                    p = float(np.clip(smooth_progress_scaled, 0.0, 1.0))
+                    radius = float(self._journey_fixed_radius * (p ** 3))
                 else:
                     if self._journey_cold_start:
                         first_pass_progress = float(np.clip(
@@ -516,7 +516,7 @@ class StrokeMapper:
                         expanded_radius = float(np.clip(decision.radius_bloom, type_max_radius, 1.0))
                         radius = float(max(radius, expanded_radius))
 
-                min_radius_bound = self._idle_radius if decision.trigger_kind == "start" else 0.70
+                min_radius_bound = 0.0 if decision.trigger_kind == "start" else 0.70
                 self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
                 radius = self._actual_radius
 
@@ -528,6 +528,15 @@ class StrokeMapper:
                 # Apply beat-type-specific orbital center
                 alpha = float(radius * np.sin(angle))
                 beta = float(type_center_y + treble_lift + (radius * np.cos(angle)))
+
+                if decision.trigger_kind == "start":
+                    p = float(np.clip(progress, 0.0, 1.0))
+                    swoop_t = float(np.clip(p / 0.25, 0.0, 1.0))
+                    swoop_blend = self._s_curve(swoop_t)
+                    park_alpha = 0.0
+                    park_beta = float(type_center_y + type_park_radius)
+                    alpha = float((1.0 - swoop_blend) * park_alpha + (swoop_blend * alpha))
+                    beta = float((1.0 - swoop_blend) * park_beta + (swoop_blend * beta))
 
                 if decision.trigger_kind == "creep":
                     jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
