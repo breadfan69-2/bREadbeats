@@ -295,6 +295,5 @@
   "alpha_weight": 1.0,
   "beta_weight": 1.0,
   "volume": 1.0,
-  "log_level": "INFO",
-  "app_run_count": 252
+  "log_level": "INFO"
 }
