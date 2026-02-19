@@ -417,6 +417,47 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertGreaterEqual(cmd.beta, -1.0)
         self.assertLessEqual(cmd.beta, 1.0)
 
+    def test_start_journey_inherits_last_known_position_at_progress_zero(self):
+        mapper = StrokeMapper(Config())
+        mapper.state.alpha = 0.23
+        mapper.state.beta = 0.82
+
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="start",
+            interval_beats=8,
+            radius_bloom=0.95,
+            silence_active=False,
+            journey_completion=0.0,
+        )
+
+        cmd = mapper.process_beat(self._event(is_beat=False, is_downbeat=False, is_syncopated=False))
+
+        self.assertIsNotNone(cmd)
+        assert cmd is not None
+        self.assertAlmostEqual(cmd.alpha, 0.23, places=6)
+        self.assertAlmostEqual(cmd.beta, 0.82, places=6)
+        self.assertGreaterEqual(mapper._actual_radius, 0.05)
+
+    def test_silence_unknown_trigger_uses_baseline_center_default(self):
+        mapper = StrokeMapper(Config())
+        mapper._last_trigger_kind = "unknown"
+        mapper._orbit_phase = 0.0
+        mapper._actual_radius = 0.05
+
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="unknown",
+            interval_beats=8,
+            radius_bloom=0.70,
+            silence_active=True,
+            journey_completion=1.0,
+        )
+
+        cmd = mapper.process_beat(self._event(is_beat=False, is_downbeat=False, is_syncopated=False))
+
+        self.assertIsNotNone(cmd)
+        assert cmd is not None
+        self.assertGreater(cmd.beta, 0.70)
+
 
 if __name__ == "__main__":
     unittest.main()

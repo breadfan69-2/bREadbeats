@@ -50,6 +50,8 @@ class StrokeMapper:
 
         self.state = StrokeState()
         self._park_y = 0.70
+        self._baseline_center_y = 0.70
+        self._min_radius = 0.05
 
         self._orbit_phase = 0.0
         self._active_interval_beats = 8
@@ -59,11 +61,13 @@ class StrokeMapper:
         self._journey_fixed_radius = self._park_radius
         self._journey_start_radius = self._park_radius
         self._journey_learning_mult = 1.0  # frozen at journey start; never re-read mid-arc
-        self._journey_center_y = 0.0
+        self._journey_center_y = self._baseline_center_y
         self._journey_park_radius = self._park_radius
         self._journey_max_radius = self._max_radius
         self._park_angle = 0.0
         self._journey_start_angle = self._park_angle
+        self._journey_start_alpha = self.state.alpha
+        self._journey_start_beta = self.state.beta
         self._journey_total_rotation = float(2.0 * np.pi)
         self._last_journey_completion = 1.0
         self._actual_radius = self._park_radius
@@ -87,7 +91,7 @@ class StrokeMapper:
         self._startup_beats_seen = 0.0
         self._journey_startup_momentum = 1.0
         self._hold_start_pose_until_reactive = False
-        self._idle_radius = 0.05
+        self._idle_radius = self._min_radius
         self._silence_decay_per_beat = 0.40
         self._idle_loops_per_beat = 0.125
 
@@ -103,7 +107,7 @@ class StrokeMapper:
         self._crossfade_elapsed = 0.0
         self._crossfade_duration = 0.50   # seconds – long enough to feel smooth
         self._crossfade_from_angle = 0.0  # angle at moment of transition
-        self._crossfade_from_center_y = 0.0
+        self._crossfade_from_center_y = self._baseline_center_y
         self._crossfade_from_radius = self._park_radius
 
         # Bass-reactive jitter state (applied on creep only)
@@ -206,7 +210,7 @@ class StrokeMapper:
             # Decay-to-idle: preserve orbital motion and gradually shrink radius
             # by a beat-scaled factor until a tiny idle loop remains.
             geom = self.config.stroke.orbit_geometry.get(self._last_trigger_kind, {
-                "center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0
+                "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
             })
             type_center_y = float(geom["center_y"])
 
@@ -304,11 +308,26 @@ class StrokeMapper:
 
                     self._settle_active = False  # cancel any active settle
                     self._radius_hold_active = False
-                    if decision.trigger_kind == "start":
-                        self._journey_start_angle = float(self._park_angle)
-                    else:
-                        self._journey_start_angle = float(self._orbit_phase)
-                    self._journey_start_radius = float(np.clip(self._actual_radius, self._idle_radius, 1.0))
+
+                    # Latch geometry at journey start so mid-journey trigger
+                    # reclassification cannot reshape a running arc.
+                    geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
+                        "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
+                    })
+                    self._journey_center_y = float(geom["center_y"])
+                    self._journey_park_radius = float(geom["park_radius"])
+                    self._journey_max_radius = float(geom["max_radius"])
+
+                    self._journey_start_alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
+                    self._journey_start_beta = float(np.clip(self.state.beta, -1.0, 1.0))
+                    inherited_angle, inherited_radius = self._infer_orbit_from_position(
+                        alpha=self._journey_start_alpha,
+                        beta=self._journey_start_beta,
+                        center_y=self._journey_center_y,
+                    )
+                    self._journey_start_angle = inherited_angle
+                    self._journey_start_radius = float(np.clip(inherited_radius, self._min_radius, 1.0))
+
                     self._journey_total_rotation = self._compute_landing_rotation(
                         start_angle=self._journey_start_angle,
                         interval_beats=decision.interval_beats,
@@ -331,15 +350,6 @@ class StrokeMapper:
                     else:
                         self._journey_startup_momentum = 1.0
 
-                    # Latch geometry at journey start so mid-journey trigger
-                    # reclassification cannot reshape a running arc.
-                    geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
-                        "center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0
-                    })
-                    self._journey_center_y = float(geom["center_y"])
-                    self._journey_park_radius = float(geom["park_radius"])
-                    self._journey_max_radius = float(geom["max_radius"])
-
                 # Use latched geometry while a journey/settle is in-flight.
                 # Only refresh from live trigger kind when fully parked.
                 if (progress < 1.0) or (self._last_journey_completion < 1.0) or self._settle_active:
@@ -348,7 +358,7 @@ class StrokeMapper:
                     type_max_radius = float(self._journey_max_radius)
                 else:
                     geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
-                        "center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0
+                        "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
                     })
                     type_center_y = float(geom["center_y"])
                     type_park_radius = float(geom["park_radius"])
@@ -368,10 +378,7 @@ class StrokeMapper:
 
                 if started_new_journey:
                     self._journey_fixed_radius = bloom_target_radius
-                    if decision.trigger_kind == "start":
-                        self._actual_radius = 0.0
-                    else:
-                        self._actual_radius = self._journey_fixed_radius
+                    self._actual_radius = self._journey_start_radius
 
                 if progress >= 1.0 and not started_new_journey:
                     continuation_expected = bool(
@@ -474,7 +481,10 @@ class StrokeMapper:
                     radius = float(0.90 + ((0.70 - 0.90) * self._s_curve(exit_t)))
                 elif decision.trigger_kind == "start":
                     p = float(np.clip(smooth_progress_scaled, 0.0, 1.0))
-                    radius = float(self._journey_fixed_radius * (p ** 3))
+                    radius = float(
+                        self._journey_start_radius
+                        + ((self._journey_fixed_radius - self._journey_start_radius) * (p ** 3))
+                    )
                 else:
                     if self._journey_cold_start:
                         first_pass_progress = float(np.clip(
@@ -516,7 +526,7 @@ class StrokeMapper:
                         expanded_radius = float(np.clip(decision.radius_bloom, type_max_radius, 1.0))
                         radius = float(max(radius, expanded_radius))
 
-                min_radius_bound = 0.0 if decision.trigger_kind == "start" else 0.70
+                min_radius_bound = self._min_radius if decision.trigger_kind == "start" else 0.70
                 self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
                 radius = self._actual_radius
 
@@ -533,10 +543,8 @@ class StrokeMapper:
                     p = float(np.clip(progress, 0.0, 1.0))
                     swoop_t = float(np.clip(p / 0.25, 0.0, 1.0))
                     swoop_blend = self._s_curve(swoop_t)
-                    park_alpha = 0.0
-                    park_beta = float(type_center_y + type_park_radius)
-                    alpha = float((1.0 - swoop_blend) * park_alpha + (swoop_blend * alpha))
-                    beta = float((1.0 - swoop_blend) * park_beta + (swoop_blend * beta))
+                    alpha = float((1.0 - swoop_blend) * self._journey_start_alpha + (swoop_blend * alpha))
+                    beta = float((1.0 - swoop_blend) * self._journey_start_beta + (swoop_blend * beta))
 
                 if decision.trigger_kind == "creep":
                     jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
@@ -737,6 +745,14 @@ class StrokeMapper:
     def _wrapped_phase_delta(current: float, previous: float) -> float:
         """Return wrapped phase delta in [-pi, pi] for stable velocity estimation."""
         return float((current - previous + np.pi) % (2.0 * np.pi) - np.pi)
+
+    @staticmethod
+    def _infer_orbit_from_position(alpha: float, beta: float, center_y: float) -> tuple[float, float]:
+        """Infer phase/radius using current orientation: alpha=r*sin(theta), beta=center+r*cos(theta)."""
+        dy = float(beta - center_y)
+        radius = float(np.hypot(alpha, dy))
+        angle = float(np.arctan2(alpha, dy))
+        return angle, radius
 
     def _compute_landing_rotation(self, start_angle: float, interval_beats: int) -> float:
         # Rotation policy: 1 journey = 1 full lap for all trigger types.
