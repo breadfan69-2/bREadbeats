@@ -279,13 +279,18 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
             box_item.hide()
             overlay['base_rect'] = None
         elif mode == 'box' and None not in (x0, x1, y0, y1):
+            assert x0 is not None and x1 is not None and y0 is not None and y1 is not None
+            x0f = float(x0)
+            x1f = float(x1)
+            y0f = float(y0)
+            y1f = float(y1)
             line_item.hide()
-            text_item.setPos(float(x0) + 0.25, self._display_ceil_db - 0.5)
+            text_item.setPos(x0f + 0.25, self._display_ceil_db - 0.5)
             overlay['base_rect'] = QRectF(
-                min(float(x0), float(x1)),
-                min(float(y0), float(y1)),
-                max(0.001, abs(float(x1) - float(x0))),
-                max(0.2, abs(float(y1) - float(y0))),
+                min(x0f, x1f),
+                min(y0f, y1f),
+                max(0.001, abs(x1f - x0f)),
+                max(0.2, abs(y1f - y0f)),
             )
             box_item.show()
 
@@ -1514,6 +1519,10 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_fill_controls_widgets = {}
         self._motion_readiness_dialog = None
         self._motion_readiness_controls_widgets = {}
+        self.jitter_effect_action = None
+        self.connection_toggle_action = None
+        self.connection_test_action = None
+        self.revert_btn = None
         
         # Setup UI
         self._setup_ui()
@@ -3599,7 +3608,6 @@ class BREadbeatsWindow(QMainWindow):
                 high_tip_high_spin.setValue(high_val)
             self.config.stroke.high_tip_freq_low_hz = float(low_val)
             self.config.stroke.high_tip_freq_high_hz = float(high_val)
-            self.config.stroke.high_tip_freq_hz = float(low_val)
             _emit_high_tip_range_ghost()
 
         def _on_high_tip_high_change(v: int) -> None:
@@ -3610,7 +3618,6 @@ class BREadbeatsWindow(QMainWindow):
                 high_tip_low_spin.setValue(low_val)
             self.config.stroke.high_tip_freq_low_hz = float(low_val)
             self.config.stroke.high_tip_freq_high_hz = float(high_val)
-            self.config.stroke.high_tip_freq_hz = float(low_val)
             _emit_high_tip_range_ghost()
 
         high_tip_low_spin.valueChanged.connect(_on_high_tip_low_change)
@@ -4676,8 +4683,9 @@ Like the app?<br>
                     auto_fill_max_req.setValue(float(getattr(self.config.stroke, 'overall_amp_fill_auto_max_required', 0.98) or 0.98))
 
                 # Effects menu toggles
-                if hasattr(self, 'jitter_effect_action'):
-                    self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
+                jitter_action = getattr(self, 'jitter_effect_action', None)
+                if jitter_action is not None:
+                    jitter_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
 
                 # Connection settings
                 if hasattr(self, 'host_edit'):
@@ -5030,8 +5038,9 @@ Like the app?<br>
 
         # 1. PyInstaller frozen bundle
         candidates: list[Path] = []
-        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-            candidates.append(Path(sys._MEIPASS) / "defaults" / "learning")
+        meipass = getattr(sys, '_MEIPASS', None)
+        if getattr(sys, 'frozen', False) and meipass:
+            candidates.append(Path(str(meipass)) / "defaults" / "learning")
         # 2. Alongside the EXE
         if getattr(sys, 'frozen', False):
             candidates.append(Path(sys.executable).parent / "defaults" / "learning")
@@ -5200,9 +5209,10 @@ Like the app?<br>
         self.config.jitter.enabled = bool(checked)
 
     def _sync_effects_menu_actions(self):
-        if hasattr(self, 'jitter_effect_action'):
-            with self._signals_blocked(self.jitter_effect_action):
-                self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
+        jitter_action = getattr(self, 'jitter_effect_action', None)
+        if jitter_action is not None:
+            with self._signals_blocked(jitter_action):
+                jitter_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
 
     def _on_toggle_beat_band(self, checked: bool):
         """Toggle visibility of beat detection band (red) on all visualizers"""
@@ -5574,8 +5584,9 @@ Like the app?<br>
             btn.set_active(False)
         
         # Disable revert button (already reverted)
-        if hasattr(self, 'revert_btn'):
-            self.revert_btn.setEnabled(False)
+        revert_btn = getattr(self, 'revert_btn', None)
+        if revert_btn is not None:
+            revert_btn.setEnabled(False)
         self._revert_settings = None
         
         print("[Config] Reverted to previous settings")
@@ -6651,8 +6662,9 @@ Like the app?<br>
             btn.set_has_preset(False)
             btn.set_active(False)
             btn.setEnabled(False)
-        if hasattr(self, 'revert_btn'):
-            self.revert_btn.setEnabled(False)
+        revert_btn = getattr(self, 'revert_btn', None)
+        if revert_btn is not None:
+            revert_btn.setEnabled(False)
     
     def _create_tempo_response_group(self, lock_default: bool = True) -> QGroupBox:
         """Advanced tempo-response controls group used in Tempo Tracking popout."""
@@ -7851,10 +7863,12 @@ Like the app?<br>
         """Update connection status"""
         self.status_label.setText("Connected" if connected else "Disconnected")
         self.status_label.setStyleSheet(f"color: {'#0f0' if connected else '#f55'};")
-        if hasattr(self, 'connection_toggle_action'):
-            self.connection_toggle_action.setText("Disconnect" if connected else "Connect")
-        if hasattr(self, 'connection_test_action'):
-            self.connection_test_action.setEnabled(connected)
+        connection_toggle_action = getattr(self, 'connection_toggle_action', None)
+        if connection_toggle_action is not None:
+            connection_toggle_action.setText("Disconnect" if connected else "Connect")
+        connection_test_action = getattr(self, 'connection_test_action', None)
+        if connection_test_action is not None:
+            connection_test_action.setEnabled(connected)
 
     def _get_effective_output_volume_percent(self) -> float:
         """Return the actual tcode volume percent last sent (includes silence fade, ramps)."""
