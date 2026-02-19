@@ -358,16 +358,26 @@ class StrokeMapper:
                 self._angular_velocity = float(phase_delta / max(dt, 1e-4))
                 self._last_phase_for_velocity = self._orbit_phase
 
-                # Continuous "Smoooooth Arc": radius is independent of journey progress.
-                # Target radius follows music/learning; actual radius lerps via EMA.
-                # Never snap radius – always lerp for buttery transitions.
+                # Radius path is mathematically locked to journey angle/progress.
+                # - During unhook: smoothstep from park -> max radius
+                # - After unhook: hold steady at max radius (no catch-up lag)
                 if self._radius_hold_active:
-                    target_radius = float(np.clip(self._radius_hold_value, type_park_radius, type_max_radius))
+                    radius = float(np.clip(self._radius_hold_value, type_park_radius, type_max_radius))
                 else:
-                    target_radius = float(np.clip(self._journey_fixed_radius, type_park_radius, type_max_radius))
-                ease = 0.05
-                self._actual_radius += (target_radius - self._actual_radius) * ease
-                radius = float(np.clip(self._actual_radius, type_park_radius, type_max_radius))
+                    first_pass_progress = float(np.clip(
+                        (self._journey_total_rotation * smooth_progress) / (2.0 * np.pi),
+                        0.0,
+                        1.0,
+                    ))
+                    unhook_window = 0.20
+                    unhook_t = float(np.clip(first_pass_progress / unhook_window, 0.0, 1.0))
+                    radius_blend = self._s_curve(unhook_t)
+                    radius = float(
+                        type_park_radius
+                        + ((type_max_radius - type_park_radius) * radius_blend)
+                    )
+                self._actual_radius = float(np.clip(radius, type_park_radius, type_max_radius))
+                radius = self._actual_radius
 
                 if decision.trigger_kind == "creep":
                     treble_lift = self._intelligence.compute_treble_lift(progress)

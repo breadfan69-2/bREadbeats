@@ -148,12 +148,12 @@ class StrokeConfig:
     geometry_sink_start_intensity: float = 0.25  # Intensity where sink-to-rest lerp begins
 
     # Beat-type-specific orbital geometry: each type blooms from a different center
-    # All park at (0, 0.70) and bloom to max (0, 1.0), but with different radius ranges
+    # All journey types share the same radius range; only center differs.
     orbit_geometry: dict = field(default_factory=lambda: {
-        "downbeat": {"center_y": 0.3, "park_radius": 0.40, "max_radius": 0.70},
-        "beat": {"center_y": 0.1, "park_radius": 0.60, "max_radius": 0.90},
-        "syncopation": {"center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0},
-        "creep": {"center_y": 0.4, "park_radius": 0.30, "max_radius": 0.60},
+        "downbeat": {"center_y": 0.3, "park_radius": 0.70, "max_radius": 0.90},
+        "beat": {"center_y": 0.1, "park_radius": 0.70, "max_radius": 0.90},
+        "syncopation": {"center_y": 0.0, "park_radius": 0.70, "max_radius": 0.90},
+        "creep": {"center_y": 0.4, "park_radius": 0.70, "max_radius": 0.90},
     })
 
     # Stroke timing cadence:
