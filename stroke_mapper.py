@@ -49,9 +49,10 @@ class StrokeMapper:
         self.audio_engine = audio_engine
 
         self.state = StrokeState()
-        self._park_y = 0.70
-        self._baseline_center_y = 0.70
+        self._park_y = 0.60
+        self._baseline_center_y = 0.60
         self._min_radius = 0.05
+        self._park_idle_radius = 0.05  # tiny orbit when fully parked
         self._base_center_y = self._baseline_center_y
         self._reactive_bounce_y = 0.0
         self._journey_start_total_center_y = self._baseline_center_y
@@ -100,6 +101,13 @@ class StrokeMapper:
         self._silence_decay_per_beat = 0.40
         self._idle_loops_per_beat = 0.125
 
+        # Swirl-to-park state: tracks the spiral transition into idle
+        self._swirl_progress = 0.0       # 0→1 S-curve interpolant
+        self._swirl_duration_s = 1.8     # total time to spirally arrive at park
+        self._swirl_start_center_y = self._baseline_center_y
+        self._swirl_start_radius = self._park_radius
+        self._swirl_entering = False     # True on first silence frame after motion
+
         # Smooth landing / settle state (exponential lerp, no oscillation)
         self._settle_active = False
         self._settle_elapsed = 0.0
@@ -135,7 +143,7 @@ class StrokeMapper:
         self._sync_learning_to_intelligence()
 
     def configure_geometry_rest_state(self, y_offset: float, sink_start_intensity: float = 0.25) -> None:
-        self._park_y = 0.70
+        self._park_y = 0.60
         self._intelligence.set_park_y(self._park_y)
 
     def configure_learning(
@@ -212,52 +220,78 @@ class StrokeMapper:
 
         if decision.silence_active:
             self._hold_start_pose_until_reactive = False
-            # Decay-to-idle: preserve orbital motion and gradually shrink radius
-            # by a beat-scaled factor until a tiny idle loop remains.
-            geom = self.config.stroke.orbit_geometry.get(self._last_trigger_kind, {
-                "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
-            })
-            type_center_y = float(geom["center_y"])
+
+            # ── Swirl-to-park: spiral into 0.6y with S-curve interpolation ──
+            # First silence frame: latch current center/radius as start.
+            if not self._swirl_entering:
+                self._swirl_entering = True
+                self._swirl_progress = 0.0
+                self._swirl_start_center_y = float(self._base_center_y)
+                self._swirl_start_radius = float(max(self._actual_radius, self._park_idle_radius))
 
             bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
             if bpm <= 0.0:
                 bpm = float(getattr(event, "bpm", 0.0) or 0.0)
             bpm = float(np.clip(bpm if bpm > 0.0 else 120.0, 40.0, 240.0))
-            beats_elapsed = float(np.clip(dt, 1e-4, 0.25) * (bpm / 60.0))
-            decay_mult = float(self._silence_decay_per_beat ** beats_elapsed)
 
-            start_radius = float(max(self._actual_radius, self._idle_radius))
-            target_radius = float(max(self._idle_radius, start_radius * decay_mult))
-            self._actual_radius += 0.35 * (target_radius - self._actual_radius)
-            radius = float(np.clip(self._actual_radius, self._idle_radius, 1.0))
+            # Advance swirl progress toward 1.0
+            self._swirl_progress = float(np.clip(
+                self._swirl_progress + (dt / max(self._swirl_duration_s, 1e-3)),
+                0.0,
+                1.0,
+            ))
+            # S-curve (3t²-2t³) ensures zero velocity at arrival
+            swirl_t = self._s_curve(self._swirl_progress)
+
+            # Interpolate center_y: current → 0.6 (park)
+            swirl_center_y = float(
+                self._swirl_start_center_y
+                + ((self._baseline_center_y - self._swirl_start_center_y) * swirl_t)
+            )
+            # Interpolate radius: current → park idle radius
+            swirl_radius = float(
+                self._swirl_start_radius
+                + ((self._park_idle_radius - self._swirl_start_radius) * swirl_t)
+            )
+            radius = float(np.clip(swirl_radius, self._park_idle_radius, 1.0))
+            self._actual_radius = radius
 
             fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
+
+            # Theta keeps spinning — inherit momentum, decelerate smoothly
+            # Start from current angular velocity, blend to idle speed via S-curve
             idle_angular_speed = float((2.0 * np.pi) * (bpm / 60.0) * self._idle_loops_per_beat)
-            self._orbit_phase = float((self._orbit_phase + (idle_angular_speed * dt)) % (2.0 * np.pi))
-            self._angular_velocity = float(idle_angular_speed)
+            current_speed = max(abs(self._angular_velocity), idle_angular_speed)
+            blended_speed = float(
+                current_speed + ((idle_angular_speed - current_speed) * swirl_t)
+            )
+            self._orbit_phase = float((self._orbit_phase + (blended_speed * dt)) % (2.0 * np.pi))
+            self._angular_velocity = float(blended_speed)
             self._last_phase_for_velocity = self._orbit_phase
 
-            self._base_center_y = self._base_center_target(
-                trigger_kind=self._last_trigger_kind,
-                progress=1.0,
-                silence_active=True,
+            self._base_center_y = swirl_center_y
+
+            # Bass-reactive jitter stays active at park so the tiny orbit vibrates
+            jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
+                event=event, dt=dt,
             )
-            self._reactive_bounce_y = self._compute_reactive_bounce_y(
-                event=event,
-                dt=dt,
-                wait_state=True,
-            )
+            treble_bump = float(self._intelligence.compute_treble_lift(0.0))
+            self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
+
             total_center_y = float(self._base_center_y + self._reactive_bounce_y)
             orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
 
             angle = float(self._orbit_phase)
-            alpha = float(orbit_radius * np.cos(angle))
+            alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
             beta = float(total_center_y + (orbit_radius * np.sin(angle)))
             volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
             self._last_journey_completion = 1.0
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
             creep_motion_disabled = not bool(getattr(self.config.creep, "enabled", True))
+            # Reset swirl state when music resumes
+            self._swirl_entering = False
+            self._swirl_progress = 0.0
 
             if self._hold_start_pose_until_reactive and decision.trigger_kind == "creep":
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))

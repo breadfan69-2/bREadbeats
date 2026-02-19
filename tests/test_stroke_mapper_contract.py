@@ -206,7 +206,7 @@ class TestStrokeMapperContract(unittest.TestCase):
 
     def test_treble_elevator_uses_positive_park_geometry(self):
         mapper = StrokeMapper(Config())
-        self.assertAlmostEqual(mapper._park_y, 0.70, places=6)
+        self.assertAlmostEqual(mapper._park_y, 0.60, places=6)
 
     def test_treble_elevator_landing_guard_returns_center_to_park(self):
         intelligence = BeatIntelligence(Config())
@@ -496,13 +496,13 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         self.assertIsNotNone(cmd)
         assert cmd is not None
-        self.assertGreater(cmd.beta, 0.70)
+        self.assertGreater(cmd.beta, 0.60)
 
     def test_base_center_target_migrates_start_over_full_journey(self):
         mapper = StrokeMapper(Config())
 
-        self.assertAlmostEqual(mapper._base_center_target("start", 0.0, False), 0.70, places=6)
-        self.assertAlmostEqual(mapper._base_center_target("start", 0.5, False), 0.35, places=6)
+        self.assertAlmostEqual(mapper._base_center_target("start", 0.0, False), 0.60, places=6)
+        self.assertAlmostEqual(mapper._base_center_target("start", 0.5, False), 0.30, places=6)
         self.assertAlmostEqual(mapper._base_center_target("start", 1.0, False), 0.0, places=6)
 
     def test_base_center_target_is_zero_for_active_journeys(self):
