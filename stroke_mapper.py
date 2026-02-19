@@ -80,6 +80,8 @@ class StrokeMapper:
         self._angular_velocity = 0.0
         self._last_phase_for_velocity = self._orbit_phase
         self._journey_initial_speed_slope = 0.0
+        self._journey_nominal_angular_speed = 0.0  # nominal speed for continuation glide
+        self._orbit_phase_initialized = False  # True once orbit_phase has been actively tracked
         self._lazy_glide_active = False
         self._journey_cold_start = True
         self._journey_linked = False
@@ -348,13 +350,21 @@ class StrokeMapper:
 
                     self._journey_start_alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
                     self._journey_start_beta = float(np.clip(self.state.beta, -1.0, 1.0))
-                    inherited_angle, inherited_radius = self._infer_orbit_from_position(
-                        alpha=self._journey_start_alpha,
-                        beta=self._journey_start_beta,
-                        center_y=self._journey_start_total_center_y,
-                    )
-                    self._journey_start_angle = inherited_angle
-                    self._journey_start_radius = float(np.clip(inherited_radius, self._min_radius, 1.0))
+                    if self._orbit_phase_initialized:
+                        # Continuous phase — avoids atan2 roundtrip jitter
+                        self._journey_start_angle = float(self._orbit_phase)
+                        self._journey_start_radius = float(np.clip(self._actual_radius, self._min_radius, 1.0))
+                    else:
+                        # First journey: infer from externally-set position
+                        inherited_angle, inherited_radius = self._infer_orbit_from_position(
+                            alpha=self._journey_start_alpha,
+                            beta=self._journey_start_beta,
+                            center_y=self._journey_start_total_center_y,
+                        )
+                        self._journey_start_angle = inherited_angle
+                        self._journey_start_radius = float(np.clip(inherited_radius, self._min_radius, 1.0))
+                        self._orbit_phase = float(inherited_angle % (2.0 * np.pi))
+                        self._orbit_phase_initialized = True
 
                     self._journey_total_rotation = self._compute_landing_rotation(
                         start_angle=self._journey_start_angle,
@@ -364,6 +374,14 @@ class StrokeMapper:
                         event=event,
                         interval_beats=decision.interval_beats,
                     )
+                    # Compute nominal angular speed for smooth continuation glide
+                    _bpm_nom = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+                    if _bpm_nom <= 0:
+                        _bpm_nom = float(getattr(event, "bpm", 0.0) or 0.0)
+                    _bpm_nom = float(np.clip(_bpm_nom if _bpm_nom > 0 else 120.0, 40.0, 240.0))
+                    _journey_dur = float(decision.interval_beats) / (_bpm_nom / 60.0)
+                    self._journey_nominal_angular_speed = abs(self._journey_total_rotation) / max(_journey_dur, 1e-3)
+
                     if self._startup_beats_seen < self._startup_ramp_beats:
                         startup_ratio = float(np.clip(
                             self._startup_beats_seen / max(self._startup_ramp_beats, 1e-6),
@@ -392,9 +410,26 @@ class StrokeMapper:
                     type_park_radius = float(geom["park_radius"])
                     type_max_radius = float(geom["max_radius"])
 
-                # Learning bloom factor disabled: keep radius multiplier neutral.
-                if started_new_journey:
-                    self._journey_learning_mult = 1.0
+# Latch learning modifiers at journey start so mid-arc
+                    # predictions never cause radius/speed discontinuities.
+                    if started_new_journey:
+                        learning = decision.learning
+                        if learning.active:
+                            self._journey_learning_mult = float(np.clip(learning.radius_mult, 0.3, 2.5))
+                            # Syncopation-specific size/speed scaling
+                            if decision.trigger_kind == "syncopation":
+                                sync_size = float(np.clip(learning.sync_size_mult, 0.5, 2.0))
+                                self._journey_max_radius = float(np.clip(
+                                    self._journey_max_radius * sync_size,
+                                    self._journey_park_radius,
+                                    1.0,
+                                ))
+                                sync_speed = float(np.clip(learning.sync_speed_mult, 0.3, 3.0))
+                                self._journey_total_rotation = float(
+                                    self._journey_total_rotation * sync_speed
+                                )
+                        else:
+                            self._journey_learning_mult = 1.0
 
                 learning_mult = self._journey_learning_mult
 
@@ -424,7 +459,9 @@ class StrokeMapper:
                         self._radius_hold_active = True
                         self._radius_hold_start_time = now
                         self._radius_hold_value = float(type_max_radius)
-                        angle = float((self._orbit_phase + (self._angular_velocity * dt)) % (2.0 * np.pi))
+                        # Use nominal angular speed to prevent stalling during wait
+                        cont_speed = max(abs(self._angular_velocity), self._journey_nominal_angular_speed * 0.85)
+                        angle = float((self._orbit_phase + (cont_speed * dt)) % (2.0 * np.pi))
                     else:
                         self._settle_active = False
                         self._radius_hold_active = False
@@ -460,9 +497,16 @@ class StrokeMapper:
                         stretched_tail = float(tail_t * tail_t)
                         effective_progress = float(0.70 + (0.30 * stretched_tail))
 
+                    # Carry velocity through journey boundary when continuation expected
+                    _cont_expected = bool(
+                        self._journey_linked
+                        or self._is_upcoming_beat_expected(now=now, decision=decision)
+                    )
+                    _end_slope = 1.0 if _cont_expected else 0.0
                     smooth_progress = self._s_curve_with_initial_velocity(
                         progress=effective_progress,
                         initial_slope=self._journey_initial_speed_slope,
+                        end_slope=_end_slope,
                         lazy_glide=self._lazy_glide_active,
                     )
                     startup_momentum = float(np.clip(
@@ -748,11 +792,11 @@ class StrokeMapper:
         """Legacy cubic Hermite easing (kept for test compatibility)."""
         p = float(np.clip(progress, 0.0, 1.0))
         p_eval = p
+        carrying = end_slope > 1e-3  # carrying velocity through to next journey
 
-        if (not lazy_glide) and (0.90 < p < 1.0):
+        if (not lazy_glide) and (not carrying) and (0.90 < p < 1.0):
             # Arrival-only micro "time stretch" before +Y crossing.
-            # This slows progress by up to ~2% without touching arc geometry
-            # or adding departure damping.
+            # Skip when carrying velocity through to next journey.
             t = (p - 0.90) / 0.10
             p_eval = float(np.clip(p - (0.020 * np.sin(np.pi * t)), 0.0, 1.0))
 
@@ -762,7 +806,8 @@ class StrokeMapper:
         h01 = (-2.0 * p_eval * p_eval * p_eval) + (3.0 * p_eval * p_eval)
         h11 = (p_eval * p_eval * p_eval) - (p_eval * p_eval)
         eased = (h10 * m0) + h01 + (h11 * m1)
-        if (not lazy_glide) and p > 0.92:
+        if (not lazy_glide) and (not carrying) and p > 0.92:
+            # Landing overshoot - skip when carrying velocity through
             t = (p - 0.92) / 0.08
             overshoot = 0.025 * float(np.sin(t * np.pi))
             eased += overshoot
