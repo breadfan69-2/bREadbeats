@@ -78,6 +78,8 @@ class BeatIntelligence:
         self.journey_duration_s = 0.0
         self.journey_elapsed_s = 0.0
         self.journey_active = False
+        self.is_recovering: bool = False
+        self._was_silence_active: bool = False
         self._journey_duration_target_s = 0.0
         self._journey_duration_blend_frames_remaining = 0
         self._journey_duration_blend_alpha = 0.35
@@ -1235,7 +1237,14 @@ class BeatIntelligence:
         "creep": 3,
     }
 
-    def update_journey_progress(self, trigger_kind: str, interval_beats: int, event: BeatEvent, dt: float) -> float:
+    def update_journey_progress(
+        self,
+        trigger_kind: str,
+        interval_beats: int,
+        event: BeatEvent,
+        dt: float,
+        force_start: bool = False,
+    ) -> float:
         bpm = self.effective_bpm(event)
         beat_period_s = 60.0 / max(1e-6, bpm)
         target_duration = max(1e-3, beat_period_s * float(interval_beats))
@@ -1254,7 +1263,19 @@ class BeatIntelligence:
         should_start = False
         is_interrupt = False   # True when restarting over an active journey
 
-        if not self.journey_active:
+        if self.is_recovering:
+            if force_start and not self.journey_active:
+                should_start = True
+            elif not self.journey_active:
+                should_start = True
+            else:
+                should_start = False
+            is_interrupt = False
+        elif force_start:
+            should_start = True
+            is_interrupt = bool(self.journey_active)
+
+        elif not self.journey_active:
             # Always start if no journey is running
             should_start = True
         elif is_new_beat:
@@ -1347,6 +1368,8 @@ class BeatIntelligence:
         if completion >= 1.0:
             self.journey_active = False
             lazy_glide = False
+            if self.is_recovering:
+                self.is_recovering = False
         self._lazy_glide_active = bool(lazy_glide)
         return completion
 
@@ -1415,6 +1438,15 @@ class BeatIntelligence:
         silence_active = self.update_silence_deadzone_gate(overall_amplitude)
         if silence_override is not None:
             silence_active = bool(silence_override)
+
+        recovery_start = False
+        if silence_active:
+            self._was_silence_active = True
+            self.is_recovering = False
+        elif self._was_silence_active:
+            self._was_silence_active = False
+            self.is_recovering = True
+            recovery_start = True
 
         # Reset fill duration tracking during silence
         if silence_active:
@@ -1486,6 +1518,9 @@ class BeatIntelligence:
             if trigger_kind != "creep":
                 self._creep_consecutive_frames = 0
 
+        if self.is_recovering and not silence_active:
+            trigger_kind = "beat"
+
         # ── Phrase Commitment: musical phrase locking ──
         # When switching from slow gear (creep) to fast gear (beat), 
         # commit for a period to prevent sporadic jumps. But allow
@@ -1550,11 +1585,15 @@ class BeatIntelligence:
             self.journey_active = False
             self.last_trigger_kind = "creep"
             self.active_interval_beats = 8
+            self.is_recovering = False
             self._phrase_committed = False
             self._phrase_beats_remaining = 0
             no_beat_timed_out = True
 
-        interval_beats = self.interval_beats_for_trigger(trigger_kind)
+        if self.is_recovering:
+            interval_beats = 8
+        else:
+            interval_beats = self.interval_beats_for_trigger(trigger_kind)
 
         # Apply learning divisor hint only at journey boundaries.
         # _committed_divisor_hint is latched from _learned_divisor_hint
@@ -1571,7 +1610,13 @@ class BeatIntelligence:
         if no_beat_timed_out:
             journey_completion = 1.0  # fully parked
         else:
-            journey_completion = self.update_journey_progress(trigger_kind, interval_beats, event, dt)
+            journey_completion = self.update_journey_progress(
+                trigger_kind,
+                interval_beats,
+                event,
+                dt,
+                force_start=recovery_start,
+            )
 
         # Only update the active trigger kind / interval when a journey
         # actually (re)started.  This keeps the running arc's priority
