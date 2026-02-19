@@ -73,6 +73,14 @@ class StrokeMapper:
         self._last_phase_for_velocity = self._orbit_phase
         self._journey_initial_speed_slope = 0.0
         self._lazy_glide_active = False
+        self._journey_cold_start = True
+        self._journey_linked = False
+        self._exit_spiral_active = False
+        self._exit_spiral_progress = 0.0
+        self._exit_spiral_start_angle = 0.0
+        self._exit_spiral_duration_s = 0.60
+        self._journey_relink_active = False
+        self._journey_relink_start_radius = 0.90
 
         # Smooth landing / settle state (exponential lerp, no oscillation)
         self._settle_active = False
@@ -249,6 +257,20 @@ class StrokeMapper:
             else:
                 started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
                 if started_new_journey:
+                    prior_completion = float(self._last_journey_completion)
+                    if self._exit_spiral_active:
+                        self._journey_linked = True
+                        self._journey_cold_start = False
+                        self._journey_relink_active = True
+                        self._journey_relink_start_radius = float(np.clip(self._actual_radius, 0.70, 1.0))
+                    else:
+                        self._journey_linked = bool(prior_completion < 0.999)
+                        self._journey_cold_start = not self._journey_linked
+                        self._journey_relink_active = False
+
+                    self._exit_spiral_active = False
+                    self._exit_spiral_progress = 0.0
+
                     # Crossfade disabled for trajectory stability.
                     # Hard switching to the new arc preserves circular motion
                     # and avoids blended-path squiggles at trigger boundaries.
@@ -306,28 +328,50 @@ class StrokeMapper:
                     self._actual_radius = self._journey_fixed_radius
 
                 if progress >= 1.0 and not started_new_journey:
+                    continuation_expected = bool(
+                        self._journey_linked
+                        or self._is_upcoming_beat_expected(now=now, decision=decision)
+                    )
+
                     if self._last_journey_completion >= 1.0:
                         self._journey_fixed_radius = bloom_target_radius
-                    if not self._radius_hold_active:
+
+                    if continuation_expected and decision.trigger_kind != "creep":
+                        self._exit_spiral_active = False
+                        self._exit_spiral_progress = 0.0
+                        self._settle_active = False
                         self._radius_hold_active = True
                         self._radius_hold_start_time = now
-                        # Hold at the same radius used throughout the journey.
-                        self._radius_hold_value = float(np.clip(self._journey_fixed_radius, type_park_radius, type_max_radius))
-                    # ── Smooth landing: long exponential lerp toward park ──
-                    # No oscillation – just a buttery-smooth glide to rest.
-                    # Uses accumulated dt for frame-rate-independent decay.
-                    if not self._settle_active:
-                        self._settle_active = True
-                        self._settle_elapsed = 0.0
-                        self._settle_start_angle = float(self._orbit_phase)
-                    self._settle_elapsed += dt
-                    blend = 1.0 - float(np.exp(-self._settle_decay_rate * self._settle_elapsed))
-                    # Lerp from where the journey ended toward park angle
-                    angle_diff = self._wrapped_phase_delta(self._park_angle, self._settle_start_angle)
-                    angle = float(self._settle_start_angle + angle_diff * blend)
-                    if blend > 0.992 and self._settle_elapsed > 0.2:
+                        self._radius_hold_value = float(type_max_radius)
+                        angle = float((self._orbit_phase + (self._angular_velocity * dt)) % (2.0 * np.pi))
+                    else:
                         self._settle_active = False
-                        angle = float(self._park_angle)
+                        self._radius_hold_active = False
+                        if not self._exit_spiral_active:
+                            self._exit_spiral_active = True
+                            self._exit_spiral_progress = 0.0
+                            self._exit_spiral_start_angle = float(self._orbit_phase)
+                            self._exit_spiral_duration_s = float(np.clip(
+                                (2.0 * np.pi) / max(abs(self._angular_velocity), 0.35),
+                                0.35,
+                                1.2,
+                            ))
+
+                        self._exit_spiral_progress = float(np.clip(
+                            self._exit_spiral_progress + (dt / max(self._exit_spiral_duration_s, 1e-3)),
+                            0.0,
+                            1.0,
+                        ))
+                        exit_t = self._exit_spiral_progress
+                        angle = float(self._exit_spiral_start_angle + (2.0 * np.pi * exit_t))
+
+                        if exit_t >= 1.0:
+                            self._exit_spiral_active = False
+                            self._journey_linked = False
+                            self._journey_cold_start = True
+                            self._radius_hold_active = True
+                            self._radius_hold_start_time = now
+                            self._radius_hold_value = 0.70
                 else:
                     effective_progress = progress
                     if self._lazy_glide_active and progress > 0.70:
@@ -359,24 +403,56 @@ class StrokeMapper:
                 self._last_phase_for_velocity = self._orbit_phase
 
                 # Radius path is mathematically locked to journey angle/progress.
-                # - During unhook: smoothstep from park -> max radius
-                # - After unhook: hold steady at max radius (no catch-up lag)
+                # - Cold start: smoothstep from park -> max during first pass
+                # - Linked beat: bypass park and lock to max immediately
+                # - Continuation expected: allow controlled bloom up to 1.0
                 if self._radius_hold_active:
                     radius = float(np.clip(self._radius_hold_value, type_park_radius, type_max_radius))
+                elif self._exit_spiral_active:
+                    exit_t = float(np.clip(self._exit_spiral_progress, 0.0, 1.0))
+                    radius = float(0.90 + ((0.70 - 0.90) * self._s_curve(exit_t)))
                 else:
-                    first_pass_progress = float(np.clip(
-                        (self._journey_total_rotation * smooth_progress) / (2.0 * np.pi),
-                        0.0,
-                        1.0,
-                    ))
-                    unhook_window = 0.20
-                    unhook_t = float(np.clip(first_pass_progress / unhook_window, 0.0, 1.0))
-                    radius_blend = self._s_curve(unhook_t)
-                    radius = float(
-                        type_park_radius
-                        + ((type_max_radius - type_park_radius) * radius_blend)
+                    if self._journey_cold_start:
+                        first_pass_progress = float(np.clip(
+                            (self._journey_total_rotation * smooth_progress) / (2.0 * np.pi),
+                            0.0,
+                            1.0,
+                        ))
+                        unhook_window = 1.0
+                        unhook_t = float(np.clip(first_pass_progress / unhook_window, 0.0, 1.0))
+                        radius_blend = self._s_curve(unhook_t)
+                        radius = float(
+                            type_park_radius
+                            + ((type_max_radius - type_park_radius) * radius_blend)
+                        )
+                    else:
+                        radius = float(type_max_radius)
+
+                    if self._journey_relink_active:
+                        first_pass_progress = float(np.clip(
+                            (self._journey_total_rotation * smooth_progress) / (2.0 * np.pi),
+                            0.0,
+                            1.0,
+                        ))
+                        relink_window = 0.30
+                        relink_t = float(np.clip(first_pass_progress / relink_window, 0.0, 1.0))
+                        relink_blend = self._s_curve(relink_t)
+                        radius = float(
+                            self._journey_relink_start_radius
+                            + ((type_max_radius - self._journey_relink_start_radius) * relink_blend)
+                        )
+                        if relink_t >= 1.0:
+                            self._journey_relink_active = False
+
+                    continuation_expected = bool(
+                        self._journey_linked
+                        or self._is_upcoming_beat_expected(now=now, decision=decision)
                     )
-                self._actual_radius = float(np.clip(radius, type_park_radius, type_max_radius))
+                    if continuation_expected:
+                        expanded_radius = float(np.clip(decision.radius_bloom, type_max_radius, 1.0))
+                        radius = float(max(radius, expanded_radius))
+
+                self._actual_radius = float(np.clip(radius, 0.70, 1.0))
                 radius = self._actual_radius
 
                 if decision.trigger_kind == "creep":
@@ -455,6 +531,23 @@ class StrokeMapper:
         jitter_alpha = float(jitter_amp * np.sin(phase))
         jitter_beta = float((jitter_amp * 0.70) * np.cos(phase))
         return jitter_alpha, jitter_beta
+
+    def _is_upcoming_beat_expected(self, now: float, decision: BeatDecision) -> bool:
+        if decision.trigger_kind == "creep":
+            return False
+        if bool(getattr(decision, "lazy_glide_active", False)):
+            return False
+        if self.audio_engine is None:
+            return False
+
+        predicted_next = float(getattr(self.audio_engine, "predicted_next_beat_mono", 0.0) or 0.0)
+        if predicted_next <= now:
+            return False
+
+        met_bpm = float(getattr(self.audio_engine, "_metronome_bpm", 0.0) or 0.0)
+        bpm = met_bpm if met_bpm > 0.0 else 120.0
+        beat_period_s = 60.0 / max(1e-6, bpm)
+        return float(predicted_next - now) <= float(1.25 * beat_period_s)
 
     @staticmethod
     def _s_curve(progress: float) -> float:
