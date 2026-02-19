@@ -57,6 +57,7 @@ class StrokeMapper:
         self._park_radius = 0.70
         self._max_radius = 1.0
         self._journey_fixed_radius = self._park_radius
+        self._journey_start_radius = self._park_radius
         self._journey_learning_mult = 1.0  # frozen at journey start; never re-read mid-arc
         self._journey_center_y = 0.0
         self._journey_park_radius = self._park_radius
@@ -85,6 +86,10 @@ class StrokeMapper:
         self._startup_ramp_beats = 4.0
         self._startup_beats_seen = 0.0
         self._journey_startup_momentum = 1.0
+        self._hold_start_pose_until_reactive = False
+        self._idle_radius = 0.05
+        self._silence_decay_per_beat = 0.95
+        self._idle_loops_per_beat = 0.125
 
         # Smooth landing / settle state (exponential lerp, no oscillation)
         self._settle_active = False
@@ -197,35 +202,53 @@ class StrokeMapper:
         self._lazy_glide_active = bool(getattr(decision, "lazy_glide_active", False))
 
         if decision.silence_active:
-            # Apply silence fade (gradual, not binary) with radius exhale.
-            # Do NOT hard-snap back to park on silence entry.
-            # Use geometry from last active trigger kind
+            self._hold_start_pose_until_reactive = False
+            # Decay-to-idle: preserve orbital motion and gradually shrink radius
+            # by a beat-scaled factor until a tiny idle loop remains.
             geom = self.config.stroke.orbit_geometry.get(self._last_trigger_kind, {
                 "center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0
             })
-            type_park_radius = float(geom["park_radius"])
-            type_max_radius = float(geom["max_radius"])
             type_center_y = float(geom["center_y"])
 
+            bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+            if bpm <= 0.0:
+                bpm = float(getattr(event, "bpm", 0.0) or 0.0)
+            bpm = float(np.clip(bpm if bpm > 0.0 else 120.0, 40.0, 240.0))
+            beats_elapsed = float(np.clip(dt, 1e-4, 0.25) * (bpm / 60.0))
+            decay_mult = float(self._silence_decay_per_beat ** beats_elapsed)
+
+            start_radius = float(max(self._actual_radius, self._idle_radius))
+            target_radius = float(max(self._idle_radius, start_radius * decay_mult))
+            self._actual_radius += 0.35 * (target_radius - self._actual_radius)
+            radius = float(np.clip(self._actual_radius, self._idle_radius, 1.0))
+
             fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
-            self._orbit_phase = float(self._park_angle)
+            idle_angular_speed = float((2.0 * np.pi) * (bpm / 60.0) * self._idle_loops_per_beat)
+            self._orbit_phase = float((self._orbit_phase + (idle_angular_speed * dt)) % (2.0 * np.pi))
+            self._angular_velocity = float(idle_angular_speed)
             self._last_phase_for_velocity = self._orbit_phase
-            self._angular_velocity = 0.0
 
-            held_radius = float(np.clip(max(self._actual_radius, self._radius_hold_value), type_park_radius, type_max_radius))
-            target_radius = float(type_park_radius + ((held_radius - type_park_radius) * fade))
-            self._actual_radius += 0.08 * (target_radius - self._actual_radius)
-            radius = float(np.clip(self._actual_radius, type_park_radius, type_max_radius))
-
-            alpha = 0.0
-            beta = float(type_center_y + (radius * np.cos(0.0)))
+            angle = float(self._orbit_phase)
+            alpha = float(radius * np.sin(angle))
+            beta = float(type_center_y + (radius * np.cos(angle)))
             volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
             self._last_journey_completion = 1.0
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
             creep_motion_disabled = not bool(getattr(self.config.creep, "enabled", True))
 
-            if creep_motion_disabled:
+            if self._hold_start_pose_until_reactive and decision.trigger_kind == "creep":
+                ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+                volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
+                self._last_journey_completion = 1.0
+                return TCodeCommand(
+                    alpha=float(np.clip(self.state.alpha, -1.0, 1.0)),
+                    beta=float(np.clip(self.state.beta, -1.0, 1.0)),
+                    duration_ms=25,
+                    volume=volume,
+                )
+
+            if creep_motion_disabled and decision.trigger_kind == "creep":
                 # Creep disabled: use creep geometry to park
                 geom = self.config.stroke.orbit_geometry.get("creep", {
                     "center_y": 0.4, "park_radius": 0.30, "max_radius": 0.60
@@ -258,6 +281,8 @@ class StrokeMapper:
             else:
                 started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
                 if started_new_journey:
+                    if decision.trigger_kind in ("beat", "downbeat", "syncopation", "start"):
+                        self._hold_start_pose_until_reactive = False
                     prior_completion = float(self._last_journey_completion)
                     if self._exit_spiral_active:
                         self._journey_linked = True
@@ -280,6 +305,7 @@ class StrokeMapper:
                     self._settle_active = False  # cancel any active settle
                     self._radius_hold_active = False
                     self._journey_start_angle = float(self._orbit_phase)
+                    self._journey_start_radius = float(np.clip(self._actual_radius, self._idle_radius, 1.0))
                     self._journey_total_rotation = self._compute_landing_rotation(
                         start_angle=self._journey_start_angle,
                         interval_beats=decision.interval_beats,
@@ -339,7 +365,10 @@ class StrokeMapper:
 
                 if started_new_journey:
                     self._journey_fixed_radius = bloom_target_radius
-                    self._actual_radius = self._journey_fixed_radius
+                    if decision.trigger_kind == "start":
+                        self._actual_radius = self._journey_start_radius
+                    else:
+                        self._actual_radius = self._journey_fixed_radius
 
                 if progress >= 1.0 and not started_new_journey:
                     continuation_expected = bool(
@@ -440,6 +469,12 @@ class StrokeMapper:
                 elif self._exit_spiral_active:
                     exit_t = float(np.clip(self._exit_spiral_progress, 0.0, 1.0))
                     radius = float(0.90 + ((0.70 - 0.90) * self._s_curve(exit_t)))
+                elif decision.trigger_kind == "start":
+                    radius_blend = self._s_curve(float(np.clip(smooth_progress_scaled, 0.0, 1.0)))
+                    radius = float(
+                        self._journey_start_radius
+                        + ((self._journey_fixed_radius - self._journey_start_radius) * radius_blend)
+                    )
                 else:
                     if self._journey_cold_start:
                         first_pass_progress = float(np.clip(
@@ -481,7 +516,8 @@ class StrokeMapper:
                         expanded_radius = float(np.clip(decision.radius_bloom, type_max_radius, 1.0))
                         radius = float(max(radius, expanded_radius))
 
-                self._actual_radius = float(np.clip(radius, 0.70, 1.0))
+                min_radius_bound = self._idle_radius if decision.trigger_kind == "start" else 0.70
+                self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
                 radius = self._actual_radius
 
                 if decision.trigger_kind == "creep":
@@ -503,6 +539,8 @@ class StrokeMapper:
                 volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
 
                 self._last_journey_completion = progress
+                if decision.trigger_kind == "start" and progress >= 1.0:
+                    self._hold_start_pose_until_reactive = True
 
         alpha = float(np.clip(alpha, -1.0, 1.0))
         beta = float(np.clip(beta, -1.0, 1.0))

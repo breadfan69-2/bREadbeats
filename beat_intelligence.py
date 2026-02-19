@@ -1247,7 +1247,20 @@ class BeatIntelligence:
     ) -> float:
         bpm = self.effective_bpm(event)
         beat_period_s = 60.0 / max(1e-6, bpm)
+        if self.is_recovering:
+            trigger_kind = "start"
+            interval_beats = 8
         target_duration = max(1e-3, beat_period_s * float(interval_beats))
+
+        if self.is_recovering and self.journey_active and not force_start:
+            step = float(np.clip(dt, 1e-4, 0.25))
+            self.journey_elapsed_s = min(self.journey_duration_s, self.journey_elapsed_s + step)
+            completion = float(np.clip(self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0))
+            if completion >= 1.0:
+                self.journey_active = False
+                self._lazy_glide_active = False
+                self.is_recovering = False
+            return completion
 
         is_new_beat = bool(
             (trigger_kind == "syncopation" and bool(getattr(event, "is_syncopated", False)))
@@ -1461,6 +1474,33 @@ class BeatIntelligence:
         if request_tempo_reset:
             self._auto_fill_offsets = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
             self._auto_fill_ema = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
+
+        if self.is_recovering and not silence_active:
+            trigger_kind = "start"
+            interval_beats = 8
+            radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
+            journey_completion = self.update_journey_progress(
+                trigger_kind,
+                interval_beats,
+                event,
+                dt,
+                force_start=recovery_start,
+            )
+            if journey_completion <= 1e-9:
+                self.active_interval_beats = interval_beats
+                self.last_trigger_kind = trigger_kind
+
+            return BeatDecision(
+                trigger_kind=trigger_kind,
+                interval_beats=interval_beats,
+                radius_bloom=radius_bloom,
+                silence_active=False,
+                journey_completion=journey_completion,
+                silence_fade=float(silence_fade),
+                post_silence_ramp=float(post_silence_ramp),
+                lazy_glide_active=False,
+                learning=LearningOutputs(),
+            )
 
         # Phase 2: readiness state machine (replaces raw _tempo_ready_for_motion)
         stroke_ready = self._update_stroke_readiness(event, now)
