@@ -57,6 +57,7 @@ class StrokeMapper:
         self._park_radius = 0.70
         self._max_radius = 1.0
         self._journey_fixed_radius = self._park_radius
+        self._journey_learning_mult = 1.0  # frozen at journey start; never re-read mid-arc
         self._park_angle = 0.0
         self._journey_start_angle = self._park_angle
         self._journey_total_rotation = float(2.0 * np.pi)
@@ -74,13 +75,13 @@ class StrokeMapper:
         self._settle_active = False
         self._settle_elapsed = 0.0
         self._settle_start_angle = self._park_angle
-        self._settle_decay_rate = 3.0  # lower = longer, smoother glide to park
+        self._settle_decay_rate = 4.0  # higher = quicker settle, less tail linger
 
         # Mid-journey crossfade state: buttery blend from old trajectory
         # into new one when a beat fires before the previous journey ends.
         self._crossfade_active = False
         self._crossfade_elapsed = 0.0
-        self._crossfade_duration = 0.35   # seconds – long enough to feel smooth
+        self._crossfade_duration = 0.50   # seconds – long enough to feel smooth
         self._crossfade_from_angle = 0.0  # angle at moment of transition
         self._crossfade_from_center_y = 0.0
         self._crossfade_from_radius = self._park_radius
@@ -245,23 +246,10 @@ class StrokeMapper:
             else:
                 started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
                 if started_new_journey:
-                    # Snapshot current pose for crossfade blending.
-                    # If the previous journey hadn't finished (or settle
-                    # was still gliding), we crossfade from where we are
-                    # into the new trajectory for a buttery transition.
-                    mid_journey = (self._last_journey_completion < 0.98)
-                    mid_settle = self._settle_active
-                    if mid_journey or mid_settle:
-                        self._crossfade_active = True
-                        self._crossfade_elapsed = 0.0
-                        self._crossfade_from_angle = float(self._orbit_phase)
-                        self._crossfade_from_radius = float(self._actual_radius)
-                        # Capture outgoing center_y
-                        old_geom = self.config.stroke.orbit_geometry.get(
-                            self._last_trigger_kind,
-                            {"center_y": 0.0, "park_radius": 0.70, "max_radius": 1.0},
-                        )
-                        self._crossfade_from_center_y = float(old_geom["center_y"])
+                    # Crossfade disabled for trajectory stability.
+                    # Hard switching to the new arc preserves circular motion
+                    # and avoids blended-path squiggles at trigger boundaries.
+                    self._crossfade_active = False
 
                     self._settle_active = False  # cancel any active settle
                     self._radius_hold_active = False
@@ -283,9 +271,11 @@ class StrokeMapper:
                 type_max_radius = float(geom["max_radius"])
                 type_center_y = float(geom["center_y"])
 
-                learning_mult = 1.0
-                if decision.learning.active:
-                    learning_mult = float(np.clip(decision.learning.radius_mult, 0.3, 2.5))
+                # Learning bloom factor disabled: keep radius multiplier neutral.
+                if started_new_journey:
+                    self._journey_learning_mult = 1.0
+
+                learning_mult = self._journey_learning_mult
 
                 # Map global radius_bloom (0.70→1.0) to type-specific range (park→max)
                 normalized_bloom = float(np.clip((decision.radius_bloom - 0.70) / 0.30, 0.0, 1.0))
@@ -317,7 +307,7 @@ class StrokeMapper:
                     # Lerp from where the journey ended toward park angle
                     angle_diff = self._wrapped_phase_delta(self._park_angle, self._settle_start_angle)
                     angle = float(self._settle_start_angle + angle_diff * blend)
-                    if blend > 0.995 and self._settle_elapsed > 0.3:
+                    if blend > 0.992 and self._settle_elapsed > 0.2:
                         self._settle_active = False
                         angle = float(self._park_angle)
                 else:
@@ -327,7 +317,7 @@ class StrokeMapper:
                         stretched_tail = float(tail_t * tail_t)
                         effective_progress = float(0.70 + (0.30 * stretched_tail))
 
-                    smooth_progress = self._sine_ease_with_velocity(
+                    smooth_progress = self._s_curve_with_initial_velocity(
                         progress=effective_progress,
                         initial_slope=self._journey_initial_speed_slope,
                         lazy_glide=self._lazy_glide_active,
@@ -370,34 +360,6 @@ class StrokeMapper:
                 # Apply beat-type-specific orbital center
                 alpha = float(radius * np.sin(angle))
                 beta = float(type_center_y + treble_lift + (radius * np.cos(angle)))
-
-                # ── Mid-journey crossfade ──
-                # When a new journey fired before the old one finished,
-                # blend from the snapshot pose into the new trajectory.
-                # Uses exponential ease-in so the blend itself is buttery.
-                if self._crossfade_active:
-                    self._crossfade_elapsed += dt
-                    t_norm = float(np.clip(
-                        self._crossfade_elapsed / max(self._crossfade_duration, 1e-4),
-                        0.0, 1.0,
-                    ))
-                    # Sine ease-in: starts slow (preserves old motion feel),
-                    # then accelerates into the new trajectory.
-                    blend = 0.5 * (1.0 - float(np.cos(np.pi * t_norm)))
-
-                    # Blend angle (in Cartesian to avoid wrap discontinuities)
-                    old_x = self._crossfade_from_radius * float(np.sin(self._crossfade_from_angle))
-                    old_y = self._crossfade_from_center_y + (
-                        self._crossfade_from_radius * float(np.cos(self._crossfade_from_angle))
-                    )
-                    alpha = float(old_x + blend * (alpha - old_x))
-                    beta = float(old_y + blend * (beta - old_y))
-
-                    # Fade the snapshot radius toward the new radius
-                    self._crossfade_from_radius += 0.08 * (radius - self._crossfade_from_radius)
-
-                    if t_norm >= 1.0:
-                        self._crossfade_active = False
 
                 if decision.trigger_kind == "creep":
                     jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
