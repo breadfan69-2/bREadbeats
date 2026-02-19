@@ -71,6 +71,46 @@ class TestStrokeMapperContract(unittest.TestCase):
         beat_event = self._event(is_syncopated=False, is_downbeat=False, is_beat=True)
         self.assertEqual(intelligence.classify_trigger(beat_event), "beat")
 
+    def test_recovery_lock_ignores_midflight_trigger_changes(self):
+        intelligence = BeatIntelligence(Config())
+
+        intelligence.build_decision(event=self._event(raw_rms=0.0), dt=1.0 / 60.0, silence_override=True)
+        d0 = intelligence.build_decision(event=self._event(is_beat=True), dt=1.0 / 60.0, silence_override=False)
+
+        self.assertTrue(intelligence.is_recovering)
+        self.assertEqual(d0.trigger_kind, "start")
+        self.assertEqual(d0.interval_beats, 8)
+        self.assertLess(d0.journey_completion, 0.05)
+
+        d1 = intelligence.build_decision(
+            event=self._event(is_syncopated=True, is_downbeat=True, is_beat=True),
+            dt=1.0 / 60.0,
+            silence_override=False,
+        )
+
+        self.assertEqual(d1.trigger_kind, "start")
+        self.assertEqual(d1.interval_beats, 8)
+        self.assertGreater(d1.journey_completion, 0.0)
+
+    def test_recovery_lock_latches_radius_bloom_until_complete(self):
+        intelligence = BeatIntelligence(Config())
+
+        intelligence.build_decision(event=self._event(raw_rms=0.0), dt=1.0 / 60.0, silence_override=True)
+
+        call_count = {"n": 0}
+
+        def _fake_radius(event=None):
+            call_count["n"] += 1
+            return 0.91 if call_count["n"] == 1 else 0.40
+
+        intelligence.compute_radius_bloom_from_sub_bass = _fake_radius
+
+        d0 = intelligence.build_decision(event=self._event(is_beat=True), dt=1.0 / 60.0, silence_override=False)
+        d1 = intelligence.build_decision(event=self._event(is_downbeat=True), dt=1.0 / 60.0, silence_override=False)
+
+        self.assertAlmostEqual(d0.radius_bloom, 0.91, places=6)
+        self.assertAlmostEqual(d1.radius_bloom, 0.91, places=6)
+
     def test_sub_bass_maps_to_radius_bloom_range(self):
         intelligence = BeatIntelligence(Config())
         intelligence.rms_envelope = 0.15  # above low-amp suppression threshold

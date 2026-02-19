@@ -80,6 +80,7 @@ class BeatIntelligence:
         self.journey_active = False
         self.is_recovering: bool = False
         self._was_silence_active: bool = False
+        self._recovery_radius_bloom: float = 0.70
         self._journey_duration_target_s = 0.0
         self._journey_duration_blend_frames_remaining = 0
         self._journey_duration_blend_alpha = 0.35
@@ -1460,6 +1461,7 @@ class BeatIntelligence:
             self._was_silence_active = False
             self.is_recovering = True
             recovery_start = True
+            self._recovery_radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
 
         # Reset fill duration tracking during silence
         if silence_active:
@@ -1478,7 +1480,7 @@ class BeatIntelligence:
         if self.is_recovering and not silence_active:
             trigger_kind = "start"
             interval_beats = 8
-            radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
+            radius_bloom = float(self._recovery_radius_bloom)
             journey_completion = self.update_journey_progress(
                 trigger_kind,
                 interval_beats,
@@ -1557,9 +1559,6 @@ class BeatIntelligence:
         else:
             if trigger_kind != "creep":
                 self._creep_consecutive_frames = 0
-
-        if self.is_recovering and not silence_active:
-            trigger_kind = "beat"
 
         # ── Phrase Commitment: musical phrase locking ──
         # When switching from slow gear (creep) to fast gear (beat), 
