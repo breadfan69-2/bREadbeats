@@ -6699,7 +6699,6 @@ Like the app?<br>
         """Programmatically save current learning/calibration state into a hidden slot."""
         key = str(int(max(0, min(4, idx))))
         self.learned_profile_slots[key] = self._capture_learned_slot_payload()
-        self._save_presets_to_disk()
 
     def _apply_learned_profile_slot(self, idx: int) -> None:
         """Programmatically apply a hidden learned slot to runtime state."""
@@ -6709,16 +6708,8 @@ Like the app?<br>
             self._apply_learned_slot_payload(payload)
     
     def _save_presets_to_disk(self):
-        """Persist hidden learned-slot payloads (UI remains fixed empty/disabled)."""
-        try:
-            out = {
-                'version': 1,
-                'slots': self.learned_profile_slots,
-            }
-            path = get_config_dir() / 'learned_profile_slots.json'
-            path.write_text(json.dumps(out, indent=2), encoding='utf-8')
-        except Exception as e:
-            print(f"[Presets] Error saving learned slots: {e}")
+        """Preset persistence disabled: keep learned slots in-memory only."""
+        return
     
     def _load_presets_from_disk(self):
         """Load hidden learned-slot payloads and initialize reserved empty slot buttons."""
@@ -8180,9 +8171,6 @@ Like the app?<br>
         
         # Save config before closing
         save_config(self.config)
-
-        # Save presets to disk
-        self._save_presets_to_disk()
 
         event.accept()
 
