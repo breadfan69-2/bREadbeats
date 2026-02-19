@@ -219,10 +219,7 @@ class StrokeMapper:
             self._last_journey_completion = 1.0
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
-            creep_motion_disabled = (
-                decision.trigger_kind == "creep"
-                and not bool(getattr(self.config.creep, "enabled", True))
-            )
+            creep_motion_disabled = False
 
             if creep_motion_disabled:
                 # Creep disabled: use creep geometry to park
