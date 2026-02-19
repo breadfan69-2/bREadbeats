@@ -5,10 +5,13 @@ Qt GUI with beat detection, stroke mapping, and spectrum visualization.
 
 # Heavy imports - these are the slow ones, but splash is already showing by this point
 import sys
+import atexit
+import socket
 from contextlib import contextmanager
 import time
 import json
 from datetime import datetime
+import subprocess
 
 _import_t0 = time.perf_counter()
 print("\n[Startup] main.py loading heavy modules...", flush=True)
@@ -80,6 +83,69 @@ def _track_slider_value(name: str, value: float) -> None:
 
 _apply_dict_to_dataclass = apply_dict_to_dataclass
 _migrate_config = migrate_config
+
+
+_CHILD_PROCESSES: set[subprocess.Popen] = set()
+_CHILD_PROCESSES_LOCK = threading.Lock()
+
+
+def _cleanup_child_processes() -> None:
+    with _CHILD_PROCESSES_LOCK:
+        procs = list(_CHILD_PROCESSES)
+        _CHILD_PROCESSES.clear()
+
+    for proc in procs:
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+        except Exception:
+            pass
+
+
+def _spawn_background_process(args: list[str]) -> subprocess.Popen | None:
+    popen_kwargs: dict = {"shell": False}
+    if os.name == 'nt':
+        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    try:
+        proc = subprocess.Popen(args, **popen_kwargs)
+        with _CHILD_PROCESSES_LOCK:
+            _CHILD_PROCESSES.add(proc)
+        return proc
+    except Exception:
+        return None
+
+
+class _SingleInstanceLock:
+    def __init__(self, port: int = 48173):
+        self._port = int(port)
+        self._sock: socket.socket | None = None
+
+    def acquire(self) -> bool:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("127.0.0.1", self._port))
+            sock.listen(1)
+            self._sock = sock
+            return True
+        except OSError:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            return False
+
+    def release(self) -> None:
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
+atexit.register(_cleanup_child_processes)
 
 
 class SignalBridge(QObject):
@@ -363,7 +429,6 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
 
 def launch_projectm():
     """Attempt to launch projectM standalone application"""
-    import subprocess
     import shutil
     
     # Common projectM executable paths
@@ -384,7 +449,9 @@ def launch_projectm():
             # Try to find in PATH
             if shutil.which(path):
                 try:
-                    subprocess.Popen([path], shell=False)
+                    proc = _spawn_background_process([path])
+                    if proc is None:
+                        raise RuntimeError("launch failed")
                     print(f"[Visualizer] Launched projectM from PATH")
                     return True
                 except:
@@ -392,7 +459,9 @@ def launch_projectm():
         else:
             if os.path.exists(path):
                 try:
-                    subprocess.Popen([path], shell=False)
+                    proc = _spawn_background_process([path])
+                    if proc is None:
+                        raise RuntimeError("launch failed")
                     print(f"[Visualizer] Launched projectM from {path}")
                     return True
                 except Exception as e:
@@ -8108,6 +8177,13 @@ Like the app?<br>
 
 def main():
     """Main entry point - backup if not launched via run.py"""
+    instance_lock = _SingleInstanceLock()
+    if not instance_lock.acquire():
+        print("[Startup] Another bREadbeats instance is already running. Exiting.", flush=True)
+        return
+
+    atexit.register(instance_lock.release)
+
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     
@@ -8139,7 +8215,10 @@ def main():
     
     window.show()
     
-    sys.exit(app.exec())
+    try:
+        sys.exit(app.exec())
+    finally:
+        instance_lock.release()
 
 
 if __name__ == "__main__":
