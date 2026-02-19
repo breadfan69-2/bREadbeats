@@ -44,6 +44,7 @@ class BeatDecision:
     silence_fade: float = 1.0          # 1.0 = full volume, 0.0 = fully faded
     post_silence_ramp: float = 1.0     # 1.0 = full volume, <1 = ramping back in
     lazy_glide_active: bool = False
+    gate_fail: str = ""                # which gate rejected a beat-family event (empty = passed or N/A)
 
     learning: LearningOutputs = field(default_factory=LearningOutputs)
 
@@ -957,6 +958,12 @@ class BeatIntelligence:
         fill_ratio = self._get_spectrum_fill_ratio(trigger_kind)
         required = self._get_overall_amp_fill_required(trigger_kind)
 
+        # Apply learning gate_bias: negative bias lowers the bar (more motion),
+        # positive bias raises it (less motion).  Scaled to ±20% of required.
+        if self._learning_outputs.active and abs(self._learning_outputs.gate_bias) > 1e-3:
+            bias_shift = float(self._learning_outputs.gate_bias * 0.20 * required)
+            required = float(np.clip(required + bias_shift, 0.02, 0.99))
+
         # Check instant fill pass/fail
         instant_passed = fill_ratio >= required
         self._update_auto_fill_required(trigger_kind, instant_passed)
@@ -1335,6 +1342,15 @@ class BeatIntelligence:
             else:
                 self.journey_duration_s = target_duration
 
+            # Apply learning lead_ms: shorten journey so orbit arrives
+            # slightly ahead of the next beat.  Clamped so timing stays sane.
+            if self._learning_outputs.active and self._learning_outputs.lead_ms > 0.5:
+                lead_s = float(np.clip(self._learning_outputs.lead_ms / 1000.0, 0.0, 0.10))
+                self.journey_duration_s = float(max(
+                    self.journey_duration_s * 0.70,
+                    self.journey_duration_s - lead_s,
+                ))
+
             self._journey_duration_target_s = self.journey_duration_s
             self._journey_duration_blend_frames_remaining = 0
             self.journey_elapsed_s = 0.0
@@ -1512,6 +1528,7 @@ class BeatIntelligence:
 
         raw_trigger_kind = self.classify_trigger(event)
         trigger_kind = raw_trigger_kind
+        gate_fail_reason = ""  # tracks which gate blocked a beat-family event
 
         # Record beat times for hierarchy tracking
         self._record_beat_times(event, raw_trigger_kind, now)
@@ -1528,19 +1545,26 @@ class BeatIntelligence:
             self._creep_consecutive_frames = 0
         elif raw_trigger_kind in ("syncopation", "beat", "downbeat") and not silence_active:
             gate_passed = True
+            gate_fail_reason = ""
             if not stroke_ready:
                 gate_passed = False
+                gate_fail_reason = "stroke_ready"
             elif not self._strict_bass_motion_allowed(event, raw_trigger_kind):
                 gate_passed = False
+                gate_fail_reason = "strict_bass"
             elif self._is_mid_trigger_blocked(event):
                 gate_passed = False
+                gate_fail_reason = "mid_trigger"
             # Phase 3 gates: low-band → dual-band → spectrum fill
             elif not self._is_low_band_full_enough(event, raw_trigger_kind, bpm):
                 gate_passed = False
+                gate_fail_reason = "low_band"
             elif not self._passes_dual_band_db_gate(event):
                 gate_passed = False
+                gate_fail_reason = "dual_band_db"
             elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
                 gate_passed = False
+                gate_fail_reason = "amp_fill"
 
             if gate_passed:
                 self._creep_consecutive_frames = 0
@@ -1674,5 +1698,6 @@ class BeatIntelligence:
             silence_fade=float(silence_fade),
             post_silence_ramp=float(post_silence_ramp),
             lazy_glide_active=bool(self._lazy_glide_active),
+            gate_fail=gate_fail_reason,
             learning=learning,
         )

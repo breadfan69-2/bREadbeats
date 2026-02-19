@@ -127,6 +127,16 @@ class StrokeMapper:
         self._bass_jitter_phase = 0.0
         self._bass_jitter_freq_ema = 0.5
 
+        # Gate-idle state: smooth deceleration when beat gets gated with creep disabled
+        self._gate_idle_active = False
+        self._gate_idle_progress = 0.0    # 0→1 S-curve deceleration
+        self._gate_idle_duration_s = 1.2  # seconds to fully decelerate
+        self._gate_idle_start_center_y = self._baseline_center_y
+        self._gate_idle_start_radius = self._park_radius
+        self._gate_idle_start_angular_vel = 0.0
+
+        self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
+
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
         self._learning_enabled = bool(getattr(self.config.beat, "teaching_learning_enabled", False))
@@ -217,9 +227,13 @@ class StrokeMapper:
         self._active_interval_beats = decision.interval_beats
         self._last_trigger_kind = decision.trigger_kind
         self._lazy_glide_active = bool(getattr(decision, "lazy_glide_active", False))
+        self._last_gate_fail = str(getattr(decision, "gate_fail", "") or "")
 
         if decision.silence_active:
             self._hold_start_pose_until_reactive = False
+            # Reset gate-idle on silence entry (swirl-to-park takes over)
+            self._gate_idle_active = False
+            self._gate_idle_progress = 0.0
 
             # ── Swirl-to-park: spiral into 0.6y with S-curve interpolation ──
             # First silence frame: latch current center/radius as start.
@@ -289,7 +303,7 @@ class StrokeMapper:
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
             creep_motion_disabled = not bool(getattr(self.config.creep, "enabled", True))
-            # Reset swirl state when music resumes
+            # Reset swirl state when music resumes (gate-idle persists until new journey)
             self._swirl_entering = False
             self._swirl_progress = 0.0
 
@@ -305,29 +319,57 @@ class StrokeMapper:
                 )
 
             if creep_motion_disabled and decision.trigger_kind == "creep":
-                # Creep disabled: park at creep geometry center with bass jitter
+                # Creep disabled: graceful momentum decay instead of instant park.
+                # Dot keeps orbiting but smoothly decelerates to park position.
                 geom = self.config.stroke.orbit_geometry.get("creep", {
                     "center_y": 0.10, "park_radius": 0.30, "max_radius": 0.60
                 })
                 type_park_radius = float(geom["park_radius"])
-                type_max_radius = float(geom["max_radius"])
                 type_center_y = float(geom["center_y"])
 
+                # First creep frame after motion: latch current state
+                if not self._gate_idle_active:
+                    self._gate_idle_active = True
+                    self._gate_idle_progress = 0.0
+                    self._gate_idle_start_center_y = float(self._base_center_y)
+                    self._gate_idle_start_radius = float(max(self._actual_radius, type_park_radius))
+                    self._gate_idle_start_angular_vel = float(max(abs(self._angular_velocity), 0.5))
+
                 self._settle_active = False
-                if not self._radius_hold_active:
-                    self._radius_hold_active = True
-                    self._radius_hold_start_time = now
-                    self._radius_hold_value = type_park_radius
-                    self._actual_radius = type_park_radius  # Snap to park immediately
-                self._orbit_phase = float(self._park_angle)
+                self._radius_hold_active = False
+
+                # Advance deceleration progress
+                self._gate_idle_progress = float(np.clip(
+                    self._gate_idle_progress + (dt / max(self._gate_idle_duration_s, 1e-3)),
+                    0.0,
+                    1.0,
+                ))
+                idle_t = self._s_curve(self._gate_idle_progress)
+
+                # Interpolate center_y: current → creep center
+                self._base_center_y = float(
+                    self._gate_idle_start_center_y
+                    + ((type_center_y - self._gate_idle_start_center_y) * idle_t)
+                )
+
+                # Interpolate radius: current → park radius
+                radius = float(
+                    self._gate_idle_start_radius
+                    + ((type_park_radius - self._gate_idle_start_radius) * idle_t)
+                )
+                self._actual_radius = float(np.clip(radius, type_park_radius, 1.0))
+
+                # Decelerate angular velocity smoothly to near-idle
+                idle_angular_speed = 0.3  # gentle residual spin
+                blended_speed = float(
+                    self._gate_idle_start_angular_vel
+                    + ((idle_angular_speed - self._gate_idle_start_angular_vel) * idle_t)
+                )
+                self._orbit_phase = float((self._orbit_phase + (blended_speed * dt)) % (2.0 * np.pi))
+                self._angular_velocity = float(blended_speed)
                 self._last_phase_for_velocity = self._orbit_phase
-                self._angular_velocity = 0.0
 
-                radius = type_park_radius  # Park at type-specific radius
-
-                # Use the creep geometry center_y directly (not baseline)
-                self._base_center_y = type_center_y
-                # Bass jitter active at park so the dot bounces with bass
+                # Bass jitter active so the dot bounces with bass
                 jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
                     event=event, dt=dt,
                 )
@@ -335,10 +377,11 @@ class StrokeMapper:
                 self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 
                 total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-                orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
+                orbit_radius = float(min(self._actual_radius, self._radius_cap_for_center(total_center_y)))
 
-                alpha = float(orbit_radius * np.cos(self._park_angle)) + float(jitter_alpha * 0.3)
-                beta = float(total_center_y + (orbit_radius * np.sin(self._park_angle)))
+                angle = float(self._orbit_phase)
+                alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
+                beta = float(total_center_y + (orbit_radius * np.sin(angle)))
 
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
@@ -354,10 +397,20 @@ class StrokeMapper:
                         self._journey_cold_start = False
                         self._journey_relink_active = True
                         self._journey_relink_start_radius = float(np.clip(self._actual_radius, 0.70, 1.0))
+                    elif self._gate_idle_active:
+                        # Coming out of gate-idle deceleration — treat as linked
+                        self._journey_linked = True
+                        self._journey_cold_start = False
+                        self._journey_relink_active = True
+                        self._journey_relink_start_radius = float(np.clip(self._actual_radius, 0.30, 1.0))
                     else:
                         self._journey_linked = bool(prior_completion < 0.999)
                         self._journey_cold_start = not self._journey_linked
                         self._journey_relink_active = False
+
+                    # Reset gate-idle state on any new journey
+                    self._gate_idle_active = False
+                    self._gate_idle_progress = 0.0
 
                     self._exit_spiral_active = False
                     self._exit_spiral_progress = 0.0

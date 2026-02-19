@@ -7769,7 +7769,12 @@ Like the app?<br>
         p1_str = f"P1={p1_tag:04d}" if p1_tag is not None else "P1=off"
         p3_tag = cmd.tcode_tags.get('P3', None) if cmd.tcode_tags else None
         p3_str = f"P3={p3_tag:04d}" if p3_tag is not None else "P3=off"
-        print(f"[Main] Cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} {p0_str} {c0_str} {p1_str} {p3_str}")
+        gate_str = ""
+        if hasattr(self, 'stroke_mapper') and hasattr(self.stroke_mapper, '_last_gate_fail'):
+            gf = self.stroke_mapper._last_gate_fail
+            if gf:
+                gate_str = f" GATE_FAIL={gf}"
+        print(f"[Main] Cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} {p0_str} {c0_str} {p1_str} {p3_str}{gate_str}")
     
     def _network_status_callback(self, message: str, connected: bool):
         """Called from network thread on status change"""
