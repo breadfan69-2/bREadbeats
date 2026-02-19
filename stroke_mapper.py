@@ -389,9 +389,19 @@ class StrokeMapper:
         speed_blend = float(np.clip(speed_inf / 100.0, 0.0, 2.0))
         size_blend = float(np.clip(size_inf / 100.0, 0.0, 2.0))
 
-        speed_mult = 1.0 + ((bass_mult - 1.0) * speed_blend)
+        combo_texture = float(np.clip(float(getattr(self.config.stroke, "combo_texture", 1.0) or 1.0), -2.0, 3.0))
+        if combo_texture >= 1.0:
+            texture_factor = 1.0 + ((combo_texture - 1.0) / 2.0)
+        else:
+            texture_factor = 1.0 - ((1.0 - combo_texture) / 3.0) * 0.5
+
+        # Texture > 1 amplifies bass-driven jitter variance, < 1 damps it.
+        speed_effect = (bass_mult - 1.0) * speed_blend * texture_factor
+        size_effect = ((1.0 / bass_mult) - 1.0) * size_blend * texture_factor
+
+        speed_mult = float(np.clip(1.0 + speed_effect, 0.0, 5.0))
         # Inverted size: high bass → smaller circles, low bass → bigger circles
-        size_mult = 1.0 + ((1.0 / bass_mult - 1.0) * size_blend)
+        size_mult = float(np.clip(1.0 + size_effect, 0.0, 5.0))
 
         jitter_speed = max(0.0, base_speed * speed_mult)
         jitter_amp = max(0.0, base_amp * size_mult)
