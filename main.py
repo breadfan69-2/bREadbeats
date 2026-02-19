@@ -7966,6 +7966,16 @@ Like the app?<br>
     
     def _update_display(self):
         """Periodic display update + sync cached widget states for thread-safe audio access"""
+        def _is_live_widget_attr(name: str) -> bool:
+            widget = getattr(self, name, None)
+            if widget is None:
+                return False
+            try:
+                widget.parent()
+            except RuntimeError:
+                return False
+            return True
+
         if self.stroke_mapper:
             alpha, beta = self.stroke_mapper.get_current_position()
             self.position_canvas.update_position(alpha, beta)
@@ -7981,7 +7991,7 @@ Like the app?<br>
             'p1_enabled_checkbox',
             'p3_enabled_checkbox',
         )
-        controls_toggle_ready = all(hasattr(self, name) for name in control_toggle_names)
+        controls_toggle_ready = all(_is_live_widget_attr(name) for name in control_toggle_names)
         if controls_toggle_ready:
             # P0/F0/P1/P3 enable state MUST be synced immediately (every frame) for instant response
             new_p0_enabled = self.pulse_enabled_checkbox.isChecked()
@@ -8057,7 +8067,7 @@ Like the app?<br>
                 'p3_mode_combo', 'p3_invert_checkbox',
                 'p3_tcode_range_slider', 'p3_monitor_range_slider', 'p3_weight_slider',
             )
-            if all(hasattr(self, name) for name in control_sync_names):
+            if all(_is_live_widget_attr(name) for name in control_sync_names):
                 # Sync other combo/checkbox states for audio thread (throttled is fine)
                 self._cached_pulse_mode = self.pulse_mode_combo.currentIndex()
                 self._cached_pulse_invert = self.pulse_invert_checkbox.isChecked()
