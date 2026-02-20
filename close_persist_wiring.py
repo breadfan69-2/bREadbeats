@@ -79,3 +79,10 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
     intensity_ramp_spin = _optional_window_attr(window, "intensity_ramp_spin")
     if hasattr(intensity_ramp_spin, "value"):
         config.stroke.intensity_ramp_hours = float(intensity_ramp_spin.value())
+
+    intensity_ramp_target_combo = _optional_window_attr(window, "intensity_ramp_target_combo")
+    if hasattr(intensity_ramp_target_combo, "currentText"):
+        target = str(intensity_ramp_target_combo.currentText() or "both").strip().lower()
+        if target not in {"size", "speed", "both"}:
+            target = "both"
+        config.stroke.intensity_ramp_target = target

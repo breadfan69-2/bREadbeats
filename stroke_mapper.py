@@ -176,6 +176,8 @@ class StrokeMapper:
         self._intensity_ramp_started: bool = False
         self._intensity_ramp_mult: float = 1.0
         self._intensity_ramp_floor: float = 0.25
+        self._intensity_ramp_affect_size: bool = True
+        self._intensity_ramp_affect_speed: bool = True
 
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
@@ -273,6 +275,12 @@ class StrokeMapper:
         self._update_expression_layer(decision=decision, dt=dt, now=now)
 
         # ── Intensity timer ramp: session-level escalation ──
+        ramp_target = str(getattr(self.config.stroke, 'intensity_ramp_target', 'both') or 'both').strip().lower()
+        if ramp_target not in ('size', 'speed', 'both'):
+            ramp_target = 'both'
+        self._intensity_ramp_affect_size = ramp_target in ('size', 'both')
+        self._intensity_ramp_affect_speed = ramp_target in ('speed', 'both')
+
         ramp_hours = float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0)
         if ramp_hours > 0.0:
             if not decision.silence_active and not self._intensity_ramp_started:
@@ -521,7 +529,7 @@ class StrokeMapper:
                     self._journey_max_radius = float(np.clip(expanded_max, base_max, 1.0))
 
                     # Intensity timer: scale available dynamic range toward park radius
-                    if self._intensity_ramp_mult < 1.0:
+                    if self._intensity_ramp_affect_size and self._intensity_ramp_mult < 1.0:
                         self._journey_max_radius = float(
                             self._journey_park_radius
                             + ((self._journey_max_radius - self._journey_park_radius) * self._intensity_ramp_mult)
@@ -1270,7 +1278,7 @@ class StrokeMapper:
             turns = float(np.clip(turns + session_bias, 0.5, 2.0))
 
         # Intensity timer: scale dynamic turn range toward minimum
-        if self._intensity_ramp_mult < 1.0:
+        if self._intensity_ramp_affect_speed and self._intensity_ramp_mult < 1.0:
             base_turns = float(getattr(self.config.stroke, 'orbit_speed_min_turns', 0.75) or 0.75)
             turns = float(base_turns + ((turns - base_turns) * self._intensity_ramp_mult))
 
