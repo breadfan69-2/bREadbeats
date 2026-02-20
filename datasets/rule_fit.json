@@ -1,0 +1,179 @@
+{
+  "status": "ok",
+  "feature_columns": [
+    "rms",
+    "log_energy",
+    "spectral_flux",
+    "flux_delta",
+    "sub_bass_energy",
+    "low_mid_energy",
+    "mid_energy",
+    "high_energy",
+    "low_high_ratio",
+    "spectral_centroid_hz",
+    "spectral_bandwidth_hz",
+    "spectral_rolloff_hz",
+    "spectral_flatness"
+  ],
+  "target_columns": [
+    "arc_size",
+    "arc_duration_frac",
+    "jitter_mix",
+    "creep_mix",
+    "gate_strictness",
+    "burst_prob"
+  ],
+  "ridge_alpha": 1.0,
+  "unscripted_weight": 3.0,
+  "normalization": {
+    "mean": {
+      "rms": 0.017669098500230976,
+      "log_energy": -5.876129468020745,
+      "spectral_flux": 0.0,
+      "flux_delta": 0.0,
+      "sub_bass_energy": 2.2406600689368124,
+      "low_mid_energy": 0.00012788898530215385,
+      "mid_energy": 5.715032479341495e-06,
+      "high_energy": 2.752757808971113e-07,
+      "low_high_ratio": 3355124.6740021976,
+      "spectral_centroid_hz": 3.0293248212790624,
+      "spectral_bandwidth_hz": 6.201067615540925,
+      "spectral_rolloff_hz": 8.981720322702314,
+      "spectral_flatness": 0.5869658693079559
+    },
+    "std": {
+      "rms": 0.025525707342709373,
+      "log_energy": 3.7273634068678243,
+      "spectral_flux": 1e-06,
+      "flux_delta": 1e-06,
+      "sub_bass_energy": 3.2369752393521036,
+      "low_mid_energy": 0.00018475496590657445,
+      "mid_energy": 8.25607183935185e-06,
+      "high_energy": 1e-06,
+      "low_high_ratio": 3999631.3812386594,
+      "spectral_centroid_hz": 3.6112436070249823,
+      "spectral_bandwidth_hz": 7.3922718676372146,
+      "spectral_rolloff_hz": 10.70706576784709,
+      "spectral_flatness": 0.4923760084773439
+    }
+  },
+  "models": {
+    "arc_size": {
+      "intercept": 0.42824062892354764,
+      "coefficients": {
+        "rms": 0.010568132491720256,
+        "log_energy": -0.003451580930964845,
+        "spectral_flux": 0.0,
+        "flux_delta": 0.0,
+        "sub_bass_energy": 0.010568133198387647,
+        "low_mid_energy": 0.010568099555401096,
+        "mid_energy": 0.010567450707381361,
+        "high_energy": 0.004201771790117984,
+        "low_high_ratio": -0.004501693730538156,
+        "spectral_centroid_hz": -0.004539571183471151,
+        "spectral_bandwidth_hz": -0.004500545255515367,
+        "spectral_rolloff_hz": -0.004539808771311949,
+        "spectral_flatness": 0.004539807417385142
+      }
+    },
+    "arc_duration_frac": {
+      "intercept": 1.2076284049024042,
+      "coefficients": {
+        "rms": -0.01911432238986454,
+        "log_energy": 0.008577811385580739,
+        "spectral_flux": 0.0,
+        "flux_delta": 0.0,
+        "sub_bass_energy": -0.01911432376619058,
+        "low_mid_energy": -0.01911425668350457,
+        "mid_energy": -0.019112961146912424,
+        "high_energy": -0.0075995065914667755,
+        "low_high_ratio": 0.01062973043635772,
+        "spectral_centroid_hz": 0.01070368446634946,
+        "spectral_bandwidth_hz": 0.010627488069908255,
+        "spectral_rolloff_hz": 0.010704146874876613,
+        "spectral_flatness": -0.010704147862809382
+      }
+    },
+    "jitter_mix": {
+      "intercept": 0.17383821622813536,
+      "coefficients": {
+        "rms": 0.007447554908257759,
+        "log_energy": -0.002800836875827727,
+        "spectral_flux": 0.0,
+        "flux_delta": 0.0,
+        "sub_bass_energy": 0.007447555458255292,
+        "low_mid_energy": 0.007447530751698457,
+        "mid_energy": 0.007447054219984012,
+        "high_energy": 0.002961043556920782,
+        "low_high_ratio": -0.003564950203509474,
+        "spectral_centroid_hz": -0.0035925024517782724,
+        "spectral_bandwidth_hz": -0.0035641148206708,
+        "spectral_rolloff_hz": -0.003592674818254371,
+        "spectral_flatness": 0.0035926751312997714
+      }
+    },
+    "creep_mix": {
+      "intercept": 0.5818259059486861,
+      "coefficients": {
+        "rms": -0.016296153716264604,
+        "log_energy": 0.007657389813164694,
+        "spectral_flux": 0.0,
+        "flux_delta": 0.0,
+        "sub_bass_energy": -0.01629615496235374,
+        "low_mid_energy": -0.016296096805777285,
+        "mid_energy": -0.0162949742489989,
+        "high_energy": -0.00647903411325479,
+        "low_high_ratio": 0.00942927876328464,
+        "spectral_centroid_hz": 0.009493132081727336,
+        "spectral_bandwidth_hz": 0.009427342678928636,
+        "spectral_rolloff_hz": 0.009493531509296632,
+        "spectral_flatness": -0.009493532306273894
+      }
+    },
+    "gate_strictness": {
+      "intercept": 0.5911631818249555,
+      "coefficients": {
+        "rms": 0.015683295483179243,
+        "log_energy": -0.009792250341435075,
+        "spectral_flux": 0.0,
+        "flux_delta": 0.0,
+        "sub_bass_energy": 0.015683296818314364,
+        "low_mid_energy": 0.01568323434285236,
+        "mid_energy": 0.015682027332819176,
+        "high_energy": 0.0062352333161541,
+        "low_high_ratio": -0.011655847763621939,
+        "spectral_centroid_hz": -0.011722950295068868,
+        "spectral_bandwidth_hz": -0.011653813167412968,
+        "spectral_rolloff_hz": -0.011723369860201545,
+        "spectral_flatness": 0.011723371228831665
+      }
+    },
+    "burst_prob": {
+      "intercept": 0.1975561670049968,
+      "coefficients": {
+        "rms": 0.005976288208889964,
+        "log_energy": -0.003314132098678392,
+        "spectral_flux": 0.0,
+        "flux_delta": 0.0,
+        "sub_bass_energy": 0.005976288695043459,
+        "low_mid_energy": 0.005976265999273969,
+        "mid_energy": 0.005975827855542865,
+        "high_energy": 0.0023760267819979333,
+        "low_high_ratio": -0.003997002536406797,
+        "spectral_centroid_hz": -0.004021599410491462,
+        "spectral_bandwidth_hz": -0.0039962567390168895,
+        "spectral_rolloff_hz": -0.0040217532922941,
+        "spectral_flatness": 0.004021753599652721
+      }
+    }
+  },
+  "cadence_rule": {
+    "quiet_threshold": -0.41532479228892216,
+    "mid_threshold": 0.0785620706362788,
+    "mapping": {
+      "quiet": 4,
+      "mid": 2,
+      "loud": 1
+    }
+  }
+}
