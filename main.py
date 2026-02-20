@@ -4955,9 +4955,9 @@ Like the app?<br>
         play_stack.addWidget(self.play_btn)
         btn_layout.addLayout(play_stack, 0, 1)
 
-        # Volume slider (0 - 100) - uses compact label for control panel
-        self.volume_slider = SliderWithLabel("Vol", 0, 100, 100, decimals=0)
-        self.volume_slider.label.setFixedWidth(30)  # Compact label for controls box
+        # Volume slider (0 - 100)
+        self.volume_slider = SliderWithLabel("Volume", 0, 100, 100, decimals=0)
+        self.volume_slider.label.setFixedWidth(60)
         self.volume_slider.setMinimumWidth(180)
         self.volume_slider.setContentsMargins(0, 0, 0, 0)
         btn_layout.addWidget(self.volume_slider, 0, 2, 1, 1, Qt.AlignmentFlag.AlignHCenter)
@@ -4968,25 +4968,25 @@ Like the app?<br>
         
         # Carrier Freq display
         self.carrier_freq_label = QLabel("Carrier Freq: off")
-        self.carrier_freq_label.setStyleSheet("color: #bbb; font-size: 10px;")
+        self.carrier_freq_label.setStyleSheet("color: #0af; font-size: 10px;")
         self.carrier_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.carrier_freq_label)
         
         # Pulse Freq display
         self.pulse_freq_label = QLabel("Pulse Freq: off")
-        self.pulse_freq_label.setStyleSheet("color: #bbb; font-size: 10px;")
+        self.pulse_freq_label.setStyleSheet("color: #0af; font-size: 10px;")
         self.pulse_freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.pulse_freq_label)
         
         # Pulse Width display
         self.p1_display_label = QLabel("Pulse Width: off")
-        self.p1_display_label.setStyleSheet("color: #bbb; font-size: 10px;")
+        self.p1_display_label.setStyleSheet("color: #0af; font-size: 10px;")
         self.p1_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.p1_display_label)
         
         # Rise Time display
         self.p3_display_label = QLabel("Rise Time: off")
-        self.p3_display_label.setStyleSheet("color: #bbb; font-size: 10px;")
+        self.p3_display_label.setStyleSheet("color: #0af; font-size: 10px;")
         self.p3_display_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         freq_display_layout.addWidget(self.p3_display_label)
         
@@ -8243,10 +8243,10 @@ Like the app?<br>
         p3_tag = cmd.tcode_tags.get('P3', None) if cmd.tcode_tags else None
         p3_str = f"P3={p3_tag:04d}" if p3_tag is not None else "P3=off"
         gate_str = ""
-        if hasattr(self, 'stroke_mapper') and hasattr(self.stroke_mapper, '_last_gate_fail'):
-            gf = self.stroke_mapper._last_gate_fail
-            if gf:
-                gate_str = f" GATE_FAIL={gf}"
+        mapper = getattr(self, 'stroke_mapper', None)
+        gf = getattr(mapper, '_last_gate_fail', None) if mapper is not None else None
+        if gf:
+            gate_str = f" GATE_FAIL={gf}"
         print(f"[Main] Cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} {p0_str} {c0_str} {p1_str} {p3_str}{gate_str}")
     
     def _network_status_callback(self, message: str, connected: bool):
@@ -8505,17 +8505,19 @@ Like the app?<br>
             self.carrier_freq_label.setText(self._cached_carrier_display)
             self.p1_display_label.setText(self._cached_p1_display)
             self.p3_display_label.setText(self._cached_p3_display)
-            self.pulse_freq_label.setStyleSheet(f"color: {'#0af' if new_p0_enabled else '#bbb'}; font-size: 10px;")
-            self.carrier_freq_label.setStyleSheet(f"color: {'#0af' if new_f0_enabled else '#bbb'}; font-size: 10px;")
-            self.p1_display_label.setStyleSheet(f"color: {'#0af' if new_p1_enabled else '#bbb'}; font-size: 10px;")
-            self.p3_display_label.setStyleSheet(f"color: {'#0af' if new_p3_enabled else '#bbb'}; font-size: 10px;")
-            # Show target volume when stopped (dim), actual sent tcode volume when running (bright)
+            self.pulse_freq_label.setStyleSheet(f"color: {'#fff' if new_p0_enabled else '#0af'}; font-size: 10px;")
+            self.carrier_freq_label.setStyleSheet(f"color: {'#fff' if new_f0_enabled else '#0af'}; font-size: 10px;")
+            self.p1_display_label.setStyleSheet(f"color: {'#fff' if new_p1_enabled else '#0af'}; font-size: 10px;")
+            self.p3_display_label.setStyleSheet(f"color: {'#fff' if new_p3_enabled else '#0af'}; font-size: 10px;")
+            # Show target volume when stopped, actual sent tcode volume when running
             if self.is_sending:
                 display_pct = self._last_sent_volume_pct
-                self.volume_slider.value_label.setStyleSheet("color: #0af;")
+                self.volume_slider.value_label.setStyleSheet("color: #fff;")
+                self.volume_slider.label.setStyleSheet("color: #fff;")
             else:
                 display_pct = float(self.volume_slider.value())
-                self.volume_slider.value_label.setStyleSheet("color: #888;")
+                self.volume_slider.value_label.setStyleSheet("color: #0af;")
+                self.volume_slider.label.setStyleSheet("color: #0af;")
             self.volume_slider.value_label.setText(f"{display_pct:.0f}")
             control_sync_names = (
                 'pulse_mode_combo', 'pulse_invert_checkbox',
