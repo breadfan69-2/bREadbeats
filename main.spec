@@ -9,6 +9,10 @@ datas = [
     ('bREadbeats.ico', '.'),
     ('splash_screen.png', '.'),
     ('C:\\Users\\andre\\.bREadbeats\\presets.json', '.bREadbeats'),
+    ('learned_profile_slots.json', '.'),
+    ('defaults/learning/profile.refresh_3h_single.json', 'defaults/learning'),
+    ('defaults/learning/rule_fit.refresh_3h_single_v3.json', 'defaults/learning'),
+    ('datasets/rule_fit.json', 'datasets'),
 ]
 
 if Path('config.json').exists():
