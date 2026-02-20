@@ -24,6 +24,9 @@ env/
 Thumbs.db
 
 # Documentation/working notes - NOT for version control
+CONFIG_*.md
+README_DRAFT.md
+README_TODO.md
 *instruction*.txt
 *note*.txt
 *notes*.txt
