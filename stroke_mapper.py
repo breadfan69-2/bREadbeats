@@ -50,8 +50,8 @@ class StrokeMapper:
         self.audio_engine = audio_engine
 
         self.state = StrokeState()
-        self._park_y = 0.60
-        self._baseline_center_y = 0.60
+        self._park_y = 0.20
+        self._baseline_center_y = 0.20
         self._min_radius = 0.05
         self._park_idle_radius = 0.05  # tiny orbit when fully parked
         self._treble_lift_enabled = False
@@ -95,10 +95,12 @@ class StrokeMapper:
         self._exit_spiral_duration_s = 0.60
         self._journey_relink_active = False
         self._journey_relink_start_radius = 0.90
-        self._startup_momentum_min = 0.30
-        self._startup_ramp_beats = 4.0
+        self._startup_momentum_min = 0.15
+        self._startup_ramp_beats = 6.0
         self._startup_beats_seen = 0.0
         self._journey_startup_momentum = 1.0
+        self._post_silence_radius_ramp = 1.0   # 0→1 over first beats after silence
+        self._post_silence_radius_floor = 0.12 # start radius fraction after silence
         self._hold_start_pose_until_reactive = False
         self._idle_radius = self._min_radius
         self._silence_decay_per_beat = 0.40
@@ -185,7 +187,7 @@ class StrokeMapper:
         self._sync_learning_to_intelligence()
 
     def configure_geometry_rest_state(self, y_offset: float, sink_start_intensity: float = 0.25) -> None:
-        self._park_y = 0.60
+        self._park_y = 0.20
         self._intelligence.set_park_y(self._park_y)
 
     def configure_learning(
@@ -266,6 +268,10 @@ class StrokeMapper:
 
         if decision.silence_active:
             self._hold_start_pose_until_reactive = False
+            # Reset cold-start momentum ramp so dot takes off slowly after silence
+            self._startup_beats_seen = 0.0
+            self._journey_startup_momentum = self._startup_momentum_min
+            self._post_silence_radius_ramp = 0.0
             # Reset gate-idle on silence entry (swirl-to-park takes over)
             self._gate_idle_active = False
             self._gate_idle_progress = 0.0
@@ -534,9 +540,16 @@ class StrokeMapper:
                             self._startup_momentum_min
                             + ((1.0 - self._startup_momentum_min) * startup_ratio)
                         )
+                        # Post-silence radius ramp: quintic ease from floor to full
+                        ramp_t = self._quintic_ease(startup_ratio)
+                        self._post_silence_radius_ramp = float(
+                            self._post_silence_radius_floor
+                            + ((1.0 - self._post_silence_radius_floor) * ramp_t)
+                        )
                         self._startup_beats_seen += 1.0
                     else:
                         self._journey_startup_momentum = 1.0
+                        self._post_silence_radius_ramp = 1.0
 
                 # Use latched geometry while a journey/settle is in-flight.
                 # Only refresh from live trigger kind when fully parked.
@@ -580,6 +593,15 @@ class StrokeMapper:
                 type_bloom = float(type_park_radius + normalized_bloom * (type_max_radius - type_park_radius))
                 bloom_target_radius = float(type_park_radius + ((type_bloom - type_park_radius) * learning_mult))
                 bloom_target_radius = float(np.clip(bloom_target_radius, type_park_radius, type_max_radius))
+
+                # Post-silence slow takeoff: scale bloom target down during ramp period
+                # so the orbit starts close to park and gently expands over several beats
+                radius_ramp = float(np.clip(self._post_silence_radius_ramp, 0.0, 1.0))
+                if radius_ramp < 1.0:
+                    ramp_park = float(self._park_idle_radius)
+                    bloom_target_radius = float(
+                        ramp_park + ((bloom_target_radius - ramp_park) * radius_ramp)
+                    )
 
                 if started_new_journey:
                     self._journey_fixed_radius = bloom_target_radius
