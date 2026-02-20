@@ -44,7 +44,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QPixmap
-from typing import Optional
+from typing import Any, Optional
 
 # PyQtGraph for high-performance real-time plotting
 import pyqtgraph as pg
@@ -2095,9 +2095,8 @@ class BREadbeatsWindow(QMainWindow):
         viz_widget.setMinimumHeight(220)
         top_pane_layout.addWidget(viz_widget, stretch=1)
 
-        # Fixed row: Main controls (locked, never squishes)
+        # Main controls row (auto-height from content)
         main_controls_widget = QWidget()
-        main_controls_widget.setFixedHeight(88)
         main_controls_layout = QHBoxLayout(main_controls_widget)
         main_controls_layout.setContentsMargins(0, 0, 0, 0)
         main_controls_layout.addWidget(self._create_main_controls_panel())
@@ -5002,7 +5001,10 @@ Like the app?<br>
                 getattr(self, 'phase_snap_slider', None),
                 getattr(self, 'mode_combo', None),
                 getattr(self, 'tempo_lock_required_cb', None),
+                getattr(self, 'intensity_ramp_spin', None),
+                getattr(self, 'intensity_ramp_target_combo', None),
                 getattr(self, 'fill_gate_scale_spin', None),
+                getattr(self, 'main_silence_close_slider', None),
                 getattr(self, 'jitter_effect_action', None),
                 getattr(self, 'host_edit', None),
                 getattr(self, 'port_spin', None),
@@ -5052,10 +5054,31 @@ Like the app?<br>
                 self.config.stroke.minimum_depth = 0.0
                 if hasattr(self, 'tempo_lock_required_cb'):
                     self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
+                if hasattr(self, 'intensity_ramp_spin'):
+                    self.intensity_ramp_spin.setValue(
+                        float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0)
+                    )
+                if hasattr(self, 'intensity_ramp_target_combo'):
+                    target_control: Any = self.intensity_ramp_target_combo
+                    target = str(getattr(self.config.stroke, 'intensity_ramp_target', 'both') or 'both').strip().lower()
+                    if target not in ('size', 'speed', 'both'):
+                        target = 'both'
+                    set_current_text = getattr(target_control, 'setCurrentText', None)
+                    set_value = getattr(target_control, 'setValue', None)
+                    if callable(set_current_text):
+                        set_current_text(target)
+                    elif callable(set_value):
+                        set_value({'size': 0, 'speed': 1, 'both': 2}.get(target, 2))
                 if hasattr(self, 'fill_gate_scale_spin'):
                     self.fill_gate_scale_spin.setValue(
                         self._fill_gate_scale_to_percent(
                             float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0)
+                        )
+                    )
+                if hasattr(self, 'main_silence_close_slider'):
+                    self.main_silence_close_slider.setValue(
+                        self._silence_close_to_normalized(
+                            float(getattr(self.config.stroke, 'silence_close_threshold', 0.048) or 0.048)
                         )
                     )
                 advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
@@ -5454,14 +5477,18 @@ Like the app?<br>
                 resolved = path.resolve()
             except Exception:
                 return False
-            if exe_root is not None and resolved.is_relative_to(exe_root.resolve()):
-                return True
-            if meipass:
-                try:
-                    if resolved.is_relative_to(Path(str(meipass)).resolve()):
-                        return True
-                except Exception:
-                    pass
+            if exe_root is None:
+                return False
+            try:
+                resolved_parent = resolved.parent.resolve()
+                exe_resolved = exe_root.resolve()
+                defaults_resolved = (exe_root / "defaults" / "learning").resolve()
+                if resolved_parent == exe_resolved:
+                    return True
+                if resolved_parent == defaults_resolved:
+                    return True
+            except Exception:
+                return False
             return False
 
         if getattr(sys, 'frozen', False) and meipass:
@@ -5494,21 +5521,12 @@ Like the app?<br>
             except Exception as exc:
                 print(f"[Learning] Failed to materialize bundled learning files: {exc}")
 
-        # Discover profile/rule_fit candidates from multiple roots.
-        # Prefer files next to EXE, then defaults/learning, then bundle temp, then repo.
+        # Discover profile/rule_fit candidates from two roots only:
+        # base dir (EXE dir for frozen, repo dir for source) and base/defaults/learning.
         search_roots: list[Path] = []
-        if getattr(sys, 'frozen', False):
-            exe_dir = Path(sys.executable).parent
-            search_roots.append(exe_dir)
-            search_roots.append(exe_dir / "defaults" / "learning")
-        if getattr(sys, 'frozen', False) and meipass:
-            meipass_root = Path(str(meipass))
-            search_roots.append(meipass_root)
-            search_roots.append(meipass_root / "defaults" / "learning")
-
-        repo_root = Path(__file__).resolve().parent
-        search_roots.append(repo_root)
-        search_roots.append(repo_root / "defaults" / "learning")
+        base_dir = Path(sys.executable).parent if frozen else Path(__file__).resolve().parent
+        search_roots.append(base_dir)
+        search_roots.append(base_dir / "defaults" / "learning")
 
         profile_candidates: list[Path] = []
         rule_fit_candidates: list[Path] = []
@@ -5776,23 +5794,21 @@ Like the app?<br>
         self.tempo_lock_required_cb = QCheckBox()
         self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
         self.tempo_lock_required_cb.toggled.connect(self._on_tempo_lock_required_toggle)
-        tempo_layout.addWidget(self.tempo_lock_required_cb, alignment=Qt.AlignmentFlag.AlignHCenter)
-        tempo_label = QLabel("Tempo lock required")
-        tempo_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        tempo_layout.addWidget(tempo_label)
+        self.tempo_lock_required_cb.setVisible(False)
 
-        intensity_label = QLabel("Intensity timer")
+        intensity_label = QLabel("Motion Ramp")
         intensity_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        intensity_label.setStyleSheet("color: #ccc; font-size: 10px; margin-top: 8px;")
+        intensity_label.setStyleSheet("color: #aaa; margin-top: 8px;")
         tempo_layout.addWidget(intensity_label)
-        self.intensity_ramp_spin = QDoubleSpinBox()
-        self.intensity_ramp_spin.setRange(0.0, 8.0)
-        self.intensity_ramp_spin.setSingleStep(0.25)
-        self.intensity_ramp_spin.setDecimals(2)
-        self.intensity_ramp_spin.setSuffix(" hrs")
-        self.intensity_ramp_spin.setValue(
-            float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0)
+        self.intensity_ramp_spin = SliderWithLabel(
+            "Duration (hrs)",
+            0.0,
+            8.0,
+            float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0),
+            2,
+            step=0.25,
         )
+        self.intensity_ramp_spin.setMinimumWidth(180)
         self.intensity_ramp_spin.setToolTip(
             "Session intensity ramp duration (0 = disabled).\n"
             "Reactions gradually climb from gentle to full power\n"
@@ -5801,7 +5817,42 @@ Like the app?<br>
         self.intensity_ramp_spin.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'intensity_ramp_hours', float(v))
         )
+
+        self.intensity_ramp_target_combo = QSlider(Qt.Orientation.Horizontal)
+        self.intensity_ramp_target_combo.setRange(0, 2)
+        self.intensity_ramp_target_combo.setSingleStep(1)
+        self.intensity_ramp_target_combo.setPageStep(1)
+        self.intensity_ramp_target_combo.setTickInterval(1)
+        self.intensity_ramp_target_combo.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.intensity_ramp_target_combo.setMinimumWidth(180)
+        current_target = str(getattr(self.config.stroke, 'intensity_ramp_target', 'both') or 'both').strip().lower()
+        if current_target not in ('size', 'speed', 'both'):
+            current_target = 'both'
+        target_to_idx = {'size': 0, 'speed': 1, 'both': 2}
+        idx_to_target = {0: 'size', 1: 'speed', 2: 'both'}
+        self.intensity_ramp_target_combo.setValue(target_to_idx.get(current_target, 2))
+        self.intensity_ramp_target_combo.setToolTip(
+            "Choose what the intensity timer affects:\n"
+            "size = orbit size only, speed = orbit speed only, both = size + speed."
+        )
+        self.intensity_ramp_target_combo.valueChanged.connect(
+            lambda idx: setattr(self.config.stroke, 'intensity_ramp_target', idx_to_target.get(int(idx), 'both'))
+        )
+
+        ramp_target_widget = QWidget()
+        ramp_target_layout = QVBoxLayout(ramp_target_widget)
+        ramp_target_layout.setContentsMargins(0, 0, 0, 0)
+        ramp_target_layout.setSpacing(0)
+        ramp_target_layout.addWidget(self.intensity_ramp_target_combo)
+        ramp_target_labels = QHBoxLayout()
+        ramp_target_labels.setContentsMargins(0, 0, 0, 0)
+        ramp_target_labels.addWidget(QLabel("size"), 0, Qt.AlignmentFlag.AlignLeft)
+        ramp_target_labels.addWidget(QLabel("speed"), 1, Qt.AlignmentFlag.AlignHCenter)
+        ramp_target_labels.addWidget(QLabel("both"), 0, Qt.AlignmentFlag.AlignRight)
+        ramp_target_layout.addLayout(ramp_target_labels)
+
         tempo_layout.addWidget(self.intensity_ramp_spin)
+        tempo_layout.addWidget(ramp_target_widget)
         tempo_layout.addStretch(1)
 
         self.fill_gate_scale_spin = SliderWithLabel(
@@ -5828,22 +5879,32 @@ Like the app?<br>
 
         self.main_silence_close_slider = SliderWithLabel(
             "volume/motion threshold",
-            0.001,
-            0.300,
-            float(getattr(self.config.stroke, 'silence_close_threshold', 0.048) or 0.048),
-            3,
+            0.0,
+            2.0,
+            self._silence_close_to_normalized(
+                float(getattr(self.config.stroke, 'silence_close_threshold', 0.048) or 0.048)
+            ),
+            2,
+            step=0.01,
         )
         self.main_silence_close_slider.setToolTip(
-            "Silence gate close (RMS): adjusts both gate close and gate open together at a fixed 4:1 close/open ratio."
+            "Normalized silence threshold factor (1.00 = baseline).\n"
+            "Adjusts both gate close and gate open together at a fixed 4:1 close/open ratio."
         )
         self.main_silence_close_slider.setMinimumWidth(260)
         self.main_silence_close_slider.valueChanged.connect(self._on_main_silence_close_change)
 
+        sensitivity_volume_widget = QWidget()
+        sensitivity_volume_layout = QVBoxLayout(sensitivity_volume_widget)
+        sensitivity_volume_layout.setContentsMargins(0, 0, 0, 0)
+        sensitivity_volume_layout.setSpacing(4)
+        sensitivity_volume_layout.addWidget(self.fill_gate_scale_spin)
+        sensitivity_volume_layout.addWidget(self.main_silence_close_slider)
+
         for widget in (
             tempo_widget,
             self.pulse_settings_btn,
-            self.fill_gate_scale_spin,
-            self.main_silence_close_slider,
+            sensitivity_volume_widget,
         ):
             widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             layout.addWidget(widget, stretch=1)
@@ -5863,6 +5924,24 @@ Like the app?<br>
         scale = float(np.power(2.0, -percent_internal / 100.0))
         return float(np.clip(scale, 0.05, 20.0))
 
+    def _silence_close_to_normalized(self, close_threshold: float) -> float:
+        min_close = 0.001
+        base_close = 0.048
+        max_close = 0.300
+        close_v = float(np.clip(float(close_threshold), min_close, max_close))
+        if close_v <= base_close:
+            return float((close_v - min_close) / max(1e-9, (base_close - min_close)))
+        return float(1.0 + ((close_v - base_close) / max(1e-9, (max_close - base_close))))
+
+    def _silence_normalized_to_close(self, normalized_value: float) -> float:
+        min_close = 0.001
+        base_close = 0.048
+        max_close = 0.300
+        norm_v = float(np.clip(float(normalized_value), 0.0, 2.0))
+        if norm_v <= 1.0:
+            return float(min_close + ((base_close - min_close) * norm_v))
+        return float(base_close + ((max_close - base_close) * (norm_v - 1.0)))
+
     def _on_fill_gate_scale_change(self, pct: float) -> None:
         setattr(
             self.config.stroke,
@@ -5881,7 +5960,7 @@ Like the app?<br>
         min_close = 0.001
         max_close = 0.300
 
-        close_v = float(np.clip(float(value), min_close, max_close))
+        close_v = self._silence_normalized_to_close(float(value))
         open_v = float(np.clip(close_v / ratio, min_open, max_open))
         close_v = float(np.clip(open_v * ratio, min_close, max_close))
 
@@ -5891,9 +5970,10 @@ Like the app?<br>
         setattr(self.config.stroke, 'silence_threshold', open_v)
         setattr(self.config.stroke, 'silence_close_threshold', close_v)
 
-        if hasattr(self, 'main_silence_close_slider') and abs(close_v - float(value)) > 1e-9:
+        normalized_close = self._silence_close_to_normalized(close_v)
+        if hasattr(self, 'main_silence_close_slider') and abs(normalized_close - float(value)) > 1e-9:
             self.main_silence_close_slider.blockSignals(True)
-            self.main_silence_close_slider.setValue(close_v)
+            self.main_silence_close_slider.setValue(normalized_close)
             self.main_silence_close_slider.blockSignals(False)
 
     def _capture_current_settings(self) -> dict:
