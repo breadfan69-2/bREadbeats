@@ -12,13 +12,6 @@ scipy>=1.10.0                  # Butterworth bandpass filter for beat detection
 
 # Visualization & Display
 pyqtgraph>=0.13.0              # Real-time audio/beat visualization
-Pillow>=10.0.0                 # Image processing
 
 # Windows Audio Support
 comtypes>=1.2.0                # Windows COM interface for WASAPI
-
-# Beat Detection
-aubio>=0.4.9                   # Optional: Additional beat detection (falls back gracefully)
-
-# Splash Screen
-pictex>=0.1.0                  # Styled text rendering for splash screen

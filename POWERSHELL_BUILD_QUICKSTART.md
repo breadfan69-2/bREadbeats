@@ -32,25 +32,31 @@ Expected path:
 
 `C:\Users\andre\Documents\vscodeworkspace\bREadbeats-master`
 
-## 2) Build the EXE (clean build)
+## 2) Install build dependencies (one-time or after dependency changes)
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r .\requirements-dev.txt
+```
+
+## 3) Build the EXE (clean build)
 
 ```powershell
 .\.venv\Scripts\pyinstaller.exe --clean --noconfirm bREadbeats.spec
 ```
 
-## 3) Run the built EXE
+## 4) Run the built EXE
 
 ```powershell
 & .\dist\bREadbeats.exe
 ```
 
-## 4) Optional: run EXE with debug output
+## 5) Optional: run EXE with debug output
 
 ```powershell
 $env:BREADBEATS_DEBUG_STDIO='1'; & .\dist\bREadbeats.exe
 ```
 
-## 5) Optional: run from VS Code Task instead
+## 6) Optional: run from VS Code Task instead
 
 In VS Code:
 
@@ -65,4 +71,4 @@ Check EXE exists:
 Get-Item .\dist\bREadbeats.exe
 ```
 
-If command says file not found, run Step 2 again from the root directory.
+If command says file not found, run Step 3 again from the root directory.

@@ -22,6 +22,7 @@ python run.py
 
 ## Build (Windows)
 ```bash
+pip install -r requirements-dev.txt
 .venv/Scripts/pyinstaller.exe bREadbeats.spec
 ```
 

@@ -6,3 +6,7 @@
 
 # Build & Packaging
 PyInstaller>=6.0.0             # Create standalone Windows exe
+
+# Optional tooling (not required to run app)
+Pillow>=10.0.0                 # Used by create_splash.py asset generation
+pictex>=0.1.0                  # Used by create_splash.py styled splash text
