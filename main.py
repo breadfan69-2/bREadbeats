@@ -5872,10 +5872,11 @@ Like the app?<br>
         )
         self.fill_gate_scale_spin.valueChanged.connect(self._on_fill_gate_scale_change)
 
-        self.pulse_settings_btn = QPushButton("Pulse\nFreq")
+        self.pulse_settings_btn = QPushButton("Pulse\nSettings")
         self.pulse_settings_btn.setToolTip("Open Pulse settings popout window")
         self.pulse_settings_btn.clicked.connect(self._on_pulse_settings_popup)
-        self.pulse_settings_btn.setFixedWidth(76)
+        self.pulse_settings_btn.setFixedSize(76, 76)
+        self.pulse_settings_btn.setStyleSheet("text-align: center;")
 
         self.main_silence_close_slider = SliderWithLabel(
             "volume/motion threshold",
