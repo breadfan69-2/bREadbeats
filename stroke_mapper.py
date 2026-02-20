@@ -126,6 +126,8 @@ class StrokeMapper:
         # Bass-reactive jitter state (applied on creep only)
         self._bass_jitter_phase = 0.0
         self._bass_jitter_freq_ema = 0.5
+        self._beat_bump_y = 0.0
+        self._beat_bump_decay_per_s = 8.0
 
         # Gate-idle state: smooth deceleration when beat gets gated with creep disabled
         self._gate_idle_active = False
@@ -302,8 +304,8 @@ class StrokeMapper:
             jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
                 event=event, dt=dt,
             )
-            treble_bump = float(self._intelligence.compute_treble_lift(0.0))
-            self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
+            beat_bump = self._compute_beat_bump_y(event=event, dt=dt)
+            self._reactive_bounce_y = float(np.clip(jitter_beta + beat_bump, -0.30, 0.30))
 
             total_center_y = float(self._base_center_y + self._reactive_bounce_y)
             orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
@@ -386,8 +388,8 @@ class StrokeMapper:
                 jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
                     event=event, dt=dt,
                 )
-                treble_bump = float(self._intelligence.compute_treble_lift(0.0))
-                self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
+                beat_bump = self._compute_beat_bump_y(event=event, dt=dt)
+                self._reactive_bounce_y = float(np.clip(jitter_beta + beat_bump, -0.30, 0.30))
 
                 total_center_y = float(self._base_center_y + self._reactive_bounce_y)
                 orbit_radius = float(min(self._actual_radius, self._radius_cap_for_center(total_center_y)))
@@ -614,8 +616,8 @@ class StrokeMapper:
                         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
                             event=event, dt=dt,
                         )
-                        treble_bump = float(self._intelligence.compute_treble_lift(0.0))
-                        self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
+                        beat_bump = self._compute_beat_bump_y(event=event, dt=dt)
+                        self._reactive_bounce_y = float(np.clip(jitter_beta + beat_bump, -0.30, 0.30))
 
                         # Compute final position directly — stored for post-fix
                         # (downstream code will overwrite locals; we restore at end)
@@ -847,27 +849,12 @@ class StrokeMapper:
         self._bass_jitter_freq_ema += 0.2 * (norm - self._bass_jitter_freq_ema)
         norm_smooth = float(np.clip(self._bass_jitter_freq_ema, 0.0, 1.0))
 
-        # Low bass -> slower/smaller, high bass -> faster/larger
-        bass_mult = 0.5 + (1.5 * norm_smooth)  # 0.5..2.0
-
-        speed_inf = float(getattr(self.config.stroke, "bass_jitter_speed_influence_percent", 100.0) or 100.0)
-        size_inf = float(getattr(self.config.stroke, "bass_jitter_size_influence_percent", 100.0) or 100.0)
-        speed_blend = float(np.clip(speed_inf / 100.0, 0.0, 2.0))
-        size_blend = float(np.clip(size_inf / 100.0, 0.0, 2.0))
-
-        combo_texture = float(np.clip(float(getattr(self.config.stroke, "combo_texture", 1.0) or 1.0), -2.0, 3.0))
-        if combo_texture >= 1.0:
-            texture_factor = 1.0 + ((combo_texture - 1.0) / 2.0)
-        else:
-            texture_factor = 1.0 - ((1.0 - combo_texture) / 3.0) * 0.5
-
-        # Texture > 1 amplifies bass-driven jitter variance, < 1 damps it.
-        speed_effect = (bass_mult - 1.0) * speed_blend * texture_factor
-        size_effect = ((1.0 / bass_mult) - 1.0) * size_blend * texture_factor
-
-        speed_mult = float(np.clip(1.0 + speed_effect, 0.0, 5.0))
-        # Inverted size: high bass → smaller circles, low bass → bigger circles
-        size_mult = float(np.clip(1.0 + size_effect, 0.0, 5.0))
+        # Dominant-frequency map dictates jitter speed and size with ±50% envelope
+        # around base values: 0.5x..1.5x.
+        centered = float((2.0 * norm_smooth) - 1.0)   # -1..1
+        delta = float(0.5 * centered)                 # -0.5..0.5
+        speed_mult = float(np.clip(1.0 + delta, 0.5, 1.5))
+        size_mult = float(np.clip(1.0 + delta, 0.5, 1.5))
 
         jitter_speed = max(0.0, base_speed * speed_mult)
         jitter_amp = max(0.0, base_amp * size_mult)
@@ -907,14 +894,37 @@ class StrokeMapper:
             return 0.0
         return self._baseline_center_y
 
+    def _compute_beat_bump_y(self, event: BeatEvent, dt: float) -> float:
+        is_beat_event = bool(
+            getattr(event, "is_downbeat", False)
+            or getattr(event, "is_beat", False)
+            or getattr(event, "is_syncopated", False)
+        )
+
+        if bool(getattr(event, "is_downbeat", False)):
+            target = 0.22
+        elif bool(getattr(event, "is_beat", False)):
+            target = 0.16
+        elif bool(getattr(event, "is_syncopated", False)):
+            target = 0.14
+        else:
+            target = 0.0
+
+        if is_beat_event:
+            self._beat_bump_y = float(max(self._beat_bump_y, target))
+
+        decay = float(np.clip(self._beat_bump_decay_per_s * max(dt, 1e-4), 0.0, 1.0))
+        self._beat_bump_y = float(self._beat_bump_y + ((0.0 - self._beat_bump_y) * decay))
+        return float(np.clip(self._beat_bump_y, 0.0, 0.30))
+
     def _compute_reactive_bounce_y(self, event: BeatEvent, dt: float, wait_state: bool) -> float:
         if not wait_state:
             return 0.0
 
         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
         _ = jitter_alpha
-        treble_bump = float(self._intelligence.compute_treble_lift(0.0))
-        return float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
+        beat_bump = self._compute_beat_bump_y(event=event, dt=dt)
+        return float(np.clip(jitter_beta + beat_bump, -0.30, 0.30))
 
     @staticmethod
     def _s_curve(progress: float) -> float:
