@@ -199,16 +199,44 @@ class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
         cfg.beat.tempo_lock_required = False
         cfg.stroke.block_mid_trigger_range_enabled = True
         bi = BeatIntelligence(cfg)
+        bi.energies.sub_bass = 0.01
+        bi.energies.low_mid = 0.01
+        bi.energies.mid = 0.9
 
         # Prime with downbeat and allow protected journey to finish
         bi.build_decision(self._event(is_downbeat=True, frequency=60.0), dt=1 / 60, silence_override=False)
         self._drain_journey(bi)
+        bi._recent_low_band_values.clear()
+        bi._recent_mid_band_values.clear()
+        for _ in range(20):
+            bi._recent_low_band_values.append(0.01)
+            bi._recent_mid_band_values.append(0.9)
 
-        # Beat at 500 Hz (vocal range) should be blocked
+        # Beat at 1500 Hz (configured mid-block range) should be blocked
         decision = bi.build_decision(
-            self._event(is_beat=True, frequency=500.0), dt=1 / 60, silence_override=False
+            self._event(is_beat=True, frequency=1500.0), dt=1 / 60, silence_override=False
         )
         self.assertEqual(decision.trigger_kind, "creep")
+
+    def test_mid_freq_with_strong_bass_not_blocked(self):
+        cfg = Config()
+        cfg.beat.tempo_lock_required = False
+        cfg.stroke.block_mid_trigger_range_enabled = True
+        bi = BeatIntelligence(cfg)
+        bi.energies.sub_bass = 0.8
+        bi.energies.low_mid = 0.7
+        bi.energies.mid = 0.9
+
+        bi.build_decision(self._event(is_downbeat=True, frequency=60.0), dt=1 / 60, silence_override=False)
+        self._drain_journey(bi)
+        bi._recent_low_band_values.clear()
+        for _ in range(20):
+            bi._recent_low_band_values.append(0.8)
+
+        decision = bi.build_decision(
+            self._event(is_beat=True, frequency=1500.0), dt=1 / 60, silence_override=False
+        )
+        self.assertEqual(decision.trigger_kind, "beat")
 
     def test_bass_freq_beat_not_blocked(self):
         cfg = Config()
@@ -230,12 +258,15 @@ class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
         cfg.beat.tempo_lock_required = False
         cfg.stroke.block_mid_trigger_range_enabled = False
         bi = BeatIntelligence(cfg)
+        bi.energies.sub_bass = 0.01
+        bi.energies.low_mid = 0.01
+        bi.energies.mid = 0.9
 
         bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
         self._drain_journey(bi)
 
         decision = bi.build_decision(
-            self._event(is_beat=True, frequency=500.0), dt=1 / 60, silence_override=False
+            self._event(is_beat=True, frequency=1500.0), dt=1 / 60, silence_override=False
         )
         self.assertEqual(decision.trigger_kind, "beat")
 
@@ -246,14 +277,52 @@ class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
         cfg.beat.teaching_learning_enabled = True
         cfg.beat.teaching_relax_phase1_gates = True
         bi = BeatIntelligence(cfg)
+        bi.energies.sub_bass = 0.01
+        bi.energies.low_mid = 0.01
+        bi.energies.mid = 0.9
 
         bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
         self._drain_journey(bi)
 
         decision = bi.build_decision(
-            self._event(is_beat=True, frequency=500.0), dt=1 / 60, silence_override=False
+            self._event(is_beat=True, frequency=1500.0), dt=1 / 60, silence_override=False
         )
         self.assertEqual(decision.trigger_kind, "beat")
+
+    def test_mid_block_window_is_adjustable_via_mid_block_window_frames(self):
+        cfg = Config()
+        cfg.stroke.block_mid_trigger_range_enabled = True
+        cfg.stroke.block_mid_trigger_window_frames = 2
+        bi = BeatIntelligence(cfg)
+
+        # Older history indicates low bass / high mid, but recent 2 frames are bass-strong.
+        for _ in range(14):
+            bi._recent_mid_band_values.append(0.9)
+            bi._recent_low_band_values.append(0.01)
+        for _ in range(2):
+            bi._recent_mid_band_values.append(0.9)
+            bi._recent_low_band_values.append(0.9)
+
+        self.assertFalse(bi._is_mid_trigger_blocked(self._event(frequency=1500.0)))
+
+        # Larger window includes older low-bass history, so it blocks.
+        cfg.stroke.block_mid_trigger_window_frames = 16
+        self.assertTrue(bi._is_mid_trigger_blocked(self._event(frequency=1500.0)))
+
+    def test_mid_block_uses_dedicated_bass_to_mid_ratio(self):
+        cfg = Config()
+        cfg.stroke.block_mid_trigger_range_enabled = True
+        cfg.stroke.low_band_activity_threshold = 0.80
+        cfg.stroke.block_mid_trigger_bass_to_mid_max_ratio = 0.20
+        bi = BeatIntelligence(cfg)
+
+        for _ in range(20):
+            bi._recent_mid_band_values.append(0.90)
+            bi._recent_low_band_values.append(0.17)
+
+        # Should block using dedicated mid-block bass-to-mid ratio (0.20),
+        # even though generic low-band threshold is much higher.
+        self.assertTrue(bi._is_mid_trigger_blocked(self._event(frequency=1500.0)))
 
 
 # ── §21 Activity helpers ───────────────────────────────────────────────────
@@ -288,7 +357,9 @@ class TestActivityHelpers(Phase1Mixin, unittest.TestCase):
         self.assertTrue(bi._get_high_band_presence_status())
 
     def test_high_band_presence_status_fails_when_low(self):
-        bi = BeatIntelligence(Config())
+        cfg = Config()
+        cfg.stroke.high_band_window_frames = 18
+        bi = BeatIntelligence(cfg)
         for _ in range(20):
             bi._recent_high_band_values.append(0.01)
         self.assertFalse(bi._get_high_band_presence_status())

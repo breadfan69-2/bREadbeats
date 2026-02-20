@@ -3743,10 +3743,14 @@ class BREadbeatsWindow(QMainWindow):
         high_tip_occ_slider.setToolTip("Required occupancy in the high-tip gate window")
         gate_layout.addWidget(high_tip_occ_slider)
 
-        mid_block_cb = QCheckBox("Block beat/downbeat triggers in mid-frequency range")
+        mid_block_cb = QCheckBox("Block triggers when mid is high and bass is too low")
         mid_block_cb.setChecked(bool(getattr(self.config.stroke, 'block_mid_trigger_range_enabled', False)))
         mid_block_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'block_mid_trigger_range_enabled', state == 2)
+        )
+        mid_block_cb.setToolTip(
+            "When enabled, beat/downbeat triggers are blocked if detected frequency is in the configured mid range and\n"
+            "rolling bass activity is below threshold."
         )
         gate_layout.addWidget(mid_block_cb)
 
@@ -3793,6 +3797,47 @@ class BREadbeatsWindow(QMainWindow):
         mid_block_low_spin.valueChanged.connect(_on_mid_block_low_change)
         mid_block_high_spin.valueChanged.connect(_on_mid_block_high_change)
         gate_layout.addLayout(mid_block_row)
+
+        mid_block_window_row = QHBoxLayout()
+        mid_block_window_row.addWidget(QLabel("Mid block avg window:"))
+        mid_block_window_spin = QSpinBox()
+        mid_block_window_spin.setRange(1, 60)
+        mid_block_window_spin.setSingleStep(1)
+        mid_block_window_spin.setValue(
+            int(getattr(self.config.stroke, 'block_mid_trigger_window_frames', 8) or 8)
+        )
+        mid_block_window_spin.setSuffix(" frames")
+        mid_block_window_spin.setToolTip(
+            "Rolling average window used by the mid-block gate (larger = smoother, slower response)."
+        )
+        mid_block_window_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'block_mid_trigger_window_frames', int(v))
+        )
+        mid_block_window_row.addWidget(mid_block_window_spin)
+        mid_block_window_row.addStretch()
+        gate_layout.addLayout(mid_block_window_row)
+
+        mid_block_bass_ratio_slider = SliderWithLabel(
+            "Mid block bass/mid max ratio",
+            0.0,
+            2.0,
+            float(
+                getattr(
+                    self.config.stroke,
+                    'block_mid_trigger_bass_to_mid_max_ratio',
+                    0.5,
+                ) or 0.5
+            ),
+            3,
+            step=0.01,
+        )
+        mid_block_bass_ratio_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'block_mid_trigger_bass_to_mid_max_ratio', float(v))
+        )
+        mid_block_bass_ratio_slider.setToolTip(
+            "Mid-trigger block closes when rolling bass activity is at or below (rolling mid activity × this ratio)."
+        )
+        gate_layout.addWidget(mid_block_bass_ratio_slider)
 
         scroll_layout.addWidget(gate_group)
 

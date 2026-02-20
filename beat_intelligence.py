@@ -96,6 +96,7 @@ class BeatIntelligence:
         # ── Phase 1: Rolling history deques (#1) ──
         self._recent_flux_values: deque = deque(maxlen=60)
         self._recent_low_band_values: deque = deque(maxlen=60)
+        self._recent_mid_band_values: deque = deque(maxlen=60)
         self._recent_high_band_values: deque = deque(maxlen=60)
         self._recent_mid_bass_values: deque = deque(maxlen=60)
 
@@ -611,6 +612,10 @@ class BeatIntelligence:
         low = float(np.clip(self.energies.low_mid, 0.0, 1.0))
         return float(max(sub, (sub * 0.6 + low * 0.4)))
 
+    def _get_mid_band_activity(self, event: BeatEvent) -> float:
+        """Estimate vocal/guitar mid-band activity for this frame."""
+        return float(np.clip(self.energies.mid, 0.0, 1.0))
+
     def _get_high_band_activity(self, event: BeatEvent) -> float:
         """Estimate upper-range (mid + high) activity for this frame."""
         mid = float(np.clip(self.energies.mid, 0.0, 1.0))
@@ -670,19 +675,55 @@ class BeatIntelligence:
     # ── Phase 1 §7: Mid-trigger block ────────────────────────────────
 
     def _is_mid_trigger_blocked(self, event: BeatEvent) -> bool:
-        """Block beats in vocal/guitar frequency range."""
+        """Block beats when mid band is dominant and bass is not high enough.
+
+        Uses rolling averages over the configurable low-band window size.
+        """
         if not bool(getattr(self.config.stroke, "block_mid_trigger_range_enabled", True)):
             return False
         # Learning relax bypass
         if (bool(getattr(self.config.beat, "teaching_learning_enabled", False))
                 and bool(getattr(self.config.beat, "teaching_relax_phase1_gates", False))):
             return False
+
         freq = float(getattr(event, "frequency", 0.0) or 0.0)
         if freq <= 0.0:
             return False
+
         low_hz = float(getattr(self.config.stroke, "block_mid_trigger_low_hz", 100.0))
         high_hz = float(getattr(self.config.stroke, "block_mid_trigger_high_hz", 2000.0))
-        return bool(low_hz <= freq <= high_hz)
+        if not bool(low_hz <= freq <= high_hz):
+            return False
+
+        cfg = self.config.stroke
+        window = int(max(1, getattr(
+            cfg,
+            "block_mid_trigger_window_frames",
+            getattr(cfg, "low_band_window_frames", 18),
+        )))
+        bass_to_mid_ratio = float(getattr(
+            cfg,
+            "block_mid_trigger_bass_to_mid_max_ratio",
+            0.5,
+        ))
+        bass_to_mid_ratio = max(0.0, bass_to_mid_ratio)
+
+        recent_mid = list(self._recent_mid_band_values)[-window:]
+        recent_low = list(self._recent_low_band_values)[-window:]
+
+        if recent_mid:
+            mid_activity = float(np.mean(recent_mid))
+        else:
+            mid_activity = float(self._get_mid_band_activity(event))
+
+        if recent_low:
+            bass_activity = float(np.mean(recent_low))
+        else:
+            bass_activity = float(self._get_low_band_activity(event))
+
+        mid_dominant = bool(mid_activity > (bass_activity * 1.20))
+        bass_not_high_enough = bool(bass_activity <= (max(0.0, mid_activity) * bass_to_mid_ratio))
+        return bool(mid_dominant and bass_not_high_enough)
     # ── Phase 3 §5: Low-band fullness gate ────────────────────────────────
 
     def _is_low_band_full_enough(self, event: BeatEvent, trigger_kind: str, bpm: float) -> bool:
@@ -1069,6 +1110,7 @@ class BeatIntelligence:
         """Append current-frame activity values to rolling history deques."""
         self._recent_flux_values.append(float(getattr(event, "spectral_flux", 0.0) or 0.0))
         self._recent_low_band_values.append(self._get_low_band_activity(event))
+        self._recent_mid_band_values.append(self._get_mid_band_activity(event))
         self._recent_high_band_values.append(self._get_high_band_activity(event))
         self._recent_mid_bass_values.append(self._get_mid_bass_activity(event))
 

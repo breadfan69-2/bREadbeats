@@ -200,6 +200,8 @@ class StrokeConfig:
     block_mid_trigger_range_enabled: bool = False
     block_mid_trigger_low_hz: float = 1000.0
     block_mid_trigger_high_hz: float = 2200.0
+    block_mid_trigger_window_frames: int = 8
+    block_mid_trigger_bass_to_mid_max_ratio: float = 0.5
     overall_amp_fill_gate_enabled: bool = True
     overall_amp_fill_target: float = 0.11
     overall_amp_fill_tolerance: float = 0.63
@@ -573,24 +575,24 @@ class BeatDetectionType(IntEnum):
 class BeatDetectionConfig:
     """Beat detection parameters"""
     detection_type: BeatDetectionType = BeatDetectionType.COMBINED
-    sensitivity: float = 0.5          # 0.0 - 1.0
-    peak_floor: float = 0.08          # Minimum threshold (aligned with reset defaults)
-    peak_decay: float = 0.9           # How fast peaks decay (0.0-1.0)
-    rise_sensitivity: float = 0.5     # How fast a peak must hit to register
-    amplification: float = 1.0        # Audio amplification (slider 0-2)
-    flux_multiplier: float = 1.0      # Weight of spectral flux
+    sensitivity: float = 0.48          # 0.0 - 1.0
+    peak_floor: float = 0.566          # Minimum threshold (aligned with reset defaults)
+    peak_decay: float = 0.443           # How fast peaks decay (0.0-1.0)
+    rise_sensitivity: float = 0.4     # How fast a peak must hit to register
+    amplification: float = 5.0        # Audio amplification (slider 0-2)
+    flux_multiplier: float = 5.0      # Weight of spectral flux
     # Frequency band selection (Hz)
     freq_low: float = 30.0            # Low cutoff frequency (Hz)
-    freq_high: float = 150.0          # High cutoff frequency (Hz) - bass range default
-    motion_freq_cutoff: float = 500.0  # Only generate motion from bands below this Hz (0=disabled)
-    silence_reset_ms: int = 400       # How long silence before resetting beat tracking (ms)
+    freq_high: float = 212.0          # High cutoff frequency (Hz) - bass range default
+    motion_freq_cutoff: float = 180.0  # Only generate motion from bands below this Hz (0=disabled)
+    silence_reset_ms: int = 179       # How long silence before resetting beat tracking (ms)
     
     # Tempo tracking parameters
     tempo_tracking_enabled: bool = True  # Enable/disable tempo & downbeat tracking
-    stability_threshold: float = 0.28    # Max CV to consider tempo "stable" (lower = stricter)
-    tempo_timeout_ms: int = 2000         # How long no beats before resetting tempo tracking (ms)
+    stability_threshold: float = 0.13    # Max CV to consider tempo "stable" (lower = stricter)
+    tempo_timeout_ms: int = 1100         # How long no beats before resetting tempo tracking (ms)
     beats_per_measure: int = 4           # Time signature: 4 = 4/4, 3 = 3/4, 6 = 6/8
-    phase_snap_weight: float = 0.3       # How much to snap detected beats toward predicted time (0=off, 1=full)
+    phase_snap_weight: float = 0.8       # How much to snap detected beats toward predicted time (0=off, 1=full)
     
     # Downbeat pattern matching (strict tempo mode)
     pattern_match_tolerance_ms: float = 100.0  # Max deviation from predicted beat (ms) to accept downbeat
@@ -606,15 +608,15 @@ class BeatDetectionConfig:
     metronome_pll_conf_gain: float = 0.08       # Extra PLL gain from confidence
     tempo_fusion_min_acf_weight: float = 0.20   # Minimum ACF weight in ACF/onset tempo fusion
     tempo_fusion_max_acf_weight: float = 0.95   # Maximum ACF weight in ACF/onset tempo fusion
-    beat_dedup_fraction: float = 0.22            # Ignore second onset inside this fraction of a beat period
-    phase_accept_window_ms: float = 85.0         # Base raw-onset acceptance window around expected beat (ms)
+    beat_dedup_fraction: float = 0.28            # Ignore second onset inside this fraction of a beat period
+    phase_accept_window_ms: float = 67.0         # Base raw-onset acceptance window around expected beat (ms)
     phase_accept_low_conf_mult: float = 2.0      # Multiply phase window when metronome confidence is low
     beat_refractory_ms: float = 170.0            # Min spacing between accepted beats (ms), independent of stroke min interval
-    aggressive_tempo_snap_enabled: bool = False  # Hard-snap metronome BPM when lock confidence is high
-    aggressive_snap_confidence: float = 0.55     # Min ACF confidence required for aggressive snap
+    aggressive_tempo_snap_enabled: bool = True  # Hard-snap metronome BPM when lock confidence is high
+    aggressive_snap_confidence: float = 0.61     # Min ACF confidence required for aggressive snap
     aggressive_snap_phase_error_ms: float = 35.0 # Max phase error allowed for aggressive snap
     aggressive_snap_min_matches: int = 1         # Min consecutive matching downbeats for snap
-    aggressive_snap_max_bpm_jump_ratio: float = 0.12  # Max relative BPM jump allowed per snap
+    aggressive_snap_max_bpm_jump_ratio: float = 0.09  # Max relative BPM jump allowed per snap
     octave_target_bias_confidence_max: float = 0.35  # Only use target-BPM hint for octave disambiguation below this confidence
     target_bps_lock_gate_enabled: bool = True        # Disable target-BPS metric adjustments when metronome lock is confident
     target_bps_lock_gate_acf_conf: float = 0.40      # Minimum ACF confidence to consider lock-gating target-BPS metric
@@ -622,31 +624,31 @@ class BeatDetectionConfig:
 
     # Syncopation / double-stroke detection
     syncopation_enabled: bool = True             # Master on/off for syncopation detection
-    syncopation_band: str = 'any'                # Which z-score band triggers syncope: 'any', 'sub_bass', 'low_mid', 'mid', 'high'
-    syncopation_window: float = 0.15             # ±fraction of beat period to detect off-beat (0.05-0.30)
-    syncopation_bpm_limit: float = 160.0         # Disable syncopation above this BPM
-    syncopation_arc_size: float = 0.5              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
-    syncopation_speed: float = 0.5                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
-    scheduled_lead_ms: int = 0                     # Land scheduled arcs this many ms before predicted beat (0-200)
+    syncopation_band: str = 'low_mid'                # Which z-score band triggers syncope: 'any', 'sub_bass', 'low_mid', 'mid', 'high'
+    syncopation_window: float = 0.09             # ±fraction of beat period to detect off-beat (0.05-0.30)
+    syncopation_bpm_limit: float = 130.0         # Disable syncopation above this BPM
+    syncopation_arc_size: float = 0.82              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
+    syncopation_speed: float = 1.0                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
+    scheduled_lead_ms: int = 6                     # Land scheduled arcs this many ms before predicted beat (0-200)
     strict_bass_motion_gate_enabled: bool = False  # Require sub_bass/low_mid z-score fired bands for beat/sync stroke motion
-    center_jitter_flux_guard_enabled: bool = False # Prevent no-beat center+jitter reset while flux activity is still high
+    center_jitter_flux_guard_enabled: bool = True # Prevent no-beat center+jitter reset while flux activity is still high
     center_jitter_flux_delta_threshold: float = 0.20  # Rising-flux threshold to hold center+jitter reset
     center_jitter_flux_avg_threshold: float = 0.25    # Recent-average flux threshold to hold center+jitter reset
 
     # Teaching/learning runtime adapter (audio -> motion-control suggestions)
     teaching_learning_enabled: bool = True      # ENABLED: learning system now wired into geometry
-    teaching_learning_strength: float = 0.55    # Blend strength for adaptive suggestions (0=off, 1=full)
-    teaching_min_confidence: float = 0.12       # Minimum confidence required before adaptive suggestions apply
+    teaching_learning_strength: float = 0.59    # Blend strength for adaptive suggestions (0=off, 1=full)
+    teaching_min_confidence: float = 0.39       # Minimum confidence required before adaptive suggestions apply
     teaching_use_fitted_rules: bool = True      # ENABLED: use trained rule_fit models for motion adaptation
-    teaching_rule_fit_path: str = "datasets/rule_fit.json"  # Path to trained rule_fit models
-    teaching_no_motion_bias: float = 1.0        # Multiplier for hold-still behavior in quiet/unscripted moments
-    teaching_apply_in_circle_mode: bool = False # Keep SIMPLE_CIRCLE behavior legacy by default unless explicitly enabled
+    teaching_rule_fit_path: str = "defaults/learning/rule_fit.tranquilizer_blend.json"  # Path to trained rule_fit models
+    teaching_no_motion_bias: float = 1.08        # Multiplier for hold-still behavior in quiet/unscripted moments
+    teaching_apply_in_circle_mode: bool = True # Keep SIMPLE_CIRCLE behavior legacy by default unless explicitly enabled
     teaching_isolation_mode: bool = True        # Branch-only: suspend selected legacy runtime modifiers while learning drives motion
     teaching_relax_phase1_gates: bool = False   # Enforce dual-band/mid-trigger legacy gates unless explicitly relaxed
-    teaching_ignore_traffic_lights: bool = False  # Re-enable traffic-light stroke readiness by default
+    teaching_ignore_traffic_lights: bool = True  # Re-enable traffic-light stroke readiness by default
     tempo_lock_required: bool = True             # Require metronome lock confidence for stroke readiness
-    teaching_metronome_relaxed_confidence: float = 0.14  # Metronome-only fallback confidence for relaxed readiness
-    teaching_stroke_ready_grace_ms: float = 450.0  # Hold readiness briefly through short confidence dips
+    teaching_metronome_relaxed_confidence: float = 0.34  # Metronome-only fallback confidence for relaxed readiness
+    teaching_stroke_ready_grace_ms: float = 2348.0  # Hold readiness briefly through short confidence dips
     teaching_stroke_finish_beats: int = 4        # When readiness drops, allow this many final beat strokes before idling
 
 @dataclass
@@ -655,23 +657,23 @@ class StrokeConfig:
     mode: StrokeMode = StrokeMode.SIMPLE_CIRCLE
     stroke_min: float = 0.2           # Minimum stroke length (0.0-1.0)
     stroke_max: float = 1.0           # Maximum stroke length (0.0-1.0)
-    min_interval_ms: int = 260        # Minimum time between strokes (ms) - slider 200->1000
-    stroke_fullness: float = 0.7      # How much params affect stroke length
+    min_interval_ms: int = 150        # Minimum time between strokes (ms) - slider 200->1000
+    stroke_fullness: float = 1      # How much params affect stroke length
     minimum_depth: float = 0.0        # Lower limit of stroke (absolute bottom)
-    freq_depth_factor: float = 0.3    # How much frequency affects depth
+    freq_depth_factor: float = 0.07    # How much frequency affects depth
     # Frequency band for stroke depth calculation (bass = deeper strokes)
     depth_freq_low: float = 30.0      # Low frequency = deepest strokes (Hz)
-    depth_freq_high: float = 200.0    # High frequency = shallowest strokes (Hz)
+    depth_freq_high: float = 22050.0    # High frequency = shallowest strokes (Hz)
     
     # Spectral flux-based stroke control
-    flux_threshold: float = 0.03      # Threshold to distinguish low vs high flux
+    flux_threshold: float = 0.068      # Threshold to distinguish low vs high flux
     # Low flux (<threshold): only full strokes on downbeats
     # High flux (>=threshold): full strokes on every beat
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
     # Silence detection thresholds (fade-out when truly silent)
-    silence_threshold: float = 0.04      # Overall amplitude threshold for silence deadzone gate
-    silence_close_threshold: float = 0.048  # Overall amplitude threshold to exit silence deadzone gate
+    silence_threshold: float = 0.002      # Overall amplitude threshold for silence deadzone gate
+    silence_close_threshold: float = 0.008  # Overall amplitude threshold to exit silence deadzone gate
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
@@ -679,16 +681,16 @@ class StrokeConfig:
     # Flux-rise depth factor over 250ms.
     # Note: flux_depth_boost_enabled is legacy/internal (UI toggle removed).
     # It remains for backward compatibility with older saved configs.
-    flux_depth_factor: float = 0.0     # 0-5, 0=disabled
+    flux_depth_factor: float = 0.12     # 0-5, 0=disabled
     flux_depth_boost_enabled: bool = False
 
     # Main Controls master combinations (1.0 = neutral)
-    combo_size: float = 1.0      # stroke size/fullness/flux-scaling/intensity-curve influence
-    combo_power: float = 1.0     # downbeat lock boost/jitter blend/scheduled lead
-    combo_depth: float = 1.0     # minimum depth/freq depth/flux-depth behavior
-    combo_speed: float = 1.0     # cadence density + min-interval behavior
-    combo_texture: float = 1.0   # noise burst + syncopation texture behavior
-    combo_reaction: float = 1.0  # gate/strictness/readiness aggressiveness
+    combo_size: float = 1.0800000000000003      # stroke size/fullness/flux-scaling/intensity-curve influence
+    combo_power: float = 1.0000000000000004     # downbeat lock boost/jitter blend/scheduled lead
+    combo_depth: float = 1.0000000000000002     # minimum depth/freq depth/flux-depth behavior
+    combo_speed: float = 1.0200000000000002     # cadence density + min-interval behavior
+    combo_texture: float = 0.94   # noise burst + syncopation texture behavior
+    combo_reaction: float = 1.0300000000000002  # gate/strictness/readiness aggressiveness
 
     # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
     phase_advance: float = 0.25
@@ -702,8 +704,7 @@ class StrokeConfig:
         "downbeat": {"center_y": 0.3, "park_radius": 0.70, "max_radius": 0.90},
         "beat": {"center_y": 0.1, "park_radius": 0.70, "max_radius": 0.90},
         "syncopation": {"center_y": 0.0, "park_radius": 0.70, "max_radius": 0.90},
-        "start": {"center_y": 0.2, "park_radius": 0.70, "max_radius": 0.92},
-        "creep": {"center_y": 0.10, "park_radius": 0.70, "max_radius": 0.90},
+        "creep": {"center_y": 0.4, "park_radius": 0.70, "max_radius": 0.90},
     })
 
     # Stroke timing cadence:
@@ -711,50 +712,52 @@ class StrokeConfig:
     # - otherwise auto-select 2/4/8 beats per stroke from BPM cutoffs
     # - beats_between_strokes acts as fallback when BPM is unavailable (2/4/8)
     single_stroke_bpm_cutoff: float = 90.0   # Allow 1 beat/stroke only below this BPM
-    bpm_cutoff_2_to_4: float = 60.0          # BPM at/above this moves 2 -> 4 beats/stroke
-    bpm_cutoff_4_to_8: float = 180.0         # BPM at/above this moves 4 -> 8 beats/stroke
+    bpm_cutoff_2_to_4: float = 120          # BPM at/above this moves 2 -> 4 beats/stroke
+    bpm_cutoff_4_to_8: float = 150.0         # BPM at/above this moves 4 -> 8 beats/stroke
     beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
     cadence_cutoff_bias_bpm: float = 0.0     # +/- BPM shift applied to cadence cutoffs (0 = disabled)
 
     # Noise-burst reactive arc (hybrid with metronome system)
     # Fires a quick partial arc on sudden loud transients between beats
-    noise_burst_enabled: bool = True        # Allow transient-reactive arcs between beats
-    noise_burst_flux_multiplier: float = 2.0  # Fire burst when flux > flux_threshold * this
-    noise_burst_magnitude: float = 1.0      # Magnitude scaling for noise burst patterns (0.5-5.0)
-    noise_burst_scale: float = 0.35         # Final burst downscale applied after magnitude/energy (0.0-0.5)
+    noise_burst_enabled: bool = False        # Allow transient-reactive arcs between beats
+    noise_burst_flux_multiplier: float = 3.32  # Fire burst when flux > flux_threshold * this
+    noise_burst_magnitude: float = 2.12      # Magnitude scaling for noise burst patterns (0.5-5.0)
+    noise_burst_scale: float = 0.0699999999999997         # Final burst downscale applied after magnitude/energy (0.0-0.5)
     downbeat_jitter_vector_percent: float = 50.0  # % of current jitter vector added to downbeat arc points
-    noise_primary_mode: bool = False        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
+    noise_primary_mode: bool = True        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
 
     # Low-band activity gate for beat-based stroke generation
     # Uses sub_bass + low_mid activity window in StrokeMapper.
     # Beat strokes require low-band mean/fullness thresholds.
     # Downbeats use the same concept with a slightly relaxed threshold multiplier.
-    low_band_window_frames: int = 18
-    low_band_activity_threshold: float = 0.20
-    low_band_fullness_occupancy_threshold: float = 0.62
+    low_band_window_frames: int = 4
+    low_band_activity_threshold: float = 0.165
+    low_band_fullness_occupancy_threshold: float = 0.091
     low_band_to_high_ratio_min: float = 0.58
     mid_bass_support_enabled: bool = True
     mid_bass_freq_low_hz: float = 200.0
     mid_bass_freq_high_hz: float = 400.0
-    mid_bass_activity_threshold: float = 0.035
-    mid_bass_occupancy_threshold: float = 0.45
-    dual_band_db_gate_enabled: bool = True
-    dual_band_sub_bass_db_min: float = -80.0
+    mid_bass_activity_threshold: float = 0.006
+    mid_bass_occupancy_threshold: float = 0.07
+    dual_band_db_gate_enabled: bool = False
+    dual_band_sub_bass_db_min: float = -40
     dual_band_high_db_min: float = -80.0
     high_tip_fullness_enabled: bool = False
-    high_tip_freq_low_hz: float = 3500.0
+    high_tip_freq_low_hz: float = 15250.0
     high_tip_freq_high_hz: float = 16000.0
-    high_tip_db_min: float = -28.0
-    high_tip_occupancy_threshold: float = 0.50
+    high_tip_db_min: float = -80.0
+    high_tip_occupancy_threshold: float = 0.26
     block_mid_trigger_range_enabled: bool = True
-    block_mid_trigger_low_hz: float = 100.0
-    block_mid_trigger_high_hz: float = 2000.0
+    block_mid_trigger_low_hz: float = 1000.0
+    block_mid_trigger_high_hz: float = 2210.0
+    block_mid_trigger_window_frames: int = 8
+    block_mid_trigger_bass_to_mid_max_ratio: float = 0.5
     overall_amp_fill_gate_enabled: bool = True
     overall_amp_fill_target: float = 0.5
     overall_amp_fill_tolerance: float = 0.5
-    downbeat_overall_amp_fill_required: float = 0.75
-    beat_overall_amp_fill_required: float = 0.70
-    syncopation_overall_amp_fill_required: float = 0.60
+    downbeat_overall_amp_fill_required: float = 0.03
+    beat_overall_amp_fill_required: float = 0.01
+    syncopation_overall_amp_fill_required: float = 0.04
     overall_amp_fill_required_scale: float = 0.5
     overall_amp_fill_auto_enabled: bool = True
     overall_amp_fill_auto_target_pass_rate: float = 0.58
@@ -776,19 +779,19 @@ class StrokeConfig:
 
     # FFT-bin windows used by overall fill gate for each phase.
     # Values are bin indexes (0..N/2) from current FFT size.
-    downbeat_fill_bin_low: int = 0
-    downbeat_fill_bin_high: int = 512
-    beat_fill_bin_low: int = 0
-    beat_fill_bin_high: int = 512
-    syncopation_fill_bin_low: int = 0
-    syncopation_fill_bin_high: int = 512
-    downbeat_low_band_relax: float = 0.85
+    downbeat_fill_bin_low: int = 2
+    downbeat_fill_bin_high: int = 3
+    beat_fill_bin_low: int = 3
+    beat_fill_bin_high: int = 10
+    syncopation_fill_bin_low: int = 151
+    syncopation_fill_bin_high: int = 153
+    downbeat_low_band_relax: float = 0.589
 
     # Fill duration gate (per phase): require sustained fullness over consecutive frames.
     # Values are frame counts (~16-23ms per frame at effective 43-60fps processing rate).
     # Set to 0 or 1 to disable duration check (instant single-frame decision) for that phase.
-    downbeat_overall_amp_fill_sustain_frames: int = 3
-    beat_overall_amp_fill_sustain_frames: int = 3
+    downbeat_overall_amp_fill_sustain_frames: int = 2
+    beat_overall_amp_fill_sustain_frames: int = 2
     syncopation_overall_amp_fill_sustain_frames: int = 3
 
     # High-band presence gate for beat/downbeat stroke generation.
@@ -798,10 +801,10 @@ class StrokeConfig:
     #   AND (delta >= threshold OR variance >= threshold)
     # Final upper gate: presence status
     high_band_gate_enabled: bool = True
-    high_band_window_frames: int = 18
+    high_band_window_frames: int = 4
     high_band_mean_threshold: float = 0.12
-    high_band_floor_threshold: float = 0.06
-    high_band_occupancy_threshold: float = 0.55
+    high_band_floor_threshold: float = 0.031
+    high_band_occupancy_threshold: float = 0.2
     high_band_delta_threshold: float = 0.05
     high_band_variance_threshold: float = 0.0010
     high_band_include_mid: bool = True
@@ -813,12 +816,12 @@ class StrokeConfig:
     # Can be bypassed when new amplitude+fill gate is prioritized.
     new_gate_priority_enabled: bool = True
     overall_activity_guard_enabled: bool = True
-    overall_low_flux_threshold: float = 0.06
-    overall_low_energy_threshold: float = 0.14
+    overall_low_flux_threshold: float = 0.16
+    overall_low_energy_threshold: float = 0.18
 
     # Post-silence volume ramp: reduce volume after silence/track-change, ramp back up
-    post_silence_vol_reduction: float = 0.15  # Fraction to reduce volume by (0.0-0.50, 0.15 = 15%)
-    post_silence_ramp_seconds: float = 3.0    # Seconds to ramp volume back to full (1.0-8.0)
+    post_silence_vol_reduction: float = 0.47  # Fraction to reduce volume by (0.0-0.50, 0.15 = 15%)
+    post_silence_ramp_seconds: float = 2.7    # Seconds to ramp volume back to full (1.0-8.0)
     silence_fade_drop_points: int = 10        # Max points (out of 100) fade can lower volume by in runtime fade pass
 
 @dataclass
@@ -826,7 +829,7 @@ class JitterConfig:
     """Jitter - micro-circles when no beat detected"""
     enabled: bool = True
     intensity: float = 9.5            # Speed of jitter movement
-    size: float = 0.024               # Circle size
+    size: float = 0.012               # Circle size
 
     @property
     def amplitude(self) -> float:
@@ -839,7 +842,7 @@ class JitterConfig:
 @dataclass
 class CreepConfig:
     """Creep - very slow movement when idle"""
-    enabled: bool = True
+    enabled: bool = False
     speed: float = 0.25               # Multiplier for creep rotation
 
 @dataclass 
@@ -854,7 +857,7 @@ class ConnectionConfig:
 class PulseFreqConfig:
     """Pulse frequency mapping settings (P0 TCode)"""
     monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
-    monitor_freq_max: float = 200.0   # Max frequency to monitor (Hz)
+    monitor_freq_max: float = 4000.0   # Max frequency to monitor (Hz)
     tcode_min: int = 2010             # Min sent TCode value (0-9999)
     tcode_max: int = 7035             # Max sent TCode value (0-9999)
     freq_weight: float = 1.0          # How much frequency affects P0 (0=none, 1=full)
@@ -863,7 +866,7 @@ class PulseFreqConfig:
 class CarrierFreqConfig:
     """Carrier frequency (C0 TCode) mapping settings"""
     monitor_freq_min: float = 30.0    # Min frequency to monitor (Hz)
-    monitor_freq_max: float = 200.0   # Max frequency to monitor (Hz)
+    monitor_freq_max: float = 4000.0   # Max frequency to monitor (Hz)
     tcode_min: int = 0                # Min sent TCode value (0-9999)
     tcode_max: int = 5000             # Max sent TCode value (0-9999)
     freq_weight: float = 1.0          # How much frequency affects C0 (0=none, 1=full)
@@ -874,8 +877,8 @@ class DeviceLimitsConfig:
     When configured (non-zero), displays show converted values alongside TCode.
     P0/C0 = frequency in Hz. P1 = pulse width in carrier cycles.
     P2 = pulse interval random (0-1). P3 = rise time in carrier cycles."""
-    p0_freq_min: float = 0.0          # Device P0 min frequency (Hz), 0 = not set
-    p0_freq_max: float = 0.0          # Device P0 max frequency (Hz), 0 = not set
+    p0_freq_min: float = 1.0          # Device P0 min frequency (Hz), 0 = not set
+    p0_freq_max: float = 100.0          # Device P0 max frequency (Hz), 0 = not set
     c0_freq_min: float = 0.0          # Device C0 min frequency (Hz), 0 = not set
     c0_freq_max: float = 0.0          # Device C0 max frequency (Hz), 0 = not set
     p1_cycles_min: float = 0.0        # Device P1 min pulse width (cycles), 0 = not set
@@ -884,7 +887,7 @@ class DeviceLimitsConfig:
     p2_range_max: float = 0.0         # Device P2 max interval random, 0 = not set
     p3_cycles_min: float = 0.0        # Device P3 min rise time (cycles), 0 = not set
     p3_cycles_max: float = 0.0        # Device P3 max rise time (cycles), 0 = not set
-    prompted: bool = False            # Whether user has been prompted on first run
+    prompted: bool = True            # Whether user has been prompted on first run
     p0_c0_sending_enabled: bool = True  # Whether to actually send P0/C0 TCode to device
     dont_show_on_startup: bool = False  # User opted out of startup device limits dialog
     dry_run: bool = False             # When True, do not send network commands (log-only)
@@ -924,7 +927,7 @@ class AutoAdjustConfig:
     consec_beats: int = 8             # Consecutive beats required to lock
     auto_range_enabled: bool = False  # Global auto-range toggle persistence
     metrics_global_enabled: bool = True  # Master toggle for all metric auto-adjust
-    metric_response_speed: float = 1.0   # 1.0 = legacy speed, >1 faster cadence/adjustment
+    metric_response_speed: float = 1.16   # 1.0 = legacy speed, >1 faster cadence/adjustment
     enabled_params: Dict[str, bool] = field(default_factory=lambda: {
         'audio_amp': False,
         'peak_floor': False,
@@ -937,13 +940,13 @@ class AutoAdjustConfig:
 @dataclass
 class AudioConfig:
     """Audio capture settings"""
-    sample_rate: int = 44100
+    sample_rate: int = 48000
     buffer_size: int = 1024
     channels: int = 2
     # Device index - None means use system default
-    device_index: int | None = None
+    device_index: int | None = 16
     # Audio gain/amplification
-    gain: float = 1.0
+    gain: float = 6.2
     # FFT optimization settings
     fft_size: int = 1024              # FFT size (512, 1024, 2048) - smaller = faster, less resolution
     spectrum_skip_frames: int = 2     # Skip N frames between spectrum updates (1=no skip, 2=every other)
