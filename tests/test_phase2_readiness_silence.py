@@ -223,12 +223,13 @@ class TestPostSilenceRamp(Phase2Mixin, unittest.TestCase):
         cfg = Config()
         cfg.stroke.post_silence_vol_reduction = 0.20
         cfg.stroke.post_silence_ramp_seconds = 2.0
+        cfg.stroke.silence_threshold = 0.002
         bi = BeatIntelligence(cfg)
 
         now = time.perf_counter()
-        # Enter silence
+        # Enter true silence-open band (below threshold) to arm ramp
         bi._was_silent = False
-        bi._update_post_silence_ramp(silence_active=True, now=now)
+        bi._update_silence_fade(silence_active=True, now=now, overall_amplitude=0.001)
         # Exit silence
         ramp = bi._update_post_silence_ramp(silence_active=False, now=now)
         # Should start at (1 - reduction)
@@ -272,6 +273,38 @@ class TestPostSilenceRamp(Phase2Mixin, unittest.TestCase):
         bi = BeatIntelligence(Config())
         decision = bi.build_decision(self._event(), dt=1 / 60)
         self.assertAlmostEqual(decision.post_silence_ramp, 1.0, places=4)
+
+    def test_close_threshold_crossing_does_not_arm_ramp(self):
+        cfg = Config()
+        cfg.stroke.silence_threshold = 0.002
+        cfg.stroke.silence_close_threshold = 0.008
+        bi = BeatIntelligence(cfg)
+
+        now = time.perf_counter()
+        bi._update_silence_fade(silence_active=True, now=now, overall_amplitude=0.004)
+        self.assertFalse(bi._was_silent)
+
+    def test_open_threshold_arms_ramp(self):
+        cfg = Config()
+        cfg.stroke.silence_threshold = 0.002
+        bi = BeatIntelligence(cfg)
+
+        now = time.perf_counter()
+        bi._update_silence_fade(silence_active=True, now=now, overall_amplitude=0.001)
+        self.assertTrue(bi._was_silent)
+
+    def test_silence_reset_ms_arms_ramp(self):
+        cfg = Config()
+        cfg.stroke.silence_threshold = 0.002
+        cfg.beat.silence_reset_ms = 179
+        bi = BeatIntelligence(cfg)
+
+        now = time.perf_counter()
+        bi._was_silent = False
+        frames = max(1, bi._silence_reset_threshold_frames)
+        for _ in range(frames):
+            bi._update_silence_fade(silence_active=True, now=now, overall_amplitude=0.01)
+        self.assertTrue(bi._was_silent)
 
 
 # ── StrokeMapper integration ───────────────────────────────────────────

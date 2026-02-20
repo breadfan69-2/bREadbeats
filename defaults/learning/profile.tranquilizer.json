@@ -16,6 +16,6 @@
   "meta": "meta.json",
   "notes": "Profile alias manifest; canonical script filenames remain alpha/beta-compatible for tooling.",
   "model": {
-    "rule_fit": "D:/breadbeats_datasets/blends/rule_fit.tranquilizer_blend.json"
+    "rule_fit": "rule_fit.tranquilizer_blend.json"
   }
 }

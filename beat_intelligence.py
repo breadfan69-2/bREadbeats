@@ -126,7 +126,8 @@ class BeatIntelligence:
         self._consecutive_silent_count: int = 0
         self._silence_reset_armed: bool = False
         self._silence_fade_rate: float = 0.02       # fade per frame (~60fps → ~0.8s full fade)
-        self._silence_reset_threshold_frames: int = 180  # ~3s at 60fps
+        silence_reset_ms = int(getattr(getattr(self.config, "beat", None), "silence_reset_ms", 179) or 179)
+        self._silence_reset_threshold_frames: int = max(1, int(round((silence_reset_ms / 1000.0) * 60.0)))
 
         # ── Phase 2: Post-silence ramp (#14) ──
         self._post_silence_ramp_active: bool = False
@@ -524,26 +525,32 @@ class BeatIntelligence:
 
     # ── Phase 2 §19: Silence fade-out tracker ────────────────────────
 
-    def _update_silence_fade(self, silence_active: bool, now: float) -> tuple[float, bool]:
+    def _update_silence_fade(self, silence_active: bool, now: float, overall_amplitude: float | None = None) -> tuple[float, bool]:
         """Track prolonged silence: emit fade scalar and tempo-reset request.
 
         Returns (fade_scalar 0..1, request_tempo_reset bool).
         """
         request_reset = False
+        open_threshold = float(getattr(self.config.stroke, "silence_threshold", 0.04) or 0.04)
+        open_threshold = max(0.0, open_threshold)
+        amp = float(overall_amplitude) if overall_amplitude is not None else 0.0
 
         if silence_active:
             self._consecutive_silent_count += 1
             # Gradual fade
             self._silence_fade = max(0.0, self._silence_fade - self._silence_fade_rate)
+
+            # Only arm post-silence ramp reset from true silence-open amplitude.
+            if amp < open_threshold:
+                self._was_silent = True
+
             # Tempo reset after prolonged silence (once per silence episode)
             if (self._consecutive_silent_count >= self._silence_reset_threshold_frames
                     and not self._silence_reset_armed):
                 self._silence_reset_armed = True
                 request_reset = True
-        else:
-            if self._consecutive_silent_count > 0:
-                # Transition from silent → active
                 self._was_silent = True
+        else:
             self._consecutive_silent_count = 0
             self._silence_reset_armed = False
             # Restore fade (quick recovery)
@@ -578,7 +585,6 @@ class BeatIntelligence:
             return float((1.0 - reduction) + (reduction * t))
 
         if silence_active:
-            self._was_silent = True
             return 1.0  # fade tracker handles volume during silence
 
         return 1.0
@@ -1525,7 +1531,11 @@ class BeatIntelligence:
                 self._fill_pass_consecutive[kind] = 0
 
         # Phase 2: silence fade + post-silence ramp
-        silence_fade, request_tempo_reset = self._update_silence_fade(silence_active, now)
+        silence_fade, request_tempo_reset = self._update_silence_fade(
+            silence_active,
+            now,
+            overall_amplitude=overall_amplitude,
+        )
         post_silence_ramp = self._update_post_silence_ramp(silence_active, now)
 
         # On silence reset: zero fill-gate EMA offsets so gate re-learns fresh for new section

@@ -3632,7 +3632,7 @@ class BREadbeatsWindow(QMainWindow):
         gate_layout.addWidget(dual_high_db_slider)
 
         high_tip_gate_cb = QCheckBox("Enable high-tip fullness gate")
-        high_tip_gate_cb.setChecked(bool(getattr(self.config.stroke, 'high_tip_fullness_enabled', True)))
+        high_tip_gate_cb.setChecked(bool(getattr(self.config.stroke, 'high_tip_fullness_enabled', False)))
         high_tip_gate_cb.setToolTip("Require high-tip presence (frequency range + dB floor + occupancy) after dual-band dB gate")
         high_tip_gate_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'high_tip_fullness_enabled', state == 2)
@@ -3700,9 +3700,9 @@ class BREadbeatsWindow(QMainWindow):
 
         high_tip_db_slider = SliderWithLabel(
             "High-tip dB min",
-            -80.0,
-            0.0,
-            float(getattr(self.config.stroke, 'high_tip_db_min', -28.0) or -28.0),
+            -100.0,
+            -40.0,
+            float(getattr(self.config.stroke, 'high_tip_db_min', -90.0) or -90.0),
             1,
         )
         high_tip_db_slider.valueChanged.connect(
@@ -3718,7 +3718,7 @@ class BREadbeatsWindow(QMainWindow):
             "High-tip occupancy",
             0.0,
             1.0,
-            float(getattr(self.config.stroke, 'high_tip_occupancy_threshold', 0.50) or 0.50),
+            float(getattr(self.config.stroke, 'high_tip_occupancy_threshold', 0.20) or 0.20),
             3,
             step=0.001,
         )
@@ -3742,7 +3742,7 @@ class BREadbeatsWindow(QMainWindow):
         mid_block_low_spin = QSpinBox()
         mid_block_low_spin.setRange(0, 10000)
         mid_block_low_spin.setSingleStep(10)
-        mid_block_low_spin.setValue(int(float(getattr(self.config.stroke, 'block_mid_trigger_low_hz', 100.0) or 100.0)))
+        mid_block_low_spin.setValue(int(float(getattr(self.config.stroke, 'block_mid_trigger_low_hz', 1000.0) or 1000.0)))
         mid_block_low_spin.setSuffix(" Hz")
         mid_block_row.addWidget(QLabel("Mid block low:"))
         mid_block_row.addWidget(mid_block_low_spin)
@@ -3750,7 +3750,7 @@ class BREadbeatsWindow(QMainWindow):
         mid_block_high_spin = QSpinBox()
         mid_block_high_spin.setRange(1, 12000)
         mid_block_high_spin.setSingleStep(10)
-        mid_block_high_spin.setValue(int(float(getattr(self.config.stroke, 'block_mid_trigger_high_hz', 2000.0) or 2000.0)))
+        mid_block_high_spin.setValue(int(float(getattr(self.config.stroke, 'block_mid_trigger_high_hz', 2200.0) or 2200.0)))
         mid_block_high_spin.setSuffix(" Hz")
         mid_block_row.addWidget(QLabel("high:"))
         mid_block_row.addWidget(mid_block_high_spin)
@@ -5159,29 +5159,53 @@ Like the app?<br>
             except Exception as exc:
                 print(f"[Learning] Failed to materialize bundled learning files: {exc}")
 
-        # 1. PyInstaller frozen bundle
-        candidates: list[Path] = []
-        # 1. Alongside the EXE (persistent copy, preferred in frozen mode)
+        # Discover profile/rule_fit candidates from multiple roots.
+        # Prefer files next to EXE, then defaults/learning, then bundle temp, then repo.
+        search_roots: list[Path] = []
         if getattr(sys, 'frozen', False):
-            candidates.append(Path(sys.executable).parent / "defaults" / "learning")
-        # 2. PyInstaller frozen bundle temp dir
+            exe_dir = Path(sys.executable).parent
+            search_roots.append(exe_dir)
+            search_roots.append(exe_dir / "defaults" / "learning")
         if getattr(sys, 'frozen', False) and meipass:
-            candidates.append(Path(str(meipass)) / "defaults" / "learning")
-        # 3. Repo-relative (dev / source run)
-        candidates.append(Path(__file__).resolve().parent / "defaults" / "learning")
+            meipass_root = Path(str(meipass))
+            search_roots.append(meipass_root)
+            search_roots.append(meipass_root / "defaults" / "learning")
 
-        for c in candidates:
-            if c.exists():
-                defaults_dir = c
-                break
+        repo_root = Path(__file__).resolve().parent
+        search_roots.append(repo_root)
+        search_roots.append(repo_root / "defaults" / "learning")
 
-        if defaults_dir is None:
-            print("[Learning] No bundled defaults/learning/ folder found — skipping.")
+        profile_candidates: list[Path] = []
+        rule_fit_candidates: list[Path] = []
+        seen_profiles: set[Path] = set()
+        seen_rule_fits: set[Path] = set()
+
+        for root in search_roots:
+            if not root.exists() or not root.is_dir():
+                continue
+            for candidate in sorted(root.glob("profile*.json")):
+                try:
+                    resolved = candidate.resolve()
+                except Exception:
+                    resolved = candidate
+                if resolved in seen_profiles:
+                    continue
+                seen_profiles.add(resolved)
+                profile_candidates.append(candidate)
+
+            for candidate in sorted(root.glob("rule_fit*.json")):
+                try:
+                    resolved = candidate.resolve()
+                except Exception:
+                    resolved = candidate
+                if resolved in seen_rule_fits:
+                    continue
+                seen_rule_fits.add(resolved)
+                rule_fit_candidates.append(candidate)
+
+        if not profile_candidates and not rule_fit_candidates:
+            print("[Learning] No release learning profile/rule_fit files found (exe dir or defaults/learning) — skipping.")
             return
-
-        # Find profile and rule_fit by glob (deterministic naming preferred)
-        profile_candidates = sorted(defaults_dir.glob("profile*.json"))
-        rule_fit_candidates = sorted(defaults_dir.glob("rule_fit*.json"))
 
         selected_profile = profile_candidates[0] if profile_candidates else None
         selected_rule_fit: Path | None = None
@@ -5234,7 +5258,7 @@ Like the app?<br>
                     if candidate.exists() and _is_allowed_frozen_candidate(candidate):
                         selected_rule_fit = candidate
 
-        # Fallback: glob for rule_fit in defaults_dir
+        # Fallback: discovered rule_fit candidates
         if selected_rule_fit is None:
             selected_rule_fit = rule_fit_candidates[0] if rule_fit_candidates else None
 
@@ -5453,7 +5477,7 @@ Like the app?<br>
             3,
         )
         self.main_silence_close_slider.setToolTip(
-            "Silence gate close (RMS): motion resumes when signal is above this threshold."
+            "Silence gate close (RMS): adjusts both gate close and gate open together at a fixed 4:1 close/open ratio."
         )
         self.main_silence_close_slider.setMinimumWidth(260)
         self.main_silence_close_slider.valueChanged.connect(self._on_main_silence_close_change)
@@ -5494,15 +5518,26 @@ Like the app?<br>
         setattr(self.config.beat, 'tempo_lock_required', bool(checked))
 
     def _on_main_silence_close_change(self, value: float) -> None:
-        close_v = float(value)
-        open_v = float(getattr(self.config.stroke, 'silence_threshold', 0.04) or 0.04)
+        ratio = 4.0  # Maintain fixed hysteresis shape: close/open
+        min_open = 0.001
+        max_open = 0.250
+        min_close = 0.001
+        max_close = 0.300
+
+        close_v = float(np.clip(float(value), min_close, max_close))
+        open_v = float(np.clip(close_v / ratio, min_open, max_open))
+        close_v = float(np.clip(open_v * ratio, min_close, max_close))
+
         if close_v <= open_v:
-            close_v = open_v + 0.001
-            if hasattr(self, 'main_silence_close_slider'):
-                self.main_silence_close_slider.blockSignals(True)
-                self.main_silence_close_slider.setValue(close_v)
-                self.main_silence_close_slider.blockSignals(False)
+            close_v = min(max_close, open_v + 0.001)
+
+        setattr(self.config.stroke, 'silence_threshold', open_v)
         setattr(self.config.stroke, 'silence_close_threshold', close_v)
+
+        if hasattr(self, 'main_silence_close_slider') and abs(close_v - float(value)) > 1e-9:
+            self.main_silence_close_slider.blockSignals(True)
+            self.main_silence_close_slider.setValue(close_v)
+            self.main_silence_close_slider.blockSignals(False)
 
     def _capture_current_settings(self) -> dict:
         """Capture all current UI settings for revert functionality"""
