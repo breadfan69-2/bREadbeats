@@ -42,7 +42,6 @@ class _Combo:
 
 class _WindowStub:
     def __init__(self):
-        self.phase_advance_slider = _Value(0.42)
         self.pulse_freq_range_slider = _Range(33.0, 222.0)
         self.tcode_freq_range_slider = _Range(2001, 7007)
         self.freq_weight_slider = _Value(0.75)
@@ -68,8 +67,6 @@ class TestClosePersistWiring(unittest.TestCase):
         window = _WindowStub()
 
         persist_runtime_ui_to_config(window, cfg)
-
-        self.assertAlmostEqual(cfg.stroke.phase_advance, 0.42, places=6)
 
         self.assertAlmostEqual(cfg.pulse_freq.monitor_freq_min, 33.0, places=6)
         self.assertAlmostEqual(cfg.pulse_freq.monitor_freq_max, 222.0, places=6)
@@ -112,15 +109,6 @@ class TestClosePersistWiring(unittest.TestCase):
 
         # Should succeed without error since all controls are now optional
         persist_runtime_ui_to_config(window, cfg)
-
-    def test_missing_phase_advance_controls_succeeds(self):
-        cfg = Config()
-        window = _WindowStub()
-        delattr(window, "phase_advance_slider")
-
-        # Should succeed without error since phase_advance_slider is optional
-        persist_runtime_ui_to_config(window, cfg)
-
 
 if __name__ == "__main__":
     unittest.main()

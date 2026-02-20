@@ -818,7 +818,7 @@ class BeatIntelligence:
         fallback and high-tip fullness sub-gate.
         """
         cfg = self.config.stroke
-        if not bool(getattr(cfg, 'dual_band_db_gate_enabled', True)):
+        if not bool(getattr(cfg, 'dual_band_db_gate_enabled', False)):
             return True
 
         # Learning relax bypass

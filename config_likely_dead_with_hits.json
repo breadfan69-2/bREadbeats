@@ -1,0 +1,19 @@
+[
+  {
+    "key": "jitter.size",
+    "files": [
+      "audio_engine.py",
+      "beat_intelligence.py",
+      "main.py"
+    ]
+  },
+  {
+    "key": "volume",
+    "files": [
+      "close_persist_wiring.py",
+      "command_wiring.py",
+      "main.py",
+      "network_engine.py"
+    ]
+  }
+]

@@ -1,0 +1,700 @@
+[2026-02-20 10:38:28,799][INFO][NetworkEngine] Started
+[2026-02-20 10:38:30,845][ERROR][NetworkEngine] Connection failed | error=[WinError 10061] No connection could be ...
+[2026-02-20 10:38:33,992][INFO][AudioEngine] Using WASAPI loopback | device=LOGITECH SPEAKERS (Realtek(R) Audio) [Loopback]
+[2026-02-20 10:38:33,995][INFO][AudioEngine] Loopback format | channels=2 sample_rate=48000
+[2026-02-20 10:38:34,006][INFO][AudioEngine] WASAPI loopback capture started
+[2026-02-20 10:38:34,010][INFO][AudioEngine] Butterworth bandpass initialized | low=30 high=150
+[2026-02-20 10:38:34,014][INFO][NetworkEngine] Dry-run OFF
+[2026-02-20 10:38:34,017][INFO][NetworkEngine] Playing
+[2026-02-20 10:38:34,431][INFO][Audio] Levels | raw_rms=0.013878 spectrum=0.001030 band_energy=0.001771 flux=0.0000 peak_env=0.002467
+[2026-02-20 10:38:34,671][INFO][BEAT] Beat detected [Z] | energy=0.0036 threshold=0.0032 flux=0.0000 bpm=0.0 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:38:34,859][INFO][Audio] Levels | raw_rms=0.010683 spectrum=0.000858 band_energy=0.003521 flux=0.0000 peak_env=0.003513
+[2026-02-20 10:38:35,034][INFO][BEAT] Beat detected [Z] | energy=0.0059 threshold=0.0043 flux=0.0000 bpm=165.7 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:38:35,219][INFO][Tempo] Auto-halved BPM | original=322.3 adjusted=161.1
+[2026-02-20 10:38:35,220][INFO][BEAT] Beat detected [Z] | energy=0.0099 threshold=0.0057 flux=0.0000 bpm=164.7 bands=band=sub_bass fired=sub_bass,low_mid
+[2026-02-20 10:38:35,280][INFO][Audio] Levels | raw_rms=0.014693 spectrum=0.001143 band_energy=0.006334 flux=0.0000 peak_env=0.006045
+[2026-02-20 10:38:35,429][INFO][Tempo] Auto-halved BPM | original=285.8 adjusted=142.9
+[2026-02-20 10:38:35,430][INFO][Tempo] Stable BPM committed | bpm=160.9 cv=0.066 stability=0.50
+[2026-02-20 10:38:35,430][INFO][BEAT] Beat detected [Z] | energy=0.0074 threshold=0.0074 flux=0.0000 bpm=160.9 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:38:35,601][INFO][Tempo] Auto-halved BPM | original=350.2 adjusted=175.1
+[2026-02-20 10:38:35,601][INFO][Tempo] Phase snap | old=0.343s new=0.367s predicted=0.373s
+[2026-02-20 10:38:35,601][INFO][Tempo] Stable BPM committed | bpm=159.7 cv=0.061 stability=0.53
+[2026-02-20 10:38:35,602][INFO][BEAT] Beat detected [Z] | energy=0.0116 threshold=0.0093 flux=0.0000 bpm=159.7 bands=band=sub_bass fired=sub_bass,low_mid
+[2026-02-20 10:38:35,710][INFO][Audio] Levels | raw_rms=0.016886 spectrum=0.001336 band_energy=0.005741 flux=0.0000 peak_env=0.011028
+[2026-02-20 10:38:36,140][INFO][Audio] Levels | raw_rms=0.005032 spectrum=0.000419 band_energy=0.001114 flux=0.0000 peak_env=0.000871
+[2026-02-20 10:38:36,560][INFO][Audio] Levels | raw_rms=0.018926 spectrum=0.001481 band_energy=0.002393 flux=0.0000 peak_env=0.002152
+[2026-02-20 10:38:36,608][INFO][ACF] Initial tempo lock | bpm=178.2 confidence=0.202 fps=47.3
+[2026-02-20 10:38:36,609][INFO][Metronome] Started | bpm=178.2
+[2026-02-20 10:38:36,710][INFO][Tempo] No beats detected, resetting tracker | idle_ms=1109 bpm=159.7
+[2026-02-20 10:38:36,740][INFO][Tempo] Auto-doubled BPM | original=52.7 adjusted=105.3
+[2026-02-20 10:38:36,741][INFO][BEAT] Beat detected [Z] | energy=0.0033 threshold=0.0032 flux=0.0000 bpm=143.4 bands=band=sub_bass fired=low_mid
+[2026-02-20 10:38:36,819][INFO][MultiBand] Primary band switched | band=low_mid fires=10
+[2026-02-20 10:38:36,930][INFO][Tempo] Auto-halved BPM | original=316.1 adjusted=158.1
+[2026-02-20 10:38:36,931][INFO][BEAT] Beat detected [Z] | energy=0.0049 threshold=0.0034 flux=0.0000 bpm=142.5 bands=band=low_mid fired=low_mid,high
+[2026-02-20 10:38:36,951][INFO][Metronome] Tick [bt] | beat=1/4 bpm=178.2 acf_conf=0.20
+[2026-02-20 10:38:36,992][INFO][Audio] Levels | raw_rms=0.031284 spectrum=0.002488 band_energy=0.005890 flux=0.0000 peak_env=0.006499
+[2026-02-20 10:38:37,101][INFO][Tempo] Auto-halved BPM | original=350.7 adjusted=175.3
+[2026-02-20 10:38:37,102][INFO][Tempo] BPM unstable | bpm=145.6 cv=0.231 stability=0.00
+[2026-02-20 10:38:37,102][INFO][BEAT] Beat detected [Z] | energy=0.0054 threshold=0.0048 flux=0.0000 bpm=145.6 bands=band=low_mid fired=sub_bass
+[2026-02-20 10:38:37,292][INFO][Metronome] Tick [bt] | beat=2/4 bpm=178.2 acf_conf=0.19
+[2026-02-20 10:38:37,309][INFO][Tempo] Auto-halved BPM | original=287.2 adjusted=143.6
+[2026-02-20 10:38:37,310][INFO][Tempo] BPM unstable | bpm=146.2 cv=0.202 stability=0.00
+[2026-02-20 10:38:37,310][INFO][BEAT] Beat detected [Z] | energy=0.0087 threshold=0.0065 flux=0.0000 bpm=146.2 bands=band=low_mid fired=mid
+[2026-02-20 10:38:37,425][INFO][Audio] Levels | raw_rms=0.022835 spectrum=0.001679 band_energy=0.007553 flux=0.0000 peak_env=0.003999
+[2026-02-20 10:38:37,482][INFO][Tempo] Auto-halved BPM | original=350.7 adjusted=175.3
+[2026-02-20 10:38:37,482][INFO][Tempo] BPM unstable | bpm=148.5 cv=0.206 stability=0.00
+[2026-02-20 10:38:37,483][INFO][BEAT] Beat detected [Z] | energy=0.0082 threshold=0.0082 flux=0.0000 bpm=148.5 bands=band=low_mid fired=low_mid
+[2026-02-20 10:38:37,631][INFO][Metronome] Tick [bt] | beat=3/4 bpm=178.1 acf_conf=0.18
+[2026-02-20 10:38:37,840][INFO][Audio] Levels | raw_rms=0.009693 spectrum=0.000766 band_energy=0.001861 flux=0.0000 peak_env=0.001780
+[2026-02-20 10:38:37,951][INFO][Tempo] BPM unstable | bpm=147.7 cv=0.191 stability=0.00
+[2026-02-20 10:38:37,951][INFO][BEAT] Beat detected [Z] | energy=0.0069 threshold=0.0080 flux=0.0000 bpm=147.7 bands=band=low_mid fired=low_mid,high
+[2026-02-20 10:38:37,972][INFO][Downbeat] Metronome+Energy accepted | position=4/4 confidence=1.77 consecutive=2/3 error_ms=0.0 energies=[0.00, 0.00, 0.00, 0.01]
+[2026-02-20 10:38:37,972][INFO][Metronome] Tick [DB] | beat=4/4 bpm=177.9 acf_conf=0.14
+[2026-02-20 10:38:38,269][INFO][Audio] Levels | raw_rms=0.017234 spectrum=0.001331 band_energy=0.002804 flux=0.0000 peak_env=0.002903
+[2026-02-20 10:38:38,315][INFO][Metronome] Tick [bt] | beat=1/4 bpm=177.8 acf_conf=0.15
+[2026-02-20 10:38:38,439][INFO][MultiBand] Primary band switched | band=high fires=11
+[2026-02-20 10:38:38,661][INFO][Metronome] Tick [bt] | beat=2/4 bpm=177.7 acf_conf=0.15
+[2026-02-20 10:38:38,700][INFO][Audio] Levels | raw_rms=0.018606 spectrum=0.001271 band_energy=0.005088 flux=0.0000 peak_env=0.001779
+[2026-02-20 10:38:38,743][INFO][Tempo] BPM unstable | bpm=139.9 cv=0.317 stability=0.00
+[2026-02-20 10:38:38,743][INFO][BEAT] Beat detected [Z] | energy=0.0055 threshold=0.0051 flux=0.0000 bpm=139.9 bands=band=high fired=high
+[2026-02-20 10:38:38,929][INFO][Tempo] Auto-halved BPM | original=321.0 adjusted=160.5
+[2026-02-20 10:38:38,930][INFO][Tempo] BPM unstable | bpm=136.2 cv=0.313 stability=0.00
+[2026-02-20 10:38:38,930][INFO][BEAT] Beat detected [Z] | energy=0.0064 threshold=0.0066 flux=0.0000 bpm=136.2 bands=band=high fired=high
+[2026-02-20 10:38:38,982][INFO][Metronome] Tick [bt] | beat=3/4 bpm=177.5 acf_conf=0.15
+[2026-02-20 10:38:39,120][INFO][Audio] Levels | raw_rms=0.019112 spectrum=0.001527 band_energy=0.008172 flux=0.0000 peak_env=0.006965
+[2026-02-20 10:38:39,171][INFO][Tempo] Auto-halved BPM | original=249.2 adjusted=124.6
+[2026-02-20 10:38:39,171][INFO][Tempo] BPM unstable | bpm=133.6 cv=0.294 stability=0.00
+[2026-02-20 10:38:39,171][INFO][BEAT] Beat detected [Z] | energy=0.0087 threshold=0.0078 flux=0.0000 bpm=133.6 bands=band=high fired=sub_bass
+[2026-02-20 10:38:39,321][INFO][Downbeat] Metronome+Energy accepted | position=4/4 confidence=1.93 consecutive=3/3 error_ms=-2.8 energies=[0.00, 0.00, 0.00, 0.01]
+[2026-02-20 10:38:39,321][INFO][Metronome] Tick [DB] | beat=4/4 bpm=177.5 acf_conf=0.14
+[2026-02-20 10:38:39,343][INFO][Tempo] Auto-halved BPM | original=347.7 adjusted=173.9
+[2026-02-20 10:38:39,343][INFO][Tempo] BPM unstable | bpm=133.3 cv=0.296 stability=0.00
+[2026-02-20 10:38:39,344][INFO][BEAT] Beat detected [Z] | energy=0.0114 threshold=0.0097 flux=0.0000 bpm=133.3 bands=band=high fired=sub_bass,low_mid
+[2026-02-20 10:38:39,550][INFO][Audio] Levels | raw_rms=0.005732 spectrum=0.000398 band_energy=0.001273 flux=0.0000 peak_env=0.000688
+[2026-02-20 10:38:39,681][INFO][Metronome] Tick [bt] | beat=1/4 bpm=166.0 acf_conf=0.14
+[2026-02-20 10:38:39,702][INFO][MultiBand] Primary band switched | band=sub_bass fires=14
+[2026-02-20 10:38:39,791][INFO][Tempo] BPM unstable | bpm=133.2 cv=0.283 stability=0.00
+[2026-02-20 10:38:39,791][INFO][BEAT] Beat detected [Z] | energy=0.0066 threshold=0.0098 flux=0.0000 bpm=133.2 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:38:39,980][INFO][Audio] Levels | raw_rms=0.014899 spectrum=0.001103 band_energy=0.002535 flux=0.0000 peak_env=0.002494
+[2026-02-20 10:38:40,065][INFO][Metronome] Tick [bt] | beat=2/4 bpm=157.2 acf_conf=0.11
+[2026-02-20 10:38:40,360][INFO][MultiBand] Primary band switched | band=mid fires=15
+[2026-02-20 10:38:40,401][INFO][Audio] Levels | raw_rms=0.011401 spectrum=0.001076 band_energy=0.003245 flux=0.0000 peak_env=0.003897
+[2026-02-20 10:38:40,450][INFO][Metronome] Tick [bt] | beat=3/4 bpm=153.1 acf_conf=0.12
+[2026-02-20 10:38:40,552][INFO][Tempo] BPM unstable | bpm=130.0 cv=0.313 stability=0.00
+[2026-02-20 10:38:40,552][INFO][BEAT] Beat detected [Z] | energy=0.0040 threshold=0.0053 flux=0.0000 bpm=130.0 bands=band=mid fired=high
+[2026-02-20 10:38:40,751][INFO][Tempo] Auto-halved BPM | original=301.2 adjusted=150.6
+[2026-02-20 10:38:40,751][INFO][Tempo] BPM unstable | bpm=128.6 cv=0.308 stability=0.00
+[2026-02-20 10:38:40,751][INFO][BEAT] Beat detected [Z] | energy=0.0069 threshold=0.0064 flux=0.0000 bpm=128.6 bands=band=mid fired=low_mid,mid,high
+[2026-02-20 10:38:40,829][INFO][Audio] Levels | raw_rms=0.015858 spectrum=0.001307 band_energy=0.005140 flux=0.0000 peak_env=0.005328
+[2026-02-20 10:38:40,851][INFO][Downbeat] Metronome+Energy accepted | position=4/4 confidence=1.99 consecutive=4/3 error_ms=-76.6 energies=[0.00, 0.00, 0.00, 0.00]
+[2026-02-20 10:38:40,851][INFO][Downbeat] Phase correction from downbeat | error_ms=-76.6 correction=-0.0286
+[2026-02-20 10:38:40,851][INFO][Metronome] Tick [DB] | beat=4/4 bpm=149.4 acf_conf=0.11
+[2026-02-20 10:38:40,870][INFO][Metronome] Tick [bt] | beat=1/4 bpm=149.3 acf_conf=0.11
+[2026-02-20 10:38:41,019][INFO][Tempo] Auto-halved BPM | original=223.3 adjusted=111.6
+[2026-02-20 10:38:41,020][INFO][Tempo] BPM unstable | bpm=127.1 cv=0.296 stability=0.00
+[2026-02-20 10:38:41,020][INFO][BEAT] Beat detected [Z] | energy=0.0065 threshold=0.0073 flux=0.0000 bpm=127.1 bands=band=mid fired=sub_bass
+[2026-02-20 10:38:41,220][INFO][Tempo] Auto-halved BPM | original=298.7 adjusted=149.3
+[2026-02-20 10:38:41,221][INFO][Tempo] BPM unstable | bpm=126.8 cv=0.292 stability=0.00
+[2026-02-20 10:38:41,221][INFO][BEAT] Beat detected [Z] | energy=0.0106 threshold=0.0090 flux=0.0000 bpm=126.8 bands=band=mid fired=sub_bass
+[2026-02-20 10:38:41,263][INFO][Audio] Levels | raw_rms=0.006795 spectrum=0.000572 band_energy=0.002294 flux=0.0000 peak_env=0.004708
+[2026-02-20 10:38:41,263][INFO][Metronome] Tick [bt] | beat=2/4 bpm=143.4 acf_conf=0.09
+[2026-02-20 10:38:41,431][INFO][MultiBand] Primary band switched | band=sub_bass fires=11
+[2026-02-20 10:38:41,679][INFO][MultiBand] Primary band switched | band=high fires=12
+[2026-02-20 10:38:41,680][INFO][Audio] Levels | raw_rms=0.022390 spectrum=0.001830 band_energy=0.001904 flux=0.0000 peak_env=0.002514
+[2026-02-20 10:38:41,731][INFO][Metronome] Tick [bt] | beat=3/4 bpm=125.6 acf_conf=0.10
+[2026-02-20 10:38:41,980][INFO][MultiBand] Primary band switched | band=sub_bass fires=9
+[2026-02-20 10:38:42,110][INFO][Audio] Levels | raw_rms=0.020174 spectrum=0.001526 band_energy=0.003184 flux=0.0000 peak_env=0.003127
+[2026-02-20 10:38:42,222][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.73 consecutive=3/3 error_ms=-642.7 energies=[0.00, 0.00, 0.00, 0.00]
+[2026-02-20 10:38:42,222][INFO][Metronome] Tick [bt] | beat=4/4 bpm=119.2 acf_conf=0.08
+[2026-02-20 10:38:42,350][INFO][Tempo] No beats detected, resetting tracker | idle_ms=1129 bpm=126.8
+[2026-02-20 10:38:42,412][INFO][Tempo] Auto-doubled BPM | original=50.4 adjusted=100.7
+[2026-02-20 10:38:42,412][INFO][BEAT] Beat detected [Z] | energy=0.0043 threshold=0.0040 flux=0.0000 bpm=119.0 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:38:42,520][INFO][MultiBand] Primary band switched | band=high fires=9
+[2026-02-20 10:38:42,541][INFO][Audio] Levels | raw_rms=0.031064 spectrum=0.002582 band_energy=0.006583 flux=0.0000 peak_env=0.005923
+[2026-02-20 10:38:42,601][INFO][Tempo] Auto-halved BPM | original=318.2 adjusted=159.1
+[2026-02-20 10:38:42,601][INFO][BEAT] Beat detected [Z] | energy=0.0066 threshold=0.0054 flux=0.0000 bpm=125.0 bands=band=high fired=sub_bass,low_mid,high
+[2026-02-20 10:38:42,730][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.44 consecutive=2/3 error_ms=0.0 energies=[0.00, 0.00, 0.00, 0.00]
+[2026-02-20 10:38:42,730][INFO][Metronome] Tick [DB] | beat=1/4 bpm=116.4 acf_conf=0.06
+[2026-02-20 10:38:42,750][INFO][MultiBand] Primary band switched | band=sub_bass fires=16
+[2026-02-20 10:38:42,840][INFO][Tempo] Auto-halved BPM | original=250.9 adjusted=125.5
+[2026-02-20 10:38:42,840][INFO][Tempo] BPM unstable | bpm=126.2 cv=0.185 stability=0.00
+[2026-02-20 10:38:42,840][INFO][BEAT] Beat detected [Z] | energy=0.0083 threshold=0.0073 flux=0.0000 bpm=126.2 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:38:42,959][INFO][Audio] Levels | raw_rms=0.024913 spectrum=0.001862 band_energy=0.009606 flux=0.0000 peak_env=0.011662
+[2026-02-20 10:38:43,011][INFO][Tempo] Auto-halved BPM | original=350.7 adjusted=175.4
+[2026-02-20 10:38:43,011][INFO][Tempo] BPM unstable | bpm=131.1 cv=0.220 stability=0.00
+[2026-02-20 10:38:43,012][INFO][BEAT] Beat detected [Z] | energy=0.0090 threshold=0.0093 flux=0.0000 bpm=131.1 bands=band=sub_bass fired=low_mid
+[2026-02-20 10:38:43,012][INFO][Syncopation] Off-beat onset detected | phase=0.55 bpm=118.9
+[2026-02-20 10:38:43,241][INFO][Metronome] Tick [bt] | beat=2/4 bpm=120.9 acf_conf=0.05
+[2026-02-20 10:38:43,390][INFO][Audio] Levels | raw_rms=0.004455 spectrum=0.000332 band_energy=0.001149 flux=0.0000 peak_env=0.001454
+[2026-02-20 10:38:43,526][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:38:43,731][INFO][Metronome] Tick [bt] | beat=3/4 bpm=122.9 acf_conf=0.04
+[2026-02-20 10:38:43,820][INFO][Audio] Levels | raw_rms=0.010886 spectrum=0.000741 band_energy=0.001379 flux=0.0000 peak_env=0.001859
+[2026-02-20 10:38:44,122][INFO][Tempo] No beats detected, resetting tracker | idle_ms=1111 bpm=131.1
+[2026-02-20 10:38:44,124][INFO][Tempo] Auto-doubled BPM | original=53.9 adjusted=107.8
+[2026-02-20 10:38:44,125][INFO][BEAT] Beat detected [Z] | energy=0.0029 threshold=0.0031 flux=0.0000 bpm=124.1 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:38:44,220][INFO][MultiBand] Primary band switched | band=mid fires=12
+[2026-02-20 10:38:44,221][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.62 consecutive=2/3 error_ms=0.0 energies=[0.00, 0.00, 0.00, 0.00]
+[2026-02-20 10:38:44,221][INFO][Metronome] Tick [DB] | beat=4/4 bpm=127.6 acf_conf=0.03
+[2026-02-20 10:38:44,241][INFO][Audio] Levels | raw_rms=0.016686 spectrum=0.001134 band_energy=0.004448 flux=0.0000 peak_env=0.001789
+[2026-02-20 10:38:44,310][INFO][Tempo] Auto-halved BPM | original=321.9 adjusted=160.9
+[2026-02-20 10:38:44,310][INFO][BEAT] Beat detected [Z] | energy=0.0044 threshold=0.0034 flux=0.0000 bpm=129.9 bands=band=mid fired=low_mid,high
+[2026-02-20 10:38:44,482][INFO][Tempo] Auto-halved BPM | original=351.4 adjusted=175.7
+[2026-02-20 10:38:44,482][INFO][Tempo] BPM unstable | bpm=137.3 cv=0.224 stability=0.00
+[2026-02-20 10:38:44,482][INFO][BEAT] Beat detected [Z] | energy=0.0076 threshold=0.0049 flux=0.0000 bpm=137.3 bands=band=mid fired=sub_bass
+[2026-02-20 10:38:44,670][INFO][Audio] Levels | raw_rms=0.018380 spectrum=0.001631 band_energy=0.006782 flux=0.0000 peak_env=0.006941
+[2026-02-20 10:38:44,671][INFO][Metronome] Tick [bt] | beat=1/4 bpm=136.5 acf_conf=0.03
+[2026-02-20 10:38:44,690][INFO][Tempo] Auto-halved BPM | original=287.1 adjusted=143.5
+[2026-02-20 10:38:44,691][INFO][Tempo] BPM unstable | bpm=140.7 cv=0.195 stability=0.00
+[2026-02-20 10:38:44,691][INFO][BEAT] Beat detected [Z] | energy=0.0069 threshold=0.0066 flux=0.0000 bpm=140.7 bands=band=mid fired=sub_bass,mid
+[2026-02-20 10:38:44,860][INFO][Tempo] Auto-halved BPM | original=352.3 adjusted=176.1
+[2026-02-20 10:38:44,861][INFO][Tempo] BPM unstable | bpm=145.1 cv=0.198 stability=0.00
+[2026-02-20 10:38:44,861][INFO][BEAT] Beat detected [Z] | energy=0.0083 threshold=0.0083 flux=0.0000 bpm=145.1 bands=band=mid fired=low_mid,mid
+[2026-02-20 10:38:45,031][INFO][MultiBand] Primary band switched | band=sub_bass fires=24
+[2026-02-20 10:38:45,032][INFO][Tempo] Auto-halved BPM | original=350.2 adjusted=175.1
+[2026-02-20 10:38:45,032][INFO][Tempo] BPM unstable | bpm=149.3 cv=0.195 stability=0.00
+[2026-02-20 10:38:45,033][INFO][BEAT] Beat detected [Z+C] | energy=0.1075 threshold=0.0231 flux=0.0001 bpm=149.3 bands=band=sub_bass fired=sub_bass,low_mid,high
+[2026-02-20 10:38:45,103][INFO][Audio] Levels | raw_rms=0.101501 spectrum=0.007671 band_energy=0.092266 flux=0.0001 peak_env=0.086418
+[2026-02-20 10:38:45,103][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=3.22 consecutive=1/3 error_ms=-799.3 energies=[0.00, 0.00, 0.01, 0.00]
+[2026-02-20 10:38:45,103][INFO][Metronome] Tick [bt] | beat=2/4 bpm=142.8 acf_conf=0.02
+[2026-02-20 10:38:45,231][INFO][Tempo] Auto-halved BPM | original=300.7 adjusted=150.3
+[2026-02-20 10:38:45,232][INFO][Tempo] BPM unstable | bpm=151.5 cv=0.180 stability=0.00
+[2026-02-20 10:38:45,232][INFO][BEAT] Beat detected [Z] | energy=0.0716 threshold=0.0470 flux=0.0002 bpm=151.5 bands=band=sub_bass fired=sub_bass,low_mid,high
+[2026-02-20 10:38:45,420][INFO][Tempo] Auto-halved BPM | original=318.1 adjusted=159.1
+[2026-02-20 10:38:45,420][INFO][Tempo] BPM unstable | bpm=153.0 cv=0.170 stability=0.00
+[2026-02-20 10:38:45,420][INFO][BEAT] Beat detected [Z] | energy=0.0689 threshold=0.0662 flux=0.0002 bpm=153.0 bands=band=sub_bass fired=low_mid,mid,high
+[2026-02-20 10:38:45,501][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.97 consecutive=0/3 error_ms=-277.9 energies=[0.00, 0.00, 0.01, 0.01]
+[2026-02-20 10:38:45,501][INFO][Metronome] Tick [bt] | beat=3/4 bpm=154.1 acf_conf=0.02
+[2026-02-20 10:38:45,519][INFO][Audio] Levels | raw_rms=0.117967 spectrum=0.008617 band_energy=0.087999 flux=0.0002 peak_env=0.035286
+[2026-02-20 10:38:45,610][INFO][Tempo] Auto-halved BPM | original=315.7 adjusted=157.9
+[2026-02-20 10:38:45,610][INFO][Tempo] BPM unstable | bpm=154.1 cv=0.162 stability=0.00
+[2026-02-20 10:38:45,610][INFO][BEAT] Beat detected [Z] | energy=0.0968 threshold=0.0896 flux=0.0004 bpm=154.1 bands=band=sub_bass fired=low_mid
+[2026-02-20 10:38:45,782][INFO][Tempo] Auto-halved BPM | original=349.4 adjusted=174.7
+[2026-02-20 10:38:45,783][INFO][Tempo] BPM unstable | bpm=155.6 cv=0.160 stability=0.00
+[2026-02-20 10:38:45,783][INFO][Downbeat] Rejected (raw) | position=1/4 confidence=1.47 error_ms=-1261.3 energies=[0.01, 0.00, 0.01, 0.01]
+[2026-02-20 10:38:45,783][INFO][BEAT] Beat detected [Z] | energy=0.0951 threshold=0.1155 flux=0.0003 bpm=155.6 bands=band=sub_bass fired=high
+[2026-02-20 10:38:45,951][INFO][Audio] Levels | raw_rms=0.139944 spectrum=0.009976 band_energy=0.107986 flux=0.0002 peak_env=0.107796
+[2026-02-20 10:38:45,951][INFO][Tempo] Auto-halved BPM | original=352.7 adjusted=176.3
+[2026-02-20 10:38:45,952][INFO][Tempo] BPM unstable | bpm=157.2 cv=0.158 stability=0.00
+[2026-02-20 10:38:45,953][INFO][Downbeat] Rejected (raw) | position=2/4 confidence=1.32 error_ms=-1075.4 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:45,953][INFO][BEAT] Beat detected [Z] | energy=0.1080 threshold=0.1409 flux=0.0002 bpm=157.2 bands=band=sub_bass fired=mid
+[2026-02-20 10:38:45,970][INFO][MultiBand] Primary band switched | band=low_mid fires=29
+[2026-02-20 10:38:46,382][INFO][MultiBand] Primary band switched | band=mid fires=22
+[2026-02-20 10:38:46,382][INFO][Audio] Levels | raw_rms=0.085846 spectrum=0.006659 band_energy=0.062206 flux=0.0001 peak_env=0.063013
+[2026-02-20 10:38:46,532][INFO][MultiBand] Primary band switched | band=high fires=25
+[2026-02-20 10:38:46,549][INFO][Metronome] Started | bpm=176.0
+[2026-02-20 10:38:46,571][INFO][Tempo] BPM unstable | bpm=154.6 cv=0.217 stability=0.00
+[2026-02-20 10:38:46,571][INFO][BEAT] Beat detected [Z] | energy=0.0924 threshold=0.1391 flux=0.0001 bpm=154.6 bands=band=high fired=high
+[2026-02-20 10:38:46,800][INFO][Audio] Levels | raw_rms=0.089497 spectrum=0.006474 band_energy=0.044017 flux=0.0001 peak_env=0.034179
+[2026-02-20 10:38:46,911][INFO][Downbeat] Metronome+Energy accepted | position=3/4 confidence=1.24 consecutive=1/3 error_ms=37.5 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:46,911][INFO][Downbeat] Phase correction from downbeat | error_ms=37.5 correction=0.0164
+[2026-02-20 10:38:46,911][INFO][Metronome] Tick [DB] | beat=1/4 bpm=174.8 acf_conf=0.67
+[2026-02-20 10:38:46,951][INFO][MultiBand] Primary band switched | band=mid fires=21
+[2026-02-20 10:38:47,232][INFO][Audio] Levels | raw_rms=0.074044 spectrum=0.005983 band_energy=0.063464 flux=0.0001 peak_env=0.065109
+[2026-02-20 10:38:47,232][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.36 consecutive=0/3 error_ms=-1065.9 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:47,233][INFO][Metronome] Tick [bt] | beat=2/4 bpm=173.0 acf_conf=0.68
+[2026-02-20 10:38:47,593][INFO][Metronome] Tick [bt] | beat=3/4 bpm=170.8 acf_conf=0.63
+[2026-02-20 10:38:47,660][INFO][Audio] Levels | raw_rms=0.119267 spectrum=0.009596 band_energy=0.066172 flux=0.0000 peak_env=0.061852
+[2026-02-20 10:38:47,681][INFO][Tempo] No beats detected, resetting tracker | idle_ms=1111 bpm=154.6
+[2026-02-20 10:38:47,741][INFO][Tempo] Auto-doubled BPM | original=51.3 adjusted=102.5
+[2026-02-20 10:38:47,742][INFO][BEAT] Beat detected [Z] | energy=0.0738 threshold=0.1002 flux=0.0001 bpm=139.0 bands=band=mid fired=sub_bass
+[2026-02-20 10:38:47,940][INFO][Tempo] Auto-halved BPM | original=302.8 adjusted=151.4
+[2026-02-20 10:38:47,940][INFO][BEAT] Beat detected [Z] | energy=0.0741 threshold=0.1023 flux=0.0001 bpm=137.9 bands=band=mid fired=high
+[2026-02-20 10:38:47,940][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.56 consecutive=2/3 error_ms=0.0 energies=[0.02, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:47,941][INFO][Metronome] Tick [DB] | beat=4/4 bpm=169.3 acf_conf=0.63
+[2026-02-20 10:38:48,081][INFO][Audio] Levels | raw_rms=0.120675 spectrum=0.009211 band_energy=0.073233 flux=0.0002 peak_env=0.089982
+[2026-02-20 10:38:48,281][INFO][MultiBand] Primary band switched | band=high fires=14
+[2026-02-20 10:38:48,301][INFO][Metronome] Tick [bt] | beat=1/4 bpm=169.1 acf_conf=0.63
+[2026-02-20 10:38:48,402][INFO][Tempo] BPM unstable | bpm=135.6 cv=0.163 stability=0.00
+[2026-02-20 10:38:48,402][INFO][BEAT] Beat detected [Z] | energy=0.0893 threshold=0.1174 flux=0.0002 bpm=135.6 bands=band=high fired=mid
+[2026-02-20 10:38:48,512][INFO][Audio] Levels | raw_rms=0.108764 spectrum=0.008217 band_energy=0.079306 flux=0.0003 peak_env=0.039927
+[2026-02-20 10:38:48,660][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.18 consecutive=1/3 error_ms=-698.5 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:48,660][INFO][Metronome] Tick [bt] | beat=2/4 bpm=169.1 acf_conf=0.63
+[2026-02-20 10:38:48,941][INFO][Audio] Levels | raw_rms=0.055714 spectrum=0.004542 band_energy=0.047524 flux=0.0000 peak_env=0.026524
+[2026-02-20 10:38:49,001][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.08 consecutive=0/3 error_ms=-358.2 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:49,001][INFO][Metronome] Tick [bt] | beat=3/4 bpm=169.1 acf_conf=0.63
+[2026-02-20 10:38:49,320][INFO][Tempo] BPM unstable | bpm=123.3 cv=0.341 stability=0.00
+[2026-02-20 10:38:49,321][INFO][BEAT] Beat detected [Z] | energy=0.0762 threshold=0.1137 flux=0.0001 bpm=123.3 bands=band=high fired=sub_bass
+[2026-02-20 10:38:49,360][INFO][Audio] Levels | raw_rms=0.104900 spectrum=0.007981 band_energy=0.079632 flux=0.0001 peak_env=0.077760
+[2026-02-20 10:38:49,361][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.43 consecutive=1/3 error_ms=2.5 energies=[0.02, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:49,361][INFO][Metronome] Tick [DB] | beat=4/4 bpm=169.1 acf_conf=0.63
+[2026-02-20 10:38:49,711][INFO][Downbeat] Metronome+Energy rejected | position=2/4 confidence=1.29 consecutive=0/3 error_ms=-1069.3 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:49,711][INFO][Metronome] Tick [bt] | beat=1/4 bpm=169.1 acf_conf=0.63
+[2026-02-20 10:38:49,791][INFO][Audio] Levels | raw_rms=0.089450 spectrum=0.006414 band_energy=0.070637 flux=0.0001 peak_env=0.071229
+[2026-02-20 10:38:50,071][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.15 consecutive=0/3 error_ms=-720.4 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:50,071][INFO][Metronome] Tick [bt] | beat=2/4 bpm=167.8 acf_conf=0.22
+[2026-02-20 10:38:50,220][INFO][Audio] Levels | raw_rms=0.088987 spectrum=0.007105 band_energy=0.068687 flux=0.0001 peak_env=0.029893
+[2026-02-20 10:38:50,352][INFO][Tempo] Auto-doubled BPM | original=58.2 adjusted=116.4
+[2026-02-20 10:38:50,352][INFO][Tempo] BPM unstable | bpm=116.5 cv=0.318 stability=0.00
+[2026-02-20 10:38:50,352][INFO][BEAT] Beat detected [Z] | energy=0.0815 threshold=0.1178 flux=0.0002 bpm=116.5 bands=band=high fired=low_mid
+[2026-02-20 10:38:50,431][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.30 consecutive=0/3 error_ms=-380.0 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:50,431][INFO][Metronome] Tick [bt] | beat=3/4 bpm=165.5 acf_conf=0.17
+[2026-02-20 10:38:50,453][INFO][MultiBand] Primary band switched | band=low_mid fires=4
+[2026-02-20 10:38:50,641][INFO][Audio] Levels | raw_rms=0.111291 spectrum=0.008778 band_energy=0.092772 flux=0.0002 peak_env=0.095031
+[2026-02-20 10:38:50,791][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.31 consecutive=1/3 error_ms=-44.0 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:50,791][INFO][Downbeat] Phase correction from downbeat | error_ms=-44.0 correction=-0.0179
+[2026-02-20 10:38:50,792][INFO][Metronome] Tick [DB] | beat=4/4 bpm=162.9 acf_conf=0.18
+[2026-02-20 10:38:50,822][INFO][Downbeat] Metronome+Energy rejected | position=2/4 confidence=1.29 consecutive=0/3 error_ms=-1443.4 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:50,822][INFO][Metronome] Tick [bt] | beat=1/4 bpm=162.7 acf_conf=0.18
+[2026-02-20 10:38:51,072][INFO][Audio] Levels | raw_rms=0.069314 spectrum=0.005886 band_energy=0.059818 flux=0.0001 peak_env=0.029431
+[2026-02-20 10:38:51,181][INFO][Metronome] Tick [bt] | beat=2/4 bpm=160.5 acf_conf=0.20
+[2026-02-20 10:38:51,221][INFO][MultiBand] Primary band switched | band=high fires=7
+[2026-02-20 10:38:51,460][INFO][Tempo] No beats detected, resetting tracker | idle_ms=1109 bpm=116.5
+[2026-02-20 10:38:51,503][INFO][Audio] Levels | raw_rms=0.091205 spectrum=0.006192 band_energy=0.055518 flux=0.0002 peak_env=0.055124
+[2026-02-20 10:38:51,542][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.28 consecutive=2/3 error_ms=0.0 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:51,542][INFO][Metronome] Tick [DB] | beat=3/4 bpm=158.2 acf_conf=0.22
+[2026-02-20 10:38:51,920][INFO][Audio] Levels | raw_rms=0.052434 spectrum=0.003429 band_energy=0.025761 flux=0.0001 peak_env=0.017214
+[2026-02-20 10:38:51,953][INFO][Downbeat] Metronome+Energy rejected | position=2/4 confidence=1.24 consecutive=1/3 error_ms=-1124.4 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:51,954][INFO][Metronome] Tick [bt] | beat=4/4 bpm=156.4 acf_conf=0.24
+[2026-02-20 10:38:52,311][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.26 consecutive=0/3 error_ms=-779.8 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:52,311][INFO][Metronome] Tick [bt] | beat=1/4 bpm=155.0 acf_conf=0.24
+[2026-02-20 10:38:52,351][INFO][Audio] Levels | raw_rms=0.090582 spectrum=0.006897 band_energy=0.070239 flux=0.0003 peak_env=0.027418
+[2026-02-20 10:38:52,562][INFO][Tempo] Auto-doubled BPM | original=27.1 adjusted=54.3
+[2026-02-20 10:38:52,563][INFO][Tempo] Auto-doubled BPM | original=27.1 adjusted=108.6
+[2026-02-20 10:38:52,563][INFO][BEAT] Beat detected [Z] | energy=0.0762 threshold=0.0826 flux=0.0001 bpm=114.2 bands=band=high fired=sub_bass
+[2026-02-20 10:38:52,710][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.13 consecutive=0/3 error_ms=-392.1 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:52,710][INFO][Metronome] Tick [bt] | beat=2/4 bpm=153.8 acf_conf=0.22
+[2026-02-20 10:38:52,781][INFO][Audio] Levels | raw_rms=0.104512 spectrum=0.005596 band_energy=0.058660 flux=0.0001 peak_env=0.055660
+[2026-02-20 10:38:52,782][INFO][Tempo] Auto-halved BPM | original=272.3 adjusted=136.1
+[2026-02-20 10:38:52,783][INFO][BEAT] Beat detected [Z] | energy=0.0587 threshold=0.0844 flux=0.0001 bpm=118.3 bands=band=high fired=high
+[2026-02-20 10:38:53,081][INFO][Tempo] Auto-halved BPM | original=200.5 adjusted=100.3
+[2026-02-20 10:38:53,082][INFO][Tempo] Stable BPM committed | bpm=116.3 cv=0.125 stability=0.04
+[2026-02-20 10:38:53,082][INFO][BEAT] Beat detected [Z] | energy=0.0702 threshold=0.0950 flux=0.0001 bpm=116.3 bands=band=high fired=low_mid
+[2026-02-20 10:38:53,102][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.18 consecutive=1/3 error_ms=-3.7 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:53,102][INFO][Metronome] Tick [DB] | beat=3/4 bpm=153.6 acf_conf=0.15
+[2026-02-20 10:38:53,201][INFO][Audio] Levels | raw_rms=0.088260 spectrum=0.008306 band_energy=0.058257 flux=0.0001 peak_env=0.052038
+[2026-02-20 10:38:53,461][INFO][Tempo] BPM unstable | bpm=119.1 cv=0.177 stability=0.00
+[2026-02-20 10:38:53,462][INFO][BEAT] Beat detected [Z] | energy=0.0684 threshold=0.0901 flux=0.0001 bpm=119.1 bands=band=high fired=low_mid
+[2026-02-20 10:38:53,502][INFO][Downbeat] Metronome+Energy rejected | position=2/4 confidence=1.31 consecutive=0/3 error_ms=-1133.7 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:53,502][INFO][Metronome] Tick [bt] | beat=4/4 bpm=156.4 acf_conf=0.16
+[2026-02-20 10:38:53,629][INFO][Audio] Levels | raw_rms=0.099684 spectrum=0.007661 band_energy=0.047532 flux=0.0001 peak_env=0.055176
+[2026-02-20 10:38:53,873][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.24 consecutive=0/3 error_ms=-684.7 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:53,873][INFO][Metronome] Tick [bt] | beat=1/4 bpm=164.9 acf_conf=0.18
+[2026-02-20 10:38:53,931][INFO][Tempo] BPM unstable | bpm=121.1 cv=0.161 stability=0.00
+[2026-02-20 10:38:53,931][INFO][BEAT] Beat detected [Z] | energy=0.0654 threshold=0.0857 flux=0.0000 bpm=121.1 bands=band=high fired=sub_bass,high
+[2026-02-20 10:38:54,062][INFO][Audio] Levels | raw_rms=0.127044 spectrum=0.010816 band_energy=0.071504 flux=0.0000 peak_env=0.053273
+[2026-02-20 10:38:54,120][INFO][Tempo] Auto-halved BPM | original=315.9 adjusted=157.9
+[2026-02-20 10:38:54,121][INFO][Tempo] BPM unstable | bpm=124.5 cv=0.175 stability=0.00
+[2026-02-20 10:38:54,121][INFO][BEAT] Beat detected [Z] | energy=0.0746 threshold=0.0845 flux=0.0001 bpm=124.5 bands=band=high fired=sub_bass,high
+[2026-02-20 10:38:54,252][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.31 consecutive=0/3 error_ms=-426.5 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:54,252][INFO][Metronome] Tick [bt] | beat=2/4 bpm=152.2 acf_conf=0.20
+[2026-02-20 10:38:54,400][INFO][Tempo] Auto-halved BPM | original=214.7 adjusted=107.3
+[2026-02-20 10:38:54,401][INFO][Tempo] BPM unstable | bpm=124.8 cv=0.170 stability=0.00
+[2026-02-20 10:38:54,401][INFO][BEAT] Beat detected [Z] | energy=0.0711 threshold=0.0948 flux=0.0001 bpm=124.8 bands=band=high fired=high
+[2026-02-20 10:38:54,482][INFO][Audio] Levels | raw_rms=0.123283 spectrum=0.009976 band_energy=0.071307 flux=0.0001 peak_env=0.079120
+[2026-02-20 10:38:54,660][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.18 consecutive=1/3 error_ms=-70.2 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:54,660][INFO][Downbeat] Phase correction from downbeat | error_ms=-70.2 correction=-0.0258
+[2026-02-20 10:38:54,660][INFO][Metronome] Tick [DB] | beat=3/4 bpm=147.4 acf_conf=0.15
+[2026-02-20 10:38:54,910][INFO][Audio] Levels | raw_rms=0.104658 spectrum=0.008681 band_energy=0.071482 flux=0.0002 peak_env=0.057756
+[2026-02-20 10:38:55,082][INFO][Metronome] Tick [bt] | beat=4/4 bpm=145.8 acf_conf=0.13
+[2026-02-20 10:38:55,343][INFO][Audio] Levels | raw_rms=0.076343 spectrum=0.006331 band_energy=0.065164 flux=0.0001 peak_env=0.046806
+[2026-02-20 10:38:55,490][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.33 consecutive=0/3 error_ms=-822.2 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:55,490][INFO][Metronome] Tick [bt] | beat=1/4 bpm=145.2 acf_conf=0.10
+[2026-02-20 10:38:55,511][INFO][Tempo] No beats detected, resetting tracker | idle_ms=1112 bpm=124.8
+[2026-02-20 10:38:55,763][INFO][Audio] Levels | raw_rms=0.074927 spectrum=0.005966 band_energy=0.060312 flux=0.0001 peak_env=0.061027
+[2026-02-20 10:38:55,891][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.34 consecutive=2/3 error_ms=0.0 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:55,891][INFO][Metronome] Tick [DB] | beat=2/4 bpm=145.1 acf_conf=0.16
+[2026-02-20 10:38:56,191][INFO][Audio] Levels | raw_rms=0.095055 spectrum=0.006681 band_energy=0.063428 flux=0.0001 peak_env=0.053053
+[2026-02-20 10:38:56,322][INFO][Metronome] Tick [bt] | beat=3/4 bpm=145.3 acf_conf=0.16
+[2026-02-20 10:38:56,621][INFO][Audio] Levels | raw_rms=0.062411 spectrum=0.007448 band_energy=0.031793 flux=0.0000 peak_env=0.035896
+[2026-02-20 10:38:56,720][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.24 consecutive=1/3 error_ms=-822.0 energies=[0.01, 0.01, 0.01, 0.00]
+[2026-02-20 10:38:56,720][INFO][Metronome] Tick [bt] | beat=4/4 bpm=145.3 acf_conf=0.15
+[2026-02-20 10:38:57,041][INFO][Audio] Levels | raw_rms=0.058185 spectrum=0.004837 band_energy=0.028641 flux=0.0001 peak_env=0.053062
+[2026-02-20 10:38:57,132][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.18 consecutive=0/3 error_ms=-412.2 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:38:57,132][INFO][Metronome] Tick [bt] | beat=1/4 bpm=145.1 acf_conf=0.12
+[2026-02-20 10:38:57,471][INFO][Audio] Levels | raw_rms=0.070485 spectrum=0.005021 band_energy=0.025676 flux=0.0001 peak_env=0.042308
+[2026-02-20 10:38:57,543][INFO][Metronome] Tick [bt] | beat=2/4 bpm=145.1 acf_conf=0.15
+[2026-02-20 10:38:57,643][INFO][Tempo] Auto-doubled BPM | original=18.5 adjusted=37.0
+[2026-02-20 10:38:57,643][INFO][Tempo] Auto-doubled BPM | original=18.5 adjusted=74.0
+[2026-02-20 10:38:57,644][INFO][BEAT] Beat detected [Z] | energy=0.0481 threshold=0.0605 flux=0.0001 bpm=109.6 bands=band=high fired=high
+[2026-02-20 10:38:57,831][INFO][Tempo] Auto-halved BPM | original=317.9 adjusted=159.0
+[2026-02-20 10:38:57,832][INFO][Tempo] Outlier interval rejected | interval=0.377s avg=0.811s
+[2026-02-20 10:38:57,832][INFO][BEAT] Beat detected [Z] | energy=0.0524 threshold=0.0627 flux=0.0001 bpm=109.6 bands=band=high fired=mid
+[2026-02-20 10:38:57,900][INFO][Audio] Levels | raw_rms=0.070827 spectrum=0.005328 band_energy=0.051375 flux=0.0001 peak_env=0.035886
+[2026-02-20 10:38:57,963][INFO][Downbeat] Metronome+Energy rejected | position=2/4 confidence=1.20 consecutive=0/3 error_ms=501.5 energies=[0.01, 0.01, 0.00, 0.01]
+[2026-02-20 10:38:57,963][INFO][Metronome] Tick [bt] | beat=3/4 bpm=152.8 acf_conf=0.19
+[2026-02-20 10:38:58,111][INFO][BEAT] Beat detected [Z] | energy=0.0430 threshold=0.0633 flux=0.0001 bpm=109.2 bands=band=high fired=high
+[2026-02-20 10:38:58,300][INFO][Tempo] Auto-halved BPM | original=316.1 adjusted=158.1
+[2026-02-20 10:38:58,301][INFO][Tempo] BPM unstable | bpm=113.9 cv=0.336 stability=0.00
+[2026-02-20 10:38:58,301][INFO][BEAT] Beat detected [Z] | energy=0.0527 threshold=0.0614 flux=0.0001 bpm=113.9 bands=band=high fired=mid,high
+[2026-02-20 10:38:58,319][INFO][Audio] Levels | raw_rms=0.097182 spectrum=0.008909 band_energy=0.048704 flux=0.0000 peak_env=0.052688
+[2026-02-20 10:38:58,350][INFO][Metronome] Tick [bt] | beat=4/4 bpm=153.5 acf_conf=0.19
+[2026-02-20 10:38:58,500][INFO][Tempo] Auto-halved BPM | original=300.9 adjusted=150.4
+[2026-02-20 10:38:58,500][INFO][Tempo] BPM unstable | bpm=118.9 cv=0.339 stability=0.00
+[2026-02-20 10:38:58,501][INFO][BEAT] Beat detected [Z] | energy=0.0613 threshold=0.0651 flux=0.0002 bpm=118.9 bands=band=high fired=low_mid,high
+[2026-02-20 10:38:58,750][INFO][Audio] Levels | raw_rms=0.118050 spectrum=0.011060 band_energy=0.034694 flux=0.0002 peak_env=0.043162
+[2026-02-20 10:38:58,751][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.28 consecutive=0/3 error_ms=-389.3 energies=[0.00, 0.00, 0.00, 0.01]
+[2026-02-20 10:38:58,751][INFO][Metronome] Tick [bt] | beat=1/4 bpm=147.8 acf_conf=0.19
+[2026-02-20 10:38:58,860][INFO][Tempo] BPM unstable | bpm=124.6 cv=0.347 stability=0.00
+[2026-02-20 10:38:58,860][INFO][BEAT] Beat detected [Z] | energy=0.0501 threshold=0.0687 flux=0.0001 bpm=124.6 bands=band=high fired=low_mid,mid
+[2026-02-20 10:38:59,163][INFO][Metronome] Tick [bt] | beat=2/4 bpm=146.2 acf_conf=0.19
+[2026-02-20 10:38:59,181][INFO][Audio] Levels | raw_rms=0.109233 spectrum=0.008331 band_energy=0.039797 flux=0.0001 peak_env=0.021194
+[2026-02-20 10:38:59,564][INFO][Downbeat] Metronome+Energy rejected | position=2/4 confidence=1.25 consecutive=0/3 error_ms=380.7 energies=[0.00, 0.01, 0.00, 0.00]
+[2026-02-20 10:38:59,564][INFO][Metronome] Tick [bt] | beat=3/4 bpm=145.8 acf_conf=0.19
+[2026-02-20 10:38:59,600][INFO][Audio] Levels | raw_rms=0.063338 spectrum=0.006741 band_energy=0.039519 flux=0.0001 peak_env=0.017625
+[2026-02-20 10:38:59,670][INFO][MultiBand] Primary band switched | band=mid fires=20
+[2026-02-20 10:38:59,709][INFO][Tempo] BPM unstable | bpm=120.4 cv=0.377 stability=0.00
+[2026-02-20 10:38:59,710][INFO][BEAT] Beat detected [Z+C] | energy=0.1390 threshold=0.0799 flux=0.0006 bpm=120.4 bands=band=mid fired=low_mid,high
+[2026-02-20 10:38:59,881][INFO][Tempo] Auto-halved BPM | original=349.5 adjusted=174.7
+[2026-02-20 10:38:59,882][INFO][Tempo] BPM unstable | bpm=120.3 cv=0.393 stability=0.00
+[2026-02-20 10:38:59,882][INFO][BEAT] Beat detected [Z+C] | energy=0.1437 threshold=0.1041 flux=0.0003 bpm=120.3 bands=band=mid fired=sub_bass,low_mid,high
+[2026-02-20 10:38:59,990][INFO][MultiBand] Primary band switched | band=high fires=15
+[2026-02-20 10:38:59,990][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.68 consecutive=0/3 error_ms=799.6 energies=[0.00, 0.00, 0.01, 0.00]
+[2026-02-20 10:38:59,992][INFO][Metronome] Tick [bt] | beat=4/4 bpm=145.5 acf_conf=0.14
+[2026-02-20 10:39:00,033][INFO][Audio] Levels | raw_rms=0.092678 spectrum=0.007106 band_energy=0.079450 flux=0.0001 peak_env=0.046757
+[2026-02-20 10:39:00,072][INFO][Tempo] Auto-halved BPM | original=315.7 adjusted=157.8
+[2026-02-20 10:39:00,072][INFO][Tempo] BPM unstable | bpm=121.8 cv=0.390 stability=0.00
+[2026-02-20 10:39:00,072][INFO][BEAT] Beat detected [Z+C] | energy=0.2619 threshold=0.1212 flux=0.0005 bpm=121.8 bands=band=high fired=sub_bass,low_mid,high
+[2026-02-20 10:39:00,099][INFO][MultiBand] Primary band switched | band=low_mid fires=14
+[2026-02-20 10:39:00,309][INFO][Tempo] Auto-halved BPM | original=252.6 adjusted=126.3
+[2026-02-20 10:39:00,309][INFO][Tempo] BPM unstable | bpm=122.8 cv=0.370 stability=0.00
+[2026-02-20 10:39:00,309][INFO][BEAT] Beat detected [Z+C] | energy=0.1124 threshold=0.1457 flux=0.0004 bpm=122.8 bands=band=low_mid fired=sub_bass,low_mid,mid
+[2026-02-20 10:39:00,422][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=2.13 consecutive=0/3 error_ms=-433.6 energies=[0.00, 0.00, 0.01, 0.02]
+[2026-02-20 10:39:00,422][INFO][Metronome] Tick [bt] | beat=1/4 bpm=145.0 acf_conf=0.22
+[2026-02-20 10:39:00,461][INFO][Audio] Levels | raw_rms=0.193629 spectrum=0.017343 band_energy=0.138765 flux=0.0001 peak_env=0.231462
+[2026-02-20 10:39:00,482][INFO][Tempo] Auto-halved BPM | original=347.9 adjusted=173.9
+[2026-02-20 10:39:00,482][INFO][Tempo] BPM unstable | bpm=125.1 cv=0.374 stability=0.00
+[2026-02-20 10:39:00,483][INFO][BEAT] Beat detected [Z] | energy=0.1132 threshold=0.1667 flux=0.0001 bpm=125.1 bands=band=low_mid fired=low_mid
+[2026-02-20 10:39:00,820][INFO][Metronome] Tick [bt] | beat=2/4 bpm=148.9 acf_conf=0.28
+[2026-02-20 10:39:00,880][INFO][Audio] Levels | raw_rms=0.078924 spectrum=0.005373 band_energy=0.062668 flux=0.0000 peak_env=0.060917
+[2026-02-20 10:39:01,100][INFO][Tempo] BPM unstable | bpm=124.9 cv=0.357 stability=0.00
+[2026-02-20 10:39:01,100][INFO][BEAT] Beat detected [Z] | energy=0.1009 threshold=0.1450 flux=0.0001 bpm=124.9 bands=band=low_mid fired=low_mid
+[2026-02-20 10:39:01,232][INFO][Metronome] Tick [bt] | beat=3/4 bpm=151.3 acf_conf=0.29
+[2026-02-20 10:39:01,270][INFO][Tempo] Auto-halved BPM | original=351.4 adjusted=175.7
+[2026-02-20 10:39:01,271][INFO][Tempo] BPM unstable | bpm=126.1 cv=0.361 stability=0.00
+[2026-02-20 10:39:01,271][INFO][BEAT] Beat detected [Z] | energy=0.1058 threshold=0.1381 flux=0.0003 bpm=126.1 bands=band=low_mid fired=low_mid
+[2026-02-20 10:39:01,311][INFO][Audio] Levels | raw_rms=0.133244 spectrum=0.010187 band_energy=0.106199 flux=0.0002 peak_env=0.107662
+[2026-02-20 10:39:01,570][INFO][Tempo] Auto-halved BPM | original=200.2 adjusted=100.1
+[2026-02-20 10:39:01,571][INFO][Tempo] BPM unstable | bpm=125.7 cv=0.347 stability=0.00
+[2026-02-20 10:39:01,571][INFO][BEAT] Beat detected [Z+C] | energy=0.1778 threshold=0.1335 flux=0.0003 bpm=125.7 bands=band=low_mid fired=sub_bass,low_mid,high
+[2026-02-20 10:39:01,631][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.49 consecutive=0/3 error_ms=737.4 energies=[0.00, 0.01, 0.01, 0.01]
+[2026-02-20 10:39:01,631][INFO][Metronome] Tick [bt] | beat=4/4 bpm=143.9 acf_conf=0.28
+[2026-02-20 10:39:01,740][INFO][Audio] Levels | raw_rms=0.124236 spectrum=0.010531 band_energy=0.098887 flux=0.0001 peak_env=0.093516
+[2026-02-20 10:39:01,910][INFO][Tempo] BPM unstable | bpm=126.6 cv=0.351 stability=0.00
+[2026-02-20 10:39:01,910][INFO][BEAT] Beat detected [Z+C] | energy=0.1233 threshold=0.1587 flux=0.0006 bpm=126.6 bands=band=low_mid fired=low_mid,high
+[2026-02-20 10:39:02,060][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.55 consecutive=0/3 error_ms=-549.2 energies=[0.00, 0.01, 0.01, 0.01]
+[2026-02-20 10:39:02,060][INFO][Metronome] Tick [bt] | beat=1/4 bpm=142.9 acf_conf=0.29
+[2026-02-20 10:39:02,160][INFO][Audio] Levels | raw_rms=0.082515 spectrum=0.006273 band_energy=0.035758 flux=0.0001 peak_env=0.024947
+[2026-02-20 10:39:02,271][INFO][Tempo] BPM unstable | bpm=128.0 cv=0.351 stability=0.00
+[2026-02-20 10:39:02,271][INFO][BEAT] Beat detected [Z+C] | energy=0.2305 threshold=0.1709 flux=0.0004 bpm=128.0 bands=band=low_mid fired=sub_bass,low_mid,mid
+[2026-02-20 10:39:02,480][INFO][MultiBand] Primary band switched | band=sub_bass fires=15
+[2026-02-20 10:39:02,481][INFO][Metronome] Tick [bt] | beat=2/4 bpm=143.1 acf_conf=0.31
+[2026-02-20 10:39:02,591][INFO][Audio] Levels | raw_rms=0.093680 spectrum=0.007540 band_energy=0.043400 flux=0.0002 peak_env=0.037261
+[2026-02-20 10:39:02,851][INFO][MultiBand] Primary band switched | band=mid fires=18
+[2026-02-20 10:39:02,890][INFO][Metronome] Tick [bt] | beat=3/4 bpm=143.5 acf_conf=0.31
+[2026-02-20 10:39:03,021][INFO][Audio] Levels | raw_rms=0.107225 spectrum=0.008827 band_energy=0.064205 flux=0.0001 peak_env=0.060028
+[2026-02-20 10:39:03,080][INFO][Tempo] BPM unstable | bpm=126.4 cv=0.365 stability=0.00
+[2026-02-20 10:39:03,080][INFO][BEAT] Beat detected [C] | energy=0.0833 threshold=0.1033 flux=0.0003 bpm=126.4 bands=band=mid
+[2026-02-20 10:39:03,272][INFO][Tempo] Auto-halved BPM | original=312.2 adjusted=156.1
+[2026-02-20 10:39:03,273][INFO][Tempo] BPM unstable | bpm=126.7 cv=0.346 stability=0.00
+[2026-02-20 10:39:03,273][INFO][BEAT] Beat detected [Z] | energy=0.0875 threshold=0.1087 flux=0.0004 bpm=126.7 bands=band=mid fired=high
+[2026-02-20 10:39:03,301][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.54 consecutive=0/3 error_ms=625.6 energies=[0.00, 0.01, 0.01, 0.01]
+[2026-02-20 10:39:03,301][INFO][Metronome] Tick [bt] | beat=4/4 bpm=141.5 acf_conf=0.31
+[2026-02-20 10:39:03,439][INFO][Audio] Levels | raw_rms=0.279283 spectrum=0.021148 band_energy=0.200543 flux=0.0006 peak_env=0.202855
+[2026-02-20 10:39:03,472][INFO][Tempo] Auto-halved BPM | original=301.0 adjusted=150.5
+[2026-02-20 10:39:03,472][INFO][Tempo] BPM unstable | bpm=127.4 cv=0.351 stability=0.00
+[2026-02-20 10:39:03,472][INFO][BEAT] Beat detected [Z] | energy=0.2005 threshold=0.1095 flux=0.0002 bpm=127.4 bands=band=mid fired=sub_bass
+[2026-02-20 10:39:03,760][INFO][Tempo] Auto-halved BPM | original=207.4 adjusted=103.7
+[2026-02-20 10:39:03,761][INFO][Tempo] BPM unstable | bpm=126.8 cv=0.344 stability=0.00
+[2026-02-20 10:39:03,761][INFO][BEAT] Beat detected [Z+C] | energy=0.2147 threshold=0.1306 flux=0.0005 bpm=126.8 bands=band=mid fired=sub_bass,low_mid
+[2026-02-20 10:39:03,762][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=2.15 consecutive=0/3 error_ms=535.7 energies=[0.00, 0.00, 0.01, 0.02]
+[2026-02-20 10:39:03,762][INFO][Metronome] Tick [bt] | beat=1/4 bpm=130.9 acf_conf=0.23
+[2026-02-20 10:39:03,870][INFO][Audio] Levels | raw_rms=0.103843 spectrum=0.006666 band_energy=0.090640 flux=0.0002 peak_env=0.051557
+[2026-02-20 10:39:04,111][INFO][Tempo] BPM unstable | bpm=127.2 cv=0.350 stability=0.00
+[2026-02-20 10:39:04,112][INFO][BEAT] Beat detected [Z+C] | energy=0.1767 threshold=0.1576 flux=0.0007 bpm=127.2 bands=band=mid fired=sub_bass,low_mid,mid,high
+[2026-02-20 10:39:04,190][INFO][MultiBand] Primary band switched | band=sub_bass fires=11
+[2026-02-20 10:39:04,211][INFO][Metronome] Tick [bt] | beat=2/4 bpm=128.4 acf_conf=0.24
+[2026-02-20 10:39:04,301][INFO][Audio] Levels | raw_rms=0.088023 spectrum=0.007301 band_energy=0.056112 flux=0.0003 peak_env=0.027507
+[2026-02-20 10:39:04,471][INFO][Syncopation] Armed -> firing (2nd onset) | phase=0.56 bpm=128.6
+[2026-02-20 10:39:04,681][INFO][Metronome] Tick [bt] | beat=3/4 bpm=129.0 acf_conf=0.25
+[2026-02-20 10:39:04,720][INFO][Audio] Levels | raw_rms=0.114492 spectrum=0.008744 band_energy=0.083540 flux=0.0001 peak_env=0.079522
+[2026-02-20 10:39:04,900][INFO][MultiBand] Primary band switched | band=low_mid fires=11
+[2026-02-20 10:39:04,900][INFO][Syncopation] Off-beat onset detected | phase=0.48 bpm=129.2
+[2026-02-20 10:39:04,922][INFO][Syncopation] Off-beat onset detected | phase=0.53 bpm=129.2
+[2026-02-20 10:39:05,042][INFO][MultiBand] Primary band switched | band=mid fires=14
+[2026-02-20 10:39:05,152][INFO][Audio] Levels | raw_rms=0.104818 spectrum=0.007759 band_energy=0.073366 flux=0.0002 peak_env=0.084464
+[2026-02-20 10:39:05,152][INFO][Metronome] Tick [bt] | beat=4/4 bpm=129.7 acf_conf=0.25
+[2026-02-20 10:39:05,219][INFO][Tempo] No beats detected, resetting tracker | idle_ms=1109 bpm=127.2
+[2026-02-20 10:39:05,260][INFO][Tempo] Auto-doubled BPM | original=52.2 adjusted=104.3
+[2026-02-20 10:39:05,261][INFO][BEAT] Beat detected [Z+C] | energy=0.1522 threshold=0.1332 flux=0.0003 bpm=120.4 bands=band=mid fired=sub_bass,low_mid,high
+[2026-02-20 10:39:05,430][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:39:05,582][INFO][Audio] Levels | raw_rms=0.073865 spectrum=0.005610 band_energy=0.033960 flux=0.0001 peak_env=0.020916
+[2026-02-20 10:39:05,602][INFO][Metronome] Tick [bt] | beat=1/4 bpm=130.7 acf_conf=0.25
+[2026-02-20 10:39:05,622][INFO][BEAT] Beat detected [Z+C] | energy=0.2056 threshold=0.1408 flux=0.0005 bpm=127.7 bands=band=mid fired=sub_bass,low_mid
+[2026-02-20 10:39:05,960][INFO][Tempo] BPM unstable | bpm=136.1 cv=0.251 stability=0.00
+[2026-02-20 10:39:05,960][INFO][BEAT] Beat detected [Z+C] | energy=0.2551 threshold=0.1457 flux=0.0006 bpm=136.1 bands=band=mid fired=sub_bass,low_mid
+[2026-02-20 10:39:05,999][INFO][Audio] Levels | raw_rms=0.228562 spectrum=0.019192 band_energy=0.203730 flux=0.0004 peak_env=0.112993
+[2026-02-20 10:39:06,070][INFO][Downbeat] Metronome+Energy accepted | position=2/4 confidence=1.18 consecutive=2/3 error_ms=0.0 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:39:06,071][INFO][Metronome] Tick [DB] | beat=2/4 bpm=130.4 acf_conf=0.22
+[2026-02-20 10:39:06,181][INFO][Tempo] Auto-halved BPM | original=271.2 adjusted=135.6
+[2026-02-20 10:39:06,181][INFO][Tempo] BPM unstable | bpm=139.0 cv=0.216 stability=0.00
+[2026-02-20 10:39:06,182][INFO][BEAT] Beat detected [Z+C] | energy=0.1363 threshold=0.1598 flux=0.0005 bpm=139.0 bands=band=mid fired=low_mid,high
+[2026-02-20 10:39:06,220][INFO][MultiBand] Primary band switched | band=low_mid fires=13
+[2026-02-20 10:39:06,430][INFO][Audio] Levels | raw_rms=0.137658 spectrum=0.011279 band_energy=0.085665 flux=0.0002 peak_env=0.103636
+[2026-02-20 10:39:06,520][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.21 consecutive=1/3 error_ms=-1363.8 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:39:06,520][INFO][Metronome] Tick [bt] | beat=3/4 bpm=132.4 acf_conf=0.26
+[2026-02-20 10:39:06,542][INFO][Tempo] BPM unstable | bpm=142.5 cv=0.210 stability=0.00
+[2026-02-20 10:39:06,542][INFO][BEAT] Beat detected [Z+C] | energy=0.2158 threshold=0.1630 flux=0.0003 bpm=142.5 bands=band=low_mid fired=sub_bass,low_mid
+[2026-02-20 10:39:06,861][INFO][Audio] Levels | raw_rms=0.135865 spectrum=0.010391 band_energy=0.084683 flux=0.0002 peak_env=0.062837
+[2026-02-20 10:39:06,881][INFO][Tempo] BPM unstable | bpm=146.5 cv=0.210 stability=0.00
+[2026-02-20 10:39:06,881][INFO][BEAT] Beat detected [Z+C] | energy=0.1664 threshold=0.1712 flux=0.0005 bpm=146.5 bands=band=low_mid fired=sub_bass,low_mid,mid,high
+[2026-02-20 10:39:06,991][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.32 consecutive=0/3 error_ms=-960.3 energies=[0.00, 0.01, 0.01, 0.01]
+[2026-02-20 10:39:06,991][INFO][Metronome] Tick [bt] | beat=4/4 bpm=127.6 acf_conf=0.28
+[2026-02-20 10:39:07,111][INFO][Tempo] Auto-halved BPM | original=259.6 adjusted=129.8
+[2026-02-20 10:39:07,112][INFO][Tempo] BPM unstable | bpm=147.3 cv=0.197 stability=0.00
+[2026-02-20 10:39:07,112][INFO][BEAT] Beat detected [Z] | energy=0.1547 threshold=0.1670 flux=0.0003 bpm=147.3 bands=band=low_mid fired=sub_bass
+[2026-02-20 10:39:07,261][INFO][MultiBand] Primary band switched | band=sub_bass fires=14
+[2026-02-20 10:39:07,279][INFO][Audio] Levels | raw_rms=0.113636 spectrum=0.010455 band_energy=0.097017 flux=0.0002 peak_env=0.136373
+[2026-02-20 10:39:07,411][INFO][Tempo] Auto-halved BPM | original=200.5 adjusted=100.2
+[2026-02-20 10:39:07,411][INFO][Tempo] BPM unstable | bpm=144.0 cv=0.225 stability=0.00
+[2026-02-20 10:39:07,411][INFO][BEAT] Beat detected [Z] | energy=0.1248 threshold=0.1680 flux=0.0003 bpm=144.0 bands=band=sub_bass fired=high
+[2026-02-20 10:39:07,430][INFO][MultiBand] Primary band switched | band=high fires=16
+[2026-02-20 10:39:07,460][INFO][Downbeat] Metronome+Energy rejected | position=1/4 confidence=1.48 consecutive=0/3 error_ms=-524.4 energies=[0.01, 0.01, 0.01, 0.01]
+[2026-02-20 10:39:07,460][INFO][Metronome] Tick [bt] | beat=1/4 bpm=125.4 acf_conf=0.31
+[2026-02-20 10:39:07,709][INFO][Audio] Levels | raw_rms=0.146285 spectrum=0.013769 band_energy=0.094079 flux=0.0001 peak_env=0.049057
+[2026-02-20 10:39:07,802][INFO][Tempo] BPM unstable | bpm=142.5 cv=0.217 stability=0.00
+[2026-02-20 10:39:07,802][INFO][BEAT] Beat detected [Z+C] | energy=0.1711 threshold=0.1707 flux=0.0005 bpm=142.5 bands=band=high fired=low_mid,mid,high
+[2026-02-20 10:39:07,950][INFO][Metronome] Tick [bt] | beat=2/4 bpm=118.8 acf_conf=0.29
+[2026-02-20 10:39:08,139][INFO][Audio] Levels | raw_rms=0.080887 spectrum=0.005657 band_energy=0.052499 flux=0.0001 peak_env=0.028549
+[2026-02-20 10:39:08,459][INFO][Metronome] Tick [bt] | beat=3/4 bpm=115.7 acf_conf=0.25
+[2026-02-20 10:39:08,561][INFO][Audio] Levels | raw_rms=0.107350 spectrum=0.008001 band_energy=0.087329 flux=0.0001 peak_env=0.033857
+[2026-02-20 10:39:08,709][INFO][Tempo] Outlier interval rejected | interval=0.908s avg=0.430s
+[2026-02-20 10:39:08,709][INFO][BEAT] Beat detected [C] | energy=0.0928 threshold=0.1185 flux=0.0003 bpm=142.5 bands=band=high
+[2026-02-20 10:39:08,779][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:39:08,910][INFO][Tempo] No beats detected, resetting tracker | idle_ms=1109 bpm=142.5
+[2026-02-20 10:39:08,952][INFO][Tempo] Auto-doubled BPM | original=52.2 adjusted=104.3
+[2026-02-20 10:39:08,952][INFO][BEAT] Beat detected [Z+C] | energy=0.1273 threshold=0.1065 flux=0.0005 bpm=131.1 bands=band=high fired=low_mid,high
+[2026-02-20 10:39:08,970][INFO][MultiBand] Primary band switched | band=mid fires=12
+[2026-02-20 10:39:08,991][INFO][Audio] Levels | raw_rms=0.253807 spectrum=0.020570 band_energy=0.214126 flux=0.0001 peak_env=0.273075
+[2026-02-20 10:39:08,992][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.99 consecutive=2/3 error_ms=0.0 energies=[0.02, 0.00, 0.01, 0.00]
+[2026-02-20 10:39:08,993][INFO][Metronome] Tick [DB] | beat=4/4 bpm=115.8 acf_conf=0.26
+[2026-02-20 10:39:09,202][INFO][Tempo] Auto-halved BPM | original=240.1 adjusted=120.0
+[2026-02-20 10:39:09,202][INFO][BEAT] Beat detected [Z] | energy=0.1018 threshold=0.1289 flux=0.0002 bpm=126.5 bands=band=mid fired=sub_bass
+[2026-02-20 10:39:09,332][INFO][MultiBand] Primary band switched | band=sub_bass fires=13
+[2026-02-20 10:39:09,420][INFO][Audio] Levels | raw_rms=0.134828 spectrum=0.012115 band_energy=0.097775 flux=0.0003 peak_env=0.031183
+[2026-02-20 10:39:09,520][INFO][Metronome] Tick [bt] | beat=1/4 bpm=111.6 acf_conf=0.20
+[2026-02-20 10:39:09,651][INFO][Tempo] Stable BPM committed | bpm=125.5 cv=0.101 stability=0.22
+[2026-02-20 10:39:09,652][INFO][BEAT] Beat detected [Z+C] | energy=0.1942 threshold=0.1628 flux=0.0002 bpm=125.5 bands=band=sub_bass fired=low_mid,mid,high
+[2026-02-20 10:39:09,840][INFO][Audio] Levels | raw_rms=0.092005 spectrum=0.007207 band_energy=0.045611 flux=0.0002 peak_env=0.054713
+[2026-02-20 10:39:10,061][INFO][Metronome] Tick [bt] | beat=2/4 bpm=109.4 acf_conf=0.20
+[2026-02-20 10:39:10,273][INFO][Audio] Levels | raw_rms=0.054462 spectrum=0.003962 band_energy=0.028072 flux=0.0001 peak_env=0.031173
+[2026-02-20 10:39:10,311][INFO][MultiBand] Primary band switched | band=high fires=14
+[2026-02-20 10:39:10,382][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:39:10,400][INFO][Tempo] BPM unstable | bpm=118.4 cv=0.200 stability=0.00
+[2026-02-20 10:39:10,400][INFO][BEAT] Beat detected [C] | energy=0.0930 threshold=0.1179 flux=0.0003 bpm=118.4 bands=band=high
+[2026-02-20 10:39:10,609][INFO][Metronome] Tick [bt] | beat=3/4 bpm=110.0 acf_conf=0.22
+[2026-02-20 10:39:10,700][INFO][Audio] Levels | raw_rms=0.113611 spectrum=0.008118 band_energy=0.084699 flux=0.0001 peak_env=0.073462
+[2026-02-20 10:39:10,802][INFO][Tempo] BPM unstable | bpm=116.9 cv=0.227 stability=0.00
+[2026-02-20 10:39:10,802][INFO][BEAT] Beat detected [Z+C] | energy=0.2151 threshold=0.1063 flux=0.0010 bpm=116.9 bands=band=high fired=sub_bass,low_mid,mid
+[2026-02-20 10:39:10,850][INFO][MultiBand] Primary band switched | band=mid fires=18
+[2026-02-20 10:39:11,019][INFO][Tempo] Auto-halved BPM | original=274.8 adjusted=137.4
+[2026-02-20 10:39:11,020][INFO][Tempo] BPM unstable | bpm=117.3 cv=0.225 stability=0.00
+[2026-02-20 10:39:11,020][INFO][BEAT] Beat detected [Z] | energy=0.0783 threshold=0.1152 flux=0.0003 bpm=117.3 bands=band=mid fired=mid
+[2026-02-20 10:39:11,121][INFO][Audio] Levels | raw_rms=0.121259 spectrum=0.009113 band_energy=0.067417 flux=0.0002 peak_env=0.039157
+[2026-02-20 10:39:11,151][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.88 consecutive=3/3 error_ms=-46.3 energies=[0.01, 0.00, 0.00, 0.01]
+[2026-02-20 10:39:11,151][INFO][Downbeat] Phase correction from downbeat | error_ms=-46.3 correction=-0.0126
+[2026-02-20 10:39:11,152][INFO][Metronome] Tick [DB] | beat=4/4 bpm=108.9 acf_conf=0.17
+[2026-02-20 10:39:11,191][INFO][Tempo] Auto-halved BPM | original=350.4 adjusted=175.2
+[2026-02-20 10:39:11,191][INFO][Tempo] BPM unstable | bpm=120.2 cv=0.252 stability=0.00
+[2026-02-20 10:39:11,192][INFO][BEAT] Beat detected [Z] | energy=0.1791 threshold=0.1310 flux=0.0002 bpm=120.2 bands=band=mid fired=sub_bass,low_mid
+[2026-02-20 10:39:11,490][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:39:11,515][INFO][Tempo] Auto-halved BPM | original=184.7 adjusted=92.3
+[2026-02-20 10:39:11,516][INFO][Tempo] BPM unstable | bpm=119.6 cv=0.248 stability=0.00
+[2026-02-20 10:39:11,516][INFO][BEAT] Beat detected [Z+C] | energy=0.2579 threshold=0.1480 flux=0.0004 bpm=119.6 bands=band=mid fired=sub_bass,low_mid
+[2026-02-20 10:39:11,551][INFO][Audio] Levels | raw_rms=0.169256 spectrum=0.012246 band_energy=0.123880 flux=0.0002 peak_env=0.114266
+[2026-02-20 10:39:11,720][INFO][Tempo] Auto-halved BPM | original=292.4 adjusted=146.2
+[2026-02-20 10:39:11,721][INFO][Tempo] BPM unstable | bpm=120.4 cv=0.248 stability=0.00
+[2026-02-20 10:39:11,721][INFO][BEAT] Beat detected [Z] | energy=0.1399 threshold=0.1606 flux=0.0002 bpm=120.4 bands=band=mid fired=low_mid
+[2026-02-20 10:39:11,722][INFO][Metronome] Tick [bt] | beat=1/4 bpm=111.1 acf_conf=0.26
+[2026-02-20 10:39:11,981][INFO][Audio] Levels | raw_rms=0.090226 spectrum=0.005857 band_energy=0.038723 flux=0.0001 peak_env=0.052913
+[2026-02-20 10:39:12,061][INFO][Tempo] BPM unstable | bpm=122.6 cv=0.263 stability=0.00
+[2026-02-20 10:39:12,061][INFO][BEAT] Beat detected [Z] | energy=0.1308 threshold=0.1567 flux=0.0004 bpm=122.6 bands=band=mid fired=low_mid,high
+[2026-02-20 10:39:12,130][INFO][MultiBand] Primary band switched | band=sub_bass fires=15
+[2026-02-20 10:39:12,230][INFO][Metronome] Tick [bt] | beat=2/4 bpm=118.7 acf_conf=0.23
+[2026-02-20 10:39:12,401][INFO][Audio] Levels | raw_rms=0.204239 spectrum=0.017075 band_energy=0.168708 flux=0.0005 peak_env=0.059911
+[2026-02-20 10:39:12,402][INFO][Tempo] BPM unstable | bpm=125.6 cv=0.272 stability=0.00
+[2026-02-20 10:39:12,402][INFO][BEAT] Beat detected [Z+C] | energy=0.1687 threshold=0.1482 flux=0.0005 bpm=125.6 bands=band=sub_bass fired=sub_bass,low_mid
+[2026-02-20 10:39:12,490][INFO][Syncopation] Armed -> firing (2nd onset) | phase=0.54 bpm=119.0
+[2026-02-20 10:39:12,510][INFO][Syncopation] Off-beat onset detected | phase=0.58 bpm=119.0
+[2026-02-20 10:39:12,752][INFO][Metronome] Tick [bt] | beat=3/4 bpm=118.2 acf_conf=0.20
+[2026-02-20 10:39:12,832][INFO][Audio] Levels | raw_rms=0.108975 spectrum=0.009516 band_energy=0.065799 flux=0.0001 peak_env=0.061729
+[2026-02-20 10:39:12,871][INFO][Tempo] BPM unstable | bpm=127.5 cv=0.261 stability=0.00
+[2026-02-20 10:39:12,871][INFO][BEAT] Beat detected [Z+C] | energy=0.1628 threshold=0.1485 flux=0.0005 bpm=127.5 bands=band=sub_bass fired=low_mid,mid
+[2026-02-20 10:39:13,001][INFO][Syncopation] Off-beat onset detected | phase=0.54 bpm=117.3
+[2026-02-20 10:39:13,112][INFO][Tempo] Auto-halved BPM | original=248.0 adjusted=124.0
+[2026-02-20 10:39:13,112][INFO][Tempo] BPM unstable | bpm=128.4 cv=0.250 stability=0.00
+[2026-02-20 10:39:13,112][INFO][BEAT] Beat detected [Z+C] | energy=0.1254 threshold=0.1592 flux=0.0004 bpm=128.4 bands=band=sub_bass fired=low_mid,mid
+[2026-02-20 10:39:13,241][INFO][Downbeat] Metronome+Energy accepted | position=1/4 confidence=1.65 consecutive=4/3 error_ms=31.1 energies=[0.01, 0.01, 0.00, 0.01]
+[2026-02-20 10:39:13,242][INFO][Downbeat] Phase correction from downbeat | error_ms=31.1 correction=0.0091
+[2026-02-20 10:39:13,242][INFO][Metronome] Tick [DB] | beat=4/4 bpm=116.5 acf_conf=0.18
+[2026-02-20 10:39:13,262][INFO][Audio] Levels | raw_rms=0.124807 spectrum=0.009562 band_energy=0.097139 flux=0.0002 peak_env=0.119430
+[2026-02-20 10:39:13,300][INFO][Tempo] Auto-halved BPM | original=319.9 adjusted=160.0
+[2026-02-20 10:39:13,300][INFO][Tempo] BPM unstable | bpm=129.8 cv=0.250 stability=0.00
+[2026-02-20 10:39:13,300][INFO][BEAT] Beat detected [Z] | energy=0.1224 threshold=0.1592 flux=0.0003 bpm=129.8 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:39:13,471][INFO][Tempo] Auto-halved BPM | original=348.8 adjusted=174.4
+[2026-02-20 10:39:13,472][INFO][Tempo] BPM unstable | bpm=131.8 cv=0.255 stability=0.00
+[2026-02-20 10:39:13,472][INFO][BEAT] Beat detected [Z+C] | energy=0.2432 threshold=0.1736 flux=0.0003 bpm=131.8 bands=band=sub_bass fired=sub_bass,low_mid
+[2026-02-20 10:39:13,473][INFO][Syncopation] Off-beat onset detected | phase=0.45 bpm=111.6
+[2026-02-20 10:39:13,491][INFO][Syncopation] Off-beat onset detected | phase=0.48 bpm=111.3
+[2026-02-20 10:39:13,680][INFO][Audio] Levels | raw_rms=0.108810 spectrum=0.009693 band_energy=0.076274 flux=0.0003 peak_env=0.077191
+[2026-02-20 10:39:13,752][INFO][MultiBand] Primary band switched | band=low_mid fires=9
+[2026-02-20 10:39:13,791][INFO][Metronome] Tick [bt] | beat=1/4 bpm=107.3 acf_conf=0.18
+[2026-02-20 10:39:13,861][INFO][MultiBand] Primary band switched | band=mid fires=9
+[2026-02-20 10:39:14,109][INFO][Audio] Levels | raw_rms=0.168360 spectrum=0.012954 band_energy=0.020736 flux=0.0001 peak_env=0.020118
+[2026-02-20 10:39:14,110][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:39:14,353][INFO][Metronome] Tick [bt] | beat=2/4 bpm=103.8 acf_conf=0.16
+[2026-02-20 10:39:14,500][INFO][Tempo] Auto-doubled BPM | original=58.3 adjusted=116.7
+[2026-02-20 10:39:14,500][INFO][Tempo] BPM unstable | bpm=132.4 cv=0.247 stability=0.00
+[2026-02-20 10:39:14,500][INFO][BEAT] Beat detected [Z+C] | energy=0.2594 threshold=0.1097 flux=0.0006 bpm=132.4 bands=band=mid fired=sub_bass,low_mid
+[2026-02-20 10:39:14,540][INFO][Audio] Levels | raw_rms=0.159273 spectrum=0.012971 band_energy=0.068154 flux=0.0002 peak_env=0.114933
+[2026-02-20 10:39:14,771][INFO][Tempo] Auto-halved BPM | original=220.9 adjusted=110.5
+[2026-02-20 10:39:14,772][INFO][Tempo] BPM unstable | bpm=132.5 cv=0.244 stability=0.00
+[2026-02-20 10:39:14,772][INFO][BEAT] Beat detected [Z] | energy=0.0589 threshold=0.0878 flux=0.0003 bpm=132.5 bands=band=mid fired=sub_bass
+[2026-02-20 10:39:14,941][INFO][Metronome] Tick [bt] | beat=3/4 bpm=102.4 acf_conf=0.14
+[2026-02-20 10:39:14,963][INFO][Audio] Levels | raw_rms=0.160736 spectrum=0.011947 band_energy=0.047394 flux=0.0001 peak_env=0.058988
+[2026-02-20 10:39:14,989][INFO][Tempo] Auto-halved BPM | original=274.9 adjusted=137.5
+[2026-02-20 10:39:14,990][INFO][Tempo] BPM unstable | bpm=132.8 cv=0.245 stability=0.00
+[2026-02-20 10:39:14,990][INFO][BEAT] Beat detected [Z] | energy=0.0605 threshold=0.0842 flux=0.0000 bpm=132.8 bands=band=mid fired=sub_bass
+[2026-02-20 10:39:15,181][INFO][Tempo] Auto-halved BPM | original=314.6 adjusted=157.3
+[2026-02-20 10:39:15,182][INFO][Tempo] BPM unstable | bpm=133.6 cv=0.251 stability=0.00
+[2026-02-20 10:39:15,182][INFO][BEAT] Beat detected [Z+C] | energy=0.1387 threshold=0.0905 flux=0.0003 bpm=133.6 bands=band=mid fired=low_mid
+[2026-02-20 10:39:15,202][INFO][Syncopation] Armed -> firing (2nd onset) | phase=0.46 bpm=101.7
+[2026-02-20 10:39:15,222][INFO][Syncopation] Off-beat onset detected | phase=0.50 bpm=101.7
+[2026-02-20 10:39:15,242][INFO][MultiBand] Primary band switched | band=sub_bass fires=16
+[2026-02-20 10:39:15,371][INFO][Tempo] Auto-halved BPM | original=314.9 adjusted=157.4
+[2026-02-20 10:39:15,372][INFO][Tempo] BPM unstable | bpm=135.6 cv=0.196 stability=0.00
+[2026-02-20 10:39:15,372][INFO][BEAT] Beat detected [Z] | energy=0.1005 threshold=0.1135 flux=0.0000 bpm=135.6 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:39:15,390][INFO][Audio] Levels | raw_rms=0.160964 spectrum=0.010995 band_energy=0.091725 flux=0.0003 peak_env=0.100517
+[2026-02-20 10:39:15,523][INFO][Downbeat] Metronome+Energy rejected | position=1/4 confidence=1.62 consecutive=3/3 error_ms=-103.6 energies=[0.01, 0.00, 0.00, 0.01]
+[2026-02-20 10:39:15,523][INFO][Metronome] Tick [bt] | beat=4/4 bpm=100.6 acf_conf=0.11
+[2026-02-20 10:39:15,582][INFO][Tempo] Auto-halved BPM | original=284.8 adjusted=142.4
+[2026-02-20 10:39:15,582][INFO][Tempo] BPM unstable | bpm=137.0 cv=0.195 stability=0.00
+[2026-02-20 10:39:15,583][INFO][BEAT] Beat detected [Z] | energy=0.0807 threshold=0.1191 flux=0.0001 bpm=137.0 bands=band=sub_bass fired=mid
+[2026-02-20 10:39:15,821][INFO][Audio] Levels | raw_rms=0.173293 spectrum=0.014933 band_energy=0.075962 flux=0.0001 peak_env=0.057074
+[2026-02-20 10:39:15,860][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:39:15,952][INFO][Tempo] BPM unstable | bpm=138.5 cv=0.200 stability=0.00
+[2026-02-20 10:39:15,952][INFO][BEAT] Beat detected [Z] | energy=0.0893 threshold=0.1294 flux=0.0001 bpm=138.5 bands=band=sub_bass fired=mid
+[2026-02-20 10:39:16,050][INFO][MultiBand] Primary band switched | band=mid fires=25
+[2026-02-20 10:39:16,102][INFO][Metronome] Tick [bt] | beat=1/4 bpm=114.8 acf_conf=0.09
+[2026-02-20 10:39:16,239][INFO][Audio] Levels | raw_rms=0.149903 spectrum=0.013600 band_energy=0.065349 flux=0.0001 peak_env=0.035863
+[2026-02-20 10:39:16,330][INFO][Tempo] BPM unstable | bpm=139.8 cv=0.194 stability=0.00
+[2026-02-20 10:39:16,331][INFO][BEAT] Beat detected [Z] | energy=0.1266 threshold=0.1267 flux=0.0002 bpm=139.8 bands=band=mid fired=low_mid,high
+[2026-02-20 10:39:16,350][INFO][Syncopation] Armed -> firing (2nd onset) | phase=0.53 bpm=117.7
+[2026-02-20 10:39:16,369][INFO][Syncopation] Off-beat onset detected | phase=0.57 bpm=117.8
+[2026-02-20 10:39:16,560][INFO][Tempo] Auto-halved BPM | original=260.5 adjusted=130.3
+[2026-02-20 10:39:16,561][INFO][Tempo] BPM unstable | bpm=141.0 cv=0.147 stability=0.00
+[2026-02-20 10:39:16,561][INFO][BEAT] Beat detected [Z+C] | energy=0.0972 threshold=0.1300 flux=0.0004 bpm=141.0 bands=band=mid fired=low_mid
+[2026-02-20 10:39:16,590][INFO][Metronome] Tick [bt] | beat=2/4 bpm=119.2 acf_conf=0.11
+[2026-02-20 10:39:16,672][INFO][Audio] Levels | raw_rms=0.187204 spectrum=0.014226 band_energy=0.076588 flux=0.0002 peak_env=0.057845
+[2026-02-20 10:39:16,912][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:39:16,951][INFO][MultiBand] Primary band switched | band=high fires=15
+[2026-02-20 10:39:17,030][INFO][Tempo] BPM unstable | bpm=141.3 cv=0.149 stability=0.00
+[2026-02-20 10:39:17,031][INFO][BEAT] Beat detected [Z+C] | energy=0.2246 threshold=0.1275 flux=0.0006 bpm=141.3 bands=band=high fired=sub_bass,low_mid
+[2026-02-20 10:39:17,101][INFO][Audio] Levels | raw_rms=0.132404 spectrum=0.010016 band_energy=0.043021 flux=0.0001 peak_env=0.044070
+[2026-02-20 10:39:17,101][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.16 consecutive=2/3 error_ms=-402.0 energies=[0.01, 0.00, 0.00, 0.01]
+[2026-02-20 10:39:17,102][INFO][Metronome] Tick [bt] | beat=3/4 bpm=121.2 acf_conf=0.12
+[2026-02-20 10:39:17,253][INFO][Tempo] Auto-halved BPM | original=269.6 adjusted=134.8
+[2026-02-20 10:39:17,254][INFO][Tempo] BPM unstable | bpm=141.1 cv=0.139 stability=0.00
+[2026-02-20 10:39:17,254][INFO][BEAT] Beat detected [Z] | energy=0.0889 threshold=0.1287 flux=0.0001 bpm=141.1 bands=band=high fired=low_mid,high
+[2026-02-20 10:39:17,519][INFO][Audio] Levels | raw_rms=0.155484 spectrum=0.012167 band_energy=0.067624 flux=0.0001 peak_env=0.053464
+[2026-02-20 10:39:17,571][INFO][Downbeat] Metronome+Energy rejected | position=1/4 confidence=1.48 consecutive=1/3 error_ms=110.6 energies=[0.01, 0.00, 0.00, 0.00]
+[2026-02-20 10:39:17,571][INFO][Metronome] Tick [bt] | beat=4/4 bpm=123.9 acf_conf=0.11
+[2026-02-20 10:39:17,953][INFO][Audio] Levels | raw_rms=0.169371 spectrum=0.014496 band_energy=0.093650 flux=0.0002 peak_env=0.067793
+[2026-02-20 10:39:17,954][INFO][Tempo] BPM unstable | bpm=138.3 cv=0.190 stability=0.00
+[2026-02-20 10:39:17,955][INFO][BEAT] Beat detected [Z] | energy=0.0937 threshold=0.1210 flux=0.0002 bpm=138.3 bands=band=high fired=sub_bass,low_mid,high
+[2026-02-20 10:39:18,061][INFO][Metronome] Tick [bt] | beat=1/4 bpm=124.3 acf_conf=0.09
+[2026-02-20 10:39:18,191][INFO][Tempo] Auto-halved BPM | original=252.1 adjusted=126.0
+[2026-02-20 10:39:18,192][INFO][Tempo] BPM unstable | bpm=136.2 cv=0.190 stability=0.00
+[2026-02-20 10:39:18,192][INFO][BEAT] Beat detected [Z+C] | energy=0.1911 threshold=0.1162 flux=0.0007 bpm=136.2 bands=band=high fired=sub_bass,low_mid
+[2026-02-20 10:39:18,384][INFO][Audio] Levels | raw_rms=0.134712 spectrum=0.010059 band_energy=0.030168 flux=0.0001 peak_env=0.034932
+[2026-02-20 10:39:18,571][INFO][Metronome] Tick [bt] | beat=2/4 bpm=121.1 acf_conf=0.08
+[2026-02-20 10:39:18,802][INFO][Audio] Levels | raw_rms=0.152377 spectrum=0.011019 band_energy=0.054544 flux=0.0000 peak_env=0.051739
+[2026-02-20 10:39:18,870][INFO][Tempo] BPM unstable | bpm=133.0 cv=0.221 stability=0.00
+[2026-02-20 10:39:18,870][INFO][BEAT] Beat detected [Z] | energy=0.0767 threshold=0.1042 flux=0.0002 bpm=133.0 bands=band=high fired=high
+[2026-02-20 10:39:18,890][INFO][MultiBand] Primary band switched | band=low_mid fires=6
+[2026-02-20 10:39:19,061][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.33 consecutive=0/3 error_ms=-519.3 energies=[0.00, 0.00, 0.00, 0.01]
+[2026-02-20 10:39:19,061][INFO][Metronome] Tick [bt] | beat=3/4 bpm=119.5 acf_conf=0.09
+[2026-02-20 10:39:19,100][INFO][Tempo] Auto-halved BPM | original=260.0 adjusted=130.0
+[2026-02-20 10:39:19,101][INFO][Tempo] BPM unstable | bpm=130.6 cv=0.213 stability=0.00
+[2026-02-20 10:39:19,101][INFO][BEAT] Beat detected [Z+C] | energy=0.1707 threshold=0.1166 flux=0.0005 bpm=130.6 bands=band=low_mid fired=low_mid,high
+[2026-02-20 10:39:19,230][INFO][Audio] Levels | raw_rms=0.184037 spectrum=0.014296 band_energy=0.081348 flux=0.0001 peak_env=0.035154
+[2026-02-20 10:39:19,620][INFO][Downbeat] Metronome+Energy rejected | position=1/4 confidence=1.47 consecutive=0/3 error_ms=-311.2 energies=[0.01, 0.00, 0.00, 0.00]
+[2026-02-20 10:39:19,620][INFO][Metronome] Tick [bt] | beat=4/4 bpm=101.7 acf_conf=0.14
+[2026-02-20 10:39:19,659][INFO][Audio] Levels | raw_rms=0.168061 spectrum=0.012265 band_energy=0.080961 flux=0.0002 peak_env=0.038109
+[2026-02-20 10:39:19,810][INFO][Tempo] BPM unstable | bpm=127.0 cv=0.225 stability=0.00
+[2026-02-20 10:39:19,810][INFO][BEAT] Beat detected [Z] | energy=0.1140 threshold=0.1401 flux=0.0003 bpm=127.0 bands=band=low_mid fired=sub_bass,low_mid
+[2026-02-20 10:39:20,021][INFO][Tempo] Auto-halved BPM | original=283.4 adjusted=141.7
+[2026-02-20 10:39:20,022][INFO][Tempo] BPM unstable | bpm=124.9 cv=0.229 stability=0.00
+[2026-02-20 10:39:20,022][INFO][BEAT] Beat detected [Z] | energy=0.1142 threshold=0.1387 flux=0.0002 bpm=124.9 bands=band=low_mid fired=high
+[2026-02-20 10:39:20,079][INFO][Audio] Levels | raw_rms=0.128952 spectrum=0.010743 band_energy=0.057684 flux=0.0000 peak_env=0.108994
+[2026-02-20 10:39:20,230][INFO][Metronome] Tick [bt] | beat=1/4 bpm=96.5 acf_conf=0.12
+[2026-02-20 10:39:20,281][INFO][MultiBand] Primary band switched | band=high fires=7
+[2026-02-20 10:39:20,382][INFO][Tempo] BPM unstable | bpm=124.5 cv=0.241 stability=0.00
+[2026-02-20 10:39:20,382][INFO][BEAT] Beat detected [Z+C] | energy=0.1482 threshold=0.1366 flux=0.0000 bpm=124.5 bands=band=high fired=low_mid
+[2026-02-20 10:39:20,509][INFO][Audio] Levels | raw_rms=0.135109 spectrum=0.011058 band_energy=0.060295 flux=0.0003 peak_env=0.067582
+[2026-02-20 10:39:20,719][INFO][Tempo] BPM unstable | bpm=125.1 cv=0.253 stability=0.00
+[2026-02-20 10:39:20,719][INFO][BEAT] Beat detected [Z+C] | energy=0.2013 threshold=0.1265 flux=0.0006 bpm=125.1 bands=band=high fired=sub_bass,low_mid
+[2026-02-20 10:39:20,852][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.26 consecutive=0/3 error_ms=727.2 energies=[0.00, 0.00, 0.01, 0.00]
+[2026-02-20 10:39:20,852][INFO][Metronome] Tick [bt] | beat=2/4 bpm=94.0 acf_conf=0.09
+[2026-02-20 10:39:20,900][INFO][MultiBand] Primary band switched | band=sub_bass fires=10
+[2026-02-20 10:39:20,901][INFO][Tempo] Auto-halved BPM | original=328.7 adjusted=164.3
+[2026-02-20 10:39:20,901][INFO][Tempo] BPM unstable | bpm=126.1 cv=0.256 stability=0.00
+[2026-02-20 10:39:20,901][INFO][BEAT] Beat detected [Z] | energy=0.0919 threshold=0.1312 flux=0.0003 bpm=126.1 bands=band=sub_bass fired=sub_bass
+[2026-02-20 10:39:20,939][INFO][Audio] Levels | raw_rms=0.175265 spectrum=0.011822 band_energy=0.105293 flux=0.0002 peak_env=0.094907
+[2026-02-20 10:39:21,150][INFO][Syncopation] Armed -> firing (2nd onset) | phase=0.47 bpm=94.1
+[2026-02-20 10:39:21,170][INFO][Syncopation] Off-beat onset detected | phase=0.50 bpm=94.1
+[2026-02-20 10:39:21,285][INFO][Tempo] BPM unstable | bpm=127.2 cv=0.255 stability=0.00
+[2026-02-20 10:39:21,285][INFO][BEAT] Beat detected [Z] | energy=0.0918 threshold=0.1304 flux=0.0001 bpm=127.2 bands=band=sub_bass fired=low_mid
+[2026-02-20 10:39:21,359][INFO][Audio] Levels | raw_rms=0.152308 spectrum=0.012575 band_energy=0.085950 flux=0.0002 peak_env=0.033215
+[2026-02-20 10:39:21,512][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.40 consecutive=0/3 error_ms=-1180.4 energies=[0.00, 0.00, 0.00, 0.01]
+[2026-02-20 10:39:21,515][INFO][Metronome] Tick [bt] | beat=3/4 bpm=93.7 acf_conf=0.10
+[2026-02-20 10:39:21,639][INFO][MultiBand] Primary band switched | band=low_mid fires=11
+[2026-02-20 10:39:21,640][INFO][Tempo] BPM unstable | bpm=128.8 cv=0.263 stability=0.00
+[2026-02-20 10:39:21,640][INFO][BEAT] Beat detected [Z] | energy=0.1194 threshold=0.1472 flux=0.0003 bpm=128.8 bands=band=low_mid fired=low_mid
+[2026-02-20 10:39:21,790][INFO][Audio] Levels | raw_rms=0.137890 spectrum=0.011665 band_energy=0.107150 flux=0.0003 peak_env=0.108742
+[2026-02-20 10:39:21,791][INFO][Syncopation] Off-beat onset detected | phase=0.47 bpm=93.7
+[2026-02-20 10:39:21,882][INFO][Tempo] Auto-halved BPM | original=248.3 adjusted=124.2
+[2026-02-20 10:39:21,882][INFO][Tempo] BPM unstable | bpm=129.5 cv=0.254 stability=0.00
+[2026-02-20 10:39:21,883][INFO][BEAT] Beat detected [Z+C] | energy=0.2241 threshold=0.1490 flux=0.0008 bpm=129.5 bands=band=low_mid fired=sub_bass,low_mid,high
+[2026-02-20 10:39:22,130][INFO][MultiBand] Primary band switched | band=high fires=15
+[2026-02-20 10:39:22,131][INFO][Metronome] Tick [bt] | beat=4/4 bpm=94.6 acf_conf=0.13
+[2026-02-20 10:39:22,221][INFO][Audio] Levels | raw_rms=0.169764 spectrum=0.015484 band_energy=0.090054 flux=0.0001 peak_env=0.037483
+[2026-02-20 10:39:22,520][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:39:22,581][INFO][Tempo] BPM unstable | bpm=128.1 cv=0.264 stability=0.00
+[2026-02-20 10:39:22,581][INFO][BEAT] Beat detected [Z+C] | energy=0.2687 threshold=0.1472 flux=0.0004 bpm=128.1 bands=band=high fired=sub_bass,low_mid
+[2026-02-20 10:39:22,639][INFO][Audio] Levels | raw_rms=0.117370 spectrum=0.009197 band_energy=0.045652 flux=0.0002 peak_env=0.052736
+[2026-02-20 10:39:22,772][INFO][Metronome] Tick [bt] | beat=1/4 bpm=96.2 acf_conf=0.14
+[2026-02-20 10:39:22,791][INFO][Tempo] Auto-halved BPM | original=284.1 adjusted=142.1
+[2026-02-20 10:39:22,792][INFO][Tempo] BPM unstable | bpm=127.5 cv=0.267 stability=0.00
+[2026-02-20 10:39:22,792][INFO][BEAT] Beat detected [Z+C] | energy=0.1542 threshold=0.1440 flux=0.0007 bpm=127.5 bands=band=high fired=low_mid,mid
+[2026-02-20 10:39:23,069][INFO][Audio] Levels | raw_rms=0.158796 spectrum=0.012537 band_energy=0.061781 flux=0.0002 peak_env=0.047421
+[2026-02-20 10:39:23,140][INFO][MultiBand] Primary band switched | band=mid fires=17
+[2026-02-20 10:39:23,393][INFO][Downbeat] Metronome+Energy rejected | position=3/4 confidence=1.28 consecutive=0/3 error_ms=808.6 energies=[0.00, 0.00, 0.00, 0.00]
+[2026-02-20 10:39:23,393][INFO][Metronome] Tick [bt] | beat=2/4 bpm=95.7 acf_conf=0.13
+[2026-02-20 10:39:23,500][INFO][Audio] Levels | raw_rms=0.169935 spectrum=0.011851 band_energy=0.096834 flux=0.0000 peak_env=0.071131
+[2026-02-20 10:39:23,602][INFO][Tempo] BPM unstable | bpm=124.7 cv=0.299 stability=0.00
+[2026-02-20 10:39:23,602][INFO][BEAT] Beat detected [Z] | energy=0.0898 threshold=0.1161 flux=0.0003 bpm=124.7 bands=band=mid fired=low_mid
+[2026-02-20 10:39:23,753][INFO][Syncopation] Armed -> firing (2nd onset) | phase=0.59 bpm=95.1
+[2026-02-20 10:39:23,780][INFO][Tempo] Auto-halved BPM | original=335.9 adjusted=167.9
+[2026-02-20 10:39:23,781][INFO][Tempo] BPM unstable | bpm=123.7 cv=0.309 stability=0.00
+[2026-02-20 10:39:23,781][INFO][BEAT] Beat detected [Z] | energy=0.1493 threshold=0.1147 flux=0.0000 bpm=123.7 bands=band=mid fired=sub_bass
+[2026-02-20 10:39:23,921][INFO][Audio] Levels | raw_rms=0.134475 spectrum=0.010774 band_energy=0.054634 flux=0.0002 peak_env=0.040514
+[2026-02-20 10:39:24,030][INFO][Downbeat] Metronome+Energy rejected | position=4/4 confidence=1.45 consecutive=0/3 error_ms=-1156.2 energies=[0.00, 0.00, 0.00, 0.01]
+[2026-02-20 10:39:24,030][INFO][Metronome] Tick [bt] | beat=3/4 bpm=94.6 acf_conf=0.11
+[2026-02-20 10:39:24,055][INFO][Tempo] Auto-halved BPM | original=218.4 adjusted=109.2
+[2026-02-20 10:39:24,055][INFO][Tempo] BPM unstable | bpm=123.1 cv=0.299 stability=0.00
+[2026-02-20 10:39:24,055][INFO][BEAT] Beat detected [Z] | energy=0.0784 threshold=0.1105 flux=0.0001 bpm=123.1 bands=band=mid fired=high
+[2026-02-20 10:39:24,310][INFO][Tempo] Auto-halved BPM | original=235.8 adjusted=117.9
+[2026-02-20 10:39:24,310][INFO][Tempo] BPM unstable | bpm=122.5 cv=0.298 stability=0.00
+[2026-02-20 10:39:24,310][INFO][BEAT] Beat detected [Z+C] | energy=0.2434 threshold=0.1168 flux=0.0004 bpm=122.5 bands=band=mid fired=sub_bass,low_mid,high
+[2026-02-20 10:39:24,311][INFO][Syncopation] Off-beat onset detected | phase=0.46 bpm=92.8
+[2026-02-20 10:39:24,331][INFO][Syncopation] Off-beat onset detected | phase=0.49 bpm=92.7
+[2026-02-20 10:39:24,351][INFO][Audio] Levels | raw_rms=0.158344 spectrum=0.010917 band_energy=0.129054 flux=0.0000 peak_env=0.107813
+[2026-02-20 10:39:24,372][INFO][MultiBand] Primary band switched | band=high fires=8
+[2026-02-20 10:39:24,653][INFO][Tempo] BPM unstable | bpm=123.5 cv=0.302 stability=0.00
+[2026-02-20 10:39:24,656][INFO][BEAT] Beat detected [Z+C] | energy=0.1792 threshold=0.1371 flux=0.0002 bpm=123.5 bands=band=high fired=low_mid
+[2026-02-20 10:39:24,670][INFO][Downbeat] Metronome+Energy rejected | position=1/4 confidence=1.24 consecutive=0/3 error_ms=-642.9 energies=[0.00, 0.00, 0.00, 0.00]
+[2026-02-20 10:39:24,671][INFO][Metronome] Tick [bt] | beat=4/4 bpm=93.0 acf_conf=0.10
+[2026-02-20 10:39:24,781][INFO][Audio] Levels | raw_rms=0.150487 spectrum=0.011700 band_energy=0.065271 flux=0.0002 peak_env=0.025170
+[2026-02-20 10:39:25,031][INFO][Syncopation] Predictive drop-off (no onset in window)
+[2026-02-20 10:39:25,201][INFO][Audio] Levels | raw_rms=0.096380 spectrum=0.008286 band_energy=0.045647 flux=0.0003 peak_env=0.025074
+[2026-02-20 10:39:25,289][INFO][Metronome] Tick [bt] | beat=1/4 bpm=100.5 acf_conf=0.09

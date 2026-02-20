@@ -16,11 +16,6 @@ def _optional_window_attr(window, attr_name: str):
 
 def persist_runtime_ui_to_config(window, config: Config) -> None:
     """Copy selected runtime UI control values into config on shutdown."""
-    phase_advance_slider = _optional_window_attr(window, "phase_advance_slider")
-    if phase_advance_slider is None:
-        phase_advance_slider = _optional_window_attr(window, "_advanced_phase_advance_slider")
-    # phase_advance_slider is optional - no UI control currently exists for this setting
-
     pulse_freq_range_slider = _optional_window_attr(window, "pulse_freq_range_slider")
     tcode_freq_range_slider = _optional_window_attr(window, "tcode_freq_range_slider")
     freq_weight_slider = _optional_window_attr(window, "freq_weight_slider")
@@ -34,9 +29,6 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
     tempo_timeout_slider = _optional_window_attr(window, "tempo_timeout_slider")
     phase_snap_slider = _optional_window_attr(window, "phase_snap_slider")
     metrics_global_cb = _optional_window_attr(window, "metrics_global_cb")
-
-    if hasattr(phase_advance_slider, "value"):
-        config.stroke.phase_advance = phase_advance_slider.value()
 
     if hasattr(pulse_freq_range_slider, "low") and hasattr(pulse_freq_range_slider, "high"):
         config.pulse_freq.monitor_freq_min = pulse_freq_range_slider.low()

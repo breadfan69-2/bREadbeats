@@ -104,12 +104,7 @@ class BeatDetectionConfig:
 class StrokeConfig:
     """Stroke generation parameters"""
     mode: StrokeMode = StrokeMode.SIMPLE_CIRCLE
-    stroke_min: float = 0.0           # Minimum stroke length (0.0-1.0)
-    stroke_max: float = 1.0           # Maximum stroke length (0.0-1.0)
     min_interval_ms: int = 150        # Minimum time between strokes (ms) - slider 200->1000
-    stroke_fullness: float = 0.98      # How much params affect stroke length
-    minimum_depth: float = 0.0        # Lower limit of stroke (absolute bottom)
-    freq_depth_factor: float = 0.07    # How much frequency affects depth
     # Frequency band for stroke depth calculation (bass = deeper strokes)
     depth_freq_low: float = 30.0      # Low frequency = deepest strokes (Hz)
     depth_freq_high: float = 22050.0    # High frequency = shallowest strokes (Hz)
@@ -141,9 +136,6 @@ class StrokeConfig:
     combo_texture: float = 0.94   # noise burst + syncopation texture behavior
     combo_reaction: float = 1.0300000000000002  # gate/strictness/readiness aggressiveness
 
-    # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
-    phase_advance: float = 1.0
-
     geometry_y_offset: float = 0.5  # Below-center rest Y offset used when intensity is near 0
     geometry_sink_start_intensity: float = 0.25  # Intensity where sink-to-rest lerp begins
 
@@ -158,10 +150,8 @@ class StrokeConfig:
     })
 
     # Stroke timing cadence:
-    # - 1 beat/stroke only allowed at very slow tempo (< single_stroke_bpm_cutoff)
-    # - otherwise auto-select 2/4/8 beats per stroke from BPM cutoffs
+    # - auto-select 2/4/8 beats per stroke from BPM cutoffs
     # - beats_between_strokes acts as fallback when BPM is unavailable (2/4/8)
-    single_stroke_bpm_cutoff: float = 90.0   # Allow 1 beat/stroke only below this BPM
     bpm_cutoff_2_to_4: float = 135.0          # BPM at/above this moves 2 -> 4 beats/stroke
     bpm_cutoff_4_to_8: float = 150.0         # BPM at/above this moves 4 -> 8 beats/stroke
     beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
@@ -189,7 +179,7 @@ class StrokeConfig:
     mid_bass_freq_high_hz: float = 400.0
     mid_bass_activity_threshold: float = 0.035
     mid_bass_occupancy_threshold: float = 0.45
-    dual_band_db_gate_enabled: bool = True
+    dual_band_db_gate_enabled: bool = False
     dual_band_sub_bass_db_min: float = -80.0
     dual_band_high_db_min: float = -80.0
     high_tip_fullness_enabled: bool = False
@@ -258,7 +248,6 @@ class StrokeConfig:
     high_band_delta_threshold: float = 0.05
     high_band_variance_threshold: float = 0.001
     high_band_include_mid: bool = True
-    downbeat_high_band_relax: float = 0.898
 
     # Overall full-spectrum quiet guard for beat/downbeat stroke generation.
     # Blocks beat-based strokes only when BOTH spectral flux and peak energy
@@ -683,12 +672,7 @@ class BeatDetectionConfig:
 class StrokeConfig:
     """Stroke generation parameters"""
     mode: StrokeMode = StrokeMode.SIMPLE_CIRCLE
-    stroke_min: float = 0.2           # Minimum stroke length (0.0-1.0)
-    stroke_max: float = 1.0           # Maximum stroke length (0.0-1.0)
     min_interval_ms: int = 150        # Minimum time between strokes (ms) - slider 200->1000
-    stroke_fullness: float = 1      # How much params affect stroke length
-    minimum_depth: float = 0.0        # Lower limit of stroke (absolute bottom)
-    freq_depth_factor: float = 0.07    # How much frequency affects depth
     # Frequency band for stroke depth calculation (bass = deeper strokes)
     depth_freq_low: float = 30.0      # Low frequency = deepest strokes (Hz)
     depth_freq_high: float = 22050.0    # High frequency = shallowest strokes (Hz)
@@ -720,9 +704,6 @@ class StrokeConfig:
     combo_texture: float = 0.94   # noise burst + syncopation texture behavior
     combo_reaction: float = 1.0300000000000002  # gate/strictness/readiness aggressiveness
 
-    # Phase advance per beat (0.0 = only downbeats, 1.0 = every beat does a full circle)
-    phase_advance: float = 0.25
-
     geometry_y_offset: float = 0.50  # Below-center rest Y offset used when intensity is near 0
     geometry_sink_start_intensity: float = 0.25  # Intensity where sink-to-rest lerp begins
 
@@ -736,10 +717,8 @@ class StrokeConfig:
     })
 
     # Stroke timing cadence:
-    # - 1 beat/stroke only allowed at very slow tempo (< single_stroke_bpm_cutoff)
-    # - otherwise auto-select 2/4/8 beats per stroke from BPM cutoffs
+    # - auto-select 2/4/8 beats per stroke from BPM cutoffs
     # - beats_between_strokes acts as fallback when BPM is unavailable (2/4/8)
-    single_stroke_bpm_cutoff: float = 90.0   # Allow 1 beat/stroke only below this BPM
     bpm_cutoff_2_to_4: float = 120          # BPM at/above this moves 2 -> 4 beats/stroke
     bpm_cutoff_4_to_8: float = 150.0         # BPM at/above this moves 4 -> 8 beats/stroke
     beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
@@ -836,7 +815,6 @@ class StrokeConfig:
     high_band_delta_threshold: float = 0.05
     high_band_variance_threshold: float = 0.0010
     high_band_include_mid: bool = True
-    downbeat_high_band_relax: float = 0.90
 
     # Overall full-spectrum quiet guard for beat/downbeat stroke generation.
     # Blocks beat-based strokes only when BOTH spectral flux and peak energy

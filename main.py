@@ -3713,7 +3713,7 @@ class BREadbeatsWindow(QMainWindow):
         _add_fill_sustain_slider("Syncopation", 'syncopation_overall_amp_fill_sustain_frames')
 
         dual_band_gate_cb = QCheckBox("Enable dual-band dB gate (sub-bass + high)")
-        dual_band_gate_cb.setChecked(bool(getattr(self.config.stroke, 'dual_band_db_gate_enabled', True)))
+        dual_band_gate_cb.setChecked(bool(getattr(self.config.stroke, 'dual_band_db_gate_enabled', False)))
         dual_band_gate_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'dual_band_db_gate_enabled', state == 2)
         )
@@ -4430,27 +4430,6 @@ class BREadbeatsWindow(QMainWindow):
         _style_ref_slider(high_var_slider, '#FFBBEE', 'High var')
         flux_layout.addWidget(high_var_slider)
 
-        high_downbeat_relax_slider = SliderWithLabel(
-            "Downbeat high-band relax",
-            0.50,
-            1.00,
-            float(getattr(self.config.stroke, 'downbeat_high_band_relax', 0.90) or 0.90),
-            3,
-            step=0.001,
-        )
-        high_downbeat_relax_slider.valueChanged.connect(_set_stroke_attr_with_ref(
-            'downbeat_high_band_relax',
-            'downbeat_high_relax',
-            'High relax eff mean',
-            '#FF9AD9',
-            dashed=True,
-            ghost_band='high',
-            ghost_range=True,
-            ghost_mode='threshold',
-            ghost_value_resolver=lambda relax: float(getattr(self.config.stroke, 'high_band_mean_threshold', 0.12) or 0.12) * float(relax),
-        ))
-        flux_layout.addWidget(high_downbeat_relax_slider)
-
         center_guard_cb = QCheckBox("Block center+jitter reset while flux activity is high")
         center_guard_cb.setChecked(bool(getattr(self.config.beat, 'center_jitter_flux_guard_enabled', False)))
         center_guard_cb.stateChanged.connect(
@@ -5051,7 +5030,6 @@ Like the app?<br>
                 if hasattr(self, 'mode_combo'):
                     self.mode_combo.setCurrentIndex(0)
                 self.config.stroke.min_interval_ms = 150
-                self.config.stroke.minimum_depth = 0.0
                 if hasattr(self, 'tempo_lock_required_cb'):
                     self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
                 if hasattr(self, 'intensity_ramp_spin'):
@@ -6025,7 +6003,6 @@ Like the app?<br>
             # Stroke Settings Tab
             'stroke_mode': 0,
             'min_interval_ms': 150,
-            'minimum_depth': 0.0,
             'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
             'combo_size': float(getattr(self.config.stroke, 'combo_size', 1.0)),
             'combo_depth': float(getattr(self.config.stroke, 'combo_depth', 1.0)),
@@ -6137,7 +6114,6 @@ Like the app?<br>
         self.mode_combo.setCurrentIndex(0)
         self._on_mode_change(0)
         self.config.stroke.min_interval_ms = 150
-        self.config.stroke.minimum_depth = 0.0
         if 'overall_amp_fill_required_scale' in preset_data:
             self.fill_gate_scale_spin.setValue(
                 self._fill_gate_scale_to_percent(float(preset_data['overall_amp_fill_required_scale']))
@@ -7207,11 +7183,6 @@ Like the app?<br>
                 dashed=False,
             )
     
-    def _on_stroke_range_change(self, low: float, high: float):
-        """Update stroke min/max in config"""
-        self.config.stroke.stroke_min = low
-        self.config.stroke.stroke_max = high
-
     def _on_tempo_tracking_toggle(self, state):
         """Enable/disable tempo tracking"""
         enabled = state == 2  # Qt.CheckState.Checked

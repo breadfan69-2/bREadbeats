@@ -29,13 +29,13 @@ class TestConfigPersistence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg_file = Path(tmpdir) / "config.json"
             cfg = Config()
-            cfg.stroke.phase_advance = 0.42
+            cfg.stroke.flux_threshold = 0.42
 
             with mock.patch.object(config_persistence, "get_config_file", return_value=cfg_file):
                 self.assertTrue(config_persistence.save_config(cfg))
                 loaded = config_persistence.load_config()
 
-            self.assertAlmostEqual(loaded.stroke.phase_advance, 0.42, places=6)
+            self.assertAlmostEqual(loaded.stroke.flux_threshold, 0.42, places=6)
 
     def test_load_default_when_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
