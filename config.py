@@ -240,10 +240,12 @@ class StrokeConfig:
     syncopation_fill_bin_high: int = 512
     downbeat_low_band_relax: float = 0.85
 
-    # Fill duration gate: require sustained fullness over consecutive frames.
+    # Fill duration gate (per phase): require sustained fullness over consecutive frames.
     # Values are frame counts (~16-23ms per frame at effective 43-60fps processing rate).
-    # Set to 0 or 1 to disable duration check (instant single-frame decision).
-    overall_amp_fill_sustain_frames: int = 3  # Frames of sustained fill required (~50-70ms at 60fps)
+    # Set to 0 or 1 to disable duration check (instant single-frame decision) for that phase.
+    downbeat_overall_amp_fill_sustain_frames: int = 3
+    beat_overall_amp_fill_sustain_frames: int = 3
+    syncopation_overall_amp_fill_sustain_frames: int = 3
 
     # High-band presence gate for beat/downbeat stroke generation.
     # Requires upper range (mid+high) to be both filled and active.

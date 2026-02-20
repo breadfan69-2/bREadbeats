@@ -363,7 +363,7 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
         self.assertTrue(bi._passes_overall_amp_fill_gate(self._event(), "beat"))
 
     def test_overall_fill_gate_blocks_when_low_fill(self):
-        bi = self._bi(overall_amp_fill_sustain_frames=1)  # Test instant decision
+        bi = self._bi(beat_overall_amp_fill_sustain_frames=1)  # Test instant decision
         engine = MagicMock()
         # Many bins above active floor but below fill threshold
         spectrum = np.full(1024, 0.03)
@@ -375,7 +375,7 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
         self.assertFalse(result)
 
     def test_overall_fill_gate_passes_when_rich_spectrum(self):
-        bi = self._bi(overall_amp_fill_sustain_frames=1)  # Test instant decision
+        bi = self._bi(beat_overall_amp_fill_sustain_frames=1)  # Test instant decision
         engine = MagicMock()
         engine.get_spectrum.return_value = np.ones(1024) * 0.5
         engine._band_energies = {}
@@ -388,7 +388,7 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
         bi = self._bi(
             overall_amp_fill_target=0.5,
             overall_amp_fill_tolerance=0.1,
-            overall_amp_fill_sustain_frames=1  # Test instant decision
+            beat_overall_amp_fill_sustain_frames=1  # Test instant decision
         )
         engine = MagicMock()
         engine.get_spectrum.return_value = np.ones(1024) * 0.5
@@ -427,7 +427,7 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
 
     def test_sustained_duration_requires_consecutive_frames(self):
         """Sustained duration gate requires fill to be maintained over consecutive frames."""
-        bi = self._bi(overall_amp_fill_sustain_frames=3)  # Require 3 consecutive frames
+        bi = self._bi(beat_overall_amp_fill_sustain_frames=3)  # Require 3 consecutive frames
         engine = MagicMock()
         engine.get_spectrum.return_value = np.ones(1024) * 0.5  # Rich spectrum
         engine._band_energies = {}

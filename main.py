@@ -3488,23 +3488,6 @@ class BREadbeatsWindow(QMainWindow):
         )
         gate_layout.addWidget(sync_fill_slider)
 
-        fill_sustain_slider = SliderWithLabel(
-            "Sustained Fullness Required (frames)",
-            0,
-            15,
-            int(getattr(self.config.stroke, 'overall_amp_fill_sustain_frames', 3) or 3),
-            0,
-        )
-        fill_sustain_slider.setToolTip(
-            "Number of consecutive frames (~20ms each) that fill must stay above threshold before stroke fires.\n"
-            "0-1 = instant (no duration check), 3 = ~60ms sustained, 5 = ~100ms, 10 = ~200ms.\n"
-            "Higher values prevent single-frame fill spikes from triggering strokes."
-        )
-        fill_sustain_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'overall_amp_fill_sustain_frames', int(v))
-        )
-        gate_layout.addWidget(fill_sustain_slider)
-
         fill_bin_info = QLabel("Fill gate FFT-bin windows (tight range control per phase)")
         fill_bin_info.setStyleSheet("color: #999; font-size: 10px;")
         gate_layout.addWidget(fill_bin_info)
@@ -3584,9 +3567,30 @@ class BREadbeatsWindow(QMainWindow):
             gate_layout.addLayout(row)
             _emit_ghost()
 
+        def _add_fill_sustain_slider(title: str, sustain_attr: str) -> None:
+            sustain_slider = SliderWithLabel(
+                f"{title} sustained fullness (frames)",
+                0,
+                15,
+                int(getattr(self.config.stroke, sustain_attr, 3) or 3),
+                0,
+            )
+            sustain_slider.setToolTip(
+                "Number of consecutive frames (~20ms each) that fill must stay above threshold before stroke fires.\n"
+                "0-1 = instant (no duration check), 3 = ~60ms sustained, 5 = ~100ms, 10 = ~200ms.\n"
+                "Higher values prevent single-frame fill spikes from triggering strokes."
+            )
+            sustain_slider.valueChanged.connect(
+                lambda v: setattr(self.config.stroke, sustain_attr, int(v))
+            )
+            gate_layout.addWidget(sustain_slider)
+
         _add_fill_bin_range_row("Downbeat fill bins", 'downbeat_fill_bin_low', 'downbeat_fill_bin_high', 'downbeat_fill_bin_range')
+        _add_fill_sustain_slider("Downbeat", 'downbeat_overall_amp_fill_sustain_frames')
         _add_fill_bin_range_row("Beat fill bins", 'beat_fill_bin_low', 'beat_fill_bin_high', 'beat_fill_bin_range')
+        _add_fill_sustain_slider("Beat", 'beat_overall_amp_fill_sustain_frames')
         _add_fill_bin_range_row("Sync fill bins", 'syncopation_fill_bin_low', 'syncopation_fill_bin_high', 'sync_fill_bin_range')
+        _add_fill_sustain_slider("Syncopation", 'syncopation_overall_amp_fill_sustain_frames')
 
         dual_band_gate_cb = QCheckBox("Enable dual-band dB gate (sub-bass + high)")
         dual_band_gate_cb.setChecked(bool(getattr(self.config.stroke, 'dual_band_db_gate_enabled', True)))
