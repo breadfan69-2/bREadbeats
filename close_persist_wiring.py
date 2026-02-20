@@ -75,3 +75,7 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
 
     if hasattr(metrics_global_cb, "isChecked"):
         config.auto_adjust.metrics_global_enabled = metrics_global_cb.isChecked()
+
+    intensity_ramp_spin = _optional_window_attr(window, "intensity_ramp_spin")
+    if hasattr(intensity_ramp_spin, "value"):
+        config.stroke.intensity_ramp_hours = float(intensity_ramp_spin.value())

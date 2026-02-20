@@ -171,6 +171,12 @@ class StrokeMapper:
         self._energy_history: deque = deque(maxlen=120)  # ~2s at 60fps
         self._session_energy_ema: float = 0.5
 
+        # ── Intensity timer ramp (session-level escalation) ──
+        self._intensity_ramp_start_time: float = 0.0
+        self._intensity_ramp_started: bool = False
+        self._intensity_ramp_mult: float = 1.0
+        self._intensity_ramp_floor: float = 0.25
+
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
         self._learning_enabled = bool(getattr(self.config.beat, "teaching_learning_enabled", False))
@@ -265,6 +271,25 @@ class StrokeMapper:
 
         # ── Expression layer: per-frame updates ──
         self._update_expression_layer(decision=decision, dt=dt, now=now)
+
+        # ── Intensity timer ramp: session-level escalation ──
+        ramp_hours = float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0)
+        if ramp_hours > 0.0:
+            if not decision.silence_active and not self._intensity_ramp_started:
+                self._intensity_ramp_started = True
+                self._intensity_ramp_start_time = now
+            if self._intensity_ramp_started:
+                elapsed_s = now - self._intensity_ramp_start_time
+                ramp_s = ramp_hours * 3600.0
+                raw_t = float(np.clip(elapsed_s / max(ramp_s, 1.0), 0.0, 1.0))
+                eased_t = self._quintic_ease(raw_t)
+                self._intensity_ramp_mult = float(
+                    self._intensity_ramp_floor + ((1.0 - self._intensity_ramp_floor) * eased_t)
+                )
+            else:
+                self._intensity_ramp_mult = self._intensity_ramp_floor
+        else:
+            self._intensity_ramp_mult = 1.0
 
         if decision.silence_active:
             self._hold_start_pose_until_reactive = False
@@ -494,6 +519,14 @@ class StrokeMapper:
                         session_nudge = (self._session_energy_ema - 0.5) * 2.0 * arc_inf
                         expanded_max = float(np.clip(expanded_max + session_nudge, base_max, 1.0))
                     self._journey_max_radius = float(np.clip(expanded_max, base_max, 1.0))
+
+                    # Intensity timer: scale available dynamic range toward park radius
+                    if self._intensity_ramp_mult < 1.0:
+                        self._journey_max_radius = float(
+                            self._journey_park_radius
+                            + ((self._journey_max_radius - self._journey_park_radius) * self._intensity_ramp_mult)
+                        )
+
                     self._journey_energy_fullness = fullness
 
                     self._journey_start_alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
@@ -1235,6 +1268,11 @@ class StrokeMapper:
             # Session intensity biases turns slightly (±10%)
             session_bias = (self._session_energy_ema - 0.5) * 2.0 * arc_influence
             turns = float(np.clip(turns + session_bias, 0.5, 2.0))
+
+        # Intensity timer: scale dynamic turn range toward minimum
+        if self._intensity_ramp_mult < 1.0:
+            base_turns = float(getattr(self.config.stroke, 'orbit_speed_min_turns', 0.75) or 0.75)
+            turns = float(base_turns + ((turns - base_turns) * self._intensity_ramp_mult))
 
         # Apply orbit direction (CW/CCW)
         rotation = float(turns * 2.0 * np.pi * self._orbit_direction)

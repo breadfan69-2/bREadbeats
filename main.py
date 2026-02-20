@@ -5780,6 +5780,28 @@ Like the app?<br>
         tempo_label = QLabel("Tempo lock required")
         tempo_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         tempo_layout.addWidget(tempo_label)
+
+        intensity_label = QLabel("Intensity timer")
+        intensity_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        intensity_label.setStyleSheet("color: #ccc; font-size: 10px; margin-top: 8px;")
+        tempo_layout.addWidget(intensity_label)
+        self.intensity_ramp_spin = QDoubleSpinBox()
+        self.intensity_ramp_spin.setRange(0.0, 8.0)
+        self.intensity_ramp_spin.setSingleStep(0.25)
+        self.intensity_ramp_spin.setDecimals(2)
+        self.intensity_ramp_spin.setSuffix(" hrs")
+        self.intensity_ramp_spin.setValue(
+            float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0)
+        )
+        self.intensity_ramp_spin.setToolTip(
+            "Session intensity ramp duration (0 = disabled).\n"
+            "Reactions gradually climb from gentle to full power\n"
+            "over this many hours."
+        )
+        self.intensity_ramp_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'intensity_ramp_hours', float(v))
+        )
+        tempo_layout.addWidget(self.intensity_ramp_spin)
         tempo_layout.addStretch(1)
 
         self.fill_gate_scale_spin = SliderWithLabel(
