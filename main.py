@@ -4499,6 +4499,180 @@ class BREadbeatsWindow(QMainWindow):
 
         scroll_layout.addWidget(flux_group)
 
+        # ===== Expression Layer Controls =====
+        expression_group = QGroupBox("Expression Layer")
+        expression_layout = QVBoxLayout(expression_group)
+
+        expr_info = QLabel(
+            "Artistic expression: orbit speed variation, center wandering,\n"
+            "direction changes, tension pauses, and session arc."
+        )
+        expr_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        expression_layout.addWidget(expr_info)
+
+        # ── Orbit Speed Variation ──
+        orbit_speed_cb = QCheckBox("Orbit speed variation (energy-driven turns per journey)")
+        orbit_speed_cb.setChecked(bool(getattr(self.config.stroke, 'orbit_speed_variation_enabled', True)))
+        orbit_speed_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'orbit_speed_variation_enabled', state == 2)
+        )
+        expression_layout.addWidget(orbit_speed_cb)
+
+        orbit_min_turns_slider = SliderWithLabel(
+            "Min turns (low energy)",
+            0.25, 1.50,
+            float(getattr(self.config.stroke, 'orbit_speed_min_turns', 0.75) or 0.75),
+            2,
+        )
+        orbit_min_turns_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'orbit_speed_min_turns', float(v))
+        )
+        expression_layout.addWidget(orbit_min_turns_slider)
+
+        orbit_max_turns_slider = SliderWithLabel(
+            "Max turns (high energy)",
+            0.50, 2.00,
+            float(getattr(self.config.stroke, 'orbit_speed_max_turns', 1.5) or 1.5),
+            2,
+        )
+        orbit_max_turns_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'orbit_speed_max_turns', float(v))
+        )
+        expression_layout.addWidget(orbit_max_turns_slider)
+
+        # ── Center Wandering ──
+        wander_cb = QCheckBox("Center wandering (orbit drifts horizontally)")
+        wander_cb.setChecked(bool(getattr(self.config.stroke, 'center_wander_enabled', True)))
+        wander_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'center_wander_enabled', state == 2)
+        )
+        expression_layout.addWidget(wander_cb)
+
+        wander_max_slider = SliderWithLabel(
+            "Wander max offset",
+            0.0, 0.50,
+            float(getattr(self.config.stroke, 'center_wander_max_x', 0.20) or 0.20),
+            2,
+        )
+        wander_max_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'center_wander_max_x', float(v))
+        )
+        expression_layout.addWidget(wander_max_slider)
+
+        wander_cycle_slider = SliderWithLabel(
+            "Wander cycle (seconds)",
+            5.0, 60.0,
+            float(getattr(self.config.stroke, 'center_wander_cycle_s', 25.0) or 25.0),
+            1,
+        )
+        wander_cycle_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'center_wander_cycle_s', float(v))
+        )
+        expression_layout.addWidget(wander_cycle_slider)
+
+        wander_energy_slider = SliderWithLabel(
+            "Wander energy influence",
+            0.0, 1.0,
+            float(getattr(self.config.stroke, 'center_wander_energy_scale', 0.6) or 0.6),
+            2,
+        )
+        wander_energy_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'center_wander_energy_scale', float(v))
+        )
+        expression_layout.addWidget(wander_energy_slider)
+
+        # ── Direction Changes ──
+        direction_cb = QCheckBox("Direction changes at phrase boundaries")
+        direction_cb.setChecked(bool(getattr(self.config.stroke, 'direction_change_enabled', True)))
+        direction_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'direction_change_enabled', state == 2)
+        )
+        expression_layout.addWidget(direction_cb)
+
+        direction_interval_slider = SliderWithLabel(
+            "Min interval between reversals (s)",
+            5.0, 60.0,
+            float(getattr(self.config.stroke, 'direction_change_interval_s', 15.0) or 15.0),
+            1,
+        )
+        direction_interval_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'direction_change_interval_s', float(v))
+        )
+        expression_layout.addWidget(direction_interval_slider)
+
+        direction_drop_slider = SliderWithLabel(
+            "Energy change to trigger reversal",
+            0.10, 0.80,
+            float(getattr(self.config.stroke, 'direction_change_energy_drop', 0.35) or 0.35),
+            2,
+        )
+        direction_drop_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'direction_change_energy_drop', float(v))
+        )
+        expression_layout.addWidget(direction_drop_slider)
+
+        # ── Tension Pauses ──
+        tension_cb = QCheckBox("Tension pauses (dramatic freeze on energy drops)")
+        tension_cb.setChecked(bool(getattr(self.config.stroke, 'tension_pause_enabled', True)))
+        tension_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'tension_pause_enabled', state == 2)
+        )
+        expression_layout.addWidget(tension_cb)
+
+        tension_drop_slider = SliderWithLabel(
+            "Energy drop to trigger pause",
+            0.15, 0.80,
+            float(getattr(self.config.stroke, 'tension_pause_energy_drop', 0.40) or 0.40),
+            2,
+        )
+        tension_drop_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'tension_pause_energy_drop', float(v))
+        )
+        expression_layout.addWidget(tension_drop_slider)
+
+        tension_hold_slider = SliderWithLabel(
+            "Pause hold duration (s)",
+            0.10, 1.50,
+            float(getattr(self.config.stroke, 'tension_pause_hold_s', 0.45) or 0.45),
+            2,
+        )
+        tension_hold_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'tension_pause_hold_s', float(v))
+        )
+        expression_layout.addWidget(tension_hold_slider)
+
+        tension_cooldown_slider = SliderWithLabel(
+            "Pause cooldown (s)",
+            2.0, 30.0,
+            float(getattr(self.config.stroke, 'tension_pause_cooldown_s', 10.0) or 10.0),
+            1,
+        )
+        tension_cooldown_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'tension_pause_cooldown_s', float(v))
+        )
+        expression_layout.addWidget(tension_cooldown_slider)
+
+        # ── Session Arc ──
+        session_cb = QCheckBox("Session arc (gradual long-term intensity evolution)")
+        session_cb.setChecked(bool(getattr(self.config.stroke, 'session_arc_enabled', True)))
+        session_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'session_arc_enabled', state == 2)
+        )
+        expression_layout.addWidget(session_cb)
+
+        session_influence_slider = SliderWithLabel(
+            "Session arc radius influence",
+            0.0, 0.30,
+            float(getattr(self.config.stroke, 'session_arc_radius_influence', 0.10) or 0.10),
+            2,
+        )
+        session_influence_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'session_arc_radius_influence', float(v))
+        )
+        expression_layout.addWidget(session_influence_slider)
+
+        scroll_layout.addWidget(expression_group)
+
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         

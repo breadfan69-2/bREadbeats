@@ -274,6 +274,34 @@ class StrokeConfig:
     post_silence_ramp_seconds: float = 2.7    # Seconds to ramp volume back to full (1.0-8.0)
     silence_fade_drop_points: int = 10        # Max points (out of 100) fade can lower volume by in runtime fade pass
 
+    # ── Expression Layer ──
+    # Orbit speed variation: modulates turns-per-journey based on energy
+    orbit_speed_variation_enabled: bool = True
+    orbit_speed_min_turns: float = 0.75       # turns at lowest energy
+    orbit_speed_max_turns: float = 1.5        # turns at highest energy
+
+    # Tension pauses: brief orbit freeze during dramatic energy drops
+    tension_pause_enabled: bool = True
+    tension_pause_energy_drop: float = 0.40   # energy drop ratio to trigger pause
+    tension_pause_hold_s: float = 0.45        # hold duration (seconds)
+    tension_pause_cooldown_s: float = 10.0    # minimum seconds between pauses
+
+    # Center wandering: orbit center drifts horizontally over time
+    center_wander_enabled: bool = True
+    center_wander_max_x: float = 0.20         # max horizontal center offset
+    center_wander_cycle_s: float = 25.0       # full wander cycle period (seconds)
+    center_wander_energy_scale: float = 0.6   # energy influence on wander amplitude
+
+    # Direction changes: CW/CCW reversal at phrase boundaries
+    direction_change_enabled: bool = True
+    direction_change_interval_s: float = 15.0 # min seconds between direction changes
+    direction_change_energy_drop: float = 0.35  # energy drop ratio to trigger reversal
+
+    # Session arc: very slow intensity tracking for gradual session evolution
+    session_arc_enabled: bool = True
+    session_arc_ema_alpha: float = 0.001      # EMA alpha for session intensity
+    session_arc_radius_influence: float = 0.10  # max radius modifier from session arc
+
 @dataclass
 class JitterConfig:
     """Jitter - micro-circles when no beat detected"""
@@ -823,6 +851,34 @@ class StrokeConfig:
     post_silence_vol_reduction: float = 0.47  # Fraction to reduce volume by (0.0-0.50, 0.15 = 15%)
     post_silence_ramp_seconds: float = 2.7    # Seconds to ramp volume back to full (1.0-8.0)
     silence_fade_drop_points: int = 10        # Max points (out of 100) fade can lower volume by in runtime fade pass
+
+    # ── Expression Layer ──
+    # Orbit speed variation: modulates turns-per-journey based on energy
+    orbit_speed_variation_enabled: bool = True
+    orbit_speed_min_turns: float = 0.75       # turns at lowest energy
+    orbit_speed_max_turns: float = 1.5        # turns at highest energy
+
+    # Tension pauses: brief orbit freeze during dramatic energy drops
+    tension_pause_enabled: bool = True
+    tension_pause_energy_drop: float = 0.40   # energy drop ratio to trigger pause
+    tension_pause_hold_s: float = 0.45        # hold duration (seconds)
+    tension_pause_cooldown_s: float = 10.0    # minimum seconds between pauses
+
+    # Center wandering: orbit center drifts horizontally over time
+    center_wander_enabled: bool = True
+    center_wander_max_x: float = 0.20         # max horizontal center offset
+    center_wander_cycle_s: float = 25.0       # full wander cycle period (seconds)
+    center_wander_energy_scale: float = 0.6   # energy influence on wander amplitude
+
+    # Direction changes: CW/CCW reversal at phrase boundaries
+    direction_change_enabled: bool = True
+    direction_change_interval_s: float = 15.0 # min seconds between direction changes
+    direction_change_energy_drop: float = 0.35  # energy drop ratio to trigger reversal
+
+    # Session arc: very slow intensity tracking for gradual session evolution
+    session_arc_enabled: bool = True
+    session_arc_ema_alpha: float = 0.001      # EMA alpha for session intensity
+    session_arc_radius_influence: float = 0.10  # max radius modifier from session arc
 
 @dataclass
 class JitterConfig:

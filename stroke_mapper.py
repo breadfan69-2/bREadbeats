@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -154,6 +155,20 @@ class StrokeMapper:
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
 
+        # ── Expression layer state ──
+        self._orbit_direction: int = 1           # 1=default, -1=reversed
+        self._last_direction_change_time: float = 0.0
+        self._center_x_offset: float = 0.0
+        self._center_wander_phase: float = 0.0
+        self._tension_pause_active: bool = False
+        self._tension_pause_end_time: float = 0.0
+        self._tension_pause_last_time: float = 0.0
+        self._tension_pause_hold_alpha: float = 0.0
+        self._tension_pause_hold_beta: float = 0.0
+        self._tension_pause_fade_end: float = 0.0    # crossfade-back end time
+        self._energy_history: deque = deque(maxlen=120)  # ~2s at 60fps
+        self._session_energy_ema: float = 0.5
+
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
         self._learning_enabled = bool(getattr(self.config.beat, "teaching_learning_enabled", False))
@@ -245,6 +260,9 @@ class StrokeMapper:
         self._last_trigger_kind = decision.trigger_kind
         self._lazy_glide_active = bool(getattr(decision, "lazy_glide_active", False))
         self._last_gate_fail = str(getattr(decision, "gate_fail", "") or "")
+
+        # ── Expression layer: per-frame updates ──
+        self._update_expression_layer(decision=decision, dt=dt, now=now)
 
         if decision.silence_active:
             self._hold_start_pose_until_reactive = False
@@ -464,6 +482,11 @@ class StrokeMapper:
                     # Smooth expansion: only starts opening above 0.4 fullness
                     expand_t = float(np.clip((fullness - 0.4) / 0.6, 0.0, 1.0))
                     expanded_max = float(base_max + (1.0 - base_max) * (expand_t * expand_t))
+                    # Session arc influence: long-term energy nudges max_radius
+                    if getattr(self.config.stroke, 'session_arc_enabled', True):
+                        arc_inf = float(getattr(self.config.stroke, 'session_arc_radius_influence', 0.10) or 0.10)
+                        session_nudge = (self._session_energy_ema - 0.5) * 2.0 * arc_inf
+                        expanded_max = float(np.clip(expanded_max + session_nudge, base_max, 1.0))
                     self._journey_max_radius = float(np.clip(expanded_max, base_max, 1.0))
                     self._journey_energy_fullness = fullness
 
@@ -848,10 +871,118 @@ class StrokeMapper:
             self._base_center_y = self._wait_swirl_base_center_y
             self._reactive_bounce_y = self._wait_swirl_reactive_bounce_y
 
-        self.state.alpha = alpha
-        self.state.beta = beta
+        # ── Expression layer: apply center X wander offset ──
+        alpha = float(alpha + self._center_x_offset)
 
-        return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+        # ── Expression layer: tension pause override ──
+        if self._tension_pause_active:
+            if now < self._tension_pause_end_time:
+                # During hold: output latched position
+                alpha = self._tension_pause_hold_alpha
+                beta = self._tension_pause_hold_beta
+            elif now < self._tension_pause_fade_end:
+                # Crossfade back: smooth blend from held → computed position
+                fade_dur = self._tension_pause_fade_end - self._tension_pause_end_time
+                t = float(np.clip((now - self._tension_pause_end_time) / max(fade_dur, 1e-3), 0.0, 1.0))
+                t = t * t * (3.0 - 2.0 * t)  # smoothstep
+                alpha = float(self._tension_pause_hold_alpha + t * (alpha - self._tension_pause_hold_alpha))
+                beta = float(self._tension_pause_hold_beta + t * (beta - self._tension_pause_hold_beta))
+            else:
+                self._tension_pause_active = False
+
+        self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
+        self.state.beta = float(np.clip(beta, -1.0, 1.0))
+
+        return TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
+
+    # ── Expression layer ──────────────────────────────────────────────
+
+    def _update_expression_layer(self, decision: 'BeatDecision', dt: float, now: float) -> None:
+        """Per-frame expression updates: center wander, energy tracking,
+        direction changes, tension pause detection, session arc."""
+
+        energy = float(np.clip(decision.energy_fullness, 0.0, 1.0))
+        self._energy_history.append(energy)
+
+        # Session arc EMA (mirrors beat_intelligence for local use)
+        if getattr(self.config.stroke, 'session_arc_enabled', True):
+            sa_alpha = float(getattr(self.config.stroke, 'session_arc_ema_alpha', 0.001) or 0.001)
+            self._session_energy_ema += sa_alpha * (energy - self._session_energy_ema)
+
+        # ── Center wandering ──
+        if (getattr(self.config.stroke, 'center_wander_enabled', True)
+                and not decision.silence_active
+                and self._orbit_phase_initialized):
+            cycle_s = float(getattr(self.config.stroke, 'center_wander_cycle_s', 25.0) or 25.0)
+            max_x = float(getattr(self.config.stroke, 'center_wander_max_x', 0.20) or 0.20)
+            e_scale = float(getattr(self.config.stroke, 'center_wander_energy_scale', 0.6) or 0.6)
+
+            self._center_wander_phase += dt / max(cycle_s, 1.0)
+            # Two harmonics for organic feel (golden ratio second harmonic)
+            raw = float(
+                0.70 * np.sin(2.0 * np.pi * self._center_wander_phase)
+                + 0.30 * np.sin(2.0 * np.pi * self._center_wander_phase * 1.618)
+            )
+            # Amplitude scales with energy: more wander when music is fuller
+            amplitude = max_x * ((1.0 - e_scale) + e_scale * energy)
+            self._center_x_offset = float(np.clip(raw * amplitude, -max_x, max_x))
+        elif decision.silence_active:
+            # Gently decay wander toward center during silence
+            self._center_x_offset *= float(max(0.0, 1.0 - 2.0 * dt))
+
+        # ── Direction change detection ──
+        if getattr(self.config.stroke, 'direction_change_enabled', True) and not decision.silence_active:
+            interval_s = float(getattr(self.config.stroke, 'direction_change_interval_s', 15.0) or 15.0)
+            drop_needed = float(getattr(self.config.stroke, 'direction_change_energy_drop', 0.35) or 0.35)
+
+            if now - self._last_direction_change_time > interval_s and len(self._energy_history) >= 30:
+                recent = list(self._energy_history)
+                recent_mean = float(np.mean(recent[-15:]))
+                prior_mean = float(np.mean(recent[-30:-15]))
+                # Trigger on significant energy transition (either direction)
+                if prior_mean > 0.08 and abs(prior_mean - recent_mean) / max(prior_mean, 0.08) > drop_needed:
+                    self._orbit_direction *= -1
+                    self._last_direction_change_time = now
+
+        # ── Tension pause detection ──
+        if getattr(self.config.stroke, 'tension_pause_enabled', True) and not decision.silence_active:
+            cooldown = float(getattr(self.config.stroke, 'tension_pause_cooldown_s', 10.0) or 10.0)
+            drop_ratio = float(getattr(self.config.stroke, 'tension_pause_energy_drop', 0.40) or 0.40)
+
+            if (not self._tension_pause_active
+                    and len(self._energy_history) >= 30
+                    and now - self._tension_pause_last_time > cooldown):
+                recent = list(self._energy_history)
+                recent_mean = float(np.mean(recent[-15:]))
+                prior_mean = float(np.mean(recent[-30:-15]))
+                # Only trigger when going from substantial energy to a real drop
+                if prior_mean > 0.20 and (prior_mean - recent_mean) / prior_mean > drop_ratio:
+                    hold_s = float(getattr(self.config.stroke, 'tension_pause_hold_s', 0.45) or 0.45)
+                    fade_s = 0.30  # crossfade back duration
+                    self._tension_pause_active = True
+                    self._tension_pause_end_time = now + hold_s
+                    self._tension_pause_fade_end = now + hold_s + fade_s
+                    self._tension_pause_last_time = now
+
+                    # Pull inward toward orbit center on pause:
+                    # bigger energy drop → more pull-in, range 0.2–0.5 of radius
+                    actual_drop = (prior_mean - recent_mean) / prior_mean
+                    drop_t = float(np.clip((actual_drop - drop_ratio) / max(0.5 - drop_ratio, 0.01), 0.0, 1.0))
+                    pull_fraction = 0.20 + drop_t * 0.30  # 0.2 (mild) to 0.5 (dramatic)
+                    # Add a small random wiggle (±0.05) for organic feel
+                    pull_fraction += (float(np.random.uniform(-0.05, 0.05)))
+                    pull_fraction = float(np.clip(pull_fraction, 0.15, 0.55))
+
+                    cx = float(self._center_x_offset)
+                    cy = float(self._base_center_y + self._reactive_bounce_y)
+                    hold_a = float(self.state.alpha)
+                    hold_b = float(self.state.beta)
+                    # Vector from center to current position, scale inward
+                    hold_a = float(cx + (hold_a - cx) * (1.0 - pull_fraction))
+                    hold_b = float(cy + (hold_b - cy) * (1.0 - pull_fraction))
+
+                    self._tension_pause_hold_alpha = hold_a
+                    self._tension_pause_hold_beta = hold_b
 
     def _compute_bass_jitter_offsets(self, event: BeatEvent, dt: float) -> tuple[float, float]:
         if not bool(getattr(self.config.jitter, "enabled", True)):
@@ -1057,17 +1188,32 @@ class StrokeMapper:
         angle = float(np.arctan2(dy, alpha))
         return angle, radius
 
-    @staticmethod
-    def _radius_cap_for_center(center_y: float) -> float:
-        """Maximum radius that keeps a perfect circle fully inside normalized Y bounds [-1, 1]."""
-        return float(max(0.0, min(1.0 - center_y, 1.0 + center_y)))
+    def _radius_cap_for_center(self, center_y: float) -> float:
+        """Maximum radius that keeps orbit inside normalized [-1, 1] bounds in both axes."""
+        y_cap = float(max(0.0, min(1.0 - center_y, 1.0 + center_y)))
+        x_cap = float(max(0.0, 1.0 - abs(self._center_x_offset)))
+        return min(y_cap, x_cap)
 
     def _compute_landing_rotation(self, start_angle: float, interval_beats: int) -> float:
-        # Rotation policy: 1 journey = 1 full lap for all trigger types.
-        turns = 1
-        phase_to_park = float((self._park_angle - start_angle) % (2.0 * np.pi))
-        rotation = float(phase_to_park + (2.0 * np.pi * max(0, turns - 1)))
-        # If start is already at park and turns==1, preserve one full visible rotation.
-        if rotation <= 1e-6:
-            rotation = float(2.0 * np.pi)
+        # Base turn count: 1 full lap per journey
+        turns = 1.0
+
+        # Orbit speed variation: energy-driven turn count
+        if getattr(self.config.stroke, 'orbit_speed_variation_enabled', True):
+            fullness = float(np.clip(self._journey_energy_fullness, 0.0, 1.0))
+            min_t = float(getattr(self.config.stroke, 'orbit_speed_min_turns', 0.75) or 0.75)
+            max_t = float(getattr(self.config.stroke, 'orbit_speed_max_turns', 1.5) or 1.5)
+            # Smoothstep mapping: low energy stays slow, high energy opens up
+            t = fullness * fullness * (3.0 - 2.0 * fullness)
+            turns = float(min_t + t * (max_t - min_t))
+
+        # Session arc influence: slightly expand/contract turns with long-term energy
+        if getattr(self.config.stroke, 'session_arc_enabled', True):
+            arc_influence = float(getattr(self.config.stroke, 'session_arc_radius_influence', 0.10) or 0.10)
+            # Session intensity biases turns slightly (±10%)
+            session_bias = (self._session_energy_ema - 0.5) * 2.0 * arc_influence
+            turns = float(np.clip(turns + session_bias, 0.5, 2.0))
+
+        # Apply orbit direction (CW/CCW)
+        rotation = float(turns * 2.0 * np.pi * self._orbit_direction)
         return rotation

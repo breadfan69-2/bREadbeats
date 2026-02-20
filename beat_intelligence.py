@@ -46,6 +46,7 @@ class BeatDecision:
     lazy_glide_active: bool = False
     gate_fail: str = ""                # which gate rejected a beat-family event (empty = passed or N/A)
     energy_fullness: float = 0.0       # 0..1 how "full" the music is (drives max_radius expansion)
+    session_intensity: float = 0.5     # long-term session energy envelope (0..1)
 
     learning: LearningOutputs = field(default_factory=LearningOutputs)
 
@@ -180,6 +181,8 @@ class BeatIntelligence:
         self._stabilized_bpm: float = 120.0         # EMA-smoothed BPM output
         self._bpm_jump_ratio_limit: float = 1.5     # max allowed jump ratio per update
 
+        # ── Session arc: very slow energy tracking ──
+        self._session_intensity_ema: float = 0.5
 
 
     def set_audio_engine(self, audio_engine) -> None:
@@ -1548,6 +1551,13 @@ class BeatIntelligence:
         self._update_flux_history(event)
         self._populate_rolling_deques(event)
 
+        # Session arc: very slow EMA of energy fullness for long-term modulation
+        if getattr(self.config.stroke, 'session_arc_enabled', True):
+            session_alpha = float(getattr(self.config.stroke, 'session_arc_ema_alpha', 0.001) or 0.001)
+            energy_now = self.compute_energy_fullness()
+            self._session_intensity_ema += session_alpha * (energy_now - self._session_intensity_ema)
+        session_intensity = float(np.clip(self._session_intensity_ema, 0.0, 1.0))
+
         now = float(getattr(event, "monotonic_timestamp", 0.0) or 0.0)
         if now <= 0.0:
             now = time.perf_counter()
@@ -1610,6 +1620,7 @@ class BeatIntelligence:
                 post_silence_ramp=float(post_silence_ramp),
                 lazy_glide_active=False,
                 energy_fullness=self.compute_energy_fullness(),
+                session_intensity=session_intensity,
                 learning=LearningOutputs(),
             )
 
@@ -1793,5 +1804,6 @@ class BeatIntelligence:
             lazy_glide_active=bool(self._lazy_glide_active),
             gate_fail=gate_fail_reason,
             energy_fullness=self.compute_energy_fullness(),
+            session_intensity=session_intensity,
             learning=learning,
         )
