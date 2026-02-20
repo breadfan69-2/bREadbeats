@@ -974,8 +974,25 @@ class BeatIntelligence:
         else:
             self._fill_pass_consecutive[trigger_kind] = 0
 
-        # Check sustain duration requirement
-        sustain_frames = max(0, int(getattr(cfg, 'overall_amp_fill_sustain_frames', 3) or 3))
+        # Check sustain duration requirement.
+        # Prefer per-trigger settings, then fall back to global.
+        sustain_key_map = {
+            "downbeat": "downbeat_overall_amp_fill_sustain_frames",
+            "beat": "beat_overall_amp_fill_sustain_frames",
+            "syncopation": "syncopation_overall_amp_fill_sustain_frames",
+        }
+        sustain_key = sustain_key_map.get(trigger_kind, "overall_amp_fill_sustain_frames")
+        sustain_frames = max(
+            0,
+            int(
+                getattr(
+                    cfg,
+                    sustain_key,
+                    getattr(cfg, 'overall_amp_fill_sustain_frames', 3),
+                )
+                or 3
+            ),
+        )
         if sustain_frames <= 1:
             # Duration check disabled (0 or 1 = instant decision)
             return instant_passed
