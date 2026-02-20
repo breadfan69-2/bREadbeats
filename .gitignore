@@ -57,6 +57,11 @@ chathistory.txt
 claude2.txt
 claude3.txt
 UI_LABEL_FRIENDLIFICATION.md
+BAKED_LEARNING_IMPLEMENTATION_GUIDE.md
+BEAT_INTELLIGENCE_PORT_AUDIT_*.md
+GUI_CONTROLS_REFACTOR_AUDIT_*.md
+PORTING_DECISIONS_NOT_HARD_PORT_*.md
+config_strict_dead.txt
 build.log
 *finaldebug.txt
 scripts/*.beta.txt
