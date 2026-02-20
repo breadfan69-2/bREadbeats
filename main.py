@@ -5108,15 +5108,65 @@ Like the app?<br>
     def _apply_release_learning_defaults(self) -> None:
         import sys
         defaults_dir: Path | None = None
+        meipass = getattr(sys, '_MEIPASS', None)
+        frozen = bool(getattr(sys, 'frozen', False))
+        exe_root = Path(sys.executable).parent if frozen else None
+
+        def _is_allowed_frozen_candidate(path: Path) -> bool:
+            if not frozen:
+                return True
+            try:
+                resolved = path.resolve()
+            except Exception:
+                return False
+            if exe_root is not None and resolved.is_relative_to(exe_root.resolve()):
+                return True
+            if meipass:
+                try:
+                    if resolved.is_relative_to(Path(str(meipass)).resolve()):
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        if getattr(sys, 'frozen', False) and meipass:
+            try:
+                bundle_root = Path(str(meipass))
+                exe_root = Path(sys.executable).parent
+
+                bundle_defaults = bundle_root / "defaults" / "learning"
+                if bundle_defaults.exists():
+                    target_defaults = exe_root / "defaults" / "learning"
+                    target_defaults.mkdir(parents=True, exist_ok=True)
+                    for source in bundle_defaults.glob("*.json"):
+                        target = target_defaults / source.name
+                        if not target.exists():
+                            target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+                bundle_rule_fit = bundle_root / "datasets" / "rule_fit.json"
+                if bundle_rule_fit.exists():
+                    target_datasets = exe_root / "datasets"
+                    target_datasets.mkdir(parents=True, exist_ok=True)
+                    target_rule_fit = target_datasets / "rule_fit.json"
+                    if not target_rule_fit.exists():
+                        target_rule_fit.write_text(bundle_rule_fit.read_text(encoding="utf-8"), encoding="utf-8")
+
+                bundle_slots = bundle_root / "learned_profile_slots.json"
+                if bundle_slots.exists():
+                    target_slots = exe_root / "learned_profile_slots.json"
+                    if not target_slots.exists():
+                        target_slots.write_text(bundle_slots.read_text(encoding="utf-8"), encoding="utf-8")
+            except Exception as exc:
+                print(f"[Learning] Failed to materialize bundled learning files: {exc}")
 
         # 1. PyInstaller frozen bundle
         candidates: list[Path] = []
-        meipass = getattr(sys, '_MEIPASS', None)
-        if getattr(sys, 'frozen', False) and meipass:
-            candidates.append(Path(str(meipass)) / "defaults" / "learning")
-        # 2. Alongside the EXE
+        # 1. Alongside the EXE (persistent copy, preferred in frozen mode)
         if getattr(sys, 'frozen', False):
             candidates.append(Path(sys.executable).parent / "defaults" / "learning")
+        # 2. PyInstaller frozen bundle temp dir
+        if getattr(sys, 'frozen', False) and meipass:
+            candidates.append(Path(str(meipass)) / "defaults" / "learning")
         # 3. Repo-relative (dev / source run)
         candidates.append(Path(__file__).resolve().parent / "defaults" / "learning")
 
@@ -5181,7 +5231,7 @@ Like the app?<br>
                     candidate = Path(raw_rule_fit.strip())
                     if not candidate.is_absolute():
                         candidate = selected_profile.parent / candidate
-                    if candidate.exists():
+                    if candidate.exists() and _is_allowed_frozen_candidate(candidate):
                         selected_rule_fit = candidate
 
         # Fallback: glob for rule_fit in defaults_dir
@@ -5196,9 +5246,9 @@ Like the app?<br>
         self.config.beat.teaching_learning_enabled = True
         self.config.beat.teaching_use_fitted_rules = True
 
-        source = "frozen" if getattr(sys, 'frozen', False) else "bundled"
+        source = "frozen" if frozen else "bundled"
         profile_label = selected_profile.name if selected_profile is not None else "(none)"
-        rule_fit_label = selected_rule_fit.name if selected_rule_fit is not None else "(none)"
+        rule_fit_label = str(selected_rule_fit) if selected_rule_fit is not None else "(none)"
         print(f"[Learning] Release defaults applied — source={source} profile={profile_label}, rule_fit={rule_fit_label}")
 
     def _apply_learning_config_to_mapper(self) -> None:
