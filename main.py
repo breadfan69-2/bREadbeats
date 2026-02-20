@@ -1599,6 +1599,13 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_fill_controls_widgets = {}
         self._motion_readiness_dialog = None
         self._motion_readiness_controls_widgets = {}
+        self._developer_controls_dialog = None
+        self._developer_controls_tab_widget = None
+        self._developer_unlock_dialog = None
+        self._developer_controls_unlocked = False
+        self._trigger_settings_tab_content = None
+        self._auto_fill_tab_content = None
+        self._motion_readiness_tab_content = None
         self.jitter_effect_action = None
         self.connection_toggle_action = None
         self.connection_test_action = None
@@ -1719,6 +1726,13 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_fill_controls_widgets = {}
         self._motion_readiness_dialog = None
         self._motion_readiness_controls_widgets = {}
+        self._developer_controls_dialog = None
+        self._developer_controls_tab_widget = None
+        self._developer_unlock_dialog = None
+        self._developer_controls_unlocked = False
+        self._trigger_settings_tab_content = None
+        self._auto_fill_tab_content = None
+        self._motion_readiness_tab_content = None
         
         # Auto-align target BPM tracking (wall-clock time-based)
         self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
@@ -2229,7 +2243,7 @@ class BREadbeatsWindow(QMainWindow):
 
         tempo_tracking_action = developer_controls_menu.addAction("Tempo Tracking...")
         assert tempo_tracking_action is not None
-        tempo_tracking_action.triggered.connect(self._on_options_tempo_tracking)
+        tempo_tracking_action.triggered.connect(lambda: self._open_developer_controls_window(tab_index=0))
 
         nerds_menu.addSeparator()
 
@@ -2248,15 +2262,15 @@ class BREadbeatsWindow(QMainWindow):
         # Trigger Settings dialog
         advanced_action = developer_controls_menu.addAction("Trigger Settings...")
         assert advanced_action is not None
-        advanced_action.triggered.connect(self._on_advanced_controls)
+        advanced_action.triggered.connect(lambda: self._open_developer_controls_window(tab_index=1))
 
         auto_fill_action = developer_controls_menu.addAction("Auto Fill %...")
         assert auto_fill_action is not None
-        auto_fill_action.triggered.connect(self._on_options_auto_fill_adaptation)
+        auto_fill_action.triggered.connect(lambda: self._open_developer_controls_window(tab_index=2))
 
         motion_readiness_action = developer_controls_menu.addAction("Motion Readiness...")
         assert motion_readiness_action is not None
-        motion_readiness_action.triggered.connect(self._on_options_motion_readiness)
+        motion_readiness_action.triggered.connect(lambda: self._open_developer_controls_window(tab_index=3))
 
         # Nerds menu should be second-to-last (right before Help)
         menubar.addMenu(nerds_menu)
@@ -2383,6 +2397,174 @@ class BREadbeatsWindow(QMainWindow):
                 self._on_connect()
 
     def _on_options_tempo_tracking(self):
+        self._open_developer_controls_window(tab_index=0)
+
+    def _open_developer_controls_window(self, tab_index: int = 0, scroll_to_flux: bool = False) -> None:
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTabWidget
+
+        dialog = getattr(self, '_developer_controls_dialog', None)
+        if dialog is not None:
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                tab_widget = getattr(self, '_developer_controls_tab_widget', None)
+                if tab_widget is not None:
+                    tab_widget.setCurrentIndex(max(0, min(int(tab_index), tab_widget.count() - 1)))
+                if scroll_to_flux and int(tab_index) == 1:
+                    self._scroll_advanced_controls_to_flux()
+                if not bool(getattr(self, '_developer_controls_unlocked', False)):
+                    dialog.setEnabled(False)
+                    self._show_developer_controls_unlock_popup()
+                return
+            except RuntimeError:
+                self._developer_controls_dialog = None
+                self._developer_controls_tab_widget = None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Developer Controls")
+        dialog.setMinimumWidth(620)
+        dialog.setMinimumHeight(560)
+        dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def _on_developer_dialog_destroyed() -> None:
+            self._developer_controls_dialog = None
+            self._developer_controls_tab_widget = None
+            self._developer_controls_unlocked = False
+            self._trigger_settings_tab_content = None
+            self._auto_fill_tab_content = None
+            self._motion_readiness_tab_content = None
+            unlock_dialog_ref = getattr(self, '_developer_unlock_dialog', None)
+            if unlock_dialog_ref is not None:
+                try:
+                    unlock_dialog_ref.close()
+                except RuntimeError:
+                    pass
+                self._developer_unlock_dialog = None
+
+        dialog.destroyed.connect(_on_developer_dialog_destroyed)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        tab_widget = QTabWidget()
+        self._developer_controls_tab_widget = tab_widget
+
+        tempo_content = getattr(self, '_tempo_tracking_popout_content', None)
+        if tempo_content is None:
+            tempo_content = self._create_tempo_tracking_tab(include_advanced_controls=True, advanced_locked=True)
+            self._tempo_tracking_popout_content = tempo_content
+            self._apply_config_to_ui()
+
+        trigger_content = getattr(self, '_trigger_settings_tab_content', None)
+        if trigger_content is None:
+            trigger_content = self._on_advanced_controls(as_tab=True)
+            self._trigger_settings_tab_content = trigger_content
+
+        auto_fill_content = getattr(self, '_auto_fill_tab_content', None)
+        if auto_fill_content is None:
+            auto_fill_content = self._on_options_auto_fill_adaptation(as_tab=True)
+            self._auto_fill_tab_content = auto_fill_content
+
+        motion_content = getattr(self, '_motion_readiness_tab_content', None)
+        if motion_content is None:
+            motion_content = self._on_options_motion_readiness(as_tab=True)
+            self._motion_readiness_tab_content = motion_content
+
+        tab_widget.addTab(tempo_content, "Tempo Tracking")
+        tab_widget.addTab(trigger_content, "Trigger Settings")
+        tab_widget.addTab(auto_fill_content, "Auto Fill %")
+        tab_widget.addTab(motion_content, "Motion Readiness")
+        tab_widget.setCurrentIndex(max(0, min(int(tab_index), tab_widget.count() - 1)))
+
+        layout.addWidget(tab_widget)
+
+        self._developer_controls_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+        if scroll_to_flux and int(tab_index) == 1:
+            self._scroll_advanced_controls_to_flux()
+
+        if not bool(getattr(self, '_developer_controls_unlocked', False)):
+            dialog.setEnabled(False)
+            self._show_developer_controls_unlock_popup()
+
+    def _show_developer_controls_unlock_popup(self) -> None:
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+
+        existing = getattr(self, '_developer_unlock_dialog', None)
+        if existing is not None:
+            try:
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return
+            except RuntimeError:
+                self._developer_unlock_dialog = None
+
+        unlock_dialog = QDialog(self)
+        unlock_dialog.setWindowTitle("Developer Controls Warning")
+        unlock_dialog.setMinimumWidth(420)
+        unlock_dialog.setModal(False)
+        unlock_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        unlock_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        unlock_layout = QVBoxLayout(unlock_dialog)
+        warning_label = QLabel("⚠️ DON'T BORK YOUR BEATS ⚠️")
+        warning_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffaa00;")
+        unlock_layout.addWidget(warning_label)
+
+        warning_text = QLabel(
+            "These controls are for advanced users. Incorrect settings\n"
+            "may cause erratic behavior or break beat detection."
+        )
+        warning_text.setStyleSheet("color: #ccaa66;")
+        unlock_layout.addWidget(warning_text)
+
+        button_row = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        unlock_btn = QPushButton("Unlock Advanced Controls")
+        button_row.addWidget(cancel_btn)
+        button_row.addWidget(unlock_btn)
+        unlock_layout.addLayout(button_row)
+
+        def _cancel() -> None:
+            developer_dialog = getattr(self, '_developer_controls_dialog', None)
+            if developer_dialog is not None:
+                try:
+                    developer_dialog.close()
+                except RuntimeError:
+                    pass
+            unlock_dialog.close()
+
+        def _unlock() -> None:
+            self._developer_controls_unlocked = True
+            developer_dialog = getattr(self, '_developer_controls_dialog', None)
+            if developer_dialog is not None:
+                try:
+                    developer_dialog.setEnabled(True)
+                    developer_dialog.show()
+                    developer_dialog.raise_()
+                    developer_dialog.activateWindow()
+                except RuntimeError:
+                    pass
+            unlock_dialog.close()
+
+        cancel_btn.clicked.connect(_cancel)
+        unlock_btn.clicked.connect(_unlock)
+        unlock_dialog.destroyed.connect(lambda *_: setattr(self, '_developer_unlock_dialog', None))
+
+        self._developer_unlock_dialog = unlock_dialog
+        unlock_dialog.show()
+        unlock_dialog.raise_()
+        unlock_dialog.activateWindow()
+
+    def _on_options_tempo_tracking_legacy(self):
         """Show Tempo Tracking controls popout (tempo tab + advanced tempo controls)."""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout
 
@@ -2603,38 +2785,16 @@ class BREadbeatsWindow(QMainWindow):
         if hasattr(self.stroke_mapper, 'configure_geometry_rest_state'):
             self.stroke_mapper.configure_geometry_rest_state(y_offset=y_offset)
 
-    def _on_options_auto_fill_adaptation(self):
-        """Show Developer Controls popout for adaptive amp-fill gate tuning."""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QCheckBox
+    def _on_options_auto_fill_adaptation(self, as_tab: bool = False):
+        """Show or build adaptive amp-fill gate tuning controls."""
+        from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QCheckBox
 
-        dialog = getattr(self, '_auto_fill_controls_dialog', None)
-        if dialog is not None:
-            try:
-                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-                dialog.show()
-                dialog.raise_()
-                dialog.activateWindow()
-                return
-            except RuntimeError:
-                self._auto_fill_controls_dialog = None
-                self._auto_fill_controls_widgets = {}
-                dialog = None
+        if not as_tab:
+            self._open_developer_controls_window(tab_index=2)
+            return
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Auto Fill Adaptation")
-        dialog.setMinimumWidth(500)
-        dialog.setMinimumHeight(460)
-        dialog.setModal(False)
-        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-
-        def _on_auto_fill_dialog_destroyed() -> None:
-            self._auto_fill_controls_dialog = None
-            self._auto_fill_controls_widgets = {}
-
-        dialog.destroyed.connect(_on_auto_fill_dialog_destroyed)
-
-        layout = QVBoxLayout(dialog)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
@@ -2753,45 +2913,18 @@ class BREadbeatsWindow(QMainWindow):
             'min_required': min_required_slider,
             'max_required': max_required_slider,
         }
-        self._auto_fill_controls_dialog = dialog
+        return content
 
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
+    def _on_options_motion_readiness(self, as_tab: bool = False):
+        """Show or build readiness gating controls."""
+        from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSpinBox, QCheckBox, QGroupBox, QPushButton
 
-    def _on_options_motion_readiness(self):
-        """Show Developer Controls popout for readiness gating behavior."""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QSpinBox, QCheckBox, QGroupBox, QPushButton
+        if not as_tab:
+            self._open_developer_controls_window(tab_index=3)
+            return
 
-        dialog = getattr(self, '_motion_readiness_dialog', None)
-        if dialog is not None:
-            try:
-                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-                dialog.show()
-                dialog.raise_()
-                return
-            except RuntimeError:
-                self._motion_readiness_dialog = None
-                self._motion_readiness_controls_widgets = {}
-                dialog = None
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Motion Readiness")
-        dialog.setMinimumWidth(500)
-        dialog.setMinimumHeight(300)
-        dialog.setModal(False)
-        dialog.setWindowModality(Qt.WindowModality.NonModal)
-        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-
-        def _on_motion_readiness_dialog_destroyed() -> None:
-            self._motion_readiness_dialog = None
-            self._motion_readiness_controls_widgets = {}
-
-        dialog.destroyed.connect(_on_motion_readiness_dialog_destroyed)
-
-        layout = QVBoxLayout(dialog)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
@@ -2914,8 +3047,6 @@ class BREadbeatsWindow(QMainWindow):
 
         layout.addStretch()
 
-        dialog.finished.connect(lambda _r: save_config(self.config))
-
         self._motion_readiness_controls_widgets = {
             'relaxed_confidence': relaxed_conf_slider,
             'stroke_ready_grace_ms': grace_ms_slider,
@@ -2926,10 +3057,7 @@ class BREadbeatsWindow(QMainWindow):
             'tuning_quiet_bias': no_motion_bias_slider,
             'tuning_apply': tuning_apply_btn,
         }
-        self._motion_readiness_dialog = dialog
-
-        dialog.show()
-        dialog.raise_()
+        return content
     
     def _on_device_limits(self, first_run: bool = False):
         """Show Device Limits dialog for value-to-real-units conversion.
@@ -3169,68 +3297,17 @@ class BREadbeatsWindow(QMainWindow):
 
         QTimer.singleShot(0, _apply_scroll)
 
-    def _on_advanced_controls(self, scroll_to_flux: bool = False):
+    def _on_advanced_controls(self, scroll_to_flux: bool = False, as_tab: bool = False):
         """Show Advanced Controls dialog with experimental/expert settings"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QScrollArea, QGroupBox, QSpinBox
-        
-        # Prevent multiple instances — reuse existing dialog if open
-        if hasattr(self, '_advanced_controls_dialog') and self._advanced_controls_dialog is not None:
-            try:
-                self._advanced_controls_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-                self._advanced_controls_dialog.show()
-                self._advanced_controls_dialog.raise_()
-                self._advanced_controls_dialog.activateWindow()
-                if scroll_to_flux:
-                    self._scroll_advanced_controls_to_flux()
-                return
-            except RuntimeError:
-                self._advanced_controls_dialog = None
-                self._advanced_controls_scroll = None
-                self._advanced_flux_group = None
-                self._advanced_flux_threshold_slider = None
-                self._advanced_flux_scaling_slider = None
-        
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Trigger Settings")
-        dialog.setMinimumWidth(563)
-        dialog.setMinimumHeight(400)
-        dialog.resize(563, 400)
-        dialog.setModal(False)
-        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        dialog.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, False)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        # Clear reference when dialog is closed
-        def _on_advanced_dialog_destroyed():
-            self._advanced_controls_dialog = None
-            self._advanced_controls_scroll = None
-            self._advanced_flux_group = None
-            self._advanced_flux_threshold_slider = None
-            self._advanced_flux_scaling_slider = None
+        from PyQt6.QtWidgets import QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QScrollArea, QGroupBox, QSpinBox
 
-        dialog.destroyed.connect(_on_advanced_dialog_destroyed)
-        self._advanced_controls_dialog = dialog
-        
-        layout = QVBoxLayout(dialog)
+        if not as_tab:
+            self._open_developer_controls_window(tab_index=1, scroll_to_flux=scroll_to_flux)
+            return
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setSpacing(10)
-        
-        # Warning message and toggle at top
-        warning_box = QGroupBox()
-        warning_box.setStyleSheet("QGroupBox { background-color: #442200; border: 2px solid #ff6600; border-radius: 4px; padding: 8px; }")
-        warning_layout = QVBoxLayout(warning_box)
-        
-        warning_label = QLabel("⚠️ DON'T BORK YOUR BEATS ⚠️")
-        warning_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffaa00;")
-        warning_layout.addWidget(warning_label)
-        
-        warning_text = QLabel("These controls are for advanced users. Incorrect settings\nmay cause erratic behavior or break beat detection.")
-        warning_text.setStyleSheet("color: #ccaa66;")
-        warning_layout.addWidget(warning_text)
-        
-        self._advanced_unlock_cb = QCheckBox("I understand, unlock advanced controls")
-        self._advanced_unlock_cb.setStyleSheet("color: #ffcc00;")
-        warning_layout.addWidget(self._advanced_unlock_cb)
-        
-        layout.addWidget(warning_box)
 
         units_box = QGroupBox("Normalized Units Reference")
         units_box.setStyleSheet("QGroupBox { background-color: #1f2630; border: 1px solid #4b5b70; border-radius: 4px; padding: 8px; }")
@@ -4425,17 +4502,12 @@ class BREadbeatsWindow(QMainWindow):
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
         
-        # Initially disable scroll content until unlocked
-        scroll_content.setEnabled(False)
-        self._advanced_unlock_cb.stateChanged.connect(
-            lambda state: scroll_content.setEnabled(state == 2)
-        )
-        
         layout.addWidget(scroll)
-        
-        dialog.show()
+
         if scroll_to_flux:
             self._scroll_advanced_controls_to_flux()
+
+        return content
 
     def _on_help(self):
         """Show Help/Troubleshooting dialog with reset buttons (non-modal)"""
