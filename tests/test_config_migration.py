@@ -29,7 +29,7 @@ class TestConfigMigration(unittest.TestCase):
         migrate_config(cfg, data.get("version"))
 
         self.assertEqual(cfg.version, CURRENT_CONFIG_VERSION)
-        self.assertEqual(cfg.stroke.noise_burst_magnitude, 1.0)
+        self.assertFalse(hasattr(cfg.stroke, "noise_burst_magnitude"))
         self.assertTrue(cfg.device_limits.p0_c0_sending_enabled)
         self.assertFalse(cfg.device_limits.dont_show_on_startup)
         self.assertFalse(cfg.device_limits.dry_run)
@@ -50,7 +50,7 @@ class TestConfigMigration(unittest.TestCase):
         migrate_config(cfg, data.get("version"))
 
         self.assertEqual(cfg.version, CURRENT_CONFIG_VERSION)
-        self.assertEqual(cfg.stroke.noise_burst_magnitude, 1.0)
+        self.assertFalse(hasattr(cfg.stroke, "noise_burst_magnitude"))
         self.assertTrue(cfg.device_limits.p0_c0_sending_enabled)
         self.assertFalse(cfg.device_limits.dont_show_on_startup)
         self.assertFalse(cfg.device_limits.prompted)
@@ -73,7 +73,7 @@ class TestConfigMigration(unittest.TestCase):
         migrate_config(cfg, data.get("version"))
 
         self.assertEqual(cfg.version, CURRENT_CONFIG_VERSION)
-        self.assertEqual(cfg.stroke.noise_burst_magnitude, 2.5)
+        self.assertFalse(hasattr(cfg.stroke, "noise_burst_magnitude"))
         self.assertFalse(cfg.device_limits.p0_c0_sending_enabled)
         self.assertTrue(cfg.device_limits.dont_show_on_startup)
         self.assertTrue(cfg.device_limits.prompted)

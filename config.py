@@ -116,8 +116,8 @@ class StrokeConfig:
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
     # Silence detection thresholds (fade-out when truly silent)
-    silence_threshold: float = 0.002      # Overall amplitude threshold for silence deadzone gate
-    silence_close_threshold: float = 0.008  # Overall amplitude threshold to exit silence deadzone gate
+    silence_threshold: float = 0.010825      # Overall amplitude threshold for silence deadzone gate
+    silence_close_threshold: float = 0.0433  # Overall amplitude threshold to exit silence deadzone gate
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
@@ -133,7 +133,7 @@ class StrokeConfig:
     combo_power: float = 1.0000000000000004     # downbeat lock boost/jitter blend/scheduled lead
     combo_depth: float = 1.0000000000000002     # minimum depth/freq depth/flux-depth behavior
     combo_speed: float = 1.0200000000000002     # cadence density + min-interval behavior
-    combo_texture: float = 0.94   # noise burst + syncopation texture behavior
+    combo_texture: float = 0.94   # syncopation/texture behavior
     combo_reaction: float = 1.0300000000000002  # gate/strictness/readiness aggressiveness
 
     geometry_y_offset: float = 0.5  # Below-center rest Y offset used when intensity is near 0
@@ -157,12 +157,8 @@ class StrokeConfig:
     beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
     cadence_cutoff_bias_bpm: float = 0.0     # +/- BPM shift applied to cadence cutoffs (0 = disabled)
 
-    # Noise-burst reactive arc (hybrid with metronome system)
-    # Fires a quick partial arc on sudden loud transients between beats
-    noise_burst_enabled: bool = False        # Allow transient-reactive arcs between beats
-    noise_burst_flux_multiplier: float = 3.32  # Fire burst when flux > flux_threshold * this
-    noise_burst_magnitude: float = 2.12      # Magnitude scaling for noise burst patterns (0.5-5.0)
-    noise_burst_scale: float = 0.0699999999999997         # Final burst downscale applied after magnitude/energy (0.0-0.5)
+    # Legacy compatibility-only note: noise_burst_* fields removed from schema.
+    # Legacy keys are accepted on load and ignored.
     downbeat_jitter_vector_percent: float = 50.0  # % of current jitter vector added to downbeat arc points
     noise_primary_mode: bool = True        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
 
@@ -490,11 +486,6 @@ def migrate_config(config: Config, loaded_version) -> None:
         version = 0
 
     if version < 1:
-        if getattr(config.stroke, 'noise_burst_magnitude', 1.0) in (None, 0):
-            config.stroke.noise_burst_magnitude = 1.0
-        if getattr(config.stroke, 'noise_burst_scale', None) is None:
-            config.stroke.noise_burst_scale = 0.35
-
         if getattr(config.stroke, 'downbeat_jitter_vector_percent', None) is None:
             config.stroke.downbeat_jitter_vector_percent = 50.0
 
@@ -513,12 +504,6 @@ def migrate_config(config: Config, loaded_version) -> None:
     except Exception:
         value = 50.0
     config.stroke.downbeat_jitter_vector_percent = max(0.0, min(100.0, value))
-
-    try:
-        burst_scale = float(getattr(config.stroke, 'noise_burst_scale', 0.35))
-    except Exception:
-        burst_scale = 0.35
-    config.stroke.noise_burst_scale = max(0.0, min(0.5, burst_scale))
 
     try:
         jitter_size = float(getattr(config.jitter, 'size', getattr(config.jitter, 'amplitude', 0.024)))
@@ -684,8 +669,8 @@ class StrokeConfig:
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
     # Silence detection thresholds (fade-out when truly silent)
-    silence_threshold: float = 0.002      # Overall amplitude threshold for silence deadzone gate
-    silence_close_threshold: float = 0.008  # Overall amplitude threshold to exit silence deadzone gate
+    silence_threshold: float = 0.010825      # Overall amplitude threshold for silence deadzone gate
+    silence_close_threshold: float = 0.0433  # Overall amplitude threshold to exit silence deadzone gate
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
@@ -701,7 +686,7 @@ class StrokeConfig:
     combo_power: float = 1.0000000000000004     # downbeat lock boost/jitter blend/scheduled lead
     combo_depth: float = 1.0000000000000002     # minimum depth/freq depth/flux-depth behavior
     combo_speed: float = 1.0200000000000002     # cadence density + min-interval behavior
-    combo_texture: float = 0.94   # noise burst + syncopation texture behavior
+    combo_texture: float = 0.94   # syncopation/texture behavior
     combo_reaction: float = 1.0300000000000002  # gate/strictness/readiness aggressiveness
 
     geometry_y_offset: float = 0.50  # Below-center rest Y offset used when intensity is near 0
@@ -724,12 +709,8 @@ class StrokeConfig:
     beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
     cadence_cutoff_bias_bpm: float = 0.0     # +/- BPM shift applied to cadence cutoffs (0 = disabled)
 
-    # Noise-burst reactive arc (hybrid with metronome system)
-    # Fires a quick partial arc on sudden loud transients between beats
-    noise_burst_enabled: bool = False        # Allow transient-reactive arcs between beats
-    noise_burst_flux_multiplier: float = 3.32  # Fire burst when flux > flux_threshold * this
-    noise_burst_magnitude: float = 2.12      # Magnitude scaling for noise burst patterns (0.5-5.0)
-    noise_burst_scale: float = 0.0699999999999997         # Final burst downscale applied after magnitude/energy (0.0-0.5)
+    # Legacy compatibility-only note: noise_burst_* fields removed from schema.
+    # Legacy keys are accepted on load and ignored.
     downbeat_jitter_vector_percent: float = 50.0  # % of current jitter vector added to downbeat arc points
     noise_primary_mode: bool = True        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
 
@@ -1057,11 +1038,6 @@ def migrate_config(config: Config, loaded_version) -> None:
         version = 0
 
     if version < 1:
-        if getattr(config.stroke, 'noise_burst_magnitude', 1.0) in (None, 0):
-            config.stroke.noise_burst_magnitude = 1.0
-        if getattr(config.stroke, 'noise_burst_scale', None) is None:
-            config.stroke.noise_burst_scale = 0.35
-
         if getattr(config.stroke, 'downbeat_jitter_vector_percent', None) is None:
             config.stroke.downbeat_jitter_vector_percent = 50.0
 
@@ -1080,12 +1056,6 @@ def migrate_config(config: Config, loaded_version) -> None:
     except Exception:
         value = 50.0
     config.stroke.downbeat_jitter_vector_percent = max(0.0, min(100.0, value))
-
-    try:
-        burst_scale = float(getattr(config.stroke, 'noise_burst_scale', 0.35))
-    except Exception:
-        burst_scale = 0.35
-    config.stroke.noise_burst_scale = max(0.0, min(0.5, burst_scale))
 
     try:
         jitter_size = float(getattr(config.jitter, 'size', getattr(config.jitter, 'amplitude', 0.024)))
