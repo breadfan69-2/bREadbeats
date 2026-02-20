@@ -2956,6 +2956,9 @@ class BREadbeatsWindow(QMainWindow):
 
         def _first_run_default(value: float, default: float) -> float:
             return float(default) if first_run and float(value) <= 0.0 else float(value)
+
+        def _default_if_unset(value: float, default: float) -> float:
+            return float(default) if float(value) <= 0.0 else float(value)
         
         # --- Pulse Freq / Carrier Freq group (always visible) ---
         main_group = QGroupBox("Pulse Freq / Carrier Freq  —  Hz")
@@ -2980,7 +2983,7 @@ class BREadbeatsWindow(QMainWindow):
         c0_min = QDoubleSpinBox()
         c0_min.setRange(0, 99999)
         c0_min.setDecimals(1)
-        c0_min.setValue(_first_run_default(dl.c0_freq_min, 500.0))
+        c0_min.setValue(_default_if_unset(dl.c0_freq_min, 500.0))
         c0_min.setSpecialValueText("not set")
         grid.addWidget(c0_min, 1, 1)
         
@@ -2988,7 +2991,7 @@ class BREadbeatsWindow(QMainWindow):
         c0_max = QDoubleSpinBox()
         c0_max.setRange(0, 99999)
         c0_max.setDecimals(1)
-        c0_max.setValue(_first_run_default(dl.c0_freq_max, 1500.0))
+        c0_max.setValue(_default_if_unset(dl.c0_freq_max, 1500.0))
         c0_max.setSpecialValueText("not set")
         grid.addWidget(c0_max, 1, 3)
         layout.addWidget(main_group)
@@ -3110,6 +3113,7 @@ class BREadbeatsWindow(QMainWindow):
             self.config.device_limits.p0_c0_sending_enabled = p0c0_cb.isChecked()
             self.config.device_limits.dont_show_on_startup = dont_show_cb.isChecked()
             self.config.device_limits.prompted = True
+            self._sync_pulse_sent_spin_limits_from_device_limits()
             print(f"[Config] Device limits updated: P0={p0_min.value()}-{p0_max.value()}Hz, "
                   f"C0={c0_min.value()}-{c0_max.value()}Hz, "
                   f"P1={p1_min.value()}-{p1_max.value()}cyc, "
@@ -3120,6 +3124,34 @@ class BREadbeatsWindow(QMainWindow):
             # Mark as prompted even if skipped/cancelled so we don't ask again
             self.config.device_limits.prompted = True
             self.config.device_limits.dont_show_on_startup = dont_show_cb.isChecked()
+
+    def _sync_pulse_sent_spin_limits_from_device_limits(self) -> None:
+        """Clamp Pulse Settings sent spinboxes to current Device Limits ranges."""
+        dl = self.config.device_limits
+
+        def _effective_limits(raw_min: float, raw_max: float, default_min: float, default_max: float) -> tuple[float, float]:
+            lo = float(raw_min)
+            hi = float(raw_max)
+            if hi <= lo:
+                lo = float(default_min)
+                hi = float(default_max)
+            return lo, hi
+
+        def _apply_pair(min_attr: str, max_attr: str, raw_min: float, raw_max: float, default_min: float, default_max: float) -> None:
+            min_spin = getattr(self, min_attr, None)
+            max_spin = getattr(self, max_attr, None)
+            if min_spin is None or max_spin is None:
+                return
+            lo, hi = _effective_limits(raw_min, raw_max, default_min, default_max)
+            min_spin.setRange(lo, hi)
+            max_spin.setRange(lo, hi)
+            min_spin.setValue(max(lo, min(hi, float(min_spin.value()))))
+            max_spin.setValue(max(lo, min(hi, float(max_spin.value()))))
+
+        _apply_pair('p0_sent_min_spin', 'p0_sent_max_spin', dl.p0_freq_min, dl.p0_freq_max, 1.0, 100.0)
+        _apply_pair('f0_sent_min_spin', 'f0_sent_max_spin', dl.c0_freq_min, dl.c0_freq_max, 500.0, 1500.0)
+        _apply_pair('p1_sent_min_spin', 'p1_sent_max_spin', dl.p1_cycles_min, dl.p1_cycles_max, 0.0, 20.0)
+        _apply_pair('p3_sent_min_spin', 'p3_sent_max_spin', dl.p3_cycles_min, dl.p3_cycles_max, 0.0, 20.0)
 
     def _scroll_advanced_controls_to_flux(self):
         """Scroll open Advanced Controls dialog near the Flux Sensitivity group."""
@@ -5834,6 +5866,52 @@ Like the app?<br>
 
     def _create_tcode_freq_tab(self) -> QWidget:
         """Combined Pulse (P0) and Carrier (F0) frequency controls"""
+        def _effective_limits(raw_min: float, raw_max: float, default_min: float, default_max: float) -> tuple[float, float]:
+            lo = float(raw_min)
+            hi = float(raw_max)
+            if hi <= lo:
+                lo = float(default_min)
+                hi = float(default_max)
+            return lo, hi
+
+        def _unit_to_tcode(value: float, unit_min: float, unit_max: float) -> int:
+            span = max(1e-9, float(unit_max) - float(unit_min))
+            norm = (float(value) - float(unit_min)) / span
+            return int(max(0, min(9999, round(norm * 9999.0))))
+
+        def _tcode_to_unit(value: int, unit_min: float, unit_max: float) -> float:
+            tcode = max(0, min(9999, int(value)))
+            return float(unit_min) + (float(tcode) / 9999.0) * (float(unit_max) - float(unit_min))
+
+        class _RangeProxy:
+            def __init__(self, low_get, high_get, low_set, high_set, parent_get, blockers):
+                self._low_get = low_get
+                self._high_get = high_get
+                self._low_set = low_set
+                self._high_set = high_set
+                self._parent_get = parent_get
+                self._blockers = list(blockers)
+
+            def low(self):
+                return self._low_get()
+
+            def high(self):
+                return self._high_get()
+
+            def setLow(self, value):
+                self._low_set(value)
+
+            def setHigh(self, value):
+                self._high_set(value)
+
+            def parent(self):
+                return self._parent_get()
+
+            def blockSignals(self, block: bool):
+                for widget in self._blockers:
+                    if widget is not None:
+                        widget.blockSignals(block)
+
         scroll_area = NoWheelScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -5847,15 +5925,48 @@ Like the app?<br>
         pulse_group = CollapsibleGroupBox("Pulse Frequency - blue overlay on spectrum", collapsed=False)
         pulse_layout = QVBoxLayout(pulse_group)
 
-        # Pulse Freq monitor slider with visibility toggle
-        p0_slider_row = QHBoxLayout()
-        self.pulse_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
-        self.pulse_freq_range_slider.rangeChanged.connect(self._on_p0_band_change)
-        p0_slider_row.addWidget(self.pulse_freq_range_slider)
-        pulse_layout.addLayout(p0_slider_row)
+        dl = self.config.device_limits
 
-        self.tcode_freq_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 2010, 7035, 0)
-        pulse_layout.addWidget(self.tcode_freq_range_slider)
+        p0_monitor_row = QHBoxLayout()
+        p0_monitor_row.addWidget(QLabel("Monitor bass min:"))
+        self.p0_monitor_min_spin = QSpinBox()
+        self.p0_monitor_min_spin.setRange(20, 500)
+        self.p0_monitor_min_spin.setSingleStep(5)
+        self.p0_monitor_min_spin.setValue(int(max(20.0, min(500.0, float(self.config.pulse_freq.monitor_freq_min)))))
+        self.p0_monitor_min_spin.setSuffix(" Hz")
+        p0_monitor_row.addWidget(self.p0_monitor_min_spin)
+
+        p0_monitor_row.addWidget(QLabel("max:"))
+        self.p0_monitor_max_spin = QSpinBox()
+        self.p0_monitor_max_spin.setRange(20, 500)
+        self.p0_monitor_max_spin.setSingleStep(5)
+        self.p0_monitor_max_spin.setValue(int(max(20.0, min(500.0, float(self.config.pulse_freq.monitor_freq_max)))))
+        self.p0_monitor_max_spin.setSuffix(" Hz")
+        p0_monitor_row.addWidget(self.p0_monitor_max_spin)
+        p0_monitor_row.addStretch()
+        pulse_layout.addLayout(p0_monitor_row)
+
+        p0_out_min_hz, p0_out_max_hz = _effective_limits(dl.p0_freq_min, dl.p0_freq_max, 1.0, 100.0)
+        p0_sent_row = QHBoxLayout()
+        p0_sent_row.addWidget(QLabel("Sent min:"))
+        self.p0_sent_min_spin = QDoubleSpinBox()
+        self.p0_sent_min_spin.setRange(float(p0_out_min_hz), float(p0_out_max_hz))
+        self.p0_sent_min_spin.setSingleStep(1.0)
+        self.p0_sent_min_spin.setDecimals(1)
+        self.p0_sent_min_spin.setValue(float(p0_out_min_hz))
+        self.p0_sent_min_spin.setSuffix(" Hz")
+        p0_sent_row.addWidget(self.p0_sent_min_spin)
+
+        p0_sent_row.addWidget(QLabel("max:"))
+        self.p0_sent_max_spin = QDoubleSpinBox()
+        self.p0_sent_max_spin.setRange(float(p0_out_min_hz), float(p0_out_max_hz))
+        self.p0_sent_max_spin.setSingleStep(1.0)
+        self.p0_sent_max_spin.setDecimals(1)
+        self.p0_sent_max_spin.setValue(float(p0_out_max_hz))
+        self.p0_sent_max_spin.setSuffix(" Hz")
+        p0_sent_row.addWidget(self.p0_sent_max_spin)
+        p0_sent_row.addStretch()
+        pulse_layout.addLayout(p0_sent_row)
 
         self.freq_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 5.0, 1.0, 2)
         pulse_layout.addWidget(self.freq_weight_slider)
@@ -5870,7 +5981,7 @@ Like the app?<br>
         self.pulse_invert_checkbox.setChecked(False)
         pulse_mode_layout.addWidget(self.pulse_invert_checkbox)
         self.pulse_enabled_checkbox = QCheckBox("Enable")
-        self.pulse_enabled_checkbox.setChecked(False)
+        self.pulse_enabled_checkbox.setChecked(bool(getattr(self, '_cached_p0_enabled', False)))
         pulse_mode_layout.addWidget(self.pulse_enabled_checkbox)
         pulse_mode_layout.addStretch()
         pulse_layout.addLayout(pulse_mode_layout)
@@ -5881,15 +5992,46 @@ Like the app?<br>
         carrier_group = CollapsibleGroupBox("Carrier Frequency", collapsed=False)
         carrier_layout = QVBoxLayout(carrier_group)
 
-        # Carrier Freq monitor slider with visibility toggle
-        f0_slider_row = QHBoxLayout()
-        self.f0_freq_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
-        self.f0_freq_range_slider.rangeChanged.connect(self._on_f0_band_change)
-        f0_slider_row.addWidget(self.f0_freq_range_slider)
-        carrier_layout.addLayout(f0_slider_row)
+        f0_monitor_row = QHBoxLayout()
+        f0_monitor_row.addWidget(QLabel("Monitor bass min:"))
+        self.f0_monitor_min_spin = QSpinBox()
+        self.f0_monitor_min_spin.setRange(20, 500)
+        self.f0_monitor_min_spin.setSingleStep(5)
+        self.f0_monitor_min_spin.setValue(int(max(20.0, min(500.0, float(self.config.carrier_freq.monitor_freq_min)))))
+        self.f0_monitor_min_spin.setSuffix(" Hz")
+        f0_monitor_row.addWidget(self.f0_monitor_min_spin)
 
-        self.f0_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 0, 5000, 0)
-        carrier_layout.addWidget(self.f0_tcode_range_slider)
+        f0_monitor_row.addWidget(QLabel("max:"))
+        self.f0_monitor_max_spin = QSpinBox()
+        self.f0_monitor_max_spin.setRange(20, 500)
+        self.f0_monitor_max_spin.setSingleStep(5)
+        self.f0_monitor_max_spin.setValue(int(max(20.0, min(500.0, float(self.config.carrier_freq.monitor_freq_max)))))
+        self.f0_monitor_max_spin.setSuffix(" Hz")
+        f0_monitor_row.addWidget(self.f0_monitor_max_spin)
+        f0_monitor_row.addStretch()
+        carrier_layout.addLayout(f0_monitor_row)
+
+        c0_out_min_hz, c0_out_max_hz = _effective_limits(dl.c0_freq_min, dl.c0_freq_max, 500.0, 1500.0)
+        f0_sent_row = QHBoxLayout()
+        f0_sent_row.addWidget(QLabel("Sent min:"))
+        self.f0_sent_min_spin = QDoubleSpinBox()
+        self.f0_sent_min_spin.setRange(float(c0_out_min_hz), float(c0_out_max_hz))
+        self.f0_sent_min_spin.setSingleStep(1.0)
+        self.f0_sent_min_spin.setDecimals(1)
+        self.f0_sent_min_spin.setValue(float(c0_out_min_hz))
+        self.f0_sent_min_spin.setSuffix(" Hz")
+        f0_sent_row.addWidget(self.f0_sent_min_spin)
+
+        f0_sent_row.addWidget(QLabel("max:"))
+        self.f0_sent_max_spin = QDoubleSpinBox()
+        self.f0_sent_max_spin.setRange(float(c0_out_min_hz), float(c0_out_max_hz))
+        self.f0_sent_max_spin.setSingleStep(1.0)
+        self.f0_sent_max_spin.setDecimals(1)
+        self.f0_sent_max_spin.setValue(float(c0_out_max_hz))
+        self.f0_sent_max_spin.setSuffix(" Hz")
+        f0_sent_row.addWidget(self.f0_sent_max_spin)
+        f0_sent_row.addStretch()
+        carrier_layout.addLayout(f0_sent_row)
 
         self.f0_weight_slider = SliderWithLabel("Frequency Weight", 0.0, 5.0, 1.0, 2)
         carrier_layout.addWidget(self.f0_weight_slider)
@@ -5904,7 +6046,7 @@ Like the app?<br>
         self.f0_invert_checkbox.setChecked(False)
         f0_mode_layout.addWidget(self.f0_invert_checkbox)
         self.f0_enabled_checkbox = QCheckBox("Enable")
-        self.f0_enabled_checkbox.setChecked(False)
+        self.f0_enabled_checkbox.setChecked(bool(getattr(self, '_cached_f0_enabled', False)))
         f0_mode_layout.addWidget(self.f0_enabled_checkbox)
         f0_mode_layout.addStretch()
         carrier_layout.addLayout(f0_mode_layout)
@@ -5915,12 +6057,46 @@ Like the app?<br>
         p1_group = CollapsibleGroupBox("Pulse Width — higher = stronger, smoother", collapsed=True)
         p1_layout = QVBoxLayout(p1_group)
 
-        self.p1_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
-        self.p1_monitor_range_slider.rangeChanged.connect(self._on_p1_band_change)
-        p1_layout.addWidget(self.p1_monitor_range_slider)
+        p1_monitor_row = QHBoxLayout()
+        p1_monitor_row.addWidget(QLabel("Monitor bass min:"))
+        self.p1_monitor_min_spin = QSpinBox()
+        self.p1_monitor_min_spin.setRange(20, 500)
+        self.p1_monitor_min_spin.setSingleStep(5)
+        self.p1_monitor_min_spin.setValue(int(max(20.0, min(500.0, float(self.config.pulse_width.monitor_freq_min)))))
+        self.p1_monitor_min_spin.setSuffix(" Hz")
+        p1_monitor_row.addWidget(self.p1_monitor_min_spin)
 
-        self.p1_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 1000, 8000, 0)
-        p1_layout.addWidget(self.p1_tcode_range_slider)
+        p1_monitor_row.addWidget(QLabel("max:"))
+        self.p1_monitor_max_spin = QSpinBox()
+        self.p1_monitor_max_spin.setRange(20, 500)
+        self.p1_monitor_max_spin.setSingleStep(5)
+        self.p1_monitor_max_spin.setValue(int(max(20.0, min(500.0, float(self.config.pulse_width.monitor_freq_max)))))
+        self.p1_monitor_max_spin.setSuffix(" Hz")
+        p1_monitor_row.addWidget(self.p1_monitor_max_spin)
+        p1_monitor_row.addStretch()
+        p1_layout.addLayout(p1_monitor_row)
+
+        p1_out_min, p1_out_max = _effective_limits(dl.p1_cycles_min, dl.p1_cycles_max, 0.0, 20.0)
+        p1_sent_row = QHBoxLayout()
+        p1_sent_row.addWidget(QLabel("Sent min:"))
+        self.p1_sent_min_spin = QDoubleSpinBox()
+        self.p1_sent_min_spin.setRange(float(p1_out_min), float(p1_out_max))
+        self.p1_sent_min_spin.setSingleStep(0.1)
+        self.p1_sent_min_spin.setDecimals(1)
+        self.p1_sent_min_spin.setValue(float(p1_out_min))
+        self.p1_sent_min_spin.setSuffix(" cyc")
+        p1_sent_row.addWidget(self.p1_sent_min_spin)
+
+        p1_sent_row.addWidget(QLabel("max:"))
+        self.p1_sent_max_spin = QDoubleSpinBox()
+        self.p1_sent_max_spin.setRange(float(p1_out_min), float(p1_out_max))
+        self.p1_sent_max_spin.setSingleStep(0.1)
+        self.p1_sent_max_spin.setDecimals(1)
+        self.p1_sent_max_spin.setValue(float(p1_out_max))
+        self.p1_sent_max_spin.setSuffix(" cyc")
+        p1_sent_row.addWidget(self.p1_sent_max_spin)
+        p1_sent_row.addStretch()
+        p1_layout.addLayout(p1_sent_row)
 
         self.p1_weight_slider = SliderWithLabel("Weight", 0.0, 5.0, 1.0, 2)
         p1_layout.addWidget(self.p1_weight_slider)
@@ -5935,7 +6111,7 @@ Like the app?<br>
         self.p1_invert_checkbox.setChecked(False)
         p1_mode_layout.addWidget(self.p1_invert_checkbox)
         self.p1_enabled_checkbox = QCheckBox("Enable")
-        self.p1_enabled_checkbox.setChecked(False)
+        self.p1_enabled_checkbox.setChecked(bool(getattr(self, '_cached_p1_enabled', False)))
         p1_mode_layout.addWidget(self.p1_enabled_checkbox)
         p1_mode_layout.addStretch()
         p1_layout.addLayout(p1_mode_layout)
@@ -5946,12 +6122,46 @@ Like the app?<br>
         p3_group = CollapsibleGroupBox("Rise Time — higher = smoother, gentler", collapsed=True)
         p3_layout = QVBoxLayout(p3_group)
 
-        self.p3_monitor_range_slider = RangeSliderWithLabel("Monitor Freq (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
-        self.p3_monitor_range_slider.rangeChanged.connect(self._on_p3_band_change)
-        p3_layout.addWidget(self.p3_monitor_range_slider)
+        p3_monitor_row = QHBoxLayout()
+        p3_monitor_row.addWidget(QLabel("Monitor bass min:"))
+        self.p3_monitor_min_spin = QSpinBox()
+        self.p3_monitor_min_spin.setRange(20, 500)
+        self.p3_monitor_min_spin.setSingleStep(5)
+        self.p3_monitor_min_spin.setValue(int(max(20.0, min(500.0, float(self.config.rise_time.monitor_freq_min)))))
+        self.p3_monitor_min_spin.setSuffix(" Hz")
+        p3_monitor_row.addWidget(self.p3_monitor_min_spin)
 
-        self.p3_tcode_range_slider = RangeSliderWithLabel("Sent Value", 0, 9999, 1000, 8000, 0)
-        p3_layout.addWidget(self.p3_tcode_range_slider)
+        p3_monitor_row.addWidget(QLabel("max:"))
+        self.p3_monitor_max_spin = QSpinBox()
+        self.p3_monitor_max_spin.setRange(20, 500)
+        self.p3_monitor_max_spin.setSingleStep(5)
+        self.p3_monitor_max_spin.setValue(int(max(20.0, min(500.0, float(self.config.rise_time.monitor_freq_max)))))
+        self.p3_monitor_max_spin.setSuffix(" Hz")
+        p3_monitor_row.addWidget(self.p3_monitor_max_spin)
+        p3_monitor_row.addStretch()
+        p3_layout.addLayout(p3_monitor_row)
+
+        p3_out_min, p3_out_max = _effective_limits(dl.p3_cycles_min, dl.p3_cycles_max, 0.0, 20.0)
+        p3_sent_row = QHBoxLayout()
+        p3_sent_row.addWidget(QLabel("Sent min:"))
+        self.p3_sent_min_spin = QDoubleSpinBox()
+        self.p3_sent_min_spin.setRange(float(p3_out_min), float(p3_out_max))
+        self.p3_sent_min_spin.setSingleStep(0.1)
+        self.p3_sent_min_spin.setDecimals(1)
+        self.p3_sent_min_spin.setValue(float(p3_out_min))
+        self.p3_sent_min_spin.setSuffix(" cyc")
+        p3_sent_row.addWidget(self.p3_sent_min_spin)
+
+        p3_sent_row.addWidget(QLabel("max:"))
+        self.p3_sent_max_spin = QDoubleSpinBox()
+        self.p3_sent_max_spin.setRange(float(p3_out_min), float(p3_out_max))
+        self.p3_sent_max_spin.setSingleStep(0.1)
+        self.p3_sent_max_spin.setDecimals(1)
+        self.p3_sent_max_spin.setValue(float(p3_out_max))
+        self.p3_sent_max_spin.setSuffix(" cyc")
+        p3_sent_row.addWidget(self.p3_sent_max_spin)
+        p3_sent_row.addStretch()
+        p3_layout.addLayout(p3_sent_row)
 
         self.p3_weight_slider = SliderWithLabel("Weight", 0.0, 5.0, 1.0, 2)
         p3_layout.addWidget(self.p3_weight_slider)
@@ -5966,12 +6176,129 @@ Like the app?<br>
         self.p3_invert_checkbox.setChecked(False)
         p3_mode_layout.addWidget(self.p3_invert_checkbox)
         self.p3_enabled_checkbox = QCheckBox("Enable")
-        self.p3_enabled_checkbox.setChecked(False)
+        self.p3_enabled_checkbox.setChecked(bool(getattr(self, '_cached_p3_enabled', False)))
         p3_mode_layout.addWidget(self.p3_enabled_checkbox)
         p3_mode_layout.addStretch()
         p3_layout.addLayout(p3_mode_layout)
 
         layout.addWidget(p3_group)
+
+        # Compatibility proxies: preserve existing low()/high()/setLow()/setHigh() call sites.
+        self.pulse_freq_range_slider = _RangeProxy(
+            low_get=lambda: min(float(self.p0_monitor_min_spin.value()), float(self.p0_monitor_max_spin.value())),
+            high_get=lambda: max(float(self.p0_monitor_min_spin.value()), float(self.p0_monitor_max_spin.value())),
+            low_set=lambda v: self.p0_monitor_min_spin.setValue(int(v)),
+            high_set=lambda v: self.p0_monitor_max_spin.setValue(int(v)),
+            parent_get=lambda: self.p0_monitor_min_spin.parent(),
+            blockers=(self.p0_monitor_min_spin, self.p0_monitor_max_spin),
+        )
+        self.f0_freq_range_slider = _RangeProxy(
+            low_get=lambda: min(float(self.f0_monitor_min_spin.value()), float(self.f0_monitor_max_spin.value())),
+            high_get=lambda: max(float(self.f0_monitor_min_spin.value()), float(self.f0_monitor_max_spin.value())),
+            low_set=lambda v: self.f0_monitor_min_spin.setValue(int(v)),
+            high_set=lambda v: self.f0_monitor_max_spin.setValue(int(v)),
+            parent_get=lambda: self.f0_monitor_min_spin.parent(),
+            blockers=(self.f0_monitor_min_spin, self.f0_monitor_max_spin),
+        )
+        self.p1_monitor_range_slider = _RangeProxy(
+            low_get=lambda: min(float(self.p1_monitor_min_spin.value()), float(self.p1_monitor_max_spin.value())),
+            high_get=lambda: max(float(self.p1_monitor_min_spin.value()), float(self.p1_monitor_max_spin.value())),
+            low_set=lambda v: self.p1_monitor_min_spin.setValue(int(v)),
+            high_set=lambda v: self.p1_monitor_max_spin.setValue(int(v)),
+            parent_get=lambda: self.p1_monitor_min_spin.parent(),
+            blockers=(self.p1_monitor_min_spin, self.p1_monitor_max_spin),
+        )
+        self.p3_monitor_range_slider = _RangeProxy(
+            low_get=lambda: min(float(self.p3_monitor_min_spin.value()), float(self.p3_monitor_max_spin.value())),
+            high_get=lambda: max(float(self.p3_monitor_min_spin.value()), float(self.p3_monitor_max_spin.value())),
+            low_set=lambda v: self.p3_monitor_min_spin.setValue(int(v)),
+            high_set=lambda v: self.p3_monitor_max_spin.setValue(int(v)),
+            parent_get=lambda: self.p3_monitor_min_spin.parent(),
+            blockers=(self.p3_monitor_min_spin, self.p3_monitor_max_spin),
+        )
+
+        self.tcode_freq_range_slider = _RangeProxy(
+            low_get=lambda: _unit_to_tcode(
+                min(float(self.p0_sent_min_spin.value()), float(self.p0_sent_max_spin.value())),
+                *_effective_limits(self.config.device_limits.p0_freq_min, self.config.device_limits.p0_freq_max, 1.0, 100.0),
+            ),
+            high_get=lambda: _unit_to_tcode(
+                max(float(self.p0_sent_min_spin.value()), float(self.p0_sent_max_spin.value())),
+                *_effective_limits(self.config.device_limits.p0_freq_min, self.config.device_limits.p0_freq_max, 1.0, 100.0),
+            ),
+            low_set=lambda v: self.p0_sent_min_spin.setValue(_tcode_to_unit(
+                int(v), *_effective_limits(self.config.device_limits.p0_freq_min, self.config.device_limits.p0_freq_max, 1.0, 100.0)
+            )),
+            high_set=lambda v: self.p0_sent_max_spin.setValue(_tcode_to_unit(
+                int(v), *_effective_limits(self.config.device_limits.p0_freq_min, self.config.device_limits.p0_freq_max, 1.0, 100.0)
+            )),
+            parent_get=lambda: self.p0_sent_min_spin.parent(),
+            blockers=(self.p0_sent_min_spin, self.p0_sent_max_spin),
+        )
+        self.f0_tcode_range_slider = _RangeProxy(
+            low_get=lambda: _unit_to_tcode(
+                min(float(self.f0_sent_min_spin.value()), float(self.f0_sent_max_spin.value())),
+                *_effective_limits(self.config.device_limits.c0_freq_min, self.config.device_limits.c0_freq_max, 500.0, 1500.0),
+            ),
+            high_get=lambda: _unit_to_tcode(
+                max(float(self.f0_sent_min_spin.value()), float(self.f0_sent_max_spin.value())),
+                *_effective_limits(self.config.device_limits.c0_freq_min, self.config.device_limits.c0_freq_max, 500.0, 1500.0),
+            ),
+            low_set=lambda v: self.f0_sent_min_spin.setValue(_tcode_to_unit(
+                int(v), *_effective_limits(self.config.device_limits.c0_freq_min, self.config.device_limits.c0_freq_max, 500.0, 1500.0)
+            )),
+            high_set=lambda v: self.f0_sent_max_spin.setValue(_tcode_to_unit(
+                int(v), *_effective_limits(self.config.device_limits.c0_freq_min, self.config.device_limits.c0_freq_max, 500.0, 1500.0)
+            )),
+            parent_get=lambda: self.f0_sent_min_spin.parent(),
+            blockers=(self.f0_sent_min_spin, self.f0_sent_max_spin),
+        )
+        self.p1_tcode_range_slider = _RangeProxy(
+            low_get=lambda: _unit_to_tcode(
+                min(float(self.p1_sent_min_spin.value()), float(self.p1_sent_max_spin.value())),
+                *_effective_limits(self.config.device_limits.p1_cycles_min, self.config.device_limits.p1_cycles_max, 0.0, 20.0),
+            ),
+            high_get=lambda: _unit_to_tcode(
+                max(float(self.p1_sent_min_spin.value()), float(self.p1_sent_max_spin.value())),
+                *_effective_limits(self.config.device_limits.p1_cycles_min, self.config.device_limits.p1_cycles_max, 0.0, 20.0),
+            ),
+            low_set=lambda v: self.p1_sent_min_spin.setValue(_tcode_to_unit(
+                int(v), *_effective_limits(self.config.device_limits.p1_cycles_min, self.config.device_limits.p1_cycles_max, 0.0, 20.0)
+            )),
+            high_set=lambda v: self.p1_sent_max_spin.setValue(_tcode_to_unit(
+                int(v), *_effective_limits(self.config.device_limits.p1_cycles_min, self.config.device_limits.p1_cycles_max, 0.0, 20.0)
+            )),
+            parent_get=lambda: self.p1_sent_min_spin.parent(),
+            blockers=(self.p1_sent_min_spin, self.p1_sent_max_spin),
+        )
+        self.p3_tcode_range_slider = _RangeProxy(
+            low_get=lambda: _unit_to_tcode(
+                min(float(self.p3_sent_min_spin.value()), float(self.p3_sent_max_spin.value())),
+                *_effective_limits(self.config.device_limits.p3_cycles_min, self.config.device_limits.p3_cycles_max, 0.0, 20.0),
+            ),
+            high_get=lambda: _unit_to_tcode(
+                max(float(self.p3_sent_min_spin.value()), float(self.p3_sent_max_spin.value())),
+                *_effective_limits(self.config.device_limits.p3_cycles_min, self.config.device_limits.p3_cycles_max, 0.0, 20.0),
+            ),
+            low_set=lambda v: self.p3_sent_min_spin.setValue(_tcode_to_unit(
+                int(v), *_effective_limits(self.config.device_limits.p3_cycles_min, self.config.device_limits.p3_cycles_max, 0.0, 20.0)
+            )),
+            high_set=lambda v: self.p3_sent_max_spin.setValue(_tcode_to_unit(
+                int(v), *_effective_limits(self.config.device_limits.p3_cycles_min, self.config.device_limits.p3_cycles_max, 0.0, 20.0)
+            )),
+            parent_get=lambda: self.p3_sent_min_spin.parent(),
+            blockers=(self.p3_sent_min_spin, self.p3_sent_max_spin),
+        )
+
+        # Keep callbacks/overlays in sync when spinboxes change.
+        self.p0_monitor_min_spin.valueChanged.connect(lambda *_: self._on_p0_band_change())
+        self.p0_monitor_max_spin.valueChanged.connect(lambda *_: self._on_p0_band_change())
+        self.f0_monitor_min_spin.valueChanged.connect(lambda *_: self._on_f0_band_change())
+        self.f0_monitor_max_spin.valueChanged.connect(lambda *_: self._on_f0_band_change())
+        self.p1_monitor_min_spin.valueChanged.connect(lambda *_: self._on_p1_band_change())
+        self.p1_monitor_max_spin.valueChanged.connect(lambda *_: self._on_p1_band_change())
+        self.p3_monitor_min_spin.valueChanged.connect(lambda *_: self._on_p3_band_change())
+        self.p3_monitor_max_spin.valueChanged.connect(lambda *_: self._on_p3_band_change())
 
         layout.addStretch()
         scroll_area.setWidget(widget)
@@ -7569,6 +7896,14 @@ Like the app?<br>
     def _compute_and_attach_tcode(self, cmd: TCodeCommand, event: BeatEvent, spectrum: Optional[np.ndarray] = None):
         """Compute P0/F0 TCode values and attach to command. Thread-safe (no widget access)."""
         now = time.time()
+
+        def _effective_output_limits(raw_min: float, raw_max: float, default_min: float, default_max: float) -> tuple[float, float]:
+            lo = float(raw_min)
+            hi = float(raw_max)
+            if hi <= lo or lo <= 0.0 or hi <= 0.0:
+                lo = float(default_min)
+                hi = float(default_max)
+            return lo, hi
         
         # Extract dominant frequencies independently for P0 and F0 monitor ranges
         dom_freq = event.frequency if hasattr(event, 'frequency') else 0.0
@@ -7646,13 +7981,11 @@ Like the app?<br>
             cmd.pulse_freq = p0_val
             cmd.pulse_freq_duration = int(self._freq_window_ms)
             self._cached_p0_val = p0_val
-            # Display raw TCode; append Hz if device limits configured
+            # Display converted real output (with safe fallback defaults when limits are unset).
             dl = self.config.device_limits
-            if dl.p0_freq_min > 0 and dl.p0_freq_max > 0:
-                hz = dl.p0_freq_min + (p0_val / 9999.0) * (dl.p0_freq_max - dl.p0_freq_min)
-                self._cached_pulse_display = f"Pulse Freq: {p0_val} ({hz:.0f}Hz)"
-            else:
-                self._cached_pulse_display = f"Pulse Freq: {p0_val}"
+            p0_lo, p0_hi = _effective_output_limits(dl.p0_freq_min, dl.p0_freq_max, 1.0, 100.0)
+            hz = p0_lo + (p0_val / 9999.0) * (p0_hi - p0_lo)
+            self._cached_pulse_display = f"Pulse Freq: {hz:.0f}Hz"
         else:
             cmd.pulse_freq = None
             self._cached_p0_val = None
@@ -7764,13 +8097,11 @@ Like the app?<br>
             cmd.tcode_tags['C0'] = f0_val  # restim uses C0 for carrier frequency, not F0
             cmd.tcode_tags['C0_duration'] = f0_duration
             self._cached_f0_val = f0_val
-            # Display raw TCode; append Hz if device limits configured
+            # Display converted real output (with safe fallback defaults when limits are unset).
             dl = self.config.device_limits
-            if dl.c0_freq_min > 0 and dl.c0_freq_max > 0:
-                hz = dl.c0_freq_min + (f0_val / 9999.0) * (dl.c0_freq_max - dl.c0_freq_min)
-                self._cached_carrier_display = f"Carrier Freq: {f0_val} ({hz:.0f}Hz)"
-            else:
-                self._cached_carrier_display = f"Carrier Freq: {f0_val}"
+            c0_lo, c0_hi = _effective_output_limits(dl.c0_freq_min, dl.c0_freq_max, 500.0, 1500.0)
+            hz = c0_lo + (f0_val / 9999.0) * (c0_hi - c0_lo)
+            self._cached_carrier_display = f"Carrier Freq: {hz:.0f}Hz"
         else:
             self._cached_f0_val = None
             self._cached_carrier_display = "Carrier Freq: off"
@@ -7826,13 +8157,11 @@ Like the app?<br>
             cmd.tcode_tags['P1'] = p1_val
             cmd.tcode_tags['P1_duration'] = int(self._freq_window_ms)
             self._cached_p1_val = p1_val
-            # Display raw TCode; append converted value if device limits configured
+            # Display converted real output (with safe fallback defaults when limits are unset).
             dl = self.config.device_limits
-            if dl.p1_cycles_min > 0 and dl.p1_cycles_max > 0:
-                p1_cyc = dl.p1_cycles_min + (p1_val / 9999.0) * (dl.p1_cycles_max - dl.p1_cycles_min)
-                self._cached_p1_display = f"Pulse Width: {p1_val} ({p1_cyc:.1f}cyc)"
-            else:
-                self._cached_p1_display = f"Pulse Width: {p1_val}"
+            p1_lo, p1_hi = _effective_output_limits(dl.p1_cycles_min, dl.p1_cycles_max, 0.0, 20.0)
+            p1_cyc = p1_lo + (p1_val / 9999.0) * (p1_hi - p1_lo)
+            self._cached_p1_display = f"Pulse Width: {p1_cyc:.1f}cyc"
         else:
             self._cached_p1_val = None
             self._cached_p1_display = "Pulse Width: off"
@@ -7895,13 +8224,11 @@ Like the app?<br>
             cmd.tcode_tags['P3'] = p3_val
             cmd.tcode_tags['P3_duration'] = int(self._freq_window_ms)
             self._cached_p3_val = p3_val
-            # Display raw TCode; append converted value if device limits configured
+            # Display converted real output (with safe fallback defaults when limits are unset).
             dl = self.config.device_limits
-            if dl.p3_cycles_min > 0 and dl.p3_cycles_max > 0:
-                p3_cyc = dl.p3_cycles_min + (p3_val / 9999.0) * (dl.p3_cycles_max - dl.p3_cycles_min)
-                self._cached_p3_display = f"Rise Time: {p3_val} ({p3_cyc:.1f}cyc)"
-            else:
-                self._cached_p3_display = f"Rise Time: {p3_val}"
+            p3_lo, p3_hi = _effective_output_limits(dl.p3_cycles_min, dl.p3_cycles_max, 0.0, 20.0)
+            p3_cyc = p3_lo + (p3_val / 9999.0) * (p3_hi - p3_lo)
+            self._cached_p3_display = f"Rise Time: {p3_cyc:.1f}cyc"
         else:
             self._cached_p3_val = None
             self._cached_p3_display = "Rise Time: off"
