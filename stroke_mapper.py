@@ -53,6 +53,7 @@ class StrokeMapper:
         self._baseline_center_y = 0.60
         self._min_radius = 0.05
         self._park_idle_radius = 0.05  # tiny orbit when fully parked
+        self._treble_lift_enabled = False
         self._base_center_y = self._baseline_center_y
         self._reactive_bounce_y = 0.0
         self._journey_start_total_center_y = self._baseline_center_y
@@ -305,7 +306,7 @@ class StrokeMapper:
             jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
                 event=event, dt=dt,
             )
-            treble_bump = float(self._intelligence.compute_treble_lift(0.0))
+            treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
             self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 
             total_center_y = float(self._base_center_y + self._reactive_bounce_y)
@@ -389,7 +390,7 @@ class StrokeMapper:
                 jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
                     event=event, dt=dt,
                 )
-                treble_bump = float(self._intelligence.compute_treble_lift(0.0))
+                treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
                 self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 
                 total_center_y = float(self._base_center_y + self._reactive_bounce_y)
@@ -632,7 +633,7 @@ class StrokeMapper:
                         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
                             event=event, dt=dt,
                         )
-                        treble_bump = float(self._intelligence.compute_treble_lift(0.0))
+                        treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
                         self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 
                         # Compute final position directly — stored for post-fix
@@ -920,7 +921,7 @@ class StrokeMapper:
 
         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
         _ = jitter_alpha
-        treble_bump = float(self._intelligence.compute_treble_lift(0.0))
+        treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
         return float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 
     @staticmethod
