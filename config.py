@@ -190,8 +190,8 @@ class StrokeConfig:
     mid_bass_activity_threshold: float = 0.035
     mid_bass_occupancy_threshold: float = 0.45
     dual_band_db_gate_enabled: bool = True
-    dual_band_sub_bass_db_min: float = -22.2
-    dual_band_high_db_min: float = -21.0
+    dual_band_sub_bass_db_min: float = -80.0
+    dual_band_high_db_min: float = -80.0
     high_tip_fullness_enabled: bool = False
     high_tip_freq_low_hz: float = 3500.0
     high_tip_freq_high_hz: float = 16000.0
@@ -739,9 +739,9 @@ class StrokeConfig:
     mid_bass_activity_threshold: float = 0.035
     mid_bass_occupancy_threshold: float = 0.45
     dual_band_db_gate_enabled: bool = True
-    dual_band_sub_bass_db_min: float = -15.0
-    dual_band_high_db_min: float = -30.0
-    high_tip_fullness_enabled: bool = True
+    dual_band_sub_bass_db_min: float = -80.0
+    dual_band_high_db_min: float = -80.0
+    high_tip_fullness_enabled: bool = False
     high_tip_freq_low_hz: float = 3500.0
     high_tip_freq_high_hz: float = 16000.0
     high_tip_db_min: float = -28.0

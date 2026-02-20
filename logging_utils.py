@@ -5,14 +5,49 @@ Provides level+tag output while keeping the existing print-style simplicity.
 from __future__ import annotations
 
 import logging
+import os
+import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any
 
 _logger = logging.getLogger("breadbeats")
 if not _logger.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("[%(levelname)s][%(tag)s] %(message)s")
-    handler.setFormatter(formatter)
-    _logger.addHandler(handler)
+    formatter = logging.Formatter("[%(asctime)s][%(levelname)s][%(tag)s] %(message)s")
+    is_frozen = bool(getattr(sys, "frozen", False))
+    debug_stdio = os.environ.get("BREADBEATS_DEBUG_STDIO", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if is_frozen:
+        log_path = Path(sys.executable).resolve().parent / "breadbeats.log"
+        try:
+            file_handler = RotatingFileHandler(
+                log_path,
+                maxBytes=1_000_000,
+                backupCount=2,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(formatter)
+            _logger.addHandler(file_handler)
+        except Exception:
+            if debug_stdio:
+                stream_handler = logging.StreamHandler()
+                stream_handler.setFormatter(formatter)
+                _logger.addHandler(stream_handler)
+
+        if debug_stdio:
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(formatter)
+            _logger.addHandler(stream_handler)
+    else:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        _logger.addHandler(stream_handler)
+
     _logger.setLevel(logging.INFO)
 
 

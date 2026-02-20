@@ -12,6 +12,18 @@ import time
 import json
 from datetime import datetime
 import subprocess
+import os
+
+_DEBUG_STDIO_ENABLED = os.environ.get("BREADBEATS_DEBUG_STDIO", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+if bool(getattr(sys, "frozen", False)) and not _DEBUG_STDIO_ENABLED:
+    _null_stream = open(os.devnull, "w", encoding="utf-8")
+    sys.stdout = _null_stream
+    sys.stderr = _null_stream
 
 _import_t0 = time.perf_counter()
 print("\n[Startup] main.py loading heavy modules...", flush=True)
@@ -19,7 +31,6 @@ print("\n[Startup] main.py loading heavy modules...", flush=True)
 import numpy as np
 import queue
 import threading
-import os
 import random
 from collections import deque
 from pathlib import Path
@@ -50,7 +61,7 @@ from config import (
     apply_dict_to_dataclass,
     migrate_config,
 )
-from logging_utils import get_log_level, set_log_level
+from logging_utils import get_log_level, log_event, set_log_level
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import NetworkEngine, TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
@@ -2936,14 +2947,15 @@ class BREadbeatsWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         
         info = QLabel(
-            "Please enter the limits you have configured in Restim:\n"
-            "When set, displays will also show the converted real-world values.\n"
-            "Leave at 0 to disable conversion for that axis."
+            "If min/max limits in Restim have been changed, please adjust here."
         )
         info.setWordWrap(True)
         layout.addWidget(info)
         
         dl = self.config.device_limits
+
+        def _first_run_default(value: float, default: float) -> float:
+            return float(default) if first_run and float(value) <= 0.0 else float(value)
         
         # --- Pulse Freq / Carrier Freq group (always visible) ---
         main_group = QGroupBox("Pulse Freq / Carrier Freq  —  Hz")
@@ -2952,7 +2964,7 @@ class BREadbeatsWindow(QMainWindow):
         p0_min = QDoubleSpinBox()
         p0_min.setRange(0, 99999)
         p0_min.setDecimals(1)
-        p0_min.setValue(dl.p0_freq_min)
+        p0_min.setValue(_first_run_default(dl.p0_freq_min, 1.0))
         p0_min.setSpecialValueText("not set")
         grid.addWidget(p0_min, 0, 1)
         
@@ -2960,7 +2972,7 @@ class BREadbeatsWindow(QMainWindow):
         p0_max = QDoubleSpinBox()
         p0_max.setRange(0, 99999)
         p0_max.setDecimals(1)
-        p0_max.setValue(dl.p0_freq_max)
+        p0_max.setValue(_first_run_default(dl.p0_freq_max, 100.0))
         p0_max.setSpecialValueText("not set")
         grid.addWidget(p0_max, 0, 3)
         
@@ -2968,7 +2980,7 @@ class BREadbeatsWindow(QMainWindow):
         c0_min = QDoubleSpinBox()
         c0_min.setRange(0, 99999)
         c0_min.setDecimals(1)
-        c0_min.setValue(dl.c0_freq_min)
+        c0_min.setValue(_first_run_default(dl.c0_freq_min, 500.0))
         c0_min.setSpecialValueText("not set")
         grid.addWidget(c0_min, 1, 1)
         
@@ -2976,7 +2988,7 @@ class BREadbeatsWindow(QMainWindow):
         c0_max = QDoubleSpinBox()
         c0_max.setRange(0, 99999)
         c0_max.setDecimals(1)
-        c0_max.setValue(dl.c0_freq_max)
+        c0_max.setValue(_first_run_default(dl.c0_freq_max, 1500.0))
         c0_max.setSpecialValueText("not set")
         grid.addWidget(c0_max, 1, 3)
         layout.addWidget(main_group)
@@ -3601,9 +3613,9 @@ class BREadbeatsWindow(QMainWindow):
 
         dual_sub_bass_db_slider = SliderWithLabel(
             "Dual-band sub-bass min (dB)",
-            -80.0,
-            0.0,
-            float(getattr(self.config.stroke, 'dual_band_sub_bass_db_min', -15.0) or -15.0),
+            -100.0,
+            -50.0,
+            float(getattr(self.config.stroke, 'dual_band_sub_bass_db_min', -80.0) or -80.0),
             1,
         )
         dual_sub_bass_db_slider.valueChanged.connect(
@@ -3617,9 +3629,9 @@ class BREadbeatsWindow(QMainWindow):
 
         dual_high_db_slider = SliderWithLabel(
             "Dual-band high min (dB)",
-            -80.0,
-            0.0,
-            float(getattr(self.config.stroke, 'dual_band_high_db_min', -30.0) or -30.0),
+            -100.0,
+            -50.0,
+            float(getattr(self.config.stroke, 'dual_band_high_db_min', -80.0) or -80.0),
             1,
         )
         dual_high_db_slider.valueChanged.connect(
@@ -4610,7 +4622,7 @@ class BREadbeatsWindow(QMainWindow):
     def _on_about(self):
         """Show About dialog"""
         about_html = """
-<b>bREadbeats v1.0</b><br>
+<b>bREadbeats v2.0</b><br>
 Live Audio to Restim<br><br>
 Inspired by:<br>
 &nbsp;&nbsp;&nbsp;&nbsp;digitalparkinglot's creations<br>
@@ -8271,8 +8283,10 @@ Like the app?<br>
 
 def main():
     """Main entry point - backup if not launched via run.py"""
+    log_event("INFO", "Startup", "Application launch", frozen=bool(getattr(sys, "frozen", False)), debug_stdio=_DEBUG_STDIO_ENABLED)
     instance_lock = _SingleInstanceLock()
     if not instance_lock.acquire():
+        log_event("WARN", "Startup", "Another instance detected; exiting")
         print("[Startup] Another bREadbeats instance is already running. Exiting.", flush=True)
         return
 
@@ -8312,6 +8326,7 @@ def main():
     try:
         sys.exit(app.exec())
     finally:
+        log_event("INFO", "Shutdown", "Application exit")
         instance_lock.release()
 
 
