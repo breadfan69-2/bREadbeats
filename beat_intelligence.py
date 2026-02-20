@@ -45,6 +45,7 @@ class BeatDecision:
     post_silence_ramp: float = 1.0     # 1.0 = full volume, <1 = ramping back in
     lazy_glide_active: bool = False
     gate_fail: str = ""                # which gate rejected a beat-family event (empty = passed or N/A)
+    energy_fullness: float = 0.0       # 0..1 how "full" the music is (drives max_radius expansion)
 
     learning: LearningOutputs = field(default_factory=LearningOutputs)
 
@@ -1254,6 +1255,28 @@ class BeatIntelligence:
 
         return float(np.clip(base_radius + bloom, base_radius, max_radius))
 
+    def compute_energy_fullness(self) -> float:
+        """0..1 measure of how 'full' the music is right now.
+
+        Combines RMS envelope with bass energy to produce a smooth
+        scalar that stroke_mapper latches at journey start to decide
+        whether max_radius should expand toward 1.0.
+        """
+        rms = float(np.clip(self.rms_envelope, 0.0, 1.0))
+        sub = float(np.clip(self.energies.sub_bass, 0.0, 1.0))
+        low = float(np.clip(self.energies.low_mid, 0.0, 1.0))
+        mid = float(np.clip(self.energies.mid, 0.0, 1.0))
+
+        # Weighted composite: RMS is the main loudness signal,
+        # bass adds body, mid adds presence.
+        composite = (rms * 0.45) + (sub * 0.25) + (low * 0.15) + (mid * 0.15)
+
+        # Soft-knee curve: gentle at low levels, opens up at high levels.
+        # fullness = composite^0.6 gives a slightly compressed feel.
+        fullness = float(composite ** 0.6)
+
+        return float(np.clip(fullness, 0.0, 1.0))
+
     # Priority rank: lower number = faster arc = higher priority for interrupts.
     _TRIGGER_PRIORITY: dict[str, int] = {
         "syncopation": 0,
@@ -1465,9 +1488,9 @@ class BeatIntelligence:
             smooth_t = t * t * (3.0 - 2.0 * t)
             guard = 1.0 - smooth_t
 
-        # Returns vertical center offset (0..max_lift), not absolute Y.
-        # At journey completion, this is forced to 0 by the landing guard.
-        return float(smoothed_offset * guard)
+        # Returns vertical center offset with downward bias (-max_lift..0), not absolute Y.
+        # At journey completion, magnitude is forced to 0 by the landing guard.
+        return float(-smoothed_offset * guard)
 
     def build_decision(self, event: BeatEvent, dt: float, silence_override: bool | None = None) -> BeatDecision:
         self.update_band_energies()
@@ -1534,6 +1557,7 @@ class BeatIntelligence:
                 silence_fade=float(silence_fade),
                 post_silence_ramp=float(post_silence_ramp),
                 lazy_glide_active=False,
+                energy_fullness=self.compute_energy_fullness(),
                 learning=LearningOutputs(),
             )
 
@@ -1716,5 +1740,6 @@ class BeatIntelligence:
             post_silence_ramp=float(post_silence_ramp),
             lazy_glide_active=bool(self._lazy_glide_active),
             gate_fail=gate_fail_reason,
+            energy_fullness=self.compute_energy_fullness(),
             learning=learning,
         )

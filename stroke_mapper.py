@@ -65,6 +65,7 @@ class StrokeMapper:
         self._journey_fixed_radius = self._park_radius
         self._journey_start_radius = self._park_radius
         self._journey_learning_mult = 1.0  # frozen at journey start; never re-read mid-arc
+        self._journey_energy_fullness = 0.0  # latched at journey start for max_radius expansion
         self._journey_center_y = self._baseline_center_y
         self._journey_park_radius = self._park_radius
         self._journey_max_radius = self._max_radius
@@ -135,10 +136,12 @@ class StrokeMapper:
         self._gate_idle_start_radius = self._park_radius
         self._gate_idle_start_angular_vel = 0.0
 
-        # Wait-swirl state: fast spiral into park-like idle while waiting for next beat
+        # Wait-swirl state: smooth spiral into slingshot loop while waiting for next beat
         self._wait_swirl_active = False
         self._wait_swirl_progress = 0.0    # 0→1 S-curve interpolant
-        self._wait_swirl_duration_s = 0.10 # very fast spiral in
+        self._wait_swirl_duration_s = 0.60 # smooth spiral into visible loop
+        self._wait_swirl_target_radius = 0.30  # visible slingshot loop radius
+        self._wait_swirl_hook_depth = 0.05     # center_y dip for hook maneuver
         self._wait_swirl_start_center_y = self._baseline_center_y
         self._wait_swirl_start_radius = self._park_radius
         self._wait_swirl_start_angular_vel = 0.0
@@ -406,11 +409,11 @@ class StrokeMapper:
                         self._hold_start_pose_until_reactive = False
                     prior_completion = float(self._last_journey_completion)
                     if self._wait_swirl_active:
-                        # Coming out of wait-swirl park — spiral out like park exit
+                        # Slingshot exit: inherit loop momentum and phase for smooth launch
                         self._journey_linked = True
                         self._journey_cold_start = False
                         self._journey_relink_active = True
-                        self._journey_relink_start_radius = float(np.clip(self._actual_radius, self._park_idle_radius, 1.0))
+                        self._journey_relink_start_radius = float(np.clip(self._actual_radius, self._min_radius, 1.0))
                     elif self._exit_spiral_active:
                         self._journey_linked = True
                         self._journey_cold_start = False
@@ -453,7 +456,15 @@ class StrokeMapper:
                     })
                     self._journey_center_y = float(geom["center_y"])
                     self._journey_park_radius = float(geom["park_radius"])
-                    self._journey_max_radius = float(geom["max_radius"])
+                    # Expand max_radius toward 1.0 based on energy fullness:
+                    # quiet music stays at configured max (0.90), full music → 1.0
+                    base_max = float(geom["max_radius"])
+                    fullness = float(np.clip(decision.energy_fullness, 0.0, 1.0))
+                    # Smooth expansion: only starts opening above 0.4 fullness
+                    expand_t = float(np.clip((fullness - 0.4) / 0.6, 0.0, 1.0))
+                    expanded_max = float(base_max + (1.0 - base_max) * (expand_t * expand_t))
+                    self._journey_max_radius = float(np.clip(expanded_max, base_max, 1.0))
+                    self._journey_energy_fullness = fullness
 
                     self._journey_start_alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
                     self._journey_start_beta = float(np.clip(self.state.beta, -1.0, 1.0))
@@ -584,28 +595,35 @@ class StrokeMapper:
                         ))
                         wait_t = self._s_curve(self._wait_swirl_progress)
 
-                        # Interpolate radius: current → park idle radius (0.05)
+                        # Interpolate radius: current → slingshot loop radius
                         wait_radius = float(
                             self._wait_swirl_start_radius
-                            + ((self._park_idle_radius - self._wait_swirl_start_radius) * wait_t)
+                            + ((self._wait_swirl_target_radius - self._wait_swirl_start_radius) * wait_t)
                         )
-                        self._actual_radius = float(np.clip(wait_radius, self._park_idle_radius, 1.0))
+                        self._actual_radius = float(np.clip(wait_radius, self._wait_swirl_target_radius, 1.0))
 
-                        # Interpolate center_y: current → baseline park center (0.60)
+                        # Center_y with hook maneuver: dip deeper at midpoint, settle at baseline.
+                        # Creates an upward-hook as the dot spirals into the slingshot loop.
+                        hook_bump = float(self._wait_swirl_hook_depth * np.sin(np.pi * wait_t))
                         self._base_center_y = float(
                             self._wait_swirl_start_center_y
                             + ((self._baseline_center_y - self._wait_swirl_start_center_y) * wait_t)
+                            + hook_bump
                         )
 
-                        # Decelerate angular velocity smoothly to idle
+                        # Decelerate to slingshot loop speed (energetic, not idle)
                         bpm_wait = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
                         if bpm_wait <= 0.0:
                             bpm_wait = float(getattr(event, "bpm", 0.0) or 0.0)
                         bpm_wait = float(np.clip(bpm_wait if bpm_wait > 0.0 else 120.0, 40.0, 240.0))
                         idle_angular_speed = float((2.0 * np.pi) * (bpm_wait / 60.0) * self._idle_loops_per_beat)
+                        slingshot_speed = float(max(
+                            self._journey_nominal_angular_speed * 0.80,
+                            idle_angular_speed,
+                        ))
                         blended_speed = float(
                             self._wait_swirl_start_angular_vel
-                            + ((idle_angular_speed - self._wait_swirl_start_angular_vel) * wait_t)
+                            + ((slingshot_speed - self._wait_swirl_start_angular_vel) * wait_t)
                         )
                         angle = float((self._orbit_phase + (blended_speed * dt)) % (2.0 * np.pi))
                         self._angular_velocity = float(blended_speed)
@@ -720,7 +738,7 @@ class StrokeMapper:
                 if self._wait_swirl_active:
                     # Wait-swirl already computed alpha/beta/volume directly
                     # in the continuation-wait block above — skip radius/center logic.
-                    radius = self._park_idle_radius
+                    radius = self._actual_radius
                 elif self._radius_hold_active:
                     radius = float(np.clip(self._radius_hold_value, type_park_radius, type_max_radius))
                 elif self._exit_spiral_active:
@@ -739,9 +757,11 @@ class StrokeMapper:
                             0.0,
                             1.0,
                         ))
-                        unhook_window = 1.0
+                        # Fast bloom: expand to full radius within first 25% of orbit
+                        unhook_window = 0.25
                         unhook_t = float(np.clip(first_pass_progress / unhook_window, 0.0, 1.0))
-                        radius_blend = self._s_curve(unhook_t)
+                        # Quintic ease (6t^5-15t^4+10t^3) for velvet-smooth expansion
+                        radius_blend = self._quintic_ease(unhook_t)
                         radius = float(
                             type_park_radius
                             + ((type_max_radius - type_park_radius) * radius_blend)
@@ -755,9 +775,11 @@ class StrokeMapper:
                             0.0,
                             1.0,
                         ))
-                        relink_window = 0.30
+                        # Fast relink: expand from slingshot loop to full radius in ~15% of orbit
+                        relink_window = 0.15
                         relink_t = float(np.clip(first_pass_progress / relink_window, 0.0, 1.0))
-                        relink_blend = self._s_curve(relink_t)
+                        # Quintic ease for buttery-smooth slingshot release
+                        relink_blend = self._quintic_ease(relink_t)
                         radius = float(
                             self._journey_relink_start_radius
                             + ((type_max_radius - self._journey_relink_start_radius) * relink_blend)
@@ -905,6 +927,17 @@ class StrokeMapper:
     def _s_curve(progress: float) -> float:
         p = float(np.clip(progress, 0.0, 1.0))
         return float(p * p * (3.0 - (2.0 * p)))
+
+    @staticmethod
+    def _quintic_ease(progress: float) -> float:
+        """Quintic smoothstep (6t^5 - 15t^4 + 10t^3).
+
+        Smoother than cubic S-curve: zero first AND second derivative
+        at both endpoints, giving velvet-smooth radius expansion with
+        no perceptible 'knee' at start or end.
+        """
+        p = float(np.clip(progress, 0.0, 1.0))
+        return float(p * p * p * (p * (p * 6.0 - 15.0) + 10.0))
 
     @staticmethod
     def _sine_ease_with_velocity(

@@ -217,8 +217,8 @@ class TestStrokeMapperContract(unittest.TestCase):
         late_offset = intelligence.compute_treble_lift(journey_completion=0.95)
         landed_offset = intelligence.compute_treble_lift(journey_completion=1.0)
 
-        self.assertGreater(early_offset, 0.0)
-        self.assertLess(late_offset, early_offset)
+        self.assertLess(early_offset, 0.0)
+        self.assertGreater(late_offset, early_offset)
         self.assertAlmostEqual(landed_offset, 0.0, places=6)
 
     def test_s_curve_hook_is_cubic(self):
