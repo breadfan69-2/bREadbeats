@@ -68,6 +68,7 @@ breadbeats_reports_*.zip
 # Local runtime config artifacts
 config.json
 config.json.bak
+config.tuned_home_presync.json
 learned_profile_slots.json
 
 # Local debug captures / transient logs
