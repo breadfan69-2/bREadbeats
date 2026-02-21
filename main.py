@@ -2403,13 +2403,23 @@ class BREadbeatsWindow(QMainWindow):
         dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
-        def _on_developer_dialog_destroyed() -> None:
+        _developer_dialog_cleared = False
+
+        def _clear_developer_dialog_state() -> None:
+            nonlocal _developer_dialog_cleared
+            if _developer_dialog_cleared:
+                return
+            _developer_dialog_cleared = True
             self._developer_controls_dialog = None
             self._developer_controls_tab_widget = None
-            self._developer_controls_unlocked = False
+            self._tempo_tracking_popout_content = None
             self._trigger_settings_tab_content = None
             self._auto_fill_tab_content = None
             self._motion_readiness_tab_content = None
+            self._advanced_flux_threshold_slider = None
+            self._advanced_flux_scaling_slider = None
+            self._auto_fill_controls_widgets = {}
+            self._motion_readiness_controls_widgets = {}
             unlock_dialog_ref = getattr(self, '_developer_unlock_dialog', None)
             if unlock_dialog_ref is not None:
                 try:
@@ -2418,7 +2428,9 @@ class BREadbeatsWindow(QMainWindow):
                     pass
                 self._developer_unlock_dialog = None
 
-        dialog.destroyed.connect(_on_developer_dialog_destroyed)
+        dialog.rejected.connect(_clear_developer_dialog_state)
+        dialog.finished.connect(lambda _result: _clear_developer_dialog_state())
+        dialog.destroyed.connect(lambda *_: _clear_developer_dialog_state())
 
         layout = QVBoxLayout(dialog)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -2510,6 +2522,9 @@ class BREadbeatsWindow(QMainWindow):
 
         def _cancel() -> None:
             developer_dialog = getattr(self, '_developer_controls_dialog', None)
+            self._developer_controls_unlocked = False
+            self._developer_controls_dialog = None
+            self._developer_controls_tab_widget = None
             if developer_dialog is not None:
                 try:
                     developer_dialog.close()
@@ -2528,11 +2543,10 @@ class BREadbeatsWindow(QMainWindow):
                     developer_dialog.activateWindow()
                 except RuntimeError:
                     pass
-            unlock_dialog.close()
+            unlock_dialog.accept()
 
         cancel_btn.clicked.connect(_cancel)
         unlock_btn.clicked.connect(_unlock)
-        unlock_dialog.rejected.connect(_cancel)
         unlock_dialog.destroyed.connect(lambda *_: setattr(self, '_developer_unlock_dialog', None))
 
         self._developer_unlock_dialog = unlock_dialog
@@ -5052,10 +5066,16 @@ Like the app?<br>
                     )
                 advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
                 if advanced_flux_slider is not None:
-                    advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
+                    try:
+                        advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
+                    except RuntimeError:
+                        self._advanced_flux_threshold_slider = None
                 advanced_flux_scaling_slider = getattr(self, '_advanced_flux_scaling_slider', None)
                 if advanced_flux_scaling_slider is not None:
-                    advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
+                    try:
+                        advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
+                    except RuntimeError:
+                        self._advanced_flux_scaling_slider = None
                 auto_fill_widgets = getattr(self, '_auto_fill_controls_widgets', {}) or {}
                 auto_fill_enabled = auto_fill_widgets.get('enabled')
                 if auto_fill_enabled is not None:
@@ -6190,11 +6210,17 @@ Like the app?<br>
         self.config.stroke.flux_threshold = float(preset_data['flux_threshold'])
         advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
         if advanced_flux_slider is not None:
-            advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
+            try:
+                advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
+            except RuntimeError:
+                self._advanced_flux_threshold_slider = None
         self.config.stroke.flux_scaling_weight = float(preset_data['flux_scaling_weight'])
         advanced_flux_scaling_slider = getattr(self, '_advanced_flux_scaling_slider', None)
         if advanced_flux_scaling_slider is not None:
-            advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
+            try:
+                advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
+            except RuntimeError:
+                self._advanced_flux_scaling_slider = None
         
         # Jitter / Creep Tab
         self.config.jitter.enabled = bool(preset_data.get('jitter_enabled', getattr(self.config.jitter, 'enabled', True)))
