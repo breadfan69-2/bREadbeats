@@ -2483,8 +2483,10 @@ class BREadbeatsWindow(QMainWindow):
         unlock_dialog = QDialog(self)
         unlock_dialog.setWindowTitle("Developer Controls Warning")
         unlock_dialog.setMinimumWidth(420)
-        unlock_dialog.setModal(False)
+        unlock_dialog.setModal(True)
+        unlock_dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
         unlock_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        unlock_dialog.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
         unlock_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
 
         unlock_layout = QVBoxLayout(unlock_dialog)
@@ -2530,6 +2532,7 @@ class BREadbeatsWindow(QMainWindow):
 
         cancel_btn.clicked.connect(_cancel)
         unlock_btn.clicked.connect(_unlock)
+        unlock_dialog.rejected.connect(_cancel)
         unlock_dialog.destroyed.connect(lambda *_: setattr(self, '_developer_unlock_dialog', None))
 
         self._developer_unlock_dialog = unlock_dialog
