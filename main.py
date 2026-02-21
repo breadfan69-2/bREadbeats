@@ -2074,12 +2074,13 @@ class BREadbeatsWindow(QMainWindow):
         main_layout.setSpacing(10)
         
         # Top: Connection and controls
-        top_layout = QHBoxLayout()
+        top_group = QWidget()
+        top_layout = QHBoxLayout(top_group)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(12)
         top_layout.addWidget(self._create_connection_panel(), stretch=1)
         top_layout.addWidget(self._create_control_panel(), stretch=5)
-        main_layout.addLayout(top_layout)
+        main_layout.addWidget(top_group)
         
         # Middle: Visualizers + fixed main controls row
         top_pane = QWidget()
@@ -5017,6 +5018,7 @@ Like the app?<br>
                         set_current_text(target)
                     elif callable(set_value):
                         set_value({'size': 0, 'speed': 1, 'both': 2}.get(target, 2))
+                self._refresh_motion_ramp_visual_state()
                 if hasattr(self, 'fill_gate_scale_spin'):
                     self.fill_gate_scale_spin.setValue(
                         self._fill_gate_scale_to_percent(
@@ -5181,7 +5183,7 @@ Like the app?<br>
         self.volume_slider.label.setFixedWidth(60)
         self.volume_slider.setMinimumWidth(180)
         self.volume_slider.setContentsMargins(0, 0, 0, 0)
-        btn_layout.addWidget(self.volume_slider, 0, 2, 1, 1, Qt.AlignmentFlag.AlignHCenter)
+        btn_layout.addWidget(self.volume_slider, 0, 2, 1, 1, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
 
         # Frequency displays - stacked vertically
         freq_display_layout = QVBoxLayout()
@@ -5725,12 +5727,11 @@ Like the app?<br>
 
         return widget
     
-    def _create_main_controls_panel(self) -> QGroupBox:
+    def _create_main_controls_panel(self) -> QWidget:
         """Main stroke controls panel."""
-        group = QGroupBox("")
-        group.setStyleSheet("QGroupBox { border: 1px solid #3b6f96; border-radius: 4px; }")
+        group = QWidget()
         layout = QHBoxLayout(group)
-        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
         # Temporary pin: stroke mode selector hidden during main development.
@@ -5768,7 +5769,10 @@ Like the app?<br>
             "over this many hours."
         )
         self.intensity_ramp_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'intensity_ramp_hours', float(v))
+            lambda v: (
+                setattr(self.config.stroke, 'intensity_ramp_hours', float(v)),
+                self._refresh_motion_ramp_visual_state(),
+            )
         )
 
         self.intensity_ramp_target_combo = QSlider(Qt.Orientation.Horizontal)
@@ -5789,7 +5793,10 @@ Like the app?<br>
             "size = orbit size only, speed = orbit speed only, both = size + speed."
         )
         self.intensity_ramp_target_combo.valueChanged.connect(
-            lambda idx: setattr(self.config.stroke, 'intensity_ramp_target', idx_to_target.get(int(idx), 'both'))
+            lambda idx: (
+                setattr(self.config.stroke, 'intensity_ramp_target', idx_to_target.get(int(idx), 'both')),
+                self._refresh_motion_ramp_visual_state(),
+            )
         )
 
         ramp_target_widget = QWidget()
@@ -5799,13 +5806,22 @@ Like the app?<br>
         ramp_target_layout.addWidget(self.intensity_ramp_target_combo)
         ramp_target_labels = QHBoxLayout()
         ramp_target_labels.setContentsMargins(0, 0, 0, 0)
-        ramp_target_labels.addWidget(QLabel("Size"), 0, Qt.AlignmentFlag.AlignLeft)
-        ramp_target_labels.addWidget(QLabel("Speed"), 1, Qt.AlignmentFlag.AlignHCenter)
-        ramp_target_labels.addWidget(QLabel("Both"), 0, Qt.AlignmentFlag.AlignRight)
+        self.intensity_ramp_target_size_label = QLabel("Size")
+        self.intensity_ramp_target_speed_label = QLabel("Speed")
+        self.intensity_ramp_target_both_label = QLabel("Both")
+        ramp_target_labels.addWidget(self.intensity_ramp_target_size_label, 0, Qt.AlignmentFlag.AlignLeft)
+        ramp_target_labels.addWidget(self.intensity_ramp_target_speed_label, 1, Qt.AlignmentFlag.AlignHCenter)
+        ramp_target_labels.addWidget(self.intensity_ramp_target_both_label, 0, Qt.AlignmentFlag.AlignRight)
         ramp_target_layout.addLayout(ramp_target_labels)
+        self._intensity_ramp_target_labels = {
+            'size': self.intensity_ramp_target_size_label,
+            'speed': self.intensity_ramp_target_speed_label,
+            'both': self.intensity_ramp_target_both_label,
+        }
 
         tempo_layout.addWidget(self.intensity_ramp_spin)
         tempo_layout.addWidget(ramp_target_widget)
+        self._refresh_motion_ramp_visual_state()
         tempo_layout.addStretch(1)
 
         self.fill_gate_scale_spin = SliderWithLabel(
@@ -5848,6 +5864,8 @@ Like the app?<br>
         self.main_silence_close_slider.setMinimumWidth(260)
         self.main_silence_close_slider.valueChanged.connect(self._on_main_silence_close_change)
 
+        self._refresh_main_controls_value_label_colors()
+
         sensitivity_volume_widget = QWidget()
         sensitivity_volume_layout = QVBoxLayout(sensitivity_volume_widget)
         sensitivity_volume_layout.setContentsMargins(0, 0, 0, 0)
@@ -5863,6 +5881,7 @@ Like the app?<br>
             widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             layout.addWidget(widget, stretch=1)
 
+        self._refresh_motion_ramp_visual_state()
         return group
 
     def _fill_gate_scale_to_percent(self, scale: float) -> float:
@@ -5906,6 +5925,49 @@ Like the app?<br>
 
     def _on_tempo_lock_required_toggle(self, checked: bool) -> None:
         setattr(self.config.beat, 'tempo_lock_required', bool(checked))
+
+    def _refresh_main_controls_value_label_colors(self) -> None:
+        always_white = '#fff'
+        for attr_name in ('fill_gate_scale_spin', 'main_silence_close_slider'):
+            slider_widget = getattr(self, attr_name, None)
+            if slider_widget is not None and hasattr(slider_widget, 'value_label'):
+                slider_widget.value_label.setStyleSheet(f"color: {always_white};")
+
+    def _refresh_motion_ramp_visual_state(self) -> None:
+        active_color = '#fff'
+        inactive_color = '#0af'
+
+        duration_slider = getattr(self, 'intensity_ramp_spin', None)
+        if duration_slider is not None and hasattr(duration_slider, 'value_label'):
+            try:
+                is_running = float(duration_slider.value()) > 0.0
+            except Exception:
+                is_running = False
+            duration_slider.value_label.setStyleSheet(
+                f"color: {active_color if is_running else inactive_color};"
+            )
+            if hasattr(duration_slider, 'slider'):
+                duration_slider.slider.setStyleSheet("")
+
+        self._refresh_main_controls_value_label_colors()
+
+        target_slider = getattr(self, 'intensity_ramp_target_combo', None)
+        target_labels = getattr(self, '_intensity_ramp_target_labels', {}) or {}
+        if target_slider is None or not target_labels:
+            return
+
+        try:
+            active_idx = int(target_slider.value())
+        except Exception:
+            active_idx = 2
+
+        for idx, key in enumerate(('size', 'speed', 'both')):
+            label_widget = target_labels.get(key)
+            if label_widget is None:
+                continue
+            label_widget.setStyleSheet(
+                f"color: {active_color if idx == active_idx else inactive_color};"
+            )
 
     def _on_main_silence_close_change(self, value: float) -> None:
         ratio = 4.0  # Maintain fixed hysteresis shape: close/open
