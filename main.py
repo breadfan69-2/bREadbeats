@@ -5159,6 +5159,7 @@ Like the app?<br>
         self.start_btn = QPushButton("▶ Start")
         self.start_btn.clicked.connect(lambda _checked=False: self._on_start_stop())
         self.start_btn.setFixedSize(100, 40)
+        self.start_btn.setStyleSheet("color: #fff;")
         start_stack = QVBoxLayout()
         start_stack.setSpacing(2)
         start_stack.addWidget(self.start_btn)
@@ -5169,6 +5170,7 @@ Like the app?<br>
         self.play_btn.clicked.connect(lambda _checked=False: self._on_play_pause())
         self.play_btn.setEnabled(False)
         self.play_btn.setFixedSize(100, 40)
+        self.play_btn.setStyleSheet("color: #fff;")
         play_stack = QVBoxLayout()
         play_stack.setSpacing(2)
         play_stack.addWidget(self.play_btn)
@@ -5726,6 +5728,7 @@ Like the app?<br>
     def _create_main_controls_panel(self) -> QGroupBox:
         """Main stroke controls panel."""
         group = QGroupBox("")
+        group.setStyleSheet("QGroupBox { border: 1px solid #3b6f96; border-radius: 4px; }")
         layout = QHBoxLayout(group)
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(10)
@@ -5796,9 +5799,9 @@ Like the app?<br>
         ramp_target_layout.addWidget(self.intensity_ramp_target_combo)
         ramp_target_labels = QHBoxLayout()
         ramp_target_labels.setContentsMargins(0, 0, 0, 0)
-        ramp_target_labels.addWidget(QLabel("size"), 0, Qt.AlignmentFlag.AlignLeft)
-        ramp_target_labels.addWidget(QLabel("speed"), 1, Qt.AlignmentFlag.AlignHCenter)
-        ramp_target_labels.addWidget(QLabel("both"), 0, Qt.AlignmentFlag.AlignRight)
+        ramp_target_labels.addWidget(QLabel("Size"), 0, Qt.AlignmentFlag.AlignLeft)
+        ramp_target_labels.addWidget(QLabel("Speed"), 1, Qt.AlignmentFlag.AlignHCenter)
+        ramp_target_labels.addWidget(QLabel("Both"), 0, Qt.AlignmentFlag.AlignRight)
         ramp_target_layout.addLayout(ramp_target_labels)
 
         tempo_layout.addWidget(self.intensity_ramp_spin)
@@ -5829,7 +5832,7 @@ Like the app?<br>
         self.pulse_settings_btn.setStyleSheet("text-align: center;")
 
         self.main_silence_close_slider = SliderWithLabel(
-            "volume/motion threshold",
+            "Volume/Motion Threshold",
             0.0,
             2.0,
             self._silence_close_to_normalized(
@@ -7905,10 +7908,12 @@ Like the app?<br>
             self.start_btn.setChecked(running)
             self.start_btn.setEnabled(start_enabled)
             self.start_btn.setText(ui_state.start_text)
+            self.start_btn.setStyleSheet(f"color: {'#fff' if running else '#0af'};")
 
             self.play_btn.setChecked(sending)
             self.play_btn.setEnabled(play_enabled)
             self.play_btn.setText(play_button_text(sending))
+            self.play_btn.setStyleSheet(f"color: {'#fff' if sending else '#0af'};")
 
         if transitioning:
             self.start_btn.setText("Working...")
