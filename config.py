@@ -95,7 +95,7 @@ class BeatDetectionConfig:
     teaching_isolation_mode: bool = True        # Branch-only: suspend selected legacy runtime modifiers while learning drives motion
     teaching_relax_phase1_gates: bool = False   # Enforce dual-band/mid-trigger legacy gates unless explicitly relaxed
     teaching_ignore_traffic_lights: bool = False  # Re-enable traffic-light stroke readiness by default
-    tempo_lock_required: bool = True             # Require metronome lock confidence for stroke readiness
+    tempo_lock_required: bool = False            # Require metronome lock confidence for stroke readiness
     teaching_metronome_relaxed_confidence: float = 0.25  # Metronome-only fallback confidence for relaxed readiness
     teaching_stroke_ready_grace_ms: float = 2662.0  # Hold readiness briefly through short confidence dips
     teaching_stroke_finish_beats: int = 4        # When readiness drops, allow this many final beat strokes before idling
@@ -648,7 +648,7 @@ class BeatDetectionConfig:
     teaching_isolation_mode: bool = True        # Branch-only: suspend selected legacy runtime modifiers while learning drives motion
     teaching_relax_phase1_gates: bool = False   # Enforce dual-band/mid-trigger legacy gates unless explicitly relaxed
     teaching_ignore_traffic_lights: bool = True  # Re-enable traffic-light stroke readiness by default
-    tempo_lock_required: bool = True             # Require metronome lock confidence for stroke readiness
+    tempo_lock_required: bool = False            # Require metronome lock confidence for stroke readiness
     teaching_metronome_relaxed_confidence: float = 0.34  # Metronome-only fallback confidence for relaxed readiness
     teaching_stroke_ready_grace_ms: float = 2348.0  # Hold readiness briefly through short confidence dips
     teaching_stroke_finish_beats: int = 4        # When readiness drops, allow this many final beat strokes before idling

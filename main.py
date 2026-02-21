@@ -2217,6 +2217,12 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
         self.jitter_effect_action.triggered.connect(self._on_effects_jitter_toggle)
 
+        self.metronome_lock_required_action = options_menu.addAction("Metronome Lock Req'd")
+        assert self.metronome_lock_required_action is not None
+        self.metronome_lock_required_action.setCheckable(True)
+        self.metronome_lock_required_action.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
+        self.metronome_lock_required_action.toggled.connect(self._on_tempo_lock_required_toggle)
+
         developer_controls_action = options_menu.addAction("Developer Controls")
         assert developer_controls_action is not None
         developer_controls_action.triggered.connect(self._open_developer_controls_window)
@@ -4963,6 +4969,7 @@ Like the app?<br>
                 getattr(self, 'fill_gate_scale_spin', None),
                 getattr(self, 'main_silence_close_slider', None),
                 getattr(self, 'jitter_effect_action', None),
+                getattr(self, 'metronome_lock_required_action', None),
                 getattr(self, 'host_edit', None),
                 getattr(self, 'port_spin', None),
                 getattr(self, 'pulse_freq_range_slider', None),
@@ -5009,7 +5016,9 @@ Like the app?<br>
                     self.mode_combo.setCurrentIndex(0)
                 self.config.stroke.min_interval_ms = 150
                 if hasattr(self, 'tempo_lock_required_cb'):
-                    self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
+                    self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
+                if hasattr(self, 'metronome_lock_required_action'):
+                    self.metronome_lock_required_action.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
                 if hasattr(self, 'intensity_ramp_spin'):
                     self.intensity_ramp_spin.setValue(
                         float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0)
@@ -5753,7 +5762,7 @@ Like the app?<br>
         tempo_layout.setContentsMargins(0, 0, 0, 0)
         tempo_layout.setSpacing(4)
         self.tempo_lock_required_cb = QCheckBox()
-        self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', True)))
+        self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
         self.tempo_lock_required_cb.toggled.connect(self._on_tempo_lock_required_toggle)
         self.tempo_lock_required_cb.setVisible(False)
 
@@ -5931,7 +5940,20 @@ Like the app?<br>
         self._preview_fill_requirement_ghosts()
 
     def _on_tempo_lock_required_toggle(self, checked: bool) -> None:
-        setattr(self.config.beat, 'tempo_lock_required', bool(checked))
+        is_required = bool(checked)
+        setattr(self.config.beat, 'tempo_lock_required', is_required)
+
+        action = getattr(self, 'metronome_lock_required_action', None)
+        if action is not None and action.isChecked() != is_required:
+            action.blockSignals(True)
+            action.setChecked(is_required)
+            action.blockSignals(False)
+
+        checkbox = getattr(self, 'tempo_lock_required_cb', None)
+        if checkbox is not None and checkbox.isChecked() != is_required:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(is_required)
+            checkbox.blockSignals(False)
 
     def _refresh_main_controls_value_label_colors(self) -> None:
         always_white = '#fff'
