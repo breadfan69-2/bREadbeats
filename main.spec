@@ -1,51 +1,55 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
-from pathlib import Path
 
-# Collect PyQt6 properly
-pyqt_datas, pyqt_binaries, pyqt_hiddenimports = collect_all('PyQt6')
-
-datas = [
-    ('bREadbeats.ico', '.'),
-    ('splash_screen.png', '.'),
-    ('C:\\Users\\andre\\.bREadbeats\\presets.json', '.bREadbeats'),
-    ('learned_profile_slots.json', '.'),
-    ('defaults/learning/profile.refresh_3h_single.json', 'defaults/learning'),
-    ('defaults/learning/rule_fit.refresh_3h_single_v3.json', 'defaults/learning'),
-    ('datasets/rule_fit.json', 'datasets'),
-]
-
-if Path('config.json').exists():
-    datas.append(('config.json', '.'))
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=pyqt_binaries,
-    datas=datas + pyqt_datas,
+    binaries=[],
+    datas=[
+        ('bREadbeats.ico', '.'),
+        ('splash_screen.png', '.'),
+        # Bundled learning assets (materialized to local files at frozen startup)
+        ('learned_profile_slots.json', '.'),
+        ('defaults/learning/profile.refresh_3h_single.json', 'defaults/learning'),
+        ('defaults/learning/rule_fit.refresh_3h_single_v3.json', 'defaults/learning'),
+        ('datasets/rule_fit.json', 'datasets'),
+    ],
     hiddenimports=[
-        'scipy.signal',
-        'scipy.signal._sosfilt',
-        'scipy.signal._lfilter',
-        'pyqtgraph',
-        'comtypes',
-        'PIL',
-    ] + pyqt_hiddenimports,
+        'config_persistence',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        'librosa',
+        'aubio',
         'matplotlib',
-        'tkinter',
-        'pytest',
+        'sklearn',
+        'numba',
+        'llvmlite',
+        'imageio',
+        'imageio_ffmpeg',
+        'PIL',
+        'pictex',
         'setuptools',
-        'numpy.tests',
-        'numpy.testing',
-        'numpy.f2py',
-        'numpy.distutils',
-        'numpy.doc',
-        'scipy.tests',
+        'pkg_resources',
+        # Keep scipy.signal only; exclude bulky scipy namespaces not used at runtime.
+        'scipy.cluster',
+        'scipy.constants',
         'scipy.datasets',
+        'scipy.fft',
+        'scipy.fftpack',
+        'scipy.integrate',
+        'scipy.interpolate',
+        'scipy.io',
+        'scipy.ndimage',
+        'scipy.odr',
+        'scipy.optimize',
+        'scipy.sparse',
+        'scipy.spatial',
+        'scipy.special',
+        'scipy.stats',
+        'scipy.tests',
     ],
     noarchive=False,
     optimize=0,
@@ -57,8 +61,8 @@ exe = EXE(
     a.scripts,
     a.binaries,
     a.datas,
-    [],
     name='bREadbeats',
+    exclude_binaries=False,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

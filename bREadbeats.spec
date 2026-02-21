@@ -7,6 +7,7 @@ a = Analysis(
     binaries=[],
     datas=[
         ('bREadbeats.ico', '.'),
+        ('splash_screen.png', '.'),
         # Bundled learning assets (materialized to local files at frozen startup)
         ('learned_profile_slots.json', '.'),
         ('defaults/learning/profile.refresh_3h_single.json', 'defaults/learning'),
