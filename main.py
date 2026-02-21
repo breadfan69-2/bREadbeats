@@ -1775,6 +1775,7 @@ class BREadbeatsWindow(QMainWindow):
     def _mark_transport_ready(self) -> None:
         """Enable transport input after startup and apply queued Start, if any."""
         self._transport_ready = True
+        self._sync_transport_buttons()
         if self._transport_pending_start and not self.is_running:
             self._transport_pending_start = False
             QTimer.singleShot(0, self._apply_pending_start)
@@ -2206,10 +2207,6 @@ class BREadbeatsWindow(QMainWindow):
             action.setChecked(i == default_viz_index)
             action.triggered.connect(lambda checked, idx=i: self._on_viz_menu_change(idx))
             self._viz_type_actions.append(action)
-
-        geometry_rest_action = options_menu.addAction("Geometry Rest State...")
-        assert geometry_rest_action is not None
-        geometry_rest_action.triggered.connect(self._on_options_geometry_rest_state)
 
         effects_menu = options_menu.addMenu("Effects")
         assert effects_menu is not None
@@ -3317,20 +3314,22 @@ class BREadbeatsWindow(QMainWindow):
         silence_layout.addWidget(silence_info)
 
         silence_open_slider = SliderWithLabel(
-            "Silence gate open (RMS)",
+            "Silence Threshold Open",
             0.001,
             0.250,
             float(getattr(self.config.stroke, 'silence_threshold', 0.010825) or 0.010825),
             3,
         )
+        silence_open_slider.setToolTip("Audio amplitude below this RMS level enters silence mode (motion stops, dot parks)")
 
         silence_close_slider = SliderWithLabel(
-            "Silence gate close (RMS)",
+            "Silence Threshold Close",
             0.001,
             0.300,
             float(getattr(self.config.stroke, 'silence_close_threshold', 0.0433) or 0.0433),
             3,
         )
+        silence_close_slider.setToolTip("Audio amplitude must exceed this RMS level to exit silence mode (motion resumes)")
 
         def _set_silence_open(v: float) -> None:
             open_v = float(v)
@@ -3364,8 +3363,9 @@ class BREadbeatsWindow(QMainWindow):
         syncope_layout = QVBoxLayout(syncope_group)
 
         # On/Off checkbox
-        syncope_enabled_cb = QCheckBox("Enable syncopation detection")
+        syncope_enabled_cb = QCheckBox("Allow Off-Beat Strokes")
         syncope_enabled_cb.setChecked(bool(getattr(self.config.beat, 'syncopation_enabled', True)))
+        syncope_enabled_cb.setToolTip("When enabled, system detects syncopation and fires rapid 1-beat strokes on off-beats")
         syncope_enabled_cb.stateChanged.connect(
             lambda state: setattr(self.config.beat, 'syncopation_enabled', state == 2)
         )
@@ -3374,8 +3374,9 @@ class BREadbeatsWindow(QMainWindow):
         # Band selector
         from PyQt6.QtWidgets import QComboBox, QHBoxLayout as QHBox
         band_row = QHBox()
-        band_label = QLabel("Detection band:")
+        band_label = QLabel("Off-Beat Detection Band:")
         band_label.setStyleSheet("color: #ccc;")
+        band_label.setToolTip("Which frequency range to scan for off-beat onsets: 'any' = all bands, or specific range (sub_bass/low_mid/mid/high)")
         band_row.addWidget(band_label)
         band_combo = QComboBox()
         band_options = ['any', 'sub_bass', 'low_mid', 'mid', 'high']
@@ -3391,12 +3392,13 @@ class BREadbeatsWindow(QMainWindow):
 
         # Syncopation window slider
         syncope_window_slider = SliderWithLabel(
-            "Off-beat window (± beat fraction)",
+            "Off-Beat Timing Window",
             0.05,
             0.30,
             float(getattr(self.config.beat, 'syncopation_window', 0.16)),
             2,
         )
+        syncope_window_slider.setToolTip("Search window (as fraction of beat period) around expected off-beat position. Wider window = more permissive but slower")
         syncope_window_slider.valueChanged.connect(
             lambda v: setattr(self.config.beat, 'syncopation_window', v)
         )
@@ -3404,12 +3406,13 @@ class BREadbeatsWindow(QMainWindow):
 
         # BPM limit slider
         syncope_bpm_slider = SliderWithLabel(
-            "BPM limit (disable above)",
+            "Max BPM for Off-Beats",
             80.0,
             200.0,
             float(getattr(self.config.beat, 'syncopation_bpm_limit', 130.0)),
             0,
         )
+        syncope_bpm_slider.setToolTip("Disable off-beat detection above this BPM (to prevent false positives in very fast music)")
         syncope_bpm_slider.valueChanged.connect(
             lambda v: setattr(self.config.beat, 'syncopation_bpm_limit', v)
         )
@@ -3477,16 +3480,17 @@ class BREadbeatsWindow(QMainWindow):
                 canvas.show_bin_range_ghost(key, int(low_bin), int(high_bin), label, color=color, duration_s=5.0, dashed=dashed)
 
 
-        bass_gate_cb = QCheckBox("Require bass z-score bands for beat/sync stroke motion")
+        bass_gate_cb = QCheckBox("Require Bass Energy for Motion")
         bass_gate_cb.setChecked(getattr(self.config.beat, 'strict_bass_motion_gate_enabled', False))
+        bass_gate_cb.setToolTip("When enabled: motion only fires if sub-bass or low-mid frequency band has strong energy")
         bass_gate_cb.stateChanged.connect(
             lambda state: setattr(self.config.beat, 'strict_bass_motion_gate_enabled', state == 2)
         )
         gate_layout.addWidget(bass_gate_cb)
 
         motion_cutoff_row = QHBoxLayout()
-        motion_cutoff_label = QLabel("Allow motion only below (Hz):")
-        motion_cutoff_label.setToolTip("When Bass Gating is enabled: stroke motion is allowed only for fired bands whose lower edge is below this cutoff")
+        motion_cutoff_label = QLabel("Motion Bass Cutoff Frequency:")
+        motion_cutoff_label.setToolTip("If Bass Energy check is on: only allow strokes from sounds whose lowest frequency is below this cutoff (Hz)")
         motion_cutoff_row.addWidget(motion_cutoff_label)
 
         self.motion_freq_cutoff_spin = QSpinBox()
@@ -3506,16 +3510,16 @@ class BREadbeatsWindow(QMainWindow):
         motion_cutoff_row.addStretch()
         gate_layout.addLayout(motion_cutoff_row)
 
-        amp_fill_gate_cb = QCheckBox("Enable overall amplitude + fill gate")
+        amp_fill_gate_cb = QCheckBox("Enable Spectral Fullness Gate")
         amp_fill_gate_cb.setChecked(bool(getattr(self.config.stroke, 'overall_amp_fill_gate_enabled', True)))
-        amp_fill_gate_cb.setToolTip("Require both overall amplitude and spectrum fill before beat/downbeat/syncopation strokes fire")
+        amp_fill_gate_cb.setToolTip("Require both overall amplitude AND spectrum 'fullness' before strokes fire (prevents sparse/thin sections from triggering)")
         amp_fill_gate_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'overall_amp_fill_gate_enabled', state == 2)
         )
         gate_layout.addWidget(amp_fill_gate_cb)
 
         amp_fill_target_slider = SliderWithLabel(
-            "Overall amp target (norm)",
+            "Required Spectral Fullness",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'overall_amp_fill_target', 0.5) or 0.5),
@@ -3524,11 +3528,11 @@ class BREadbeatsWindow(QMainWindow):
         amp_fill_target_slider.valueChanged.connect(
             lambda v: (setattr(self.config.stroke, 'overall_amp_fill_target', float(v)), _update_overall_amp_fill_refs())
         )
-        amp_fill_target_slider.setToolTip("Normalized amplitude target (0-1). Gate min amplitude is target minus tolerance")
+        amp_fill_target_slider.setToolTip("Normalized target amplitude (0-1). Gates won't fire below this intensity range")
         gate_layout.addWidget(amp_fill_target_slider)
 
         amp_fill_tol_slider = SliderWithLabel(
-            "Overall amp tolerance (norm)",
+            "Amplitude Range Width",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'overall_amp_fill_tolerance', 0.5) or 0.5),
@@ -3537,43 +3541,43 @@ class BREadbeatsWindow(QMainWindow):
         amp_fill_tol_slider.valueChanged.connect(
             lambda v: (setattr(self.config.stroke, 'overall_amp_fill_tolerance', float(v)), _update_overall_amp_fill_refs())
         )
-        amp_fill_tol_slider.setToolTip("Normalized tolerance (0-1) below amp target before gate blocks")
+        amp_fill_tol_slider.setToolTip("Normalized tolerance band around the target (±). Strokes fire when amplitude stays in this zone")
         gate_layout.addWidget(amp_fill_tol_slider)
 
         downbeat_fill_slider = SliderWithLabel(
-            "Downbeat fill required (occ 0-1)",
+            "Downbeat Spectral Fullness Requirement",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'downbeat_overall_amp_fill_required', 0.08) or 0.08),
             2,
         )
-        downbeat_fill_slider.setToolTip("Waveform preview: symmetric ± amplitude guide for downbeat fill requirement")
+        downbeat_fill_slider.setToolTip("How 'full' the spectrum must be (0-1) for downbeat to fire. Higher = requires more filled/dense spectrum")
         downbeat_fill_slider.valueChanged.connect(
             lambda v: (setattr(self.config.stroke, 'downbeat_overall_amp_fill_required', float(v)), _update_fill_requirement_refs())
         )
         gate_layout.addWidget(downbeat_fill_slider)
 
         beat_fill_slider = SliderWithLabel(
-            "Beat fill required (occ 0-1)",
+            "Beat Spectral Fullness Requirement",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'beat_overall_amp_fill_required', 0.10) or 0.10),
             2,
         )
-        beat_fill_slider.setToolTip("Waveform preview: symmetric ± amplitude guide for beat fill requirement")
+        beat_fill_slider.setToolTip("How 'full' the spectrum must be (0-1) for beat strokes to fire. Higher = requires fuller, richer spectrum")
         beat_fill_slider.valueChanged.connect(
             lambda v: (setattr(self.config.stroke, 'beat_overall_amp_fill_required', float(v)), _update_fill_requirement_refs())
         )
         gate_layout.addWidget(beat_fill_slider)
 
         sync_fill_slider = SliderWithLabel(
-            "Syncopation fill required (occ 0-1)",
+            "Off-Beat Spectral Fullness Requirement",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'syncopation_overall_amp_fill_required', 0.12) or 0.12),
             2,
         )
-        sync_fill_slider.setToolTip("Waveform preview: symmetric ± amplitude guide for syncopation fill requirement")
+        sync_fill_slider.setToolTip("How 'full' the spectrum must be (0-1) for off-beat strokes to fire. Usually highest since off-beats are stricter")
         sync_fill_slider.valueChanged.connect(
             lambda v: (setattr(self.config.stroke, 'syncopation_overall_amp_fill_required', float(v)), _update_fill_requirement_refs())
         )
@@ -3660,16 +3664,16 @@ class BREadbeatsWindow(QMainWindow):
 
         def _add_fill_sustain_slider(title: str, sustain_attr: str) -> None:
             sustain_slider = SliderWithLabel(
-                f"{title} sustained fullness (frames)",
+                f"{title} Sustained Fullness Duration",
                 0,
                 15,
                 int(getattr(self.config.stroke, sustain_attr, 3) or 3),
                 0,
             )
             sustain_slider.setToolTip(
-                "Number of consecutive frames (~20ms each) that fill must stay above threshold before stroke fires.\n"
-                "0-1 = instant (no duration check), 3 = ~60ms sustained, 5 = ~100ms, 10 = ~200ms.\n"
-                "Higher values prevent single-frame fill spikes from triggering strokes."
+                "Consecutive frames (~20ms each) that spectrum must stay full before stroke fires.\n"
+                "0-1 = instant, 3 = ~60ms, 5 = ~100ms, 10 = ~200ms.\n"
+                "Prevents single-frame spikes from triggering."
             )
             sustain_slider.valueChanged.connect(
                 lambda v: setattr(self.config.stroke, sustain_attr, int(v))
@@ -3683,15 +3687,16 @@ class BREadbeatsWindow(QMainWindow):
         _add_fill_bin_range_row("Sync fill bins", 'syncopation_fill_bin_low', 'syncopation_fill_bin_high', 'sync_fill_bin_range')
         _add_fill_sustain_slider("Syncopation", 'syncopation_overall_amp_fill_sustain_frames')
 
-        dual_band_gate_cb = QCheckBox("Enable dual-band dB gate (sub-bass + high)")
+        dual_band_gate_cb = QCheckBox("Enable Sub-Bass + Treble Lock")
         dual_band_gate_cb.setChecked(bool(getattr(self.config.stroke, 'dual_band_db_gate_enabled', False)))
+        dual_band_gate_cb.setToolTip("Require BOTH sub-bass energy AND high-frequency presence before strokes fire (prevents bass-only or treble-only false positives)")
         dual_band_gate_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'dual_band_db_gate_enabled', state == 2)
         )
         gate_layout.addWidget(dual_band_gate_cb)
 
         dual_sub_bass_db_slider = SliderWithLabel(
-            "Dual-band sub-bass min (dB)",
+            "Sub-Bass Minimum Energy (dB)",
             -100.0,
             -50.0,
             float(getattr(self.config.stroke, 'dual_band_sub_bass_db_min', -80.0) or -80.0),
@@ -3703,11 +3708,11 @@ class BREadbeatsWindow(QMainWindow):
                 _show_freqdb_ghost_ref('dual_sub_bass_db_min', float(v), 'Dual sub-bass dB', '#5CFF9A', band='low', mode='db_line')
             )
         )
-        dual_sub_bass_db_slider.setToolTip("Minimum sub-bass dB required by dual-band gate; shown as a horizontal dB line")
+        dual_sub_bass_db_slider.setToolTip("Sub-bass must be this strong (in dB) for the gate to pass. Lower (more negative) = more permissive; higher (closer to 0) = stricter")
         gate_layout.addWidget(dual_sub_bass_db_slider)
 
         dual_high_db_slider = SliderWithLabel(
-            "Dual-band high min (dB)",
+            "Treble Minimum Energy (dB)",
             -100.0,
             -50.0,
             float(getattr(self.config.stroke, 'dual_band_high_db_min', -80.0) or -80.0),
@@ -3719,7 +3724,7 @@ class BREadbeatsWindow(QMainWindow):
                 _show_freqdb_ghost_ref('dual_high_db_min', float(v), 'Dual high dB', '#FF9AD9', band='high', mode='db_line')
             )
         )
-        dual_high_db_slider.setToolTip("Minimum high-band dB required by dual-band gate; shown as a horizontal dB line")
+        dual_high_db_slider.setToolTip("Treble/high-band must be this strong (in dB) for gate to pass. Lower = more permissive; higher = stricter")
         gate_layout.addWidget(dual_high_db_slider)
 
         high_tip_gate_cb = QCheckBox("Enable high-tip fullness gate")
@@ -4324,15 +4329,15 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(high_info)
 
         high_band_window_row = QHBoxLayout()
-        high_band_window_label = QLabel("High-band gate window (frames):")
+        high_band_window_label = QLabel("Treble Presence Window (frames):")
         high_band_window_label.setStyleSheet("color: #ccc;")
         high_band_window_row.addWidget(high_band_window_label)
         high_band_window_spin = QSpinBox()
         high_band_window_spin.setMinimum(8)
         high_band_window_spin.setMaximum(60)
         high_band_window_spin.setValue(int(getattr(self.config.stroke, 'high_band_window_frames', 18) or 18))
-        high_band_window_spin.setToolTip("High-band gate history window (frames)")
-        high_band_window_label.setToolTip("High-band gate history window (frames)")
+        high_band_window_spin.setToolTip("How many recent frames to check for sustained high-band activity. Larger = more stable confirmation")
+        high_band_window_label.setToolTip("How many recent frames to check for sustained high-band activity. Larger = more stable confirmation")
         high_band_window_spin.valueChanged.connect(
             lambda v: (
                 setattr(self.config.stroke, 'high_band_window_frames', int(v)),
@@ -4342,13 +4347,14 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addLayout(high_band_window_row)
 
         high_mean_slider = SliderWithLabel(
-            "High-band mean threshold (norm)",
+            "Treble Activity Floor",
             0.001,
             2.00,
             float(getattr(self.config.stroke, 'high_band_mean_threshold', 0.12) or 0.12),
             3,
             step=0.001,
         )
+        high_mean_slider.setToolTip("Average treble energy (normalized 0-1) required across the window. Filters out brief spikes")
         high_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_mean_threshold', 'high_band_mean', 'High mean', '#FF66CC', ghost_band='high'))
         _style_ref_slider(high_mean_slider, '#FF66CC', 'High mean')
         flux_layout.addWidget(high_mean_slider)
@@ -4366,13 +4372,14 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(high_floor_slider)
 
         high_occ_slider = SliderWithLabel(
-            "High-band occupancy threshold (0-1)",
+            "Treble Occupancy Requirement",
             0.00,
             1.00,
             float(getattr(self.config.stroke, 'high_band_occupancy_threshold', 0.55) or 0.55),
             3,
             step=0.001,
         )
+        high_occ_slider.setToolTip("Fraction of frames (0-1) that must exceed threshold for confirmation. Higher = stricter presence check")
         high_occ_slider.valueChanged.connect(_set_stroke_attr_with_ref('high_band_occupancy_threshold', 'high_band_occ', 'High occ', '#FFAAEE', dashed=True, ghost_band='high', ghost_range=True, ghost_mode='occupancy'))
         _style_ref_slider(high_occ_slider, '#FFAAEE', 'High occ')
         flux_layout.addWidget(high_occ_slider)
@@ -5161,7 +5168,7 @@ Like the app?<br>
         self.start_btn = QPushButton("▶ Start")
         self.start_btn.clicked.connect(lambda _checked=False: self._on_start_stop())
         self.start_btn.setFixedSize(100, 40)
-        self.start_btn.setStyleSheet("color: #fff;")
+        self.start_btn.setStyleSheet("color: #0af;")
         start_stack = QVBoxLayout()
         start_stack.setSpacing(2)
         start_stack.addWidget(self.start_btn)
@@ -5172,7 +5179,7 @@ Like the app?<br>
         self.play_btn.clicked.connect(lambda _checked=False: self._on_play_pause())
         self.play_btn.setEnabled(False)
         self.play_btn.setFixedSize(100, 40)
-        self.play_btn.setStyleSheet("color: #fff;")
+        self.play_btn.setStyleSheet("color: #0af;")
         play_stack = QVBoxLayout()
         play_stack.setSpacing(2)
         play_stack.addWidget(self.play_btn)
@@ -7600,29 +7607,29 @@ Like the app?<br>
         acf_row.addWidget(acf_spin)
         tempo_resp_layout.addLayout(acf_row)
 
-        alpha_slow_slider = SliderWithLabel("BPM alpha (slow)", 0.01, 0.20, getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03), 3)
+        alpha_slow_slider = SliderWithLabel("BPM Adaptation (Uncertain)", 0.01, 0.20, getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03), 3)
         alpha_slow_slider.valueChanged.connect(self._on_metronome_bpm_alpha_slow_change)
-        _set_slider_row_tooltip(alpha_slow_slider, "Smoothing used when confidence is low. Lower = steadier but slower relock; higher = faster catch-up.")
+        _set_slider_row_tooltip(alpha_slow_slider, "How fast BPM locks when beat signal is unclear. Lower = safer, slower lock; Higher = aggressive adaptation")
         tempo_resp_layout.addWidget(alpha_slow_slider)
 
-        alpha_fast_slider = SliderWithLabel("BPM alpha (fast)", 0.05, 0.40, getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22), 3)
+        alpha_fast_slider = SliderWithLabel("BPM Adaptation (Confident)", 0.05, 0.40, getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22), 3)
         alpha_fast_slider.valueChanged.connect(self._on_metronome_bpm_alpha_fast_change)
-        _set_slider_row_tooltip(alpha_fast_slider, "Smoothing used when confidence is high. Higher values react faster to tempo changes.")
+        _set_slider_row_tooltip(alpha_fast_slider, "How fast BPM locks when beat is strong and clear. Lower = stable, conservative; Higher = snappy response")
         tempo_resp_layout.addWidget(alpha_fast_slider)
 
-        pll_window_slider = SliderWithLabel("PLL window", 0.10, 0.50, getattr(self.config.beat, 'metronome_pll_window', 0.35), 2)
+        pll_window_slider = SliderWithLabel("Timing Flex Window", 0.10, 0.50, getattr(self.config.beat, 'metronome_pll_window', 0.35), 2)
         pll_window_slider.valueChanged.connect(self._on_metronome_pll_window_change)
-        _set_slider_row_tooltip(pll_window_slider, "How far from expected phase an onset can be and still correct metronome timing.")
+        _set_slider_row_tooltip(pll_window_slider, "How much timing drift (as beat fraction) allowed before auto-correction kicks in. Higher = more tolerant; Lower = stricter")
         tempo_resp_layout.addWidget(pll_window_slider)
 
-        pll_base_slider = SliderWithLabel("PLL gain (base)", 0.01, 0.20, getattr(self.config.beat, 'metronome_pll_base_gain', 0.09), 3)
+        pll_base_slider = SliderWithLabel("Timing Correction Strength", 0.01, 0.20, getattr(self.config.beat, 'metronome_pll_base_gain', 0.09), 3)
         pll_base_slider.valueChanged.connect(self._on_metronome_pll_base_gain_change)
-        _set_slider_row_tooltip(pll_base_slider, "Base strength of phase correction on each accepted onset.")
+        _set_slider_row_tooltip(pll_base_slider, "How aggressively to adjust timing when out of sync. Lower = laid-back/behind-the-beat feel; Higher = tight/ahead tracking")
         tempo_resp_layout.addWidget(pll_base_slider)
 
-        pll_conf_slider = SliderWithLabel("PLL gain (conf)", 0.00, 0.20, getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08), 3)
+        pll_conf_slider = SliderWithLabel("Confidence Boost", 0.00, 0.20, getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08), 3)
         pll_conf_slider.valueChanged.connect(self._on_metronome_pll_conf_gain_change)
-        _set_slider_row_tooltip(pll_conf_slider, "Extra phase-correction gain added as confidence rises.")
+        _set_slider_row_tooltip(pll_conf_slider, "Extra timing correction when beat lock is solid. Amplifies the correction intensity. Lower = stable when locked; Higher = responsive")
         tempo_resp_layout.addWidget(pll_conf_slider)
 
         fusion_min_slider = SliderWithLabel("Fusion min ACF wt", 0.00, 0.80, getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20), 2)
