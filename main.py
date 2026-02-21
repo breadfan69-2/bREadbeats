@@ -2112,8 +2112,32 @@ class BREadbeatsWindow(QMainWindow):
         main_menu = menubar.addMenu("Menu")
         assert main_menu is not None
         
-        # Separator
-        main_menu.addSeparator()
+        # Connection submenu
+        connection_menu = main_menu.addMenu("Connection")
+        assert connection_menu is not None
+
+        connection_settings_action = connection_menu.addAction("Settings...")
+        assert connection_settings_action is not None
+        connection_settings_action.triggered.connect(self._on_options_connection)
+
+        self.connection_toggle_action = connection_menu.addAction("Connect")
+        assert self.connection_toggle_action is not None
+        self.connection_toggle_action.triggered.connect(self._on_connect)
+
+        self.connection_test_action = connection_menu.addAction("Test")
+        assert self.connection_test_action is not None
+        self.connection_test_action.triggered.connect(self._on_test)
+        self.connection_test_action.setEnabled(False)
+
+        # Audio Device option
+        audio_device_action = main_menu.addAction("Audio Device...")
+        assert audio_device_action is not None
+        audio_device_action.triggered.connect(self._on_options_audio_device)
+
+        # Device Limits option
+        device_limits_action = main_menu.addAction("Device Limits...")
+        assert device_limits_action is not None
+        device_limits_action.triggered.connect(self._on_device_limits)
         
         # Nerds menu (advanced perf + diagnostics) - inserted near Help later
         nerds_menu = QMenu("Nerds", menubar)
@@ -2157,53 +2181,18 @@ class BREadbeatsWindow(QMainWindow):
         assert fft_diag_action is not None
         fft_diag_action.triggered.connect(self._on_fft_bin_diagnostics)
         
-        # Separator
-        main_menu.addSeparator()
-        
-        # About action
-        about_action = main_menu.addAction("About")
-        assert about_action is not None
-        about_action.triggered.connect(self._on_about)
-        
         # Options menu (separate top-level menu)
         options_menu = menubar.addMenu("Options")
         assert options_menu is not None
         
-        # Audio Device option
-        audio_device_action = options_menu.addAction("Audio Device...")
-        assert audio_device_action is not None
-        audio_device_action.triggered.connect(self._on_options_audio_device)
-        
-        # Connection submenu
-        connection_menu = options_menu.addMenu("Connection")
-        assert connection_menu is not None
-
-        connection_settings_action = connection_menu.addAction("Settings...")
-        assert connection_settings_action is not None
-        connection_settings_action.triggered.connect(self._on_options_connection)
-
-        self.connection_toggle_action = connection_menu.addAction("Connect")
-        assert self.connection_toggle_action is not None
-        self.connection_toggle_action.triggered.connect(self._on_connect)
-
-        self.connection_test_action = connection_menu.addAction("Test")
-        assert self.connection_test_action is not None
-        self.connection_test_action.triggered.connect(self._on_test)
-        self.connection_test_action.setEnabled(False)
-
         beat_detection_action = options_menu.addAction("Beat Detection...")
         assert beat_detection_action is not None
         beat_detection_action.triggered.connect(self._on_options_beat_detection)
 
-        # Device Limits option
-        device_limits_action = options_menu.addAction("Device Limits...")
-        assert device_limits_action is not None
-        device_limits_action.triggered.connect(self._on_device_limits)
-
         # Spectrum visualizer type submenu
         viz_menu = options_menu.addMenu("Spectrum Type")
         assert viz_menu is not None
-        viz_names = ["Waveform", "Freq dB", "FFT Bins (Exact)"]
+        viz_names = ["Waveform", "Freq dB", "Digital FFT"]
         default_viz_index = 0  # Waveform
         self.visualizer_type_combo = QComboBox()  # Hidden combo for state tracking
         self.visualizer_type_combo.addItems(viz_names)
@@ -2216,13 +2205,6 @@ class BREadbeatsWindow(QMainWindow):
             action.setChecked(i == default_viz_index)
             action.triggered.connect(lambda checked, idx=i: self._on_viz_menu_change(idx))
             self._viz_type_actions.append(action)
-
-        # Show/Hide peak indicators
-        self.show_peak_indicators_action = options_menu.addAction("Show Peak Indicators")
-        assert self.show_peak_indicators_action is not None
-        self.show_peak_indicators_action.setCheckable(True)
-        self.show_peak_indicators_action.setChecked(True)  # Peak visible by default
-        self.show_peak_indicators_action.triggered.connect(self._on_show_peak_indicators_menu_toggle)
 
         geometry_rest_action = options_menu.addAction("Geometry Rest State...")
         assert geometry_rest_action is not None
@@ -2237,12 +2219,9 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_effect_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
         self.jitter_effect_action.triggered.connect(self._on_effects_jitter_toggle)
 
-        developer_controls_menu = options_menu.addMenu("Developer Controls")
-        assert developer_controls_menu is not None
-
-        tempo_tracking_action = developer_controls_menu.addAction("Tempo Tracking...")
-        assert tempo_tracking_action is not None
-        tempo_tracking_action.triggered.connect(lambda: self._open_developer_controls_window(tab_index=0))
+        developer_controls_action = options_menu.addAction("Developer Controls")
+        assert developer_controls_action is not None
+        developer_controls_action.triggered.connect(self._open_developer_controls_window)
 
         nerds_menu.addSeparator()
 
@@ -2258,19 +2237,6 @@ class BREadbeatsWindow(QMainWindow):
             self._log_level_actions.append(action)
         self._sync_log_level_menu(getattr(self.config, 'log_level', 'INFO'))
         
-        # Trigger Settings dialog
-        advanced_action = developer_controls_menu.addAction("Trigger Settings...")
-        assert advanced_action is not None
-        advanced_action.triggered.connect(lambda: self._open_developer_controls_window(tab_index=1))
-
-        auto_fill_action = developer_controls_menu.addAction("Auto Fill %...")
-        assert auto_fill_action is not None
-        auto_fill_action.triggered.connect(lambda: self._open_developer_controls_window(tab_index=2))
-
-        motion_readiness_action = developer_controls_menu.addAction("Motion Readiness...")
-        assert motion_readiness_action is not None
-        motion_readiness_action.triggered.connect(lambda: self._open_developer_controls_window(tab_index=3))
-
         # Nerds menu should be second-to-last (right before Help)
         menubar.addMenu(nerds_menu)
         
@@ -2281,6 +2247,10 @@ class BREadbeatsWindow(QMainWindow):
         help_action = help_menu.addAction("Troubleshooting...")
         assert help_action is not None
         help_action.triggered.connect(self._on_help)
+
+        about_action = help_menu.addAction("About")
+        assert about_action is not None
+        about_action.triggered.connect(self._on_about)
     
     def _on_options_audio_device(self):
         """Show Audio Device selection dialog"""
@@ -5160,10 +5130,12 @@ Like the app?<br>
         self.port_spin.setValue(self.config.connection.port)
         self.port_spin.setVisible(False)
         
-        # Status
-        self.status_label = QLabel("Disconnected")
-        self.status_label.setStyleSheet("color: #f55;")
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Connection status / refresh button
+        self.status_label = QPushButton("Connect")
+        self.status_label.setFixedSize(100, 40)
+        self.status_label.setStyleSheet("color: #fff;")
+        self.status_label.setToolTip("Reconnect / refresh TCP connection")
+        self.status_label.clicked.connect(self._on_connection_refresh)
         layout.addWidget(self.status_label)
         
         return group
@@ -7865,6 +7837,24 @@ Like the app?<br>
             )
         else:
             toggle_user_connection(self.network_engine)
+
+    def _on_connection_refresh(self):
+        """Refresh TCP connection from the main status button."""
+        self.config.connection.host = self.host_edit.text()
+        self.config.connection.port = self.port_spin.value()
+        if self.network_engine is None:
+            self.network_engine = ensure_network_engine(
+                self.network_engine,
+                self.config,
+                self._network_status_callback,
+            )
+            return
+
+        try:
+            self.network_engine.disconnect()
+        except Exception:
+            pass
+        self.network_engine.user_connect()
     
     def _on_test(self):
         """Send test pattern"""
@@ -8728,8 +8718,8 @@ Like the app?<br>
     
     def _on_status_change(self, message: str, connected: bool):
         """Update connection status"""
-        self.status_label.setText("Connected" if connected else "Disconnected")
-        self.status_label.setStyleSheet(f"color: {'#0f0' if connected else '#f55'};")
+        self.status_label.setText("Connected" if connected else "Connect")
+        self.status_label.setStyleSheet(f"color: {'#0af' if connected else '#fff'};")
         connection_toggle_action = getattr(self, 'connection_toggle_action', None)
         if connection_toggle_action is not None:
             connection_toggle_action.setText("Disconnect" if connected else "Connect")
