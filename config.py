@@ -116,8 +116,8 @@ class StrokeConfig:
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
     # Silence detection thresholds (fade-out when truly silent)
-    silence_threshold: float = 0.010825      # Overall amplitude threshold for silence deadzone gate
-    silence_close_threshold: float = 0.0433  # Overall amplitude threshold to exit silence deadzone gate
+    silence_threshold: float = 0.001      # Overall amplitude threshold for silence deadzone gate
+    silence_close_threshold: float = 0.01  # Overall amplitude threshold to exit silence deadzone gate
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
@@ -669,8 +669,8 @@ class StrokeConfig:
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
     # Silence detection thresholds (fade-out when truly silent)
-    silence_threshold: float = 0.010825      # Overall amplitude threshold for silence deadzone gate
-    silence_close_threshold: float = 0.0433  # Overall amplitude threshold to exit silence deadzone gate
+    silence_threshold: float = 0.001      # Overall amplitude threshold for silence deadzone gate
+    silence_close_threshold: float = 0.01  # Overall amplitude threshold to exit silence deadzone gate
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup

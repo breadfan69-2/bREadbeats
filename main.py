@@ -2993,7 +2993,7 @@ class BREadbeatsWindow(QMainWindow):
             "No Motion Under (RMS)",
             0.001,
             0.250,
-            float(getattr(self.config.stroke, 'silence_threshold', 0.010825) or 0.010825),
+            float(getattr(self.config.stroke, 'silence_threshold', 0.001) or 0.001),
             3,
         )
         silence_open_slider.setToolTip("Audio amplitude below this RMS level enters silence mode (motion stops, dot parks)")
@@ -3002,7 +3002,7 @@ class BREadbeatsWindow(QMainWindow):
             "Limited Motion Under (RMS)",
             0.001,
             0.300,
-            float(getattr(self.config.stroke, 'silence_close_threshold', 0.0433) or 0.0433),
+            float(getattr(self.config.stroke, 'silence_close_threshold', 0.01) or 0.01),
             3,
         )
         silence_close_slider.setToolTip("Audio amplitude must exceed this RMS level to exit silence mode (motion resumes)")
@@ -3010,7 +3010,7 @@ class BREadbeatsWindow(QMainWindow):
         def _set_silence_open(v: float) -> None:
             open_v = float(v)
             setattr(self.config.stroke, 'silence_threshold', open_v)
-            close_v = float(getattr(self.config.stroke, 'silence_close_threshold', 0.0433) or 0.0433)
+            close_v = float(getattr(self.config.stroke, 'silence_close_threshold', 0.01) or 0.01)
             if close_v <= open_v:
                 close_v = open_v + 0.001
                 setattr(self.config.stroke, 'silence_close_threshold', close_v)
@@ -3020,7 +3020,7 @@ class BREadbeatsWindow(QMainWindow):
 
         def _set_silence_close(v: float) -> None:
             close_v = float(v)
-            open_v = float(getattr(self.config.stroke, 'silence_threshold', 0.010825) or 0.010825)
+            open_v = float(getattr(self.config.stroke, 'silence_threshold', 0.001) or 0.001)
             if close_v <= open_v:
                 close_v = open_v + 0.001
                 silence_close_slider.blockSignals(True)
@@ -5135,7 +5135,7 @@ Like the app?<br>
                 if hasattr(self, 'main_silence_close_slider'):
                     self.main_silence_close_slider.setValue(
                         self._silence_close_to_normalized(
-                            float(getattr(self.config.stroke, 'silence_close_threshold', 0.0433) or 0.0433)
+                            float(getattr(self.config.stroke, 'silence_close_threshold', 0.01) or 0.01)
                         )
                     )
                 advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
@@ -5965,7 +5965,7 @@ Like the app?<br>
             0.0,
             2.0,
             self._silence_close_to_normalized(
-                float(getattr(self.config.stroke, 'silence_close_threshold', 0.0433) or 0.0433)
+                float(getattr(self.config.stroke, 'silence_close_threshold', 0.01) or 0.01)
             ),
             2,
             step=0.01,
