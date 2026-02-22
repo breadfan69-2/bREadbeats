@@ -1,0 +1,79 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on any tag starting with 'v' (e.g., v2.1.0)
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full git history for version detection
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Create virtual environment
+      run: python -m venv .venv
+    
+    - name: Install dependencies
+      run: |
+        .venv\Scripts\activate
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-dev.txt
+    
+    - name: Show version info
+      run: |
+        .venv\Scripts\activate  
+        python version.py
+    
+    - name: Build executable
+      run: |
+        .venv\Scripts\activate
+        python build.py
+    
+    - name: Get version for release
+      id: version
+      run: |
+        .venv\Scripts\activate
+        $VERSION = python -c "from version import __version__; print(__version__)"
+        echo "version=$VERSION" >> $env:GITHUB_OUTPUT
+        echo "Version: $VERSION"
+    
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: bREadbeats ${{ steps.version.outputs.version }}
+        body: |
+          bREadbeats ${{ steps.version.outputs.version }}
+          
+          ## Changes
+          - [Add release notes here]
+          
+          ## Download
+          Download `bREadbeats.exe` below and run it directly - no installation required.
+          
+          See [README](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md) for usage instructions.
+        draft: true  # Create as draft so you can add release notes manually
+        prerelease: false
+    
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./dist/bREadbeats.exe
+        asset_name: bREadbeats.exe
+        asset_content_type: application/octet-stream

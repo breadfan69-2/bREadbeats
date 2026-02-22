@@ -84,6 +84,7 @@ from transport_wiring import (
     trigger_network_test,
 )
 from stroke_mapper import StrokeMapper
+from version import __version__
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
 
@@ -4997,8 +4998,8 @@ class BREadbeatsWindow(QMainWindow):
     
     def _on_about(self):
         """Show About dialog"""
-        about_html = """
-<b>bREadbeats v2.0</b><br>
+        about_html = f"""
+<b>bREadbeats {__version__}</b><br>
 Live Audio to Restim<br><br>
 Inspired by:<br>
 &nbsp;&nbsp;&nbsp;&nbsp;digitalparkinglot's creations<br>
