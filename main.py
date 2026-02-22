@@ -784,6 +784,7 @@ class SliderWithLabel(QWidget):
         self.max_val = max_val
         self.decimals = decimals
         self.multiplier = 10 ** decimals
+        self._last_value = float(default)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -820,15 +821,24 @@ class SliderWithLabel(QWidget):
         
     def _on_change(self, value: int):
         real_value = value / self.multiplier
+        self._last_value = real_value
         self.value_label.setText(f"{real_value:.{self.decimals}f}")
         _track_slider_value(self.label.text(), real_value)
         self.valueChanged.emit(real_value)
         
     def value(self) -> float:
-        return self.slider.value() / self.multiplier
+        try:
+            self._last_value = self.slider.value() / self.multiplier
+        except RuntimeError:
+            pass
+        return float(self._last_value)
     
     def setValue(self, value: float):
-        self.slider.setValue(int(value * self.multiplier))
+        self._last_value = float(value)
+        try:
+            self.slider.setValue(int(value * self.multiplier))
+        except RuntimeError:
+            return
 
 
 class TrafficLightWidget(QWidget):
@@ -1571,6 +1581,7 @@ class BREadbeatsWindow(QMainWindow):
         self.audio_engine = None
         self.network_engine = None
         self.stroke_mapper = None
+        self._is_shutting_down = False
         
         self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
         self._apply_release_learning_defaults()
@@ -6789,11 +6800,26 @@ Like the app?<br>
     
     def _on_metric_feedback(self, feedback_data: dict):
         """Handle feedback from a metric controller (update slider)"""
+        if getattr(self, '_is_shutting_down', False):
+            return
+
+        def _slider_live(name: str) -> bool:
+            slider_wrap = getattr(self, name, None)
+            if slider_wrap is None:
+                return False
+            try:
+                slider_wrap.value()
+            except RuntimeError:
+                return False
+            return True
+
         metric = feedback_data.get('metric', '')
         adjustment = feedback_data.get('adjustment', 0.0)
         direction = feedback_data.get('direction', 'hold')
         
         if metric == 'peak_floor' and adjustment != 0:
+            if not _slider_live('peak_floor_slider'):
+                return
             current = self.peak_floor_slider.value()
             new_val = current + adjustment
             pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
@@ -6805,6 +6831,8 @@ Like the app?<br>
                 print(f"[Metric] peak_floor: valley={valley:.4f} ({direction}) -> {new_val:.4f}")
         
         elif metric == 'target_bps' and adjustment != 0:
+            if not _slider_live('peak_floor_slider'):
+                return
             # Adjust peak_floor to hit target BPS
             # BUT: suppress lowering if valley-tracking wants to RAISE it (prevents oscillation)
             if feedback_data.get('direction', '') == 'lower':
@@ -6832,6 +6860,8 @@ Like the app?<br>
         
         elif metric == 'audio_amp' and adjustment != 0:
             # Adjust audio amplification based on beat presence
+            if not _slider_live('audio_gain_slider'):
+                return
             current = self.audio_gain_slider.value()
             new_val = current + adjustment
             aa_min, aa_max = BEAT_RANGE_LIMITS['audio_amp']
@@ -6844,6 +6874,8 @@ Like the app?<br>
         
         elif metric == 'flux_balance' and adjustment != 0:
             # Adjust flux_mult to balance flux ≈ energy bar heights
+            if not _slider_live('flux_mult_slider'):
+                return
             current = self.flux_mult_slider.value()
             new_val = current + adjustment
             fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
@@ -9008,10 +9040,13 @@ Like the app?<br>
         # ===== TIMER-DRIVEN METRIC FEEDBACK: Audio Amp =====
         # These fire from the display timer (not from _on_beat) so they can
         # detect the ABSENCE of beats and escalate accordingly.
-        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
+        if (not getattr(self, '_is_shutting_down', False)
+                and hasattr(self, 'audio_engine') and self.audio_engine is not None):
             now = time.perf_counter()
-            self.audio_engine.compute_audio_amp_feedback(now, callback=self._on_metric_feedback)
-            self.audio_engine.compute_flux_balance_feedback(now, callback=self._on_metric_feedback)
+            if _is_live_widget_attr('audio_gain_slider'):
+                self.audio_engine.compute_audio_amp_feedback(now, callback=self._on_metric_feedback)
+            if _is_live_widget_attr('flux_mult_slider'):
+                self.audio_engine.compute_flux_balance_feedback(now, callback=self._on_metric_feedback)
             
             # ===== AUTO-ALIGN TARGET BPM (time-based) =====
             if self._auto_align_target_enabled:
@@ -9080,6 +9115,8 @@ Like the app?<br>
 
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
+        self._is_shutting_down = True
+
         shutdown_runtime(self._stop_engines, self.network_engine)
 
         persist_runtime_ui_to_config(self, self.config)
