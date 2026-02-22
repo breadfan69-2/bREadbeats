@@ -157,6 +157,30 @@ class StrokeMapper:
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
 
+        # ── Fixed anchor state (§1) ──
+        self._anchor_sign: int = 1               # +1 = +Y anchor, -1 = -Y anchor
+        self._anchor_angle: float = float(np.pi / 2.0)  # angle of anchor on orbit
+        self._anchor_swing_deg: float = 10.0     # ±10° swing around y-axis
+        self._anchor_phrase_locked: bool = False  # True once chosen for current phrase
+
+        # ── Expression pause spiral (§2/§3) ──
+        self._expr_pause_spiral_active: bool = False
+        self._expr_pause_spiral_progress: float = 0.0
+        self._expr_pause_spiral_duration_beats: float = 2.0
+        self._expr_pause_spiral_start_radius: float = 0.7
+        self._expr_pause_spiral_target_radius: float = 0.5
+        self._expr_pause_spiral_start_angle: float = 0.0
+        self._expr_pause_return_active: bool = False
+        self._expr_pause_return_progress: float = 0.0
+        self._expr_pause_return_start_angle: float = 0.0
+        self._expr_pause_return_start_radius: float = 0.5
+
+        # ── Entry journey gating (§8) ──
+        self._post_silence_entry_done: bool = False  # True after first entry journey completes
+        self._post_wait_reentry_active: bool = False
+        self._post_wait_reentry_progress: float = 0.0
+        self._post_wait_reentry_beats_remaining: float = 4.0
+
         # ── Expression layer state ──
         self._orbit_direction: int = 1           # 1=default, -1=reversed
         self._last_direction_change_time: float = 0.0
@@ -308,6 +332,10 @@ class StrokeMapper:
             # Reset gate-idle on silence entry (swirl-to-park takes over)
             self._gate_idle_active = False
             self._gate_idle_progress = 0.0
+            # Reset entry gating on silence
+            self._post_silence_entry_done = False
+            self._post_wait_reentry_active = False
+            self._anchor_phrase_locked = False
 
             # ── Swirl-to-park: spiral into 0.6y with S-curve interpolation ──
             # First silence frame: latch current center/radius as start.
@@ -937,14 +965,35 @@ class StrokeMapper:
         # ── Expression layer: apply center X wander offset ──
         alpha = float(alpha + self._center_x_offset)
 
-        # ── Expression layer: tension pause override ──
+        # ── §2/§3: Expression pause spiral override ──
+        if self._expr_pause_spiral_active:
+            # Logarithmic spiral inward: radius shrinks logarithmically
+            t_sp = self._quintic_ease(self._expr_pause_spiral_progress)
+            # Logarithmic interpolation: r = r_start * (r_target/r_start)^t
+            r_start = max(self._expr_pause_spiral_start_radius, 0.1)
+            r_target = max(self._expr_pause_spiral_target_radius, 0.05)
+            log_radius = float(r_start * ((r_target / r_start) ** t_sp))
+            # Phase keeps advancing (inherited angular velocity, slowing down)
+            total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+            alpha = float(log_radius * np.cos(self._orbit_phase))
+            beta = float(total_center_y + log_radius * np.sin(self._orbit_phase))
+
+        if self._expr_pause_return_active:
+            # §3: Spiral back out to normal orbit from pause, landing at anchor
+            t_ret = self._quintic_ease(self._expr_pause_return_progress)
+            r_start_ret = max(self._expr_pause_return_start_radius, 0.05)
+            r_target_ret = float(max(self._actual_radius, 0.5))
+            log_radius_ret = float(r_start_ret * ((r_target_ret / r_start_ret) ** t_ret))
+            total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+            alpha = float(log_radius_ret * np.cos(self._orbit_phase))
+            beta = float(total_center_y + log_radius_ret * np.sin(self._orbit_phase))
+
+        # ── Expression layer: tension pause override (legacy fade) ──
         if self._tension_pause_active:
             if now < self._tension_pause_end_time:
-                # During hold: output latched position
                 alpha = self._tension_pause_hold_alpha
                 beta = self._tension_pause_hold_beta
             elif now < self._tension_pause_fade_end:
-                # Crossfade back: smooth blend from held → computed position
                 fade_dur = self._tension_pause_fade_end - self._tension_pause_end_time
                 t = float(np.clip((now - self._tension_pause_end_time) / max(fade_dur, 1e-3), 0.0, 1.0))
                 t = t * t * (3.0 - 2.0 * t)  # smoothstep
@@ -952,6 +1001,16 @@ class StrokeMapper:
                 beta = float(self._tension_pause_hold_beta + t * (beta - self._tension_pause_hold_beta))
             else:
                 self._tension_pause_active = False
+
+        # ── §8: Entry journey gating — mark entry done when first journey completes ──
+        if not self._post_silence_entry_done and not decision.silence_active:
+            if decision.trigger_kind == "start" and decision.journey_completion >= 1.0:
+                self._post_silence_entry_done = True
+            elif decision.trigger_kind != "start" and decision.trigger_kind != "creep":
+                # Only allow entry journey types before unlocking; force creep otherwise
+                if not self._post_silence_entry_done and self._startup_beats_seen < 8:
+                    # Keep dot in entry mode by not overriding alpha/beta
+                    pass
 
         self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
         self.state.beta = float(np.clip(beta, -1.0, 1.0))
@@ -993,7 +1052,62 @@ class StrokeMapper:
             # Gently decay wander toward center during silence
             self._center_x_offset *= float(max(0.0, 1.0 - 2.0 * dt))
 
-        # ── Direction change detection ──
+        # ── Tension pause detection (§2: spiral-in to radius ≤0.5) ──
+        if getattr(self.config.stroke, 'tension_pause_enabled', True) and not decision.silence_active:
+            cooldown = float(getattr(self.config.stroke, 'tension_pause_cooldown_s', 10.0) or 10.0)
+            drop_ratio = float(getattr(self.config.stroke, 'tension_pause_energy_drop', 0.40) or 0.40)
+
+            if (not self._tension_pause_active
+                    and not self._expr_pause_spiral_active
+                    and len(self._energy_history) >= 30
+                    and now - self._tension_pause_last_time > cooldown):
+                recent = list(self._energy_history)
+                recent_mean = float(np.mean(recent[-15:]))
+                prior_mean = float(np.mean(recent[-30:-15]))
+                # Only trigger when going from substantial energy to a real drop
+                if prior_mean > 0.20 and (prior_mean - recent_mean) / prior_mean > drop_ratio:
+                    # §2: Start logarithmic spiral-in instead of hard hold
+                    self._expr_pause_spiral_active = True
+                    self._expr_pause_spiral_progress = 0.0
+                    self._expr_pause_spiral_start_radius = float(max(self._actual_radius, 0.3))
+                    self._expr_pause_spiral_target_radius = 0.45  # ≤0.5
+                    self._expr_pause_spiral_start_angle = float(self._orbit_phase)
+                    self._expr_pause_spiral_duration_beats = 2.0
+                    self._tension_pause_last_time = now
+
+                    # After spiral-in, we'll need to spiral back out (§3)
+                    self._expr_pause_return_active = False
+                    self._expr_pause_return_progress = 0.0
+
+        # ── §2/§3: Advance expression pause spiral states ──
+        if self._expr_pause_spiral_active and not decision.silence_active:
+            bpm_for_spiral = float(getattr(self.audio_engine, '_metronome_bpm', 120.0) if self.audio_engine else 120.0)
+            bpm_for_spiral = float(np.clip(bpm_for_spiral if bpm_for_spiral > 0 else 120.0, 40.0, 240.0))
+            spiral_dur_s = float(self._expr_pause_spiral_duration_beats * 60.0 / bpm_for_spiral)
+            self._expr_pause_spiral_progress = float(np.clip(
+                self._expr_pause_spiral_progress + (dt / max(spiral_dur_s, 0.1)),
+                0.0, 1.0,
+            ))
+            if self._expr_pause_spiral_progress >= 1.0:
+                # Spiral-in complete → start spiral return (§3)
+                self._expr_pause_spiral_active = False
+                self._expr_pause_return_active = True
+                self._expr_pause_return_progress = 0.0
+                self._expr_pause_return_start_angle = float(self._orbit_phase)
+                self._expr_pause_return_start_radius = self._expr_pause_spiral_target_radius
+
+        if self._expr_pause_return_active and not decision.silence_active:
+            bpm_for_return = float(getattr(self.audio_engine, '_metronome_bpm', 120.0) if self.audio_engine else 120.0)
+            bpm_for_return = float(np.clip(bpm_for_return if bpm_for_return > 0 else 120.0, 40.0, 240.0))
+            return_dur_s = float(2.0 * 60.0 / bpm_for_return)  # 2 beats to return
+            self._expr_pause_return_progress = float(np.clip(
+                self._expr_pause_return_progress + (dt / max(return_dur_s, 0.1)),
+                0.0, 1.0,
+            ))
+            if self._expr_pause_return_progress >= 1.0:
+                self._expr_pause_return_active = False
+
+        # ── §1: Anchor phrase management (direction change → new anchor) ──
         if getattr(self.config.stroke, 'direction_change_enabled', True) and not decision.silence_active:
             interval_s = float(getattr(self.config.stroke, 'direction_change_interval_s', 15.0) or 15.0)
             drop_needed = float(getattr(self.config.stroke, 'direction_change_energy_drop', 0.35) or 0.35)
@@ -1006,46 +1120,10 @@ class StrokeMapper:
                 if prior_mean > 0.08 and abs(prior_mean - recent_mean) / max(prior_mean, 0.08) > drop_needed:
                     self._orbit_direction *= -1
                     self._last_direction_change_time = now
-
-        # ── Tension pause detection ──
-        if getattr(self.config.stroke, 'tension_pause_enabled', True) and not decision.silence_active:
-            cooldown = float(getattr(self.config.stroke, 'tension_pause_cooldown_s', 10.0) or 10.0)
-            drop_ratio = float(getattr(self.config.stroke, 'tension_pause_energy_drop', 0.40) or 0.40)
-
-            if (not self._tension_pause_active
-                    and len(self._energy_history) >= 30
-                    and now - self._tension_pause_last_time > cooldown):
-                recent = list(self._energy_history)
-                recent_mean = float(np.mean(recent[-15:]))
-                prior_mean = float(np.mean(recent[-30:-15]))
-                # Only trigger when going from substantial energy to a real drop
-                if prior_mean > 0.20 and (prior_mean - recent_mean) / prior_mean > drop_ratio:
-                    hold_s = float(getattr(self.config.stroke, 'tension_pause_hold_s', 0.45) or 0.45)
-                    fade_s = 0.30  # crossfade back duration
-                    self._tension_pause_active = True
-                    self._tension_pause_end_time = now + hold_s
-                    self._tension_pause_fade_end = now + hold_s + fade_s
-                    self._tension_pause_last_time = now
-
-                    # Pull inward toward orbit center on pause:
-                    # bigger energy drop → more pull-in, range 0.2–0.5 of radius
-                    actual_drop = (prior_mean - recent_mean) / prior_mean
-                    drop_t = float(np.clip((actual_drop - drop_ratio) / max(0.5 - drop_ratio, 0.01), 0.0, 1.0))
-                    pull_fraction = 0.20 + drop_t * 0.30  # 0.2 (mild) to 0.5 (dramatic)
-                    # Add a small random wiggle (±0.05) for organic feel
-                    pull_fraction += (float(np.random.uniform(-0.05, 0.05)))
-                    pull_fraction = float(np.clip(pull_fraction, 0.15, 0.55))
-
-                    cx = float(self._center_x_offset)
-                    cy = float(self._base_center_y + self._reactive_bounce_y)
-                    hold_a = float(self.state.alpha)
-                    hold_b = float(self.state.beta)
-                    # Vector from center to current position, scale inward
-                    hold_a = float(cx + (hold_a - cx) * (1.0 - pull_fraction))
-                    hold_b = float(cy + (hold_b - cy) * (1.0 - pull_fraction))
-
-                    self._tension_pause_hold_alpha = hold_a
-                    self._tension_pause_hold_beta = hold_b
+                    # §1: Direction change → new anchor may be chosen
+                    self._anchor_phrase_locked = False
+                    # Randomly choose +Y or -Y for next phrase
+                    self._anchor_sign = 1 if float(np.random.random()) > 0.5 else -1
 
     def _compute_bass_jitter_offsets(self, event: BeatEvent, dt: float) -> tuple[float, float]:
         if not bool(getattr(self.config.jitter, "enabled", True)):
@@ -1258,7 +1336,12 @@ class StrokeMapper:
         return min(y_cap, x_cap)
 
     def _compute_landing_rotation(self, start_angle: float, interval_beats: int) -> float:
-        # Base turn count: 1 full lap per journey
+        # §7: All journeys are capped at 1x 360° rotation.
+        # Exception: entry journey after silence gets 2 rotations over ≥8 beats.
+        is_entry = bool(self._intelligence.is_recovering or (not self._post_silence_entry_done and self._startup_beats_seen < 2))
+        max_turns = 2.0 if is_entry else 1.0
+
+        # Base turn count: 1 full lap per journey (capped)
         turns = 1.0
 
         # Orbit speed variation: energy-driven turn count
@@ -1275,13 +1358,53 @@ class StrokeMapper:
             arc_influence = float(getattr(self.config.stroke, 'session_arc_radius_influence', 0.10) or 0.10)
             # Session intensity biases turns slightly (±10%)
             session_bias = (self._session_energy_ema - 0.5) * 2.0 * arc_influence
-            turns = float(np.clip(turns + session_bias, 0.5, 2.0))
+            turns = float(np.clip(turns + session_bias, 0.5, max_turns))
 
         # Intensity timer: scale dynamic turn range toward minimum
         if self._intensity_ramp_affect_speed and self._intensity_ramp_mult < 1.0:
             base_turns = float(getattr(self.config.stroke, 'orbit_speed_min_turns', 0.75) or 0.75)
             turns = float(base_turns + ((turns - base_turns) * self._intensity_ramp_mult))
 
+        # §7: Hard clamp to max_turns
+        turns = float(np.clip(turns, 0.5, max_turns))
+
+        # §1: Anchor landing – ensure the journey ends within ±10° of the
+        # chosen Y-axis anchor.  Adjust total rotation so the arrival angle
+        # falls inside the anchor swing window.
+        anchor_angle = float(np.pi / 2.0) * self._anchor_sign  # +Y or -Y
+        target_end = float(start_angle + turns * 2.0 * np.pi * self._orbit_direction)
+        # Nearest anchor crossing to target_end
+        swing_rad = float(np.deg2rad(self._anchor_swing_deg))
+        best_end = self._nearest_anchor_crossing(target_end, anchor_angle, swing_rad)
+        # Recompute turns from adjusted end
+        delta = best_end - start_angle
+        if abs(self._orbit_direction) > 0:
+            # Ensure delta sign matches direction
+            if self._orbit_direction > 0 and delta < 0:
+                delta += 2.0 * np.pi
+            elif self._orbit_direction < 0 and delta > 0:
+                delta -= 2.0 * np.pi
+        turns = abs(delta) / (2.0 * np.pi)
+        turns = float(np.clip(turns, 0.3, max_turns))
+
         # Apply orbit direction (CW/CCW)
         rotation = float(turns * 2.0 * np.pi * self._orbit_direction)
         return rotation
+
+    @staticmethod
+    def _nearest_anchor_crossing(target_angle: float, anchor_angle: float, swing_rad: float) -> float:
+        """Find the angle nearest to target_angle within ±swing_rad of anchor_angle.
+        Anchor_angle repeats every 2π. Returns the adjusted angle."""
+        two_pi = 2.0 * np.pi
+        # Normalize to find nearest multiple of 2π offset
+        base = anchor_angle
+        # Number of full rotations in target
+        n = round((target_angle - base) / two_pi)
+        candidate = base + n * two_pi
+        # Check ±1 rotation too
+        candidates = [candidate - two_pi, candidate, candidate + two_pi]
+        best = min(candidates, key=lambda c: abs(c - target_angle))
+        # Clamp within swing window
+        delta = target_angle - best
+        clamped_delta = float(np.clip(delta, -swing_rad, swing_rad))
+        return float(best + clamped_delta)

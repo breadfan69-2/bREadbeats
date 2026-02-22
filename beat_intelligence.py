@@ -114,6 +114,10 @@ class BeatIntelligence:
         # ── Phase 1: No-beat timeout (#4) ──
         self._no_beat_timeout_s: float = 3.0
 
+        # ── §8: Entry gating state ──
+        self._post_silence_entry_complete: bool = False   # first entry journey done
+        self._post_wait_reentry_beats: int = 0            # beats remaining in reentry
+
         # ── Phase 2: ReadinessState (#17) ──
         self._stroke_ready: bool = False
         self._stroke_ready_reason: str = "cold_start"
@@ -180,6 +184,15 @@ class BeatIntelligence:
         self._last_locked_bpm: float = 120.0       # last BPM when tempo_locked was True
         self._stabilized_bpm: float = 120.0         # EMA-smoothed BPM output
         self._bpm_jump_ratio_limit: float = 1.5     # max allowed jump ratio per update
+
+        # ── §5: Tempo-unlock hold ──
+        # When we had mild confidence but metronome is not green,
+        # hold the last cadence until cancelled by flux spike/drop or silence.
+        self._tempo_unlock_hold_active: bool = False
+        self._tempo_unlock_hold_bpm: float = 120.0
+        self._tempo_unlock_hold_flux_baseline: float = 0.0
+        self._tempo_unlock_hold_flux_spike_ratio: float = 2.0   # cancel if flux > 2x baseline
+        self._tempo_unlock_hold_flux_drop_ratio: float = 0.25   # cancel if flux < 25% of baseline
 
         # ── Session arc: very slow energy tracking ──
         self._session_intensity_ema: float = 0.5
@@ -476,13 +489,24 @@ class BeatIntelligence:
 
         Returns True if motion should be allowed.
         Brief confidence dips don't kill motion; sustained loss does.
+
+        §5/§6: Tempo-unlock hold integration.
+        When hold is active, stroke_ready stays True even if tempo is not green.
+        Hold releases immediately on flux spike/drop or silence.
         """
         grace_ms = float(getattr(self.config.beat, "teaching_stroke_ready_grace_ms", 450.0) or 450.0)
         _raw_finish = getattr(self.config.beat, "teaching_stroke_finish_beats", 4)
         finish_beats = int(_raw_finish) if _raw_finish is not None else 4
 
+        # §5: Update tempo-unlock hold state
+        self._update_tempo_unlock_hold(event, now)
+
         # Raw readiness check (same logic as _tempo_ready_for_motion)
         raw_ready = self._tempo_ready_for_motion(event)
+
+        # §6: If unlock-hold is active, override raw_ready to True
+        if self._tempo_unlock_hold_active and not raw_ready:
+            raw_ready = True
 
         if raw_ready:
             self._readiness_green_count += 1
@@ -493,7 +517,7 @@ class BeatIntelligence:
 
             if self._readiness_green_count >= 1:
                 self._stroke_ready = True
-                self._stroke_ready_reason = "green"
+                self._stroke_ready_reason = "green" if not self._tempo_unlock_hold_active else "hold_active"
         else:
             self._readiness_yellow_count += 1
             self._readiness_green_count = 0
@@ -526,6 +550,55 @@ class BeatIntelligence:
                     self._stroke_ready_reason = "blocked"
 
         return self._stroke_ready
+
+    def _update_tempo_unlock_hold(self, event: BeatEvent, now: float) -> None:
+        """§5: Tempo-unlock hold management.
+
+        Activates when we have mild beat confidence but metronome is not green.
+        Holds the last locked cadence until cancelled by flux spike/drop or silence.
+        Releases immediately on flux event or silence for responsive relaxation.
+        """
+        tempo_locked = bool(getattr(event, "tempo_locked", False))
+        acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+        if not math.isfinite(acf_conf):
+            acf_conf = 0.0
+        metro_bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+
+        # Cancel on silence
+        if self.silence_deadzone_active:
+            self._tempo_unlock_hold_active = False
+            return
+
+        # Cancel on flux spike or drop
+        if self._tempo_unlock_hold_active:
+            recent_flux = list(self._recent_flux_values)
+            if len(recent_flux) >= 4:
+                current_flux = float(np.mean(recent_flux[-4:]))
+                baseline = max(self._tempo_unlock_hold_flux_baseline, 1e-6)
+                if current_flux > baseline * self._tempo_unlock_hold_flux_spike_ratio:
+                    # Flux spike — release hold
+                    self._tempo_unlock_hold_active = False
+                    return
+                if current_flux < baseline * self._tempo_unlock_hold_flux_drop_ratio:
+                    # Flux drop — release hold
+                    self._tempo_unlock_hold_active = False
+                    return
+
+        # If tempo is truly locked, deactivate hold (not needed)
+        if tempo_locked:
+            self._tempo_unlock_hold_active = False
+            self._tempo_unlock_hold_bpm = float(self._last_locked_bpm)
+            return
+
+        # Activate hold: mild confidence (0.08+) but not green
+        mild_confidence = acf_conf >= 0.08
+        has_bpm = metro_bpm > 0.0 or self._last_locked_bpm > 0.0
+
+        if mild_confidence and has_bpm and not self._tempo_unlock_hold_active:
+            self._tempo_unlock_hold_active = True
+            self._tempo_unlock_hold_bpm = float(self._last_locked_bpm if self._last_locked_bpm > 0 else metro_bpm)
+            recent_flux = list(self._recent_flux_values)
+            self._tempo_unlock_hold_flux_baseline = float(np.mean(recent_flux)) if len(recent_flux) >= 4 else 0.1
 
     # ── Phase 2 §19: Silence fade-out tracker ────────────────────────
 
@@ -1421,14 +1494,14 @@ class BeatIntelligence:
 
             # When interrupting an active arc, time the new journey so
             # it arrives at the next beat rather than using the full
-            # interval duration.  Clamped to [40%..100%] of normal so
-            # arcs never feel rushed or overly slow.
+            # interval duration.  Clamped to [80%..110%] of normal so
+            # arcs never feel rushed or overly slow.  (§4: was 40-100%)
             if is_interrupt:
                 now_ts = float(getattr(event, 'monotonic_timestamp', 0.0) or 0.0)
                 if now_ts <= 0.0:
                     now_ts = time.perf_counter()
                 next_beat_s = self._seconds_until_next_beat(event=event, bpm=bpm, now=now_ts)
-                clamped = float(np.clip(next_beat_s, target_duration * 0.40, target_duration))
+                clamped = float(np.clip(next_beat_s, target_duration * 0.80, target_duration * 1.10))
                 self.journey_duration_s = clamped
             else:
                 self.journey_duration_s = target_duration
@@ -1571,6 +1644,11 @@ class BeatIntelligence:
         if silence_active:
             self._was_silence_active = True
             self.is_recovering = False
+            # §8: Reset entry gating on silence
+            self._post_silence_entry_complete = False
+            self._post_wait_reentry_beats = 0
+            # §5: Cancel unlock hold on silence
+            self._tempo_unlock_hold_active = False
         elif self._was_silence_active:
             self._was_silence_active = False
             self.is_recovering = True
@@ -1609,6 +1687,9 @@ class BeatIntelligence:
             if journey_completion <= 1e-9:
                 self.active_interval_beats = interval_beats
                 self.last_trigger_kind = trigger_kind
+            # §8: Mark entry complete when recovery journey finishes
+            if journey_completion >= 1.0:
+                self._post_silence_entry_complete = True
 
             return BeatDecision(
                 trigger_kind=trigger_kind,
@@ -1624,9 +1705,6 @@ class BeatIntelligence:
                 learning=LearningOutputs(),
             )
 
-        # Phase 2: readiness state machine (replaces raw _tempo_ready_for_motion)
-        stroke_ready = self._update_stroke_readiness(event, now)
-
         # Phase 5: learning adapter
         learning = self._update_learning_adapter(event)
 
@@ -1639,12 +1717,27 @@ class BeatIntelligence:
 
         bpm = self.effective_bpm(event)
 
+        # §6: Readiness check runs AFTER effective_bpm so the unlock-hold
+        # can protect stroke_ready using stabilized BPM state.
+        stroke_ready = self._update_stroke_readiness(event, now)
+
         # ── Priority interrupt: beat-family events run the gate chain.
         # Creep frames during an active beat-family journey keep the current kind.
         # When a beat-family event FAILS gates during an active journey, the
         # active journey is preserved (not killed to creep) — it finishes
         # naturally on its own timing.
-        if raw_trigger_kind == "creep" and self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
+        #
+        # §8: After silence, only entry journeys are allowed until
+        # _post_silence_entry_complete is True.  After a wait, a 4-beat
+        # reentry must complete before faster journeys are unlocked.
+        if not self._post_silence_entry_complete and not self.is_recovering and not silence_active:
+            # Entry not done yet — suppress beat-family triggers
+            if raw_trigger_kind in ("syncopation", "beat", "downbeat"):
+                trigger_kind = "creep"
+                gate_fail_reason = "entry_gate"
+            elif raw_trigger_kind == "creep":
+                trigger_kind = "creep"
+        elif raw_trigger_kind == "creep" and self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
             trigger_kind = self.last_trigger_kind
             self._creep_consecutive_frames = 0
         elif raw_trigger_kind in ("syncopation", "beat", "downbeat") and not silence_active:
