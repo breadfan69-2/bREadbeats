@@ -1,0 +1,19 @@
+wow i see why everyone says the dot doesn't move 
+please set these new hardcode defaults:
+motionsettings: motionreadiness:
+readiness:
+-metronome.relaxed.confidence->1.0
+-stroke.ready.grace->1800
+tuning:
+-quite.bias->1.5
+
+developer.controls: trigger.settings:
+syncopation/double-stroke:
+-off-beat.timing.window->0.20
+amplitude.gate:
+-downbeat.spectral.fullness.requirementn->0.03
+-beat.spectral.fullness.requirement->0.04
+-off-beat.spectral.fullness.requirement->0.07
+-downbeat.sustained.fullness.duration->1
+
+and then restart the program please

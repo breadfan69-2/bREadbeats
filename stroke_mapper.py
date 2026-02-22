@@ -99,6 +99,7 @@ class StrokeMapper:
         self._startup_ramp_beats = 6.0
         self._startup_beats_seen = 0.0
         self._journey_startup_momentum = 1.0
+        self._startup_gate_hold_armed = False
         self._post_silence_radius_ramp = 1.0   # 0→1 over first beats after silence
         self._post_silence_radius_floor = 0.12 # start radius fraction after silence
         self._hold_start_pose_until_reactive = False
@@ -163,6 +164,9 @@ class StrokeMapper:
         self._wait_swirl_base_center_y = self._baseline_center_y
         self._wait_swirl_reactive_bounce_y = 0.0
         self._wait_state_jitter_alpha = 0.0
+        self._pull_in_radius_cap = 0.70
+        self._amp_fill_swirl_hold_until = 0.0
+        self._amp_fill_swirl_hold_s = 0.60
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
 
@@ -336,8 +340,10 @@ class StrokeMapper:
         if decision.silence_active:
             self._hold_start_pose_until_reactive = False
             self._hold_start_pose_enter_time = 0.0
+            self._amp_fill_swirl_hold_until = 0.0
             # Reset cold-start momentum ramp so dot takes off slowly after silence
             self._startup_beats_seen = 0.0
+            self._startup_gate_hold_armed = False
             self._journey_startup_momentum = self._startup_momentum_min
             self._post_silence_radius_ramp = 0.0
             # Reset gate-idle on silence entry (swirl-to-park takes over)
@@ -420,6 +426,35 @@ class StrokeMapper:
             self._swirl_entering = False
             self._swirl_progress = 0.0
 
+            startup_window_active = bool(self._startup_beats_seen < self._startup_ramp_beats)
+            amp_fill_cutover_now = bool(
+                self._last_gate_fail == "amp_fill"
+                and (startup_window_active or progress < 1.0 or self._last_journey_completion < 1.0)
+            )
+            if amp_fill_cutover_now:
+                self._amp_fill_swirl_hold_until = float(max(
+                    self._amp_fill_swirl_hold_until,
+                    now + float(max(self._amp_fill_swirl_hold_s, 0.05)),
+                ))
+
+            amp_fill_swirl_hold_active = bool(now < self._amp_fill_swirl_hold_until)
+            force_amp_fill_swirl = bool(amp_fill_cutover_now or amp_fill_swirl_hold_active)
+            amp_fill_jitter_boost_active = bool(force_amp_fill_swirl or self._last_gate_fail == "amp_fill")
+            if force_amp_fill_swirl and decision.trigger_kind != "creep":
+                decision.trigger_kind = "creep"
+                progress = 1.0
+
+            gated_to_creep_startup = bool(
+                startup_window_active
+                and decision.trigger_kind == "creep"
+                and bool(self._last_gate_fail)
+                and not self._startup_gate_hold_armed
+            )
+            if gated_to_creep_startup:
+                self._hold_start_pose_until_reactive = True
+                self._hold_start_pose_enter_time = now
+                self._startup_gate_hold_armed = True
+
             if self._hold_start_pose_until_reactive and decision.trigger_kind == "creep":
                 if self._hold_start_pose_enter_time > 0.0:
                     hold_elapsed = float(now - self._hold_start_pose_enter_time)
@@ -445,21 +480,46 @@ class StrokeMapper:
                 # loops_per_beat <= 1.0 guarantees never faster than one full
                 # rotation per beat.  Default is intentionally slow (0.20).
                 loops_per_beat = float(np.clip(self._reactive_hold_swirl_loops_per_beat, 0.02, 1.0))
+                if amp_fill_jitter_boost_active:
+                    loops_per_beat = float(max(loops_per_beat, 0.70))
                 angular_speed = float((2.0 * np.pi) * (bpm_hold / 60.0) * loops_per_beat)
                 self._reactive_hold_swirl_phase = float(
                     (self._reactive_hold_swirl_phase + (angular_speed * dt)) % (2.0 * np.pi)
                 )
 
                 base_center_y = float(np.clip(self._reactive_hold_swirl_center_y, -0.95, 0.95))
+                if amp_fill_jitter_boost_active:
+                    # Keep the hold swirl inboard while preserving visible orbital motion.
+                    base_center_y = float(np.clip(base_center_y, -0.52, 0.52))
                 total_center_y = float(base_center_y + self._center_y_offset)
                 radius_target = float(np.clip(self._reactive_hold_swirl_radius, 0.05, 0.35))
                 orbit_radius = float(min(radius_target, self._radius_cap_for_center(base_center_y)))
+                if amp_fill_jitter_boost_active:
+                    inboard_cap_radius = float(max(0.06, self._pull_in_radius_cap - abs(base_center_y) - 0.03))
+                    orbit_radius = float(min(orbit_radius, inboard_cap_radius))
 
                 jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
                 jitter_mix = float(np.clip(self._reactive_hold_swirl_jitter_mix, 0.0, 1.0))
+                if amp_fill_jitter_boost_active:
+                    jitter_mix = float(max(jitter_mix, 1.00))
 
                 alpha = float(orbit_radius * np.cos(self._reactive_hold_swirl_phase)) + float(jitter_alpha * jitter_mix)
                 beta = float(total_center_y + (orbit_radius * np.sin(self._reactive_hold_swirl_phase))) + float(jitter_beta * jitter_mix)
+
+                if amp_fill_jitter_boost_active:
+                    # Deterministic micro-motion floor so 2-decimal logs do not flatline.
+                    alpha += float(0.018 * np.cos(3.0 * self._reactive_hold_swirl_phase))
+                    beta += float(0.014 * np.sin(2.0 * self._reactive_hold_swirl_phase))
+
+                amp_fill_output_cap_active = bool(
+                    self._last_gate_fail == "amp_fill" or now < float(self._amp_fill_swirl_hold_until)
+                )
+                if amp_fill_output_cap_active:
+                    out_mag = float(np.hypot(alpha, beta))
+                    if out_mag > float(self._pull_in_radius_cap) and out_mag > 1e-6:
+                        out_scale = float(self._pull_in_radius_cap / out_mag)
+                        alpha = float(alpha * out_scale)
+                        beta = float(beta * out_scale)
 
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
@@ -769,7 +829,8 @@ class StrokeMapper:
                             self._wait_swirl_start_radius
                             + ((self._wait_swirl_target_radius - self._wait_swirl_start_radius) * wait_t)
                         )
-                        self._actual_radius = float(np.clip(wait_radius, self._wait_swirl_target_radius, 1.0))
+                        wait_max_radius = float(self._pull_in_radius_cap if force_amp_fill_swirl else 1.0)
+                        self._actual_radius = float(np.clip(wait_radius, self._wait_swirl_target_radius, wait_max_radius))
 
                         # Center_y with hook maneuver: dip deeper at midpoint, settle at baseline.
                         # Creates an upward-hook as the dot spirals into the slingshot loop.
@@ -809,8 +870,14 @@ class StrokeMapper:
                         total_center_y = float(self._base_center_y + self._reactive_bounce_y)
                         orbit_radius = float(min(self._actual_radius, self._radius_cap_for_center(total_center_y)))
 
-                        self._wait_swirl_alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
-                        self._wait_swirl_beta = float(total_center_y + (orbit_radius * np.sin(angle)))
+                        jitter_alpha_mix = 0.3
+                        jitter_beta_mix = 1.0
+                        if amp_fill_jitter_boost_active:
+                            jitter_alpha_mix = 0.65
+                            jitter_beta_mix = 1.35
+
+                        self._wait_swirl_alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * jitter_alpha_mix)
+                        self._wait_swirl_beta = float(total_center_y + (orbit_radius * np.sin(angle))) + float(jitter_beta * (jitter_beta_mix - 1.0))
 
                         ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                         self._wait_swirl_volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
@@ -846,7 +913,7 @@ class StrokeMapper:
                             self._wait_swirl_start_radius
                             + ((creep_wait_target_radius - self._wait_swirl_start_radius) * wait_t)
                         )
-                        self._actual_radius = float(np.clip(wait_radius, 0.60, 1.0))
+                        self._actual_radius = float(np.clip(wait_radius, 0.60, self._pull_in_radius_cap))
 
                         hook_bump = float(self._wait_swirl_hook_depth * np.sin(np.pi * wait_t))
                         self._base_center_y = float(
@@ -878,8 +945,14 @@ class StrokeMapper:
                         total_center_y = float(self._base_center_y + self._reactive_bounce_y)
                         orbit_radius = float(min(self._actual_radius, self._radius_cap_for_center(total_center_y)))
 
-                        self._wait_swirl_alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
-                        self._wait_swirl_beta = float(total_center_y + (orbit_radius * np.sin(angle)))
+                        jitter_alpha_mix = 0.3
+                        jitter_beta_mix = 1.0
+                        if amp_fill_jitter_boost_active:
+                            jitter_alpha_mix = 0.65
+                            jitter_beta_mix = 1.35
+
+                        self._wait_swirl_alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * jitter_alpha_mix)
+                        self._wait_swirl_beta = float(total_center_y + (orbit_radius * np.sin(angle))) + float(jitter_beta * (jitter_beta_mix - 1.0))
 
                         ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                         self._wait_swirl_volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
@@ -1039,7 +1112,9 @@ class StrokeMapper:
                     min_radius_bound = self._min_radius
                 else:
                     min_radius_bound = 0.70
-                self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
+                max_radius_bound = float(self._pull_in_radius_cap if force_amp_fill_swirl else 1.0)
+                min_radius_bound = float(min(min_radius_bound, max_radius_bound))
+                self._actual_radius = float(np.clip(radius, min_radius_bound, max_radius_bound))
                 radius = self._actual_radius
 
                 base_target_center = self._base_center_target(
@@ -1144,6 +1219,16 @@ class StrokeMapper:
                 if not self._post_silence_entry_done and self._startup_beats_seen < 8:
                     # Keep dot in entry mode by not overriding alpha/beta
                     pass
+
+        amp_fill_output_cap_active = bool(
+            self._last_gate_fail == "amp_fill" or now < float(self._amp_fill_swirl_hold_until)
+        )
+        if amp_fill_output_cap_active:
+            out_mag = float(np.hypot(alpha, beta))
+            if out_mag > float(self._pull_in_radius_cap) and out_mag > 1e-6:
+                out_scale = float(self._pull_in_radius_cap / out_mag)
+                alpha = float(alpha * out_scale)
+                beta = float(beta * out_scale)
 
         self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
         self.state.beta = float(np.clip(beta, -1.0, 1.0))

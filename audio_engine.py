@@ -1895,7 +1895,7 @@ class AudioEngine:
         if self.last_beat_time > 0:
             interval = current_time - self.last_beat_time
             
-            # Auto-halve/double interval to bring BPM into 60-180 range
+            # Strict tempo acceptance range (no octave correction)
             min_bpm = 60.0
             max_bpm = 180.0
             min_interval = 60.0 / max_bpm  # ~0.333s
@@ -1904,31 +1904,19 @@ class AudioEngine:
             # Calculate what BPM this interval would give
             if interval > 0:
                 raw_bpm = 60.0 / interval
-                adjusted_interval = interval
-                
-                # Only apply octave correction when metronome lock is not active.
-                # When ACF/metronome is confidently running, it already resolves
-                # octave ambiguity and should be the authority.
-                metronome_lock_active = bool(
-                    self._acf_metronome_enabled
-                    and self._metronome_bpm > 0
-                    and self._acf_confidence >= 0.25
-                )
-                if not metronome_lock_active:
-                    # Auto-halve: if BPM > 180, double the interval (halve BPM)
-                    while 60.0 / adjusted_interval > max_bpm and adjusted_interval < 2.0:
-                        adjusted_interval *= 2
-                        log_event("INFO", "Tempo", "Auto-halved BPM", original=f"{60.0/interval:.1f}", adjusted=f"{60.0/adjusted_interval:.1f}")
-
-                    # Auto-double: if BPM < 60, halve the interval (double BPM)
-                    while 60.0 / adjusted_interval < min_bpm and adjusted_interval > 0.1:
-                        adjusted_interval /= 2
-                        log_event("INFO", "Tempo", "Auto-doubled BPM", original=f"{60.0/interval:.1f}", adjusted=f"{60.0/adjusted_interval:.1f}")
-                
-                interval = adjusted_interval
+                if raw_bpm < min_bpm or raw_bpm > max_bpm:
+                    log_event(
+                        "INFO",
+                        "Tempo",
+                        "Tempo out of range",
+                        bpm=f"{raw_bpm:.1f}",
+                        min_bpm=f"{min_bpm:.1f}",
+                        max_bpm=f"{max_bpm:.1f}",
+                    )
+                    return
             
-            # Reject intervals still outside reasonable range after adjustment
-            if interval < 0.15 or interval > 2.0:
+            # Reject intervals outside the accepted tempo window
+            if interval < min_interval or interval > max_interval:
                 log_event("INFO", "Tempo", "Interval rejected", interval=f"{interval:.3f}s", bpm=f"{60.0/interval:.1f}")
                 return
             if interval > 0.2:
