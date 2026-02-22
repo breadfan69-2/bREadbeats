@@ -28,6 +28,11 @@ desktop.ini
 CONFIG_*.md
 README_DRAFT.md
 README_TODO.md
+
+# Development audit and analysis files
+*audit*.json
+config_*_with_hits.json
+presets.json
 *instruction*.txt
 *note*.txt
 *notes*.txt
