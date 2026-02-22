@@ -294,7 +294,36 @@ Yes â€” settings are written to `config.json` when you close the app. You c
 | Silence handling | Hard cut | Graceful fade with post-silence ramp |
 | Final motion tuning by Opus |
 ---
+## Building from Source
 
+### Prerequisites
+- Python 3.8 or higher
+- Required packages: `pip install -r requirements.txt`
+- PyInstaller for building executable: `pip install -r requirements-dev.txt`
+
+### Intelligence Files Setup
+The motion intelligence system requires profile and rule_fit files to be present:
+
+**Required files:**
+- **Profile files** in `defaults/learning/`: `profile*.json` (motion behavior parameters)
+- **Rule_fit files** in `defaults/learning/`: `rule_fit*.json` (audio-to-motion mapping models)  
+- **Training data** in `datasets/`: `rule_fit.json` (reference dataset)
+
+These files are included in the repository and should be present after cloning.
+
+### Running from Source
+```bash
+python run.py
+```
+
+### Building Executable
+```bash
+pyinstaller bREadbeats.spec
+```
+
+The PyInstaller spec automatically bundles all intelligence files into the executable. The built EXE will be in `dist/bREadbeats.exe`.
+
+---
 ## Credits & Acknowledgements
 
 - **digitalparkingleot** â€” original concept inspirations
