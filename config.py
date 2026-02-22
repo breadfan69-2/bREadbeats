@@ -261,7 +261,7 @@ class StrokeConfig:
 
     # ── Expression Layer ──
     # Orbit speed variation: modulates turns-per-journey based on energy
-    orbit_speed_variation_enabled: bool = True
+    orbit_speed_variation_enabled: bool = False
     orbit_speed_min_turns: float = 0.75       # turns at lowest energy
     orbit_speed_max_turns: float = 1.5        # turns at highest energy
 
@@ -813,7 +813,7 @@ class StrokeConfig:
 
     # ── Expression Layer ──
     # Orbit speed variation: modulates turns-per-journey based on energy
-    orbit_speed_variation_enabled: bool = True
+    orbit_speed_variation_enabled: bool = False
     orbit_speed_min_turns: float = 0.75       # turns at lowest energy
     orbit_speed_max_turns: float = 1.5        # turns at highest energy
 

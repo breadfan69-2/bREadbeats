@@ -1609,6 +1609,7 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_fill_controls_dialog = None
         self._auto_fill_controls_widgets = {}
         self._motion_readiness_dialog = None
+        self._motion_settings_dialog = None
         self._motion_readiness_controls_widgets = {}
         self._developer_controls_dialog = None
         self._developer_controls_tab_widget = None
@@ -1736,6 +1737,7 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_fill_controls_dialog = None
         self._auto_fill_controls_widgets = {}
         self._motion_readiness_dialog = None
+        self._motion_settings_tab_widget = None
         self._motion_readiness_controls_widgets = {}
         self._developer_controls_dialog = None
         self._developer_controls_tab_widget = None
@@ -2202,6 +2204,10 @@ class BREadbeatsWindow(QMainWindow):
         assert beat_detection_action is not None
         beat_detection_action.triggered.connect(self._on_options_beat_detection)
 
+        motion_settings_action = options_menu.addAction("Motion Settings...")
+        assert motion_settings_action is not None
+        motion_settings_action.triggered.connect(self._on_options_motion_settings)
+
         # Spectrum visualizer type submenu
         viz_menu = options_menu.addMenu("Spectrum Type")
         assert viz_menu is not None
@@ -2426,7 +2432,6 @@ class BREadbeatsWindow(QMainWindow):
             self._tempo_tracking_popout_content = None
             self._trigger_settings_tab_content = None
             self._auto_fill_tab_content = None
-            self._motion_readiness_tab_content = None
             self._advanced_flux_threshold_slider = None
             self._advanced_flux_scaling_slider = None
             self._auto_fill_controls_widgets = {}
@@ -2465,15 +2470,9 @@ class BREadbeatsWindow(QMainWindow):
             auto_fill_content = self._on_options_auto_fill_adaptation(as_tab=True)
             self._auto_fill_tab_content = auto_fill_content
 
-        motion_content = getattr(self, '_motion_readiness_tab_content', None)
-        if motion_content is None:
-            motion_content = self._on_options_motion_readiness(as_tab=True)
-            self._motion_readiness_tab_content = motion_content
-
         tab_widget.addTab(tempo_content, "Tempo Tracking")
         tab_widget.addTab(trigger_content, "Trigger Settings")
         tab_widget.addTab(auto_fill_content, "Auto Fill %")
-        tab_widget.addTab(motion_content, "Motion Readiness")
         tab_widget.setCurrentIndex(max(0, min(int(tab_index), tab_widget.count() - 1)))
 
         layout.addWidget(tab_widget)
@@ -2916,12 +2915,355 @@ class BREadbeatsWindow(QMainWindow):
         }
         return content
 
+    def _on_options_motion_settings(self, tab_index: int = 0):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTabWidget
+
+        dialog = getattr(self, '_motion_settings_dialog', None)
+        if dialog is not None:
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                tab_widget = getattr(self, '_motion_settings_tab_widget', None)
+                if tab_widget is not None:
+                    tab_widget.setCurrentIndex(max(0, min(int(tab_index), tab_widget.count() - 1)))
+                return
+            except RuntimeError:
+                self._motion_settings_dialog = None
+                self._motion_settings_tab_widget = None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Motion Settings")
+        dialog.setMinimumWidth(620)
+        dialog.setMinimumHeight(560)
+        dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def _clear_motion_settings_state() -> None:
+            self._motion_settings_dialog = None
+            self._motion_settings_tab_widget = None
+
+        dialog.rejected.connect(_clear_motion_settings_state)
+        dialog.finished.connect(lambda _result: _clear_motion_settings_state())
+        dialog.destroyed.connect(lambda *_: _clear_motion_settings_state())
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        tab_widget = QTabWidget()
+        self._motion_settings_tab_widget = tab_widget
+        tab_widget.addTab(self._build_motion_options_tab(), "Motion Options")
+        tab_widget.addTab(self._on_options_motion_readiness(as_tab=True), "Motion Readiness")
+        tab_widget.setCurrentIndex(max(0, min(int(tab_index), tab_widget.count() - 1)))
+        layout.addWidget(tab_widget)
+
+        self._motion_settings_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _build_motion_options_tab(self) -> QWidget:
+        from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QGroupBox, QSpinBox
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setSpacing(10)
+
+        scroll = NoWheelScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(10)
+
+        # ===== Silence Gate Controls =====
+        silence_group = QGroupBox("Silence Gate (RMS)")
+        silence_layout = QVBoxLayout(silence_group)
+
+        silence_info = QLabel(
+            "These thresholds control the silence deadzone hysteresis using RMS amplitude units.\n"
+            "Open = enter silence (park), Close = exit silence (resume motion)."
+        )
+        silence_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        silence_layout.addWidget(silence_info)
+
+        silence_open_slider = SliderWithLabel(
+            "No Motion Under (RMS)",
+            0.001,
+            0.250,
+            float(getattr(self.config.stroke, 'silence_threshold', 0.010825) or 0.010825),
+            3,
+        )
+        silence_open_slider.setToolTip("Audio amplitude below this RMS level enters silence mode (motion stops, dot parks)")
+
+        silence_close_slider = SliderWithLabel(
+            "Limited Motion Under (RMS)",
+            0.001,
+            0.300,
+            float(getattr(self.config.stroke, 'silence_close_threshold', 0.0433) or 0.0433),
+            3,
+        )
+        silence_close_slider.setToolTip("Audio amplitude must exceed this RMS level to exit silence mode (motion resumes)")
+
+        def _set_silence_open(v: float) -> None:
+            open_v = float(v)
+            setattr(self.config.stroke, 'silence_threshold', open_v)
+            close_v = float(getattr(self.config.stroke, 'silence_close_threshold', 0.0433) or 0.0433)
+            if close_v <= open_v:
+                close_v = open_v + 0.001
+                setattr(self.config.stroke, 'silence_close_threshold', close_v)
+                silence_close_slider.blockSignals(True)
+                silence_close_slider.setValue(close_v)
+                silence_close_slider.blockSignals(False)
+
+        def _set_silence_close(v: float) -> None:
+            close_v = float(v)
+            open_v = float(getattr(self.config.stroke, 'silence_threshold', 0.010825) or 0.010825)
+            if close_v <= open_v:
+                close_v = open_v + 0.001
+                silence_close_slider.blockSignals(True)
+                silence_close_slider.setValue(close_v)
+                silence_close_slider.blockSignals(False)
+            setattr(self.config.stroke, 'silence_close_threshold', close_v)
+
+        silence_open_slider.valueChanged.connect(_set_silence_open)
+        silence_close_slider.valueChanged.connect(_set_silence_close)
+        silence_layout.addWidget(silence_open_slider)
+        silence_layout.addWidget(silence_close_slider)
+        scroll_layout.addWidget(silence_group)
+
+        # ===== Expression Layer Controls =====
+        expression_group = QGroupBox("Expression Layer")
+        expression_layout = QVBoxLayout(expression_group)
+
+        expr_info = QLabel(
+            "Artistic expression: orbit speed variation, center wandering,\n"
+            "direction changes, tension pauses, and session arc."
+        )
+        expr_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        expression_layout.addWidget(expr_info)
+
+        orbit_speed_cb = QCheckBox("Orbit speed variation (energy-driven turns per journey)")
+        orbit_speed_cb.setChecked(bool(getattr(self.config.stroke, 'orbit_speed_variation_enabled', False)))
+        orbit_speed_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'orbit_speed_variation_enabled', state == 2)
+        )
+        expression_layout.addWidget(orbit_speed_cb)
+
+        orbit_min_turns_slider = SliderWithLabel(
+            "Min turns (low energy)",
+            0.25, 1.50,
+            float(getattr(self.config.stroke, 'orbit_speed_min_turns', 0.75) or 0.75),
+            2,
+        )
+        orbit_min_turns_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'orbit_speed_min_turns', float(v))
+        )
+        expression_layout.addWidget(orbit_min_turns_slider)
+
+        orbit_max_turns_slider = SliderWithLabel(
+            "Max turns (high energy)",
+            0.50, 2.00,
+            float(getattr(self.config.stroke, 'orbit_speed_max_turns', 1.5) or 1.5),
+            2,
+        )
+        orbit_max_turns_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'orbit_speed_max_turns', float(v))
+        )
+        expression_layout.addWidget(orbit_max_turns_slider)
+
+        wander_cb = QCheckBox("Center wandering (orbit drifts horizontally)")
+        wander_cb.setChecked(bool(getattr(self.config.stroke, 'center_wander_enabled', True)))
+        wander_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'center_wander_enabled', state == 2)
+        )
+        expression_layout.addWidget(wander_cb)
+
+        wander_max_slider = SliderWithLabel(
+            "Wander max offset",
+            0.0, 0.50,
+            float(getattr(self.config.stroke, 'center_wander_max_x', 0.20) or 0.20),
+            2,
+        )
+        wander_max_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'center_wander_max_x', float(v))
+        )
+        expression_layout.addWidget(wander_max_slider)
+
+        wander_cycle_slider = SliderWithLabel(
+            "Wander cycle (seconds)",
+            5.0, 60.0,
+            float(getattr(self.config.stroke, 'center_wander_cycle_s', 25.0) or 25.0),
+            1,
+        )
+        wander_cycle_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'center_wander_cycle_s', float(v))
+        )
+        expression_layout.addWidget(wander_cycle_slider)
+
+        wander_energy_slider = SliderWithLabel(
+            "Wander energy influence",
+            0.0, 1.0,
+            float(getattr(self.config.stroke, 'center_wander_energy_scale', 0.6) or 0.6),
+            2,
+        )
+        wander_energy_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'center_wander_energy_scale', float(v))
+        )
+        expression_layout.addWidget(wander_energy_slider)
+
+        direction_cb = QCheckBox("Direction changes at phrase boundaries")
+        direction_cb.setChecked(bool(getattr(self.config.stroke, 'direction_change_enabled', True)))
+        direction_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'direction_change_enabled', state == 2)
+        )
+        expression_layout.addWidget(direction_cb)
+
+        direction_interval_slider = SliderWithLabel(
+            "Min interval between reversals (s)",
+            5.0, 60.0,
+            float(getattr(self.config.stroke, 'direction_change_interval_s', 15.0) or 15.0),
+            1,
+        )
+        direction_interval_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'direction_change_interval_s', float(v))
+        )
+        expression_layout.addWidget(direction_interval_slider)
+
+        direction_drop_slider = SliderWithLabel(
+            "Energy change to trigger reversal",
+            0.10, 0.80,
+            float(getattr(self.config.stroke, 'direction_change_energy_drop', 0.35) or 0.35),
+            2,
+        )
+        direction_drop_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'direction_change_energy_drop', float(v))
+        )
+        expression_layout.addWidget(direction_drop_slider)
+
+        tension_cb = QCheckBox("Tension pauses (dramatic freeze on energy drops)")
+        tension_cb.setChecked(bool(getattr(self.config.stroke, 'tension_pause_enabled', True)))
+        tension_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'tension_pause_enabled', state == 2)
+        )
+        expression_layout.addWidget(tension_cb)
+
+        tension_drop_slider = SliderWithLabel(
+            "Energy drop to trigger pause",
+            0.15, 0.80,
+            float(getattr(self.config.stroke, 'tension_pause_energy_drop', 0.40) or 0.40),
+            2,
+        )
+        tension_drop_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'tension_pause_energy_drop', float(v))
+        )
+        expression_layout.addWidget(tension_drop_slider)
+
+        tension_hold_slider = SliderWithLabel(
+            "Pause hold duration (s)",
+            0.10, 1.50,
+            float(getattr(self.config.stroke, 'tension_pause_hold_s', 0.45) or 0.45),
+            2,
+        )
+        tension_hold_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'tension_pause_hold_s', float(v))
+        )
+        expression_layout.addWidget(tension_hold_slider)
+
+        tension_cooldown_slider = SliderWithLabel(
+            "Pause cooldown (s)",
+            2.0, 30.0,
+            float(getattr(self.config.stroke, 'tension_pause_cooldown_s', 10.0) or 10.0),
+            1,
+        )
+        tension_cooldown_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'tension_pause_cooldown_s', float(v))
+        )
+        expression_layout.addWidget(tension_cooldown_slider)
+
+        session_cb = QCheckBox("Session arc (gradual long-term intensity evolution)")
+        session_cb.setChecked(bool(getattr(self.config.stroke, 'session_arc_enabled', True)))
+        session_cb.stateChanged.connect(
+            lambda state: setattr(self.config.stroke, 'session_arc_enabled', state == 2)
+        )
+        expression_layout.addWidget(session_cb)
+
+        session_influence_slider = SliderWithLabel(
+            "Session arc radius influence",
+            0.0, 0.30,
+            float(getattr(self.config.stroke, 'session_arc_radius_influence', 0.10) or 0.10),
+            2,
+        )
+        session_influence_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'session_arc_radius_influence', float(v))
+        )
+        expression_layout.addWidget(session_influence_slider)
+
+        scroll_layout.addWidget(expression_group)
+
+        # ===== Post-Silence Volume Ramp =====
+        silence_ramp_group = QGroupBox("Post-Silence Volume Ramp")
+        silence_ramp_layout = QVBoxLayout(silence_ramp_group)
+
+        silence_ramp_info = QLabel("After silence (track change), reduce volume and slowly\nraise it back over a configurable duration.")
+        silence_ramp_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        silence_ramp_layout.addWidget(silence_ramp_info)
+
+        vol_reduction_slider = SliderWithLabel(
+            "Volume reduction (%)",
+            0.0,
+            0.50,
+            float(getattr(self.config.stroke, 'post_silence_vol_reduction', 0.15) or 0.15),
+            2,
+        )
+        vol_reduction_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'post_silence_vol_reduction', v)
+        )
+        silence_ramp_layout.addWidget(vol_reduction_slider)
+
+        ramp_dur_slider = SliderWithLabel(
+            "Ramp duration (seconds)",
+            1.0,
+            8.0,
+            float(getattr(self.config.stroke, 'post_silence_ramp_seconds', 4.0) or 4.0),
+            1,
+        )
+        ramp_dur_slider.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'post_silence_ramp_seconds', v)
+        )
+        silence_ramp_layout.addWidget(ramp_dur_slider)
+
+        fade_drop_row = QHBoxLayout()
+        fade_drop_label = QLabel("Fade max drop points (out of 100):")
+        fade_drop_label.setStyleSheet("color: #ccc;")
+        fade_drop_row.addWidget(fade_drop_label)
+        fade_drop_spin = QSpinBox()
+        fade_drop_spin.setRange(0, 10)
+        fade_drop_spin.setSingleStep(1)
+        fade_drop_spin.setValue(int(np.clip(getattr(self.config.stroke, 'silence_fade_drop_points', 10) or 10, 0, 10)))
+        fade_drop_spin.setToolTip("Caps runtime fade reduction to this many volume points (0-10)")
+        fade_drop_spin.valueChanged.connect(
+            lambda v: setattr(self.config.stroke, 'silence_fade_drop_points', int(v))
+        )
+        fade_drop_row.addWidget(fade_drop_spin)
+        fade_drop_row.addStretch()
+        silence_ramp_layout.addLayout(fade_drop_row)
+
+        scroll_layout.addWidget(silence_ramp_group)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_content)
+        layout.addWidget(scroll)
+        return content
+
     def _on_options_motion_readiness(self, as_tab: bool = False):
         """Show or build readiness gating controls."""
         from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSpinBox, QCheckBox, QGroupBox, QPushButton
 
         if not as_tab:
-            self._open_developer_controls_window(tab_index=3)
+            self._on_options_motion_settings(tab_index=1)
             return
 
         content = QWidget()
@@ -3336,62 +3678,6 @@ class BREadbeatsWindow(QMainWindow):
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setSpacing(10)
 
-        # ===== Silence Gate Controls (Top Priority) =====
-        silence_group = QGroupBox("Silence Gate (RMS)")
-        silence_layout = QVBoxLayout(silence_group)
-
-        silence_info = QLabel(
-            "These thresholds control the silence deadzone hysteresis using RMS amplitude units.\n"
-            "Open = enter silence (park), Close = exit silence (resume motion)."
-        )
-        silence_info.setStyleSheet("color: #aaa; font-size: 11px;")
-        silence_layout.addWidget(silence_info)
-
-        silence_open_slider = SliderWithLabel(
-            "Silence Threshold Open",
-            0.001,
-            0.250,
-            float(getattr(self.config.stroke, 'silence_threshold', 0.010825) or 0.010825),
-            3,
-        )
-        silence_open_slider.setToolTip("Audio amplitude below this RMS level enters silence mode (motion stops, dot parks)")
-
-        silence_close_slider = SliderWithLabel(
-            "Silence Threshold Close",
-            0.001,
-            0.300,
-            float(getattr(self.config.stroke, 'silence_close_threshold', 0.0433) or 0.0433),
-            3,
-        )
-        silence_close_slider.setToolTip("Audio amplitude must exceed this RMS level to exit silence mode (motion resumes)")
-
-        def _set_silence_open(v: float) -> None:
-            open_v = float(v)
-            setattr(self.config.stroke, 'silence_threshold', open_v)
-            close_v = float(getattr(self.config.stroke, 'silence_close_threshold', 0.0433) or 0.0433)
-            if close_v <= open_v:
-                close_v = open_v + 0.001
-                setattr(self.config.stroke, 'silence_close_threshold', close_v)
-                silence_close_slider.blockSignals(True)
-                silence_close_slider.setValue(close_v)
-                silence_close_slider.blockSignals(False)
-
-        def _set_silence_close(v: float) -> None:
-            close_v = float(v)
-            open_v = float(getattr(self.config.stroke, 'silence_threshold', 0.010825) or 0.010825)
-            if close_v <= open_v:
-                close_v = open_v + 0.001
-                silence_close_slider.blockSignals(True)
-                silence_close_slider.setValue(close_v)
-                silence_close_slider.blockSignals(False)
-            setattr(self.config.stroke, 'silence_close_threshold', close_v)
-
-        silence_open_slider.valueChanged.connect(_set_silence_open)
-        silence_close_slider.valueChanged.connect(_set_silence_close)
-        silence_layout.addWidget(silence_open_slider)
-        silence_layout.addWidget(silence_close_slider)
-        scroll_layout.addWidget(silence_group)
-        
         # ===== Syncopation Controls =====
         syncope_group = QGroupBox("Syncopation / Double-Stroke")
         syncope_layout = QVBoxLayout(syncope_group)
@@ -3980,58 +4266,6 @@ class BREadbeatsWindow(QMainWindow):
 
         scroll_layout.addWidget(scheduling_group)
 
-        # ===== Post-Silence Volume Ramp =====
-        silence_ramp_group = QGroupBox("Post-Silence Volume Ramp")
-        silence_ramp_layout = QVBoxLayout(silence_ramp_group)
-
-        silence_ramp_info = QLabel("After silence (track change), reduce volume and slowly\nraise it back over a configurable duration.")
-        silence_ramp_info.setStyleSheet("color: #aaa; font-size: 11px;")
-        silence_ramp_layout.addWidget(silence_ramp_info)
-
-        # Volume reduction slider (0% - 50%)
-        vol_reduction_slider = SliderWithLabel(
-            "Volume reduction (%)",
-            0.0,
-            0.50,
-            float(getattr(self.config.stroke, 'post_silence_vol_reduction', 0.15) or 0.15),
-            2,
-        )
-        vol_reduction_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'post_silence_vol_reduction', v)
-        )
-        silence_ramp_layout.addWidget(vol_reduction_slider)
-
-        # Ramp duration slider (1.0 - 8.0 seconds)
-        ramp_dur_slider = SliderWithLabel(
-            "Ramp duration (seconds)",
-            1.0,
-            8.0,
-            float(getattr(self.config.stroke, 'post_silence_ramp_seconds', 4.0) or 4.0),
-            1,
-        )
-        ramp_dur_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'post_silence_ramp_seconds', v)
-        )
-        silence_ramp_layout.addWidget(ramp_dur_slider)
-
-        fade_drop_row = QHBoxLayout()
-        fade_drop_label = QLabel("Fade max drop points (out of 100):")
-        fade_drop_label.setStyleSheet("color: #ccc;")
-        fade_drop_row.addWidget(fade_drop_label)
-        fade_drop_spin = QSpinBox()
-        fade_drop_spin.setRange(0, 10)
-        fade_drop_spin.setSingleStep(1)
-        fade_drop_spin.setValue(int(np.clip(getattr(self.config.stroke, 'silence_fade_drop_points', 10) or 10, 0, 10)))
-        fade_drop_spin.setToolTip("Caps runtime fade reduction to this many volume points (0-10)")
-        fade_drop_spin.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'silence_fade_drop_points', int(v))
-        )
-        fade_drop_row.addWidget(fade_drop_spin)
-        fade_drop_row.addStretch()
-        silence_ramp_layout.addLayout(fade_drop_row)
-
-        scroll_layout.addWidget(silence_ramp_group)
-
         # ===== Flux Controls =====
         flux_group = QGroupBox("Flux Sensitivity")
         self._advanced_flux_group = flux_group
@@ -4488,180 +4722,6 @@ class BREadbeatsWindow(QMainWindow):
         flux_layout.addWidget(center_guard_avg_slider)
 
         scroll_layout.addWidget(flux_group)
-
-        # ===== Expression Layer Controls =====
-        expression_group = QGroupBox("Expression Layer")
-        expression_layout = QVBoxLayout(expression_group)
-
-        expr_info = QLabel(
-            "Artistic expression: orbit speed variation, center wandering,\n"
-            "direction changes, tension pauses, and session arc."
-        )
-        expr_info.setStyleSheet("color: #aaa; font-size: 11px;")
-        expression_layout.addWidget(expr_info)
-
-        # ── Orbit Speed Variation ──
-        orbit_speed_cb = QCheckBox("Orbit speed variation (energy-driven turns per journey)")
-        orbit_speed_cb.setChecked(bool(getattr(self.config.stroke, 'orbit_speed_variation_enabled', True)))
-        orbit_speed_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'orbit_speed_variation_enabled', state == 2)
-        )
-        expression_layout.addWidget(orbit_speed_cb)
-
-        orbit_min_turns_slider = SliderWithLabel(
-            "Min turns (low energy)",
-            0.25, 1.50,
-            float(getattr(self.config.stroke, 'orbit_speed_min_turns', 0.75) or 0.75),
-            2,
-        )
-        orbit_min_turns_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'orbit_speed_min_turns', float(v))
-        )
-        expression_layout.addWidget(orbit_min_turns_slider)
-
-        orbit_max_turns_slider = SliderWithLabel(
-            "Max turns (high energy)",
-            0.50, 2.00,
-            float(getattr(self.config.stroke, 'orbit_speed_max_turns', 1.5) or 1.5),
-            2,
-        )
-        orbit_max_turns_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'orbit_speed_max_turns', float(v))
-        )
-        expression_layout.addWidget(orbit_max_turns_slider)
-
-        # ── Center Wandering ──
-        wander_cb = QCheckBox("Center wandering (orbit drifts horizontally)")
-        wander_cb.setChecked(bool(getattr(self.config.stroke, 'center_wander_enabled', True)))
-        wander_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'center_wander_enabled', state == 2)
-        )
-        expression_layout.addWidget(wander_cb)
-
-        wander_max_slider = SliderWithLabel(
-            "Wander max offset",
-            0.0, 0.50,
-            float(getattr(self.config.stroke, 'center_wander_max_x', 0.20) or 0.20),
-            2,
-        )
-        wander_max_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'center_wander_max_x', float(v))
-        )
-        expression_layout.addWidget(wander_max_slider)
-
-        wander_cycle_slider = SliderWithLabel(
-            "Wander cycle (seconds)",
-            5.0, 60.0,
-            float(getattr(self.config.stroke, 'center_wander_cycle_s', 25.0) or 25.0),
-            1,
-        )
-        wander_cycle_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'center_wander_cycle_s', float(v))
-        )
-        expression_layout.addWidget(wander_cycle_slider)
-
-        wander_energy_slider = SliderWithLabel(
-            "Wander energy influence",
-            0.0, 1.0,
-            float(getattr(self.config.stroke, 'center_wander_energy_scale', 0.6) or 0.6),
-            2,
-        )
-        wander_energy_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'center_wander_energy_scale', float(v))
-        )
-        expression_layout.addWidget(wander_energy_slider)
-
-        # ── Direction Changes ──
-        direction_cb = QCheckBox("Direction changes at phrase boundaries")
-        direction_cb.setChecked(bool(getattr(self.config.stroke, 'direction_change_enabled', True)))
-        direction_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'direction_change_enabled', state == 2)
-        )
-        expression_layout.addWidget(direction_cb)
-
-        direction_interval_slider = SliderWithLabel(
-            "Min interval between reversals (s)",
-            5.0, 60.0,
-            float(getattr(self.config.stroke, 'direction_change_interval_s', 15.0) or 15.0),
-            1,
-        )
-        direction_interval_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'direction_change_interval_s', float(v))
-        )
-        expression_layout.addWidget(direction_interval_slider)
-
-        direction_drop_slider = SliderWithLabel(
-            "Energy change to trigger reversal",
-            0.10, 0.80,
-            float(getattr(self.config.stroke, 'direction_change_energy_drop', 0.35) or 0.35),
-            2,
-        )
-        direction_drop_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'direction_change_energy_drop', float(v))
-        )
-        expression_layout.addWidget(direction_drop_slider)
-
-        # ── Tension Pauses ──
-        tension_cb = QCheckBox("Tension pauses (dramatic freeze on energy drops)")
-        tension_cb.setChecked(bool(getattr(self.config.stroke, 'tension_pause_enabled', True)))
-        tension_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'tension_pause_enabled', state == 2)
-        )
-        expression_layout.addWidget(tension_cb)
-
-        tension_drop_slider = SliderWithLabel(
-            "Energy drop to trigger pause",
-            0.15, 0.80,
-            float(getattr(self.config.stroke, 'tension_pause_energy_drop', 0.40) or 0.40),
-            2,
-        )
-        tension_drop_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'tension_pause_energy_drop', float(v))
-        )
-        expression_layout.addWidget(tension_drop_slider)
-
-        tension_hold_slider = SliderWithLabel(
-            "Pause hold duration (s)",
-            0.10, 1.50,
-            float(getattr(self.config.stroke, 'tension_pause_hold_s', 0.45) or 0.45),
-            2,
-        )
-        tension_hold_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'tension_pause_hold_s', float(v))
-        )
-        expression_layout.addWidget(tension_hold_slider)
-
-        tension_cooldown_slider = SliderWithLabel(
-            "Pause cooldown (s)",
-            2.0, 30.0,
-            float(getattr(self.config.stroke, 'tension_pause_cooldown_s', 10.0) or 10.0),
-            1,
-        )
-        tension_cooldown_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'tension_pause_cooldown_s', float(v))
-        )
-        expression_layout.addWidget(tension_cooldown_slider)
-
-        # ── Session Arc ──
-        session_cb = QCheckBox("Session arc (gradual long-term intensity evolution)")
-        session_cb.setChecked(bool(getattr(self.config.stroke, 'session_arc_enabled', True)))
-        session_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'session_arc_enabled', state == 2)
-        )
-        expression_layout.addWidget(session_cb)
-
-        session_influence_slider = SliderWithLabel(
-            "Session arc radius influence",
-            0.0, 0.30,
-            float(getattr(self.config.stroke, 'session_arc_radius_influence', 0.10) or 0.10),
-            2,
-        )
-        session_influence_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'session_arc_radius_influence', float(v))
-        )
-        expression_layout.addWidget(session_influence_slider)
-
-        scroll_layout.addWidget(expression_group)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
