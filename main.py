@@ -8778,10 +8778,15 @@ Like the app?<br>
     
     def _network_status_callback(self, message: str, connected: bool):
         """Called from network thread on status change"""
+        if getattr(self, '_is_shutting_down', False):
+            return
         self.signals.status_changed.emit(message, connected)
     
     def _on_beat(self, event: BeatEvent):
         """Handle beat event in GUI thread"""
+        if getattr(self, '_is_shutting_down', False):
+            return
+
         # ===== METRONOME SYNC INDICATOR (updates every frame, not just on beat) =====
         acf_conf_raw = getattr(event, 'acf_confidence', 0.0)
         metro_bpm_raw = getattr(event, 'metronome_bpm', 0.0)
@@ -8870,14 +8875,28 @@ Like the app?<br>
     
     def _turn_off_beat_indicator(self):
         """Turn off beat indicator after minimum duration"""
-        self.beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+        beat_indicator = getattr(self, 'beat_indicator', None)
+        if beat_indicator is None:
+            return
+        try:
+            beat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+        except RuntimeError:
+            return
     
     def _turn_off_downbeat_indicator(self):
         """Turn off downbeat indicator after minimum duration"""
-        self.downbeat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+        downbeat_indicator = getattr(self, 'downbeat_indicator', None)
+        if downbeat_indicator is None:
+            return
+        try:
+            downbeat_indicator.setStyleSheet("color: #333; font-size: 24px;")
+        except RuntimeError:
+            return
     
     def _on_spectrum(self, spectrum: np.ndarray):
         """Queue spectrum for throttled update"""
+        if getattr(self, '_is_shutting_down', False):
+            return
         self._pending_spectrum = spectrum
 
     def _compute_visual_metrics(self, spectrum: np.ndarray) -> tuple[float, float]:
@@ -8908,6 +8927,9 @@ Like the app?<br>
     
     def _do_spectrum_update(self):
         """Actually update spectrum at throttled rate - only update visible visualizer"""
+        if getattr(self, '_is_shutting_down', False):
+            self._pending_spectrum = None
+            return
         if self._pending_spectrum is not None:
             # Handle both old format (numpy array) and new format (dict with stats)
             if isinstance(self._pending_spectrum, dict):
@@ -8935,8 +8957,13 @@ Like the app?<br>
     
     def _on_status_change(self, message: str, connected: bool):
         """Update connection status"""
-        self.status_label.setText("Connected" if connected else "Connect")
-        self.status_label.setStyleSheet(f"color: {'#0af' if connected else '#fff'};")
+        if getattr(self, '_is_shutting_down', False):
+            return
+        try:
+            self.status_label.setText("Connected" if connected else "Connect")
+            self.status_label.setStyleSheet(f"color: {'#0af' if connected else '#fff'};")
+        except RuntimeError:
+            return
         connection_toggle_action = getattr(self, 'connection_toggle_action', None)
         if connection_toggle_action is not None:
             connection_toggle_action.setText("Disconnect" if connected else "Connect")
@@ -8952,6 +8979,9 @@ Like the app?<br>
     
     def _update_display(self):
         """Periodic display update + sync cached widget states for thread-safe audio access"""
+        if getattr(self, '_is_shutting_down', False):
+            return
+
         def _is_live_widget_attr(name: str) -> bool:
             widget = getattr(self, name, None)
             if widget is None:
@@ -9176,6 +9206,15 @@ Like the app?<br>
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
         self._is_shutting_down = True
+
+        for timer_name in ('update_timer', '_spectrum_timer', 'beat_timer', 'downbeat_timer'):
+            timer = getattr(self, timer_name, None)
+            if timer is None:
+                continue
+            try:
+                timer.stop()
+            except RuntimeError:
+                pass
 
         shutdown_runtime(self._stop_engines, self.network_engine)
 
