@@ -22,6 +22,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Documentation/working notes - NOT for version control
 CONFIG_*.md
