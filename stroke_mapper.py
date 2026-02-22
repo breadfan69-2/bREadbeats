@@ -81,6 +81,7 @@ class StrokeMapper:
         self._radius_hold_active = False
         self._radius_hold_value = self._park_radius
         self._radius_hold_start_time = 0.0
+        self._radius_hold_visible_cycle_done = False
         self._angular_velocity = 0.0
         self._last_phase_for_velocity = self._orbit_phase
         self._journey_initial_speed_slope = 0.0
@@ -718,85 +719,95 @@ class StrokeMapper:
                     if self._last_journey_completion >= 1.0:
                         self._journey_fixed_radius = bloom_target_radius
 
+                    # allow_wait_swirl_in_creep is True when a gate (e.g. mid_trigger)
+                    # is repeatedly blocking real beats and forcing the trigger to creep.
+                    # In that case beats ARE incoming — treat as continuation_expected so
+                    # the orbit enters wait-swirl instead of exit-spiralling to a hold.
                     allow_wait_swirl_in_creep = bool(self._last_gate_fail)
-                    if continuation_expected and (decision.trigger_kind != "creep" or allow_wait_swirl_in_creep):
-                        # ── Wait-swirl: fast spiral into park-like idle ──
-                        self._exit_spiral_active = False
-                        self._exit_spiral_progress = 0.0
-                        self._settle_active = False
-                        self._radius_hold_active = False
+                    if (continuation_expected or allow_wait_swirl_in_creep) and (decision.trigger_kind != "creep" or allow_wait_swirl_in_creep):
+                        hold_cycle_pending = bool(
+                            self._radius_hold_active and not self._radius_hold_visible_cycle_done
+                        )
+                        if hold_cycle_pending:
+                            pass
+                        else:
+                            # ── Wait-swirl: fast spiral into park-like idle ──
+                            self._exit_spiral_active = False
+                            self._exit_spiral_progress = 0.0
+                            self._settle_active = False
+                            self._radius_hold_active = False
 
-                        # First wait frame: latch current state
-                        if not self._wait_swirl_active:
-                            self._wait_swirl_active = True
-                            self._wait_swirl_progress = 0.0
-                            self._wait_swirl_start_center_y = float(self._base_center_y)
-                            self._wait_swirl_start_radius = float(max(self._actual_radius, self._park_idle_radius))
-                            self._wait_swirl_start_angular_vel = float(
-                                max(abs(self._angular_velocity), self._journey_nominal_angular_speed * 0.85)
+                            # First wait frame: latch current state
+                            if not self._wait_swirl_active:
+                                self._wait_swirl_active = True
+                                self._wait_swirl_progress = 0.0
+                                self._wait_swirl_start_center_y = float(self._base_center_y)
+                                self._wait_swirl_start_radius = float(max(self._actual_radius, self._park_idle_radius))
+                                self._wait_swirl_start_angular_vel = float(
+                                    max(abs(self._angular_velocity), self._journey_nominal_angular_speed * 0.85)
+                                )
+
+                            # Advance wait-swirl progress
+                            self._wait_swirl_progress = float(np.clip(
+                                self._wait_swirl_progress + (dt / max(self._wait_swirl_duration_s, 1e-3)),
+                                0.0,
+                                1.0,
+                            ))
+                            wait_t = self._s_curve(self._wait_swirl_progress)
+
+                            # Interpolate radius: current → slingshot loop radius
+                            wait_radius = float(
+                                self._wait_swirl_start_radius
+                                + ((self._wait_swirl_target_radius - self._wait_swirl_start_radius) * wait_t)
+                            )
+                            self._actual_radius = float(np.clip(wait_radius, self._wait_swirl_target_radius, 1.0))
+
+                            # Center_y with hook maneuver: dip deeper at midpoint, settle at baseline.
+                            # Creates an upward-hook as the dot spirals into the slingshot loop.
+                            hook_bump = float(self._wait_swirl_hook_depth * np.sin(np.pi * wait_t))
+                            self._base_center_y = float(
+                                self._wait_swirl_start_center_y
+                                + ((self._baseline_center_y - self._wait_swirl_start_center_y) * wait_t)
+                                + hook_bump
                             )
 
-                        # Advance wait-swirl progress
-                        self._wait_swirl_progress = float(np.clip(
-                            self._wait_swirl_progress + (dt / max(self._wait_swirl_duration_s, 1e-3)),
-                            0.0,
-                            1.0,
-                        ))
-                        wait_t = self._s_curve(self._wait_swirl_progress)
+                            # Decelerate to slingshot loop speed (energetic, not idle)
+                            bpm_wait = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+                            if bpm_wait <= 0.0:
+                                bpm_wait = float(getattr(event, "bpm", 0.0) or 0.0)
+                            bpm_wait = float(np.clip(bpm_wait if bpm_wait > 0.0 else 120.0, 40.0, 240.0))
+                            idle_angular_speed = float((2.0 * np.pi) * (bpm_wait / 60.0) * self._idle_loops_per_beat)
+                            slingshot_speed = float(max(
+                                self._journey_nominal_angular_speed * 0.80,
+                                idle_angular_speed,
+                            ))
+                            blended_speed = float(
+                                self._wait_swirl_start_angular_vel
+                                + ((slingshot_speed - self._wait_swirl_start_angular_vel) * wait_t)
+                            )
+                            angle = float((self._orbit_phase + (blended_speed * dt)) % (2.0 * np.pi))
+                            self._angular_velocity = float(blended_speed)
 
-                        # Interpolate radius: current → slingshot loop radius
-                        wait_radius = float(
-                            self._wait_swirl_start_radius
-                            + ((self._wait_swirl_target_radius - self._wait_swirl_start_radius) * wait_t)
-                        )
-                        self._actual_radius = float(np.clip(wait_radius, self._wait_swirl_target_radius, 1.0))
+                            # Bass-reactive jitter at wait (same as park)
+                            jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
+                                event=event, dt=dt,
+                            )
+                            treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
+                            self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 
-                        # Center_y with hook maneuver: dip deeper at midpoint, settle at baseline.
-                        # Creates an upward-hook as the dot spirals into the slingshot loop.
-                        hook_bump = float(self._wait_swirl_hook_depth * np.sin(np.pi * wait_t))
-                        self._base_center_y = float(
-                            self._wait_swirl_start_center_y
-                            + ((self._baseline_center_y - self._wait_swirl_start_center_y) * wait_t)
-                            + hook_bump
-                        )
+                            # Compute final position directly — stored for post-fix
+                            # (downstream code will overwrite locals; we restore at end)
+                            total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+                            orbit_radius = float(min(self._actual_radius, self._radius_cap_for_center(total_center_y)))
 
-                        # Decelerate to slingshot loop speed (energetic, not idle)
-                        bpm_wait = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-                        if bpm_wait <= 0.0:
-                            bpm_wait = float(getattr(event, "bpm", 0.0) or 0.0)
-                        bpm_wait = float(np.clip(bpm_wait if bpm_wait > 0.0 else 120.0, 40.0, 240.0))
-                        idle_angular_speed = float((2.0 * np.pi) * (bpm_wait / 60.0) * self._idle_loops_per_beat)
-                        slingshot_speed = float(max(
-                            self._journey_nominal_angular_speed * 0.80,
-                            idle_angular_speed,
-                        ))
-                        blended_speed = float(
-                            self._wait_swirl_start_angular_vel
-                            + ((slingshot_speed - self._wait_swirl_start_angular_vel) * wait_t)
-                        )
-                        angle = float((self._orbit_phase + (blended_speed * dt)) % (2.0 * np.pi))
-                        self._angular_velocity = float(blended_speed)
+                            self._wait_swirl_alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
+                            self._wait_swirl_beta = float(total_center_y + (orbit_radius * np.sin(angle)))
 
-                        # Bass-reactive jitter at wait (same as park)
-                        jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
-                            event=event, dt=dt,
-                        )
-                        treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
-                        self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
-
-                        # Compute final position directly — stored for post-fix
-                        # (downstream code will overwrite locals; we restore at end)
-                        total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-                        orbit_radius = float(min(self._actual_radius, self._radius_cap_for_center(total_center_y)))
-
-                        self._wait_swirl_alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
-                        self._wait_swirl_beta = float(total_center_y + (orbit_radius * np.sin(angle)))
-
-                        ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
-                        self._wait_swirl_volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
-                        self._wait_swirl_base_center_y = float(self._base_center_y)
-                        self._wait_swirl_reactive_bounce_y = float(self._reactive_bounce_y)
-                        self._last_journey_completion = progress
+                            ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+                            self._wait_swirl_volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
+                            self._wait_swirl_base_center_y = float(self._base_center_y)
+                            self._wait_swirl_reactive_bounce_y = float(self._reactive_bounce_y)
+                            self._last_journey_completion = progress
 
                     else:
                         self._settle_active = False
@@ -828,6 +839,7 @@ class StrokeMapper:
                             self._radius_hold_active = True
                             self._radius_hold_start_time = now
                             self._radius_hold_value = 0.70
+                            self._radius_hold_visible_cycle_done = False
                 else:
                     effective_progress = progress
                     if self._lazy_glide_active and progress > 0.70:
@@ -890,6 +902,7 @@ class StrokeMapper:
                     radius = self._actual_radius
                 elif self._radius_hold_active:
                     radius = float(np.clip(self._radius_hold_value, type_park_radius, type_max_radius))
+                    self._radius_hold_visible_cycle_done = True
                 elif self._exit_spiral_active:
                     exit_t = float(np.clip(self._exit_spiral_progress, 0.0, 1.0))
                     radius = float(0.90 + ((0.70 - 0.90) * self._s_curve(exit_t)))

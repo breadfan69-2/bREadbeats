@@ -1830,8 +1830,11 @@ class BeatIntelligence:
                 # Hard flux drop — cancel phrase commitment immediately
                 self._phrase_committed = False
                 self._phrase_beats_remaining = 0
-            elif trigger_kind == "creep" and not silence_active:
-                # Override: don't allow creep during committed phrase
+            elif trigger_kind == "creep" and not silence_active and not gate_fail_reason:
+                # Override: don't allow creep during committed phrase.
+                # Gate failures always win — do NOT re-promote a gated-out beat
+                # back to "beat", or the orbit loops at full radius against the
+                # perimeter instead of pulling in to wait-swirl / jitter.
                 trigger_kind = "beat"
 
         # Intensity-Lock: at measure end, renew if still pumping

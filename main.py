@@ -7151,7 +7151,7 @@ Like the app?<br>
         
         # Frequency band selection with visibility toggle (red beat detection band)
         beat_slider_row = QHBoxLayout()
-        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 3000, 0, log_scale=True)
+        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 50, 20000, 0, log_scale=True)
         self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
         beat_slider_row.addWidget(self.freq_range_slider)
         levels_layout.addLayout(beat_slider_row)

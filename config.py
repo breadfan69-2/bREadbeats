@@ -31,8 +31,8 @@ class BeatDetectionConfig:
     amplification: float = 1.0        # Audio amplification (slider 0-2)
     flux_multiplier: float = 10.0      # Weight of spectral flux
     # Frequency band selection (Hz)
-    freq_low: float = 30.0            # Low cutoff frequency (Hz)
-    freq_high: float = 212.0          # High cutoff frequency (Hz) - bass range default
+    freq_low: float = 50.0            # Low cutoff frequency (Hz)
+    freq_high: float = 20000.0        # High cutoff frequency (Hz)
     motion_freq_cutoff: float = 180.0  # Only generate motion from bands below this Hz (0=disabled)
     silence_reset_ms: int = 179       # How long silence before resetting beat tracking (ms)
     
@@ -41,7 +41,7 @@ class BeatDetectionConfig:
     stability_threshold: float = 0.13    # Max CV to consider tempo "stable" (lower = stricter)
     tempo_timeout_ms: int = 1100         # How long no beats before resetting tempo tracking (ms)
     beats_per_measure: int = 4           # Time signature: 4 = 4/4, 3 = 3/4, 6 = 6/8
-    phase_snap_weight: float = 0.8       # How much to snap detected beats toward predicted time (0=off, 1=full)
+    phase_snap_weight: float = 0.65      # How much to snap detected beats toward predicted time (0=off, 1=full)
     
     # Downbeat pattern matching (strict tempo mode)
     pattern_match_tolerance_ms: float = 100.0  # Max deviation from predicted beat (ms) to accept downbeat
@@ -52,13 +52,13 @@ class BeatDetectionConfig:
     acf_interval_ms: float = 180.0              # ACF update cadence in milliseconds
     metronome_bpm_alpha_slow: float = 0.06      # BPM smoothing alpha when confidence is low
     metronome_bpm_alpha_fast: float = 0.28      # BPM smoothing alpha when confidence is high
-    metronome_pll_window: float = 0.45          # Phase-lock correction window (beat fraction)
-    metronome_pll_base_gain: float = 0.14       # Base PLL gain
+    metronome_pll_window: float = 0.35          # Phase-lock correction window (beat fraction)
+    metronome_pll_base_gain: float = 0.20       # Base PLL gain
     metronome_pll_conf_gain: float = 0.12       # Extra PLL gain from confidence
     tempo_fusion_min_acf_weight: float = 0.15   # Minimum ACF weight in ACF/onset tempo fusion
     tempo_fusion_max_acf_weight: float = 0.82   # Maximum ACF weight in ACF/onset tempo fusion
     beat_dedup_fraction: float = 0.20            # Ignore second onset inside this fraction of a beat period
-    phase_accept_window_ms: float = 80.0         # Base raw-onset acceptance window around expected beat (ms)
+    phase_accept_window_ms: float = 50.0         # Base raw-onset acceptance window around expected beat (ms)
     phase_accept_low_conf_mult: float = 2.0      # Multiply phase window when metronome confidence is low
     beat_refractory_ms: float = 140.0            # Min spacing between accepted beats (ms), independent of stroke min interval
     aggressive_tempo_snap_enabled: bool = True  # Hard-snap metronome BPM when lock confidence is high
@@ -78,7 +78,7 @@ class BeatDetectionConfig:
     syncopation_bpm_limit: float = 130.0         # Disable syncopation above this BPM
     syncopation_arc_size: float = 0.82              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
     syncopation_speed: float = 1.0                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
-    scheduled_lead_ms: int = 18                    # Land scheduled arcs this many ms before predicted beat (0-200)
+    scheduled_lead_ms: int = 0                     # Land scheduled arcs this many ms before predicted beat (0-200)
     strict_bass_motion_gate_enabled: bool = True  # Require sub_bass/low_mid z-score fired bands for beat/sync stroke motion
     center_jitter_flux_guard_enabled: bool = True # Prevent no-beat center+jitter reset while flux activity is still high
     center_jitter_flux_delta_threshold: float = 0.2  # Rising-flux threshold to hold center+jitter reset
@@ -584,8 +584,8 @@ class BeatDetectionConfig:
     amplification: float = 5.0        # Audio amplification (slider 0-2)
     flux_multiplier: float = 5.0      # Weight of spectral flux
     # Frequency band selection (Hz)
-    freq_low: float = 30.0            # Low cutoff frequency (Hz)
-    freq_high: float = 212.0          # High cutoff frequency (Hz) - bass range default
+    freq_low: float = 50.0            # Low cutoff frequency (Hz)
+    freq_high: float = 20000.0        # High cutoff frequency (Hz)
     motion_freq_cutoff: float = 180.0  # Only generate motion from bands below this Hz (0=disabled)
     silence_reset_ms: int = 179       # How long silence before resetting beat tracking (ms)
     
@@ -594,7 +594,7 @@ class BeatDetectionConfig:
     stability_threshold: float = 0.13    # Max CV to consider tempo "stable" (lower = stricter)
     tempo_timeout_ms: int = 1100         # How long no beats before resetting tempo tracking (ms)
     beats_per_measure: int = 4           # Time signature: 4 = 4/4, 3 = 3/4, 6 = 6/8
-    phase_snap_weight: float = 0.8       # How much to snap detected beats toward predicted time (0=off, 1=full)
+    phase_snap_weight: float = 0.65      # How much to snap detected beats toward predicted time (0=off, 1=full)
     
     # Downbeat pattern matching (strict tempo mode)
     pattern_match_tolerance_ms: float = 100.0  # Max deviation from predicted beat (ms) to accept downbeat
@@ -605,13 +605,13 @@ class BeatDetectionConfig:
     acf_interval_ms: float = 180.0              # ACF update cadence in milliseconds
     metronome_bpm_alpha_slow: float = 0.06      # BPM smoothing alpha when confidence is low
     metronome_bpm_alpha_fast: float = 0.28      # BPM smoothing alpha when confidence is high
-    metronome_pll_window: float = 0.45          # Phase-lock correction window (beat fraction)
-    metronome_pll_base_gain: float = 0.14       # Base PLL gain
+    metronome_pll_window: float = 0.35          # Phase-lock correction window (beat fraction)
+    metronome_pll_base_gain: float = 0.20       # Base PLL gain
     metronome_pll_conf_gain: float = 0.12       # Extra PLL gain from confidence
     tempo_fusion_min_acf_weight: float = 0.15   # Minimum ACF weight in ACF/onset tempo fusion
     tempo_fusion_max_acf_weight: float = 0.82   # Maximum ACF weight in ACF/onset tempo fusion
     beat_dedup_fraction: float = 0.20            # Ignore second onset inside this fraction of a beat period
-    phase_accept_window_ms: float = 80.0         # Base raw-onset acceptance window around expected beat (ms)
+    phase_accept_window_ms: float = 50.0         # Base raw-onset acceptance window around expected beat (ms)
     phase_accept_low_conf_mult: float = 2.0      # Multiply phase window when metronome confidence is low
     beat_refractory_ms: float = 140.0            # Min spacing between accepted beats (ms), independent of stroke min interval
     aggressive_tempo_snap_enabled: bool = True  # Hard-snap metronome BPM when lock confidence is high
@@ -631,7 +631,7 @@ class BeatDetectionConfig:
     syncopation_bpm_limit: float = 130.0         # Disable syncopation above this BPM
     syncopation_arc_size: float = 0.82              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
     syncopation_speed: float = 1.0                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
-    scheduled_lead_ms: int = 18                    # Land scheduled arcs this many ms before predicted beat (0-200)
+    scheduled_lead_ms: int = 0                     # Land scheduled arcs this many ms before predicted beat (0-200)
     strict_bass_motion_gate_enabled: bool = False  # Require sub_bass/low_mid z-score fired bands for beat/sync stroke motion
     center_jitter_flux_guard_enabled: bool = True # Prevent no-beat center+jitter reset while flux activity is still high
     center_jitter_flux_delta_threshold: float = 0.20  # Rising-flux threshold to hold center+jitter reset
