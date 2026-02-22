@@ -102,6 +102,8 @@ class StrokeMapper:
         self._post_silence_radius_ramp = 1.0   # 0→1 over first beats after silence
         self._post_silence_radius_floor = 0.12 # start radius fraction after silence
         self._hold_start_pose_until_reactive = False
+        self._hold_start_pose_enter_time = 0.0
+        self._hold_start_pose_max_seconds = 1.8
         self._reactive_hold_swirl_phase = 0.0
         self._reactive_hold_swirl_center_y = float(getattr(self.config.stroke, "reactive_hold_center_y", -0.70) or -0.70)
         self._reactive_hold_swirl_radius = float(getattr(self.config.stroke, "reactive_hold_radius", 0.18) or 0.18)
@@ -150,6 +152,7 @@ class StrokeMapper:
         self._wait_swirl_progress = 0.0    # 0→1 S-curve interpolant
         self._wait_swirl_duration_s = 0.60 # smooth spiral into visible loop
         self._wait_swirl_target_radius = 0.30  # visible slingshot loop radius
+        self._wait_swirl_creep_target_radius = 0.65  # tighter inboard loop for creep-wait
         self._wait_swirl_hook_depth = 0.05     # center_y dip for hook maneuver
         self._wait_swirl_start_center_y = self._baseline_center_y
         self._wait_swirl_start_radius = self._park_radius
@@ -159,6 +162,7 @@ class StrokeMapper:
         self._wait_swirl_volume = 0.0
         self._wait_swirl_base_center_y = self._baseline_center_y
         self._wait_swirl_reactive_bounce_y = 0.0
+        self._wait_state_jitter_alpha = 0.0
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
 
@@ -331,6 +335,7 @@ class StrokeMapper:
 
         if decision.silence_active:
             self._hold_start_pose_until_reactive = False
+            self._hold_start_pose_enter_time = 0.0
             # Reset cold-start momentum ramp so dot takes off slowly after silence
             self._startup_beats_seen = 0.0
             self._journey_startup_momentum = self._startup_momentum_min
@@ -414,6 +419,21 @@ class StrokeMapper:
             # Reset swirl state when music resumes (gate-idle persists until new journey)
             self._swirl_entering = False
             self._swirl_progress = 0.0
+
+            if self._hold_start_pose_until_reactive and decision.trigger_kind == "creep":
+                if self._hold_start_pose_enter_time > 0.0:
+                    hold_elapsed = float(now - self._hold_start_pose_enter_time)
+                    if hold_elapsed >= float(max(self._hold_start_pose_max_seconds, 0.1)):
+                        self._hold_start_pose_until_reactive = False
+                        self._hold_start_pose_enter_time = 0.0
+
+                if self._hold_start_pose_until_reactive and bool(
+                    getattr(event, "is_beat", False)
+                    or getattr(event, "is_downbeat", False)
+                    or getattr(event, "is_syncopated", False)
+                ):
+                    self._hold_start_pose_until_reactive = False
+                    self._hold_start_pose_enter_time = 0.0
 
             if self._hold_start_pose_until_reactive and decision.trigger_kind == "creep":
                 bpm_hold = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
@@ -526,6 +546,7 @@ class StrokeMapper:
                 if started_new_journey:
                     if decision.trigger_kind in ("beat", "downbeat", "syncopation", "start"):
                         self._hold_start_pose_until_reactive = False
+                        self._hold_start_pose_enter_time = 0.0
                     prior_completion = float(self._last_journey_completion)
                     if self._wait_swirl_active:
                         # Slingshot exit: inherit loop momentum and phase for smooth launch
@@ -797,6 +818,75 @@ class StrokeMapper:
                         self._wait_swirl_reactive_bounce_y = float(self._reactive_bounce_y)
                         self._last_journey_completion = progress
 
+                    elif decision.trigger_kind == "creep":
+                        # ── Creep-wait swirl: keep movement alive in a tighter inboard loop ──
+                        self._exit_spiral_active = False
+                        self._exit_spiral_progress = 0.0
+                        self._settle_active = False
+                        self._radius_hold_active = False
+
+                        if not self._wait_swirl_active:
+                            self._wait_swirl_active = True
+                            self._wait_swirl_progress = 0.0
+                            self._wait_swirl_start_center_y = float(self._base_center_y)
+                            self._wait_swirl_start_radius = float(max(self._actual_radius, self._park_idle_radius))
+                            self._wait_swirl_start_angular_vel = float(
+                                max(abs(self._angular_velocity), 0.35)
+                            )
+
+                        self._wait_swirl_progress = float(np.clip(
+                            self._wait_swirl_progress + (dt / max(self._wait_swirl_duration_s, 1e-3)),
+                            0.0,
+                            1.0,
+                        ))
+                        wait_t = self._s_curve(self._wait_swirl_progress)
+
+                        creep_wait_target_radius = float(np.clip(self._wait_swirl_creep_target_radius, 0.60, 0.70))
+                        wait_radius = float(
+                            self._wait_swirl_start_radius
+                            + ((creep_wait_target_radius - self._wait_swirl_start_radius) * wait_t)
+                        )
+                        self._actual_radius = float(np.clip(wait_radius, 0.60, 1.0))
+
+                        hook_bump = float(self._wait_swirl_hook_depth * np.sin(np.pi * wait_t))
+                        self._base_center_y = float(
+                            self._wait_swirl_start_center_y
+                            + ((self._baseline_center_y - self._wait_swirl_start_center_y) * wait_t)
+                            + hook_bump
+                        )
+
+                        bpm_wait = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+                        if bpm_wait <= 0.0:
+                            bpm_wait = float(getattr(event, "bpm", 0.0) or 0.0)
+                        bpm_wait = float(np.clip(bpm_wait if bpm_wait > 0.0 else 120.0, 40.0, 240.0))
+                        idle_angular_speed = float((2.0 * np.pi) * (bpm_wait / 60.0) * self._idle_loops_per_beat)
+                        creep_wait_speed = float(max(idle_angular_speed * 1.35, 0.35))
+                        blended_speed = float(
+                            self._wait_swirl_start_angular_vel
+                            + ((creep_wait_speed - self._wait_swirl_start_angular_vel) * wait_t)
+                        )
+                        angle = float((self._orbit_phase + (blended_speed * dt)) % (2.0 * np.pi))
+                        self._angular_velocity = float(blended_speed)
+
+                        # Bass-reactive jitter applies in creep wait swirl too.
+                        jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
+                            event=event, dt=dt,
+                        )
+                        treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
+                        self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
+
+                        total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+                        orbit_radius = float(min(self._actual_radius, self._radius_cap_for_center(total_center_y)))
+
+                        self._wait_swirl_alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
+                        self._wait_swirl_beta = float(total_center_y + (orbit_radius * np.sin(angle)))
+
+                        ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+                        self._wait_swirl_volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
+                        self._wait_swirl_base_center_y = float(self._base_center_y)
+                        self._wait_swirl_reactive_bounce_y = float(self._reactive_bounce_y)
+                        self._last_journey_completion = progress
+
                     else:
                         self._settle_active = False
                         self._radius_hold_active = False
@@ -976,6 +1066,8 @@ class StrokeMapper:
                 orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
 
                 alpha = float(orbit_radius * np.cos(angle))
+                if wait_state:
+                    alpha = float(alpha + self._wait_state_jitter_alpha)
                 beta = float(total_center_y + (orbit_radius * np.sin(angle)))
 
                 # Apply post-silence ramp to volume
@@ -984,7 +1076,15 @@ class StrokeMapper:
 
                 self._last_journey_completion = progress
                 if decision.trigger_kind == "start" and progress >= 1.0:
-                    self._hold_start_pose_until_reactive = True
+                    if not self._hold_start_pose_until_reactive:
+                        self._hold_start_pose_until_reactive = True
+                        self._hold_start_pose_enter_time = now
+
+        if self._hold_start_pose_until_reactive and self._hold_start_pose_enter_time > 0.0:
+            hold_elapsed = float(now - self._hold_start_pose_enter_time)
+            if hold_elapsed >= float(max(self._hold_start_pose_max_seconds, 0.1)):
+                self._hold_start_pose_until_reactive = False
+                self._hold_start_pose_enter_time = 0.0
 
         # Wait-swirl computed its own final position — restore from stored values
         # (downstream code ran and overwrote locals with journey-based geometry)
@@ -1232,10 +1332,11 @@ class StrokeMapper:
 
     def _compute_reactive_bounce_y(self, event: BeatEvent, dt: float, wait_state: bool) -> float:
         if not wait_state:
+            self._wait_state_jitter_alpha = 0.0
             return 0.0
 
         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
-        _ = jitter_alpha
+        self._wait_state_jitter_alpha = float(jitter_alpha * 0.3)
         treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
         return float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 

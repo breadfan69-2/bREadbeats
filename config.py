@@ -74,7 +74,7 @@ class BeatDetectionConfig:
     # Syncopation / double-stroke detection
     syncopation_enabled: bool = True             # Master on/off for syncopation detection
     syncopation_band: str = 'low_mid'                # Which z-score band triggers syncope: 'any', 'sub_bass', 'low_mid', 'mid', 'high'
-    syncopation_window: float = 0.09             # ±fraction of beat period to detect off-beat (0.05-0.30)
+    syncopation_window: float = 0.20             # ±fraction of beat period to detect off-beat (0.05-0.30)
     syncopation_bpm_limit: float = 130.0         # Disable syncopation above this BPM
     syncopation_arc_size: float = 0.82              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
     syncopation_speed: float = 1.0                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
@@ -90,14 +90,14 @@ class BeatDetectionConfig:
     teaching_min_confidence: float = 0.18       # Minimum confidence required before adaptive suggestions apply
     teaching_use_fitted_rules: bool = True      # ENABLED: use trained rule_fit models for motion adaptation
     teaching_rule_fit_path: str = 'defaults/learning/rule_fit.tranquilizer_blend.json'  # Path to trained rule_fit models
-    teaching_no_motion_bias: float = 0.72        # Multiplier for hold-still behavior in quiet/unscripted moments
+    teaching_no_motion_bias: float = 1.5        # Multiplier for hold-still behavior in quiet/unscripted moments
     teaching_apply_in_circle_mode: bool = True # Keep SIMPLE_CIRCLE behavior legacy by default unless explicitly enabled
     teaching_isolation_mode: bool = True        # Branch-only: suspend selected legacy runtime modifiers while learning drives motion
     teaching_relax_phase1_gates: bool = False   # Enforce dual-band/mid-trigger legacy gates unless explicitly relaxed
     teaching_ignore_traffic_lights: bool = False  # Re-enable traffic-light stroke readiness by default
     tempo_lock_required: bool = False            # Require metronome lock confidence for stroke readiness
-    teaching_metronome_relaxed_confidence: float = 0.25  # Metronome-only fallback confidence for relaxed readiness
-    teaching_stroke_ready_grace_ms: float = 2662.0  # Hold readiness briefly through short confidence dips
+    teaching_metronome_relaxed_confidence: float = 1.0  # Metronome-only fallback confidence for relaxed readiness
+    teaching_stroke_ready_grace_ms: float = 1800.0  # Hold readiness briefly through short confidence dips
     teaching_stroke_finish_beats: int = 4        # When readiness drops, allow this many final beat strokes before idling
 
 @dataclass
@@ -192,8 +192,8 @@ class StrokeConfig:
     overall_amp_fill_target: float = 0.11
     overall_amp_fill_tolerance: float = 0.63
     downbeat_overall_amp_fill_required: float = 0.06
-    beat_overall_amp_fill_required: float = 0.24
-    syncopation_overall_amp_fill_required: float = 0.42
+    beat_overall_amp_fill_required: float = 0.04
+    syncopation_overall_amp_fill_required: float = 0.07
     overall_amp_fill_required_scale: float = 0.8499999999999994
     overall_amp_fill_auto_enabled: bool = True
     overall_amp_fill_auto_target_pass_rate: float = 0.58
@@ -226,7 +226,7 @@ class StrokeConfig:
     # Fill duration gate (per phase): require sustained fullness over consecutive frames.
     # Values are frame counts (~16-23ms per frame at effective 43-60fps processing rate).
     # Set to 0 or 1 to disable duration check (instant single-frame decision) for that phase.
-    downbeat_overall_amp_fill_sustain_frames: int = 3
+    downbeat_overall_amp_fill_sustain_frames: int = 1
     beat_overall_amp_fill_sustain_frames: int = 3
     syncopation_overall_amp_fill_sustain_frames: int = 3
 
@@ -627,7 +627,7 @@ class BeatDetectionConfig:
     # Syncopation / double-stroke detection
     syncopation_enabled: bool = True             # Master on/off for syncopation detection
     syncopation_band: str = 'low_mid'                # Which z-score band triggers syncope: 'any', 'sub_bass', 'low_mid', 'mid', 'high'
-    syncopation_window: float = 0.09             # ±fraction of beat period to detect off-beat (0.05-0.30)
+    syncopation_window: float = 0.20             # ±fraction of beat period to detect off-beat (0.05-0.30)
     syncopation_bpm_limit: float = 130.0         # Disable syncopation above this BPM
     syncopation_arc_size: float = 0.82              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
     syncopation_speed: float = 1.0                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
@@ -643,14 +643,14 @@ class BeatDetectionConfig:
     teaching_min_confidence: float = 0.39       # Minimum confidence required before adaptive suggestions apply
     teaching_use_fitted_rules: bool = True      # ENABLED: use trained rule_fit models for motion adaptation
     teaching_rule_fit_path: str = "defaults/learning/rule_fit.tranquilizer_blend.json"  # Path to trained rule_fit models
-    teaching_no_motion_bias: float = 1.08        # Multiplier for hold-still behavior in quiet/unscripted moments
+    teaching_no_motion_bias: float = 1.5        # Multiplier for hold-still behavior in quiet/unscripted moments
     teaching_apply_in_circle_mode: bool = True # Keep SIMPLE_CIRCLE behavior legacy by default unless explicitly enabled
     teaching_isolation_mode: bool = True        # Branch-only: suspend selected legacy runtime modifiers while learning drives motion
     teaching_relax_phase1_gates: bool = False   # Enforce dual-band/mid-trigger legacy gates unless explicitly relaxed
     teaching_ignore_traffic_lights: bool = True  # Re-enable traffic-light stroke readiness by default
     tempo_lock_required: bool = False            # Require metronome lock confidence for stroke readiness
-    teaching_metronome_relaxed_confidence: float = 0.34  # Metronome-only fallback confidence for relaxed readiness
-    teaching_stroke_ready_grace_ms: float = 2348.0  # Hold readiness briefly through short confidence dips
+    teaching_metronome_relaxed_confidence: float = 1.0  # Metronome-only fallback confidence for relaxed readiness
+    teaching_stroke_ready_grace_ms: float = 1800.0  # Hold readiness briefly through short confidence dips
     teaching_stroke_finish_beats: int = 4        # When readiness drops, allow this many final beat strokes before idling
 
 @dataclass
@@ -744,8 +744,8 @@ class StrokeConfig:
     overall_amp_fill_target: float = 0.5
     overall_amp_fill_tolerance: float = 0.5
     downbeat_overall_amp_fill_required: float = 0.03
-    beat_overall_amp_fill_required: float = 0.01
-    syncopation_overall_amp_fill_required: float = 0.04
+    beat_overall_amp_fill_required: float = 0.04
+    syncopation_overall_amp_fill_required: float = 0.07
     overall_amp_fill_required_scale: float = 0.5
     overall_amp_fill_auto_enabled: bool = True
     overall_amp_fill_auto_target_pass_rate: float = 0.58
@@ -778,7 +778,7 @@ class StrokeConfig:
     # Fill duration gate (per phase): require sustained fullness over consecutive frames.
     # Values are frame counts (~16-23ms per frame at effective 43-60fps processing rate).
     # Set to 0 or 1 to disable duration check (instant single-frame decision) for that phase.
-    downbeat_overall_amp_fill_sustain_frames: int = 2
+    downbeat_overall_amp_fill_sustain_frames: int = 1
     beat_overall_amp_fill_sustain_frames: int = 2
     syncopation_overall_amp_fill_sustain_frames: int = 3
 

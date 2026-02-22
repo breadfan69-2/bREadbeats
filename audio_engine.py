@@ -1906,15 +1906,24 @@ class AudioEngine:
                 raw_bpm = 60.0 / interval
                 adjusted_interval = interval
                 
-                # Auto-halve: if BPM > 180, double the interval (halve BPM)
-                while 60.0 / adjusted_interval > max_bpm and adjusted_interval < 2.0:
-                    adjusted_interval *= 2
-                    log_event("INFO", "Tempo", "Auto-halved BPM", original=f"{60.0/interval:.1f}", adjusted=f"{60.0/adjusted_interval:.1f}")
-                
-                # Auto-double: if BPM < 60, halve the interval (double BPM)
-                while 60.0 / adjusted_interval < min_bpm and adjusted_interval > 0.1:
-                    adjusted_interval /= 2
-                    log_event("INFO", "Tempo", "Auto-doubled BPM", original=f"{60.0/interval:.1f}", adjusted=f"{60.0/adjusted_interval:.1f}")
+                # Only apply octave correction when metronome lock is not active.
+                # When ACF/metronome is confidently running, it already resolves
+                # octave ambiguity and should be the authority.
+                metronome_lock_active = bool(
+                    self._acf_metronome_enabled
+                    and self._metronome_bpm > 0
+                    and self._acf_confidence >= 0.25
+                )
+                if not metronome_lock_active:
+                    # Auto-halve: if BPM > 180, double the interval (halve BPM)
+                    while 60.0 / adjusted_interval > max_bpm and adjusted_interval < 2.0:
+                        adjusted_interval *= 2
+                        log_event("INFO", "Tempo", "Auto-halved BPM", original=f"{60.0/interval:.1f}", adjusted=f"{60.0/adjusted_interval:.1f}")
+
+                    # Auto-double: if BPM < 60, halve the interval (double BPM)
+                    while 60.0 / adjusted_interval < min_bpm and adjusted_interval > 0.1:
+                        adjusted_interval /= 2
+                        log_event("INFO", "Tempo", "Auto-doubled BPM", original=f"{60.0/interval:.1f}", adjusted=f"{60.0/adjusted_interval:.1f}")
                 
                 interval = adjusted_interval
             

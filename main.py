@@ -1537,8 +1537,8 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
 
 class BREadbeatsWindow(QMainWindow):
     """Main application window"""
-    FIXED_JITTER_AMPLITUDE = 0.012
-    FIXED_JITTER_INTENSITY = 9.5
+    FIXED_JITTER_AMPLITUDE = 0.04
+    FIXED_JITTER_INTENSITY = 95.0
     FIXED_CREEP_SPEED = 0.25
     FIXED_AXIS_WEIGHT = 1.0
     
@@ -1752,7 +1752,7 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
         self._auto_align_stable_since: float = 0.0      # time.time() when stability started
         self._auto_align_is_stable: bool = False         # currently in stable state
-        self._auto_align_required_seconds: float = 0.2   # seconds of stability before first alignment
+        self._auto_align_required_seconds: float = 0.8   # seconds of stability before first alignment
         self._auto_align_last_adjust_time: float = 0.0   # time.time() of last ±1 BPM adjustment
         self._auto_align_cooldown: float = 0.3            # seconds between each ±1 BPM step
         self._last_sensed_bpm: float = 0.0
@@ -7117,7 +7117,7 @@ Like the app?<br>
         
         self.auto_align_seconds_spin = QDoubleSpinBox()
         self.auto_align_seconds_spin.setRange(0.1, 8.0)
-        self.auto_align_seconds_spin.setValue(0.2)
+        self.auto_align_seconds_spin.setValue(0.8)
         self.auto_align_seconds_spin.setSingleStep(0.1)
         self.auto_align_seconds_spin.setDecimals(2)
         self.auto_align_seconds_spin.setSuffix("s")
@@ -7151,7 +7151,7 @@ Like the app?<br>
         
         # Frequency band selection with visibility toggle (red beat detection band)
         beat_slider_row = QHBoxLayout()
-        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 4000, 0, log_scale=True)
+        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 30, 3000, 0, log_scale=True)
         self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
         beat_slider_row.addWidget(self.freq_range_slider)
         levels_layout.addLayout(beat_slider_row)
@@ -8814,6 +8814,26 @@ Like the app?<br>
         if not np.isfinite(metro_bpm):
             metro_bpm = 0.0
 
+        is_event_beat = bool(getattr(event, 'is_beat', False))
+        tempo_locked = bool(getattr(event, 'tempo_locked', False))
+        tempo_lock_required = bool(getattr(getattr(self.config, 'beat', None), 'tempo_lock_required', False))
+        relaxed_conf = float(getattr(getattr(self.config, 'beat', None), 'teaching_metronome_relaxed_confidence', 0.14) or 0.14)
+        if not np.isfinite(relaxed_conf):
+            relaxed_conf = 0.14
+        relaxed_conf = float(np.clip(relaxed_conf, 0.0, 1.0))
+
+        # Display readiness should never be stricter than the metronome-sync lamp.
+        # If sync lamp is green (acf_conf >= 0.25), beat/downbeat indicators should blink.
+        metronome_ready_for_display = bool(
+            metro_bpm > 0.0 and (tempo_locked or acf_conf >= relaxed_conf or acf_conf >= 0.25)
+        )
+        beat_passes_display_gate = bool(
+            is_event_beat and (
+                metronome_ready_for_display
+                or (not tempo_lock_required and metro_bpm <= 0.0)
+            )
+        )
+
         if hasattr(self, 'metronome_sync_indicator') and self.metronome_sync_indicator is not None:
             try:
                 if metro_bpm <= 0 or acf_conf < 0.05:
@@ -8835,7 +8855,7 @@ Like the app?<br>
             except RuntimeError:
                 pass
 
-        if event.is_beat:
+        if beat_passes_display_gate:
             # Track beat time for auto-adjustment feature
             self._last_beat_time_for_auto = time.time()
             
@@ -8867,7 +8887,7 @@ Like the app?<br>
                 if tempo_info['bpm'] > 0:
                     # Use event.is_downbeat (frozen at construction time) instead of
                     # polling get_tempo_info() which races with audio thread clearing the flag
-                    is_downbeat = getattr(event, 'is_downbeat', False)
+                    is_downbeat = bool(getattr(event, 'is_downbeat', False)) and metronome_ready_for_display
                     
                     # Light up downbeat indicator (cyan/blue for downbeat)
                     if is_downbeat:
