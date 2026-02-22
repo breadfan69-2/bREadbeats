@@ -718,7 +718,8 @@ class StrokeMapper:
                     if self._last_journey_completion >= 1.0:
                         self._journey_fixed_radius = bloom_target_radius
 
-                    if continuation_expected and decision.trigger_kind != "creep":
+                    allow_wait_swirl_in_creep = bool(self._last_gate_fail)
+                    if continuation_expected and (decision.trigger_kind != "creep" or allow_wait_swirl_in_creep):
                         # ── Wait-swirl: fast spiral into park-like idle ──
                         self._exit_spiral_active = False
                         self._exit_spiral_progress = 0.0

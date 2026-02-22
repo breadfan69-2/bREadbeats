@@ -115,9 +115,10 @@ class BeatIntelligence:
         self._no_beat_timeout_s: float = 3.0
 
         # ── §8: Entry gating state ──
-        self._entry_gate_enabled: bool = False
         self._post_silence_entry_complete: bool = False   # first entry journey done
         self._post_wait_reentry_beats: int = 0            # beats remaining in reentry
+        self._entry_gate_started_mono: float = 0.0
+        self._entry_gate_timeout_s: float = 2.5
 
         # ── Phase 2: ReadinessState (#17) ──
         self._stroke_ready: bool = False
@@ -1648,6 +1649,7 @@ class BeatIntelligence:
             # §8: Reset entry gating on silence
             self._post_silence_entry_complete = False
             self._post_wait_reentry_beats = 0
+            self._entry_gate_started_mono = 0.0
             # §5: Cancel unlock hold on silence
             self._tempo_unlock_hold_active = False
         elif self._was_silence_active:
@@ -1731,7 +1733,18 @@ class BeatIntelligence:
         # §8: After silence, only entry journeys are allowed until
         # _post_silence_entry_complete is True.  After a wait, a 4-beat
         # reentry must complete before faster journeys are unlocked.
-        if self._entry_gate_enabled and not self._post_silence_entry_complete and not self.is_recovering and not silence_active:
+        entry_gate_armed = (not self._post_silence_entry_complete and not self.is_recovering and not silence_active)
+        if entry_gate_armed:
+            if self._entry_gate_started_mono <= 0.0:
+                self._entry_gate_started_mono = now
+            elif (now - self._entry_gate_started_mono) >= self._entry_gate_timeout_s:
+                self._post_silence_entry_complete = True
+                self._entry_gate_started_mono = 0.0
+                entry_gate_armed = False
+        else:
+            self._entry_gate_started_mono = 0.0
+
+        if entry_gate_armed:
             # Entry not done yet — suppress beat-family triggers
             if raw_trigger_kind in ("syncopation", "beat", "downbeat"):
                 trigger_kind = "creep"
