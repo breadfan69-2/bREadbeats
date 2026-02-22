@@ -185,6 +185,7 @@ class StrokeMapper:
         self._orbit_direction: int = 1           # 1=default, -1=reversed
         self._last_direction_change_time: float = 0.0
         self._center_x_offset: float = 0.0
+        self._center_y_offset: float = 0.0
         self._center_wander_phase: float = 0.0
         self._tension_pause_active: bool = False
         self._tension_pause_end_time: float = 0.0
@@ -962,8 +963,8 @@ class StrokeMapper:
             self._base_center_y = self._wait_swirl_base_center_y
             self._reactive_bounce_y = self._wait_swirl_reactive_bounce_y
 
-        # ── Expression layer: apply center X wander offset ──
-        alpha = float(alpha + self._center_x_offset)
+        # ── Expression layer: apply center Y wander offset only ──
+        beta = float(beta + self._center_y_offset)
 
         # ── §2/§3: Expression pause spiral override ──
         if self._expr_pause_spiral_active:
@@ -1031,12 +1032,19 @@ class StrokeMapper:
             sa_alpha = float(getattr(self.config.stroke, 'session_arc_ema_alpha', 0.001) or 0.001)
             self._session_energy_ema += sa_alpha * (energy - self._session_energy_ema)
 
-        # ── Center wandering ──
+        # ── Center wandering (Y-axis only) ──
         if (getattr(self.config.stroke, 'center_wander_enabled', True)
                 and not decision.silence_active
                 and self._orbit_phase_initialized):
             cycle_s = float(getattr(self.config.stroke, 'center_wander_cycle_s', 25.0) or 25.0)
-            max_x = float(getattr(self.config.stroke, 'center_wander_max_x', 0.20) or 0.20)
+            max_y = float(
+                getattr(
+                    self.config.stroke,
+                    'center_wander_max_y',
+                    getattr(self.config.stroke, 'center_wander_max_x', 0.20),
+                )
+                or 0.20
+            )
             e_scale = float(getattr(self.config.stroke, 'center_wander_energy_scale', 0.6) or 0.6)
 
             self._center_wander_phase += dt / max(cycle_s, 1.0)
@@ -1046,11 +1054,14 @@ class StrokeMapper:
                 + 0.30 * np.sin(2.0 * np.pi * self._center_wander_phase * 1.618)
             )
             # Amplitude scales with energy: more wander when music is fuller
-            amplitude = max_x * ((1.0 - e_scale) + e_scale * energy)
-            self._center_x_offset = float(np.clip(raw * amplitude, -max_x, max_x))
+            amplitude = max_y * ((1.0 - e_scale) + e_scale * energy)
+            self._center_y_offset = float(np.clip(raw * amplitude, -max_y, max_y))
+            self._center_x_offset = 0.0
         elif decision.silence_active:
             # Gently decay wander toward center during silence
-            self._center_x_offset *= float(max(0.0, 1.0 - 2.0 * dt))
+            decay = float(max(0.0, 1.0 - 2.0 * dt))
+            self._center_x_offset *= decay
+            self._center_y_offset *= decay
 
         # ── Tension pause detection (§2: spiral-in to radius ≤0.5) ──
         if getattr(self.config.stroke, 'tension_pause_enabled', True) and not decision.silence_active:
@@ -1331,7 +1342,10 @@ class StrokeMapper:
 
     def _radius_cap_for_center(self, center_y: float) -> float:
         """Maximum radius that keeps orbit inside normalized [-1, 1] bounds in both axes."""
-        y_cap = float(max(0.0, min(1.0 - center_y, 1.0 + center_y)))
+        # Include expression-layer Y wander in the cap math so boundary
+        # protection matches prior X-wander behavior and avoids D-shape clipping.
+        effective_center_y = float(center_y + self._center_y_offset)
+        y_cap = float(max(0.0, min(1.0 - effective_center_y, 1.0 + effective_center_y)))
         x_cap = float(max(0.0, 1.0 - abs(self._center_x_offset)))
         return min(y_cap, x_cap)
 
