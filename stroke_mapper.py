@@ -102,6 +102,11 @@ class StrokeMapper:
         self._post_silence_radius_ramp = 1.0   # 0→1 over first beats after silence
         self._post_silence_radius_floor = 0.12 # start radius fraction after silence
         self._hold_start_pose_until_reactive = False
+        self._reactive_hold_swirl_phase = 0.0
+        self._reactive_hold_swirl_center_y = float(getattr(self.config.stroke, "reactive_hold_center_y", -0.70) or -0.70)
+        self._reactive_hold_swirl_radius = float(getattr(self.config.stroke, "reactive_hold_radius", 0.18) or 0.18)
+        self._reactive_hold_swirl_loops_per_beat = float(getattr(self.config.stroke, "reactive_hold_loops_per_beat", 0.20) or 0.20)
+        self._reactive_hold_swirl_jitter_mix = float(getattr(self.config.stroke, "reactive_hold_jitter_mix", 0.35) or 0.35)
         self._idle_radius = self._min_radius
         self._silence_decay_per_beat = 0.40
         self._idle_loops_per_beat = 0.125
@@ -411,12 +416,39 @@ class StrokeMapper:
             self._swirl_progress = 0.0
 
             if self._hold_start_pose_until_reactive and decision.trigger_kind == "creep":
+                bpm_hold = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+                if bpm_hold <= 0.0:
+                    bpm_hold = float(getattr(event, "bpm", 0.0) or 0.0)
+                bpm_hold = float(np.clip(bpm_hold if bpm_hold > 0.0 else 120.0, 40.0, 240.0))
+
+                # Gentle reactive swirl (no hard freeze):
+                # loops_per_beat <= 1.0 guarantees never faster than one full
+                # rotation per beat.  Default is intentionally slow (0.20).
+                loops_per_beat = float(np.clip(self._reactive_hold_swirl_loops_per_beat, 0.02, 1.0))
+                angular_speed = float((2.0 * np.pi) * (bpm_hold / 60.0) * loops_per_beat)
+                self._reactive_hold_swirl_phase = float(
+                    (self._reactive_hold_swirl_phase + (angular_speed * dt)) % (2.0 * np.pi)
+                )
+
+                base_center_y = float(np.clip(self._reactive_hold_swirl_center_y, -0.95, 0.95))
+                total_center_y = float(base_center_y + self._center_y_offset)
+                radius_target = float(np.clip(self._reactive_hold_swirl_radius, 0.05, 0.35))
+                orbit_radius = float(min(radius_target, self._radius_cap_for_center(base_center_y)))
+
+                jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
+                jitter_mix = float(np.clip(self._reactive_hold_swirl_jitter_mix, 0.0, 1.0))
+
+                alpha = float(orbit_radius * np.cos(self._reactive_hold_swirl_phase)) + float(jitter_alpha * jitter_mix)
+                beta = float(total_center_y + (orbit_radius * np.sin(self._reactive_hold_swirl_phase))) + float(jitter_beta * jitter_mix)
+
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
                 self._last_journey_completion = 1.0
+                self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
+                self.state.beta = float(np.clip(beta, -1.0, 1.0))
                 return TCodeCommand(
-                    alpha=float(np.clip(self.state.alpha, -1.0, 1.0)),
-                    beta=float(np.clip(self.state.beta, -1.0, 1.0)),
+                    alpha=self.state.alpha,
+                    beta=self.state.beta,
                     duration_ms=25,
                     volume=volume,
                 )
