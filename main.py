@@ -3406,6 +3406,9 @@ class BREadbeatsWindow(QMainWindow):
         """Show Device Limits dialog for value-to-real-units conversion.
         Pulse Freq/Carrier Freq (Hz) are always shown. Pulse Width/Interval Random/Rise Time are optional.
         Called from Options menu or on first startup if not yet prompted."""
+        if getattr(self, '_is_shutting_down', False):
+            return
+
         from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QDoubleSpinBox,
                                       QPushButton, QHBoxLayout, QGridLayout, QGroupBox, QCheckBox)
         
@@ -8077,6 +8080,8 @@ Like the app?<br>
 
     def _apply_pending_start(self) -> None:
         """Apply a queued start request captured during stop transition."""
+        if getattr(self, '_is_shutting_down', False):
+            return
         if self._transport_transition:
             return
         if self.is_running:
@@ -8087,6 +8092,8 @@ Like the app?<br>
 
     def _apply_pending_stop(self) -> None:
         """Apply a queued stop request captured during start transition."""
+        if getattr(self, '_is_shutting_down', False):
+            return
         if self._transport_transition:
             return
         if not self.is_running:
@@ -8097,6 +8104,8 @@ Like the app?<br>
 
     def _apply_pending_play(self) -> None:
         """Apply queued play/pause request captured during transport transition."""
+        if getattr(self, '_is_shutting_down', False):
+            return
         if self._transport_transition or not self.is_running:
             return
         desired = bool(self._transport_pending_play)
