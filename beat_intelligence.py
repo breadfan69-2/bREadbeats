@@ -115,7 +115,9 @@ class BeatIntelligence:
         self._no_beat_timeout_s: float = 3.0
 
         # ── §8: Entry gating state ──
-        self._post_silence_entry_complete: bool = False   # first entry journey done
+        # Entry gate should apply only after an actual silence transition.
+        # Startup begins unlocked; silence handling will re-arm this gate.
+        self._post_silence_entry_complete: bool = True
         self._post_wait_reentry_beats: int = 0            # beats remaining in reentry
         self._entry_gate_started_mono: float = 0.0
         self._entry_gate_timeout_s: float = 2.5
@@ -632,9 +634,18 @@ class BeatIntelligence:
             self._tempo_unlock_hold_bpm = float(self._last_locked_bpm)
             return
 
-        # Activate hold: mild confidence (0.08+) but not green
-        mild_confidence = acf_conf >= 0.08
-        has_bpm = metro_bpm > 0.0 or self._last_locked_bpm > 0.0
+        # Activate hold only when confidence is at least the configured relaxed
+        # threshold; this prevents hold from masking explicit "not ready" states.
+        relaxed_conf = float(getattr(self.config.beat, "teaching_metronome_relaxed_confidence", 0.14) or 0.14)
+        relaxed_conf = float(np.clip(relaxed_conf, 0.0, 1.0))
+        mild_confidence = acf_conf >= max(0.08, relaxed_conf)
+
+        # In legacy metronome-only mode, require a live metronome BPM.
+        # Otherwise allow last-locked BPM memory as fallback.
+        if bool(getattr(self.config.beat, "teaching_ignore_traffic_lights", False)):
+            has_bpm = metro_bpm > 0.0
+        else:
+            has_bpm = metro_bpm > 0.0 or self._last_locked_bpm > 0.0
 
         if mild_confidence and has_bpm and not self._tempo_unlock_hold_active:
             self._tempo_unlock_hold_active = True
