@@ -34,7 +34,7 @@ class BeatDetectionConfig:
     freq_low: float = 50.0            # Low cutoff frequency (Hz)
     freq_high: float = 20000.0        # High cutoff frequency (Hz)
     motion_freq_cutoff: float = 180.0  # Only generate motion from bands below this Hz (0=disabled)
-    silence_reset_ms: int = 179       # How long silence before resetting beat tracking (ms)
+    silence_reset_ms: int = 180       # How long silence before resetting beat tracking (ms)
     
     # Tempo tracking parameters
     tempo_tracking_enabled: bool = True  # Enable/disable tempo & downbeat tracking
@@ -78,7 +78,7 @@ class BeatDetectionConfig:
     syncopation_bpm_limit: float = 130.0         # Disable syncopation above this BPM
     syncopation_arc_size: float = 0.82              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
     syncopation_speed: float = 1.0                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
-    scheduled_lead_ms: int = 0                     # Land scheduled arcs this many ms before predicted beat (0-200)
+    scheduled_lead_ms: int = 50                    # Pipeline-latency compensation: shorten each journey by this many ms so orbit peak lands on the actual beat (0-200). Tune to WASAPI loopback latency + ~half buffer period.
     strict_bass_motion_gate_enabled: bool = True  # Require sub_bass/low_mid z-score fired bands for beat/sync stroke motion
     center_jitter_flux_guard_enabled: bool = True # Prevent no-beat center+jitter reset while flux activity is still high
     center_jitter_flux_delta_threshold: float = 0.2  # Rising-flux threshold to hold center+jitter reset
@@ -587,7 +587,7 @@ class BeatDetectionConfig:
     freq_low: float = 50.0            # Low cutoff frequency (Hz)
     freq_high: float = 20000.0        # High cutoff frequency (Hz)
     motion_freq_cutoff: float = 180.0  # Only generate motion from bands below this Hz (0=disabled)
-    silence_reset_ms: int = 179       # How long silence before resetting beat tracking (ms)
+    silence_reset_ms: int = 180       # How long silence before resetting beat tracking (ms)
     
     # Tempo tracking parameters
     tempo_tracking_enabled: bool = True  # Enable/disable tempo & downbeat tracking
@@ -631,7 +631,7 @@ class BeatDetectionConfig:
     syncopation_bpm_limit: float = 130.0         # Disable syncopation above this BPM
     syncopation_arc_size: float = 0.82              # Arc sweep as fraction of circle (0.25=90°, 0.5=180°, 1.0=360°)
     syncopation_speed: float = 1.0                 # Duration as fraction of beat interval (0.25=quarter, 0.5=half, 1.0=full)
-    scheduled_lead_ms: int = 0                     # Land scheduled arcs this many ms before predicted beat (0-200)
+    scheduled_lead_ms: int = 50                    # Pipeline-latency compensation: shorten each journey by this many ms so orbit peak lands on the actual beat (0-200). Tune to WASAPI loopback latency + ~half buffer period.
     strict_bass_motion_gate_enabled: bool = False  # Require sub_bass/low_mid z-score fired bands for beat/sync stroke motion
     center_jitter_flux_guard_enabled: bool = True # Prevent no-beat center+jitter reset while flux activity is still high
     center_jitter_flux_delta_threshold: float = 0.20  # Rising-flux threshold to hold center+jitter reset

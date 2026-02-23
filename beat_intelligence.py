@@ -134,7 +134,7 @@ class BeatIntelligence:
         self._consecutive_silent_count: int = 0
         self._silence_reset_armed: bool = False
         self._silence_fade_rate: float = 0.02       # fade per frame (~60fps → ~0.8s full fade)
-        silence_reset_ms = int(getattr(getattr(self.config, "beat", None), "silence_reset_ms", 179) or 179)
+        silence_reset_ms = int(getattr(getattr(self.config, "beat", None), "silence_reset_ms", 180) or 180)
         self._silence_reset_threshold_frames: int = max(1, int(round((silence_reset_ms / 1000.0) * 60.0)))
 
         # ── Phase 2: Post-silence ramp (#14) ──
@@ -1515,6 +1515,23 @@ class BeatIntelligence:
                 self.journey_duration_s = float(max(
                     self.journey_duration_s * 0.70,
                     self.journey_duration_s - lead_s,
+                ))
+
+            # Apply scheduled pipeline-latency lead (config.beat.scheduled_lead_ms).
+            # The audio callback fires AFTER the audio buffer is captured (buffer
+            # latency) plus WASAPI loopback delay, so beat timestamps arrive late.
+            # Shortening journey_duration_s by this amount makes the orbit reach
+            # the anchor at the actual musical beat rather than lagging behind.
+            # Tune this to: (WASAPI input latency) + (buffer_size / sample_rate / 2).
+            # Typical value on Windows: 40-80 ms.
+            _sched_lead_s = float(np.clip(
+                float(getattr(self.config.beat, 'scheduled_lead_ms', 0) or 0) / 1000.0,
+                0.0, 0.25,
+            ))
+            if _sched_lead_s > 0.0:
+                self.journey_duration_s = float(max(
+                    target_duration * 0.60,
+                    self.journey_duration_s - _sched_lead_s,
                 ))
 
             self._journey_duration_target_s = self.journey_duration_s

@@ -296,7 +296,7 @@ class TestPostSilenceRamp(Phase2Mixin, unittest.TestCase):
     def test_silence_reset_ms_arms_ramp(self):
         cfg = Config()
         cfg.stroke.silence_threshold = 0.002
-        cfg.beat.silence_reset_ms = 179
+        cfg.beat.silence_reset_ms = 180
         bi = BeatIntelligence(cfg)
 
         now = time.perf_counter()

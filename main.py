@@ -4253,7 +4253,7 @@ class BREadbeatsWindow(QMainWindow):
         scheduling_layout = QVBoxLayout(scheduling_group)
 
         lead_row = QHBoxLayout()
-        lead_label = QLabel("Scheduled lead (ms):")
+        lead_label = QLabel("Pipeline lead (ms):")
         lead_label.setStyleSheet("color: #ccc;")
         lead_row.addWidget(lead_label)
         lead_spin = QSpinBox()
@@ -4261,7 +4261,13 @@ class BREadbeatsWindow(QMainWindow):
         lead_spin.setMaximum(200)
         lead_spin.setSingleStep(1)
         lead_spin.setValue(int(getattr(self.config.beat, 'scheduled_lead_ms', 0)))
-        lead_spin.setToolTip("Land scheduled arcs this many milliseconds before predicted beat")
+        lead_spin.setToolTip(
+            "Pipeline latency compensation (ms).\n"
+            "Shortens each orbit journey by this amount so the motion peak\n"
+            "lands on the actual musical beat instead of lagging behind.\n"
+            "Compensates for WASAPI loopback delay + audio buffer latency.\n"
+            "Typical range: 40-80 ms. Increase if motion arrives late; decrease if early."
+        )
         lead_spin.valueChanged.connect(
             lambda v: setattr(self.config.beat, 'scheduled_lead_ms', int(v))
         )
@@ -8008,7 +8014,7 @@ Like the app?<br>
         tempo_layout.addWidget(self.phase_snap_slider)
         
         # Silence reset threshold (moved from Beat Detection)
-        self.silence_reset_slider = SliderWithLabel("Silence Reset (ms)", 100, 3000, 400, 0)
+        self.silence_reset_slider = SliderWithLabel("Silence Reset (ms)", 100, 3000, 180, 0)
         self.silence_reset_slider.valueChanged.connect(lambda v: setattr(self.config.beat, 'silence_reset_ms', int(v)))
         tempo_layout.addWidget(self.silence_reset_slider)
 
