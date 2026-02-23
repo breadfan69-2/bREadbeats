@@ -10,7 +10,7 @@ from typing import Optional
 
 import numpy as np
 
-from audio_engine import BeatEvent
+from audio_engine import BeatEvent, RMS_DB_FLOOR, rms_to_dbfs, silence_threshold_to_dbfs
 from config import Config
 
 
@@ -62,7 +62,7 @@ class BeatIntelligence:
         self.band_ema_alpha = 0.2
         self.energies = BandEnergies()
 
-        self.rms_envelope = 0.0
+        self.rms_envelope = RMS_DB_FLOOR
         self.rms_attack = 0.15
         self.rms_release = 0.05
 
@@ -199,6 +199,41 @@ class BeatIntelligence:
         # ── Session arc: very slow energy tracking ──
         self._session_intensity_ema: float = 0.5
 
+    @staticmethod
+    def _linear_to_dbfs(value: float) -> float:
+        return rms_to_dbfs(float(value), floor_db=RMS_DB_FLOOR)
+
+    @staticmethod
+    def _dbfs_to_unit(value_db: float, floor_db: float = RMS_DB_FLOOR) -> float:
+        clipped = float(np.clip(value_db, floor_db, 0.0))
+        return float(np.clip((clipped - floor_db) / max(1e-9, -floor_db), 0.0, 1.0))
+
+    def _event_rms_db(self, event: BeatEvent) -> float:
+        raw_rms_db = float(getattr(event, "raw_rms_db", RMS_DB_FLOOR) or RMS_DB_FLOOR)
+        if np.isfinite(raw_rms_db) and raw_rms_db > RMS_DB_FLOOR:
+            return float(np.clip(raw_rms_db, RMS_DB_FLOOR, 12.0))
+        raw_rms = float(getattr(event, "raw_rms", 0.0) or 0.0)
+        if raw_rms > 0.0:
+            return self._linear_to_dbfs(raw_rms)
+        return RMS_DB_FLOOR
+
+    def _coerce_amplitude_db(self, amplitude: float | None) -> float:
+        if amplitude is None:
+            return RMS_DB_FLOOR
+        value = float(amplitude)
+        if not np.isfinite(value):
+            return RMS_DB_FLOOR
+        if 0.0 < value <= 1.0:
+            return self._linear_to_dbfs(value)
+        return float(np.clip(value, RMS_DB_FLOOR, 12.0))
+
+    def _learning_expects_linear_rms(self) -> bool:
+        if not self._learning_model_loaded:
+            return False
+        mean = float(self._learning_norm_mean.get("rms", -999.0))
+        std = float(self._learning_norm_std.get("rms", -1.0))
+        return bool(0.0 <= mean <= 1.5 and 0.0 < std <= 1.0)
+
 
     def set_audio_engine(self, audio_engine) -> None:
         self.audio_engine = audio_engine
@@ -285,11 +320,16 @@ class BeatIntelligence:
     def _build_runtime_feature_values(self, event: BeatEvent) -> dict[str, float]:
         """Map current BeatEvent + BandEnergies to the 13 model features (#10)."""
         peak = float(getattr(event, "peak_energy", 0.0) or 0.0)
-        raw_rms = float(getattr(event, "raw_rms", 0.0) or 0.0)
+        raw_rms_db = self._event_rms_db(event)
+        raw_rms_linear = float(10.0 ** (raw_rms_db / 20.0))
         flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
 
-        energy_mean = raw_rms if raw_rms > 0 else peak
-        log_energy = float(math.log(max(1e-10, energy_mean)))
+        if self._learning_expects_linear_rms():
+            energy_mean = raw_rms_linear if raw_rms_linear > 0.0 else peak
+            log_energy = float(np.log10(max(1e-10, energy_mean)))
+        else:
+            energy_mean = raw_rms_db if np.isfinite(raw_rms_db) else self._linear_to_dbfs(peak)
+            log_energy = energy_mean
 
         sub = float(self.energies.sub_bass)
         low = float(self.energies.low_mid)
@@ -298,7 +338,7 @@ class BeatIntelligence:
 
         # Derived features
         low_high_ratio = sub / max(high, 1e-10)
-        energy_norm = float(np.clip(energy_mean / 0.05, 0.0, 1.0))  # rough normalization
+        energy_norm = self._dbfs_to_unit(energy_mean)
 
         # Spectral features: use event fields if available, fallback to estimates
         centroid = float(getattr(event, "spectral_centroid_hz", 0.0) or 0.0)
@@ -377,8 +417,8 @@ class BeatIntelligence:
 
         # Use z-score normalized RMS for cadence decision
         rms = features.get("rms", 0.0)
-        rms_mean = self._learning_norm_mean.get("rms", 0.02)
-        rms_std = max(self._learning_norm_std.get("rms", 0.025), 1e-8)
+        rms_mean = self._learning_norm_mean.get("rms", -34.0)
+        rms_std = max(self._learning_norm_std.get("rms", 8.0), 1e-8)
         z_rms = (rms - rms_mean) / rms_std
 
         if z_rms < quiet_thresh:
@@ -610,9 +650,9 @@ class BeatIntelligence:
         Returns (fade_scalar 0..1, request_tempo_reset bool).
         """
         request_reset = False
-        open_threshold = float(getattr(self.config.stroke, "silence_threshold", 0.04) or 0.04)
-        open_threshold = max(0.0, open_threshold)
-        amp = float(overall_amplitude) if overall_amplitude is not None else 0.0
+        open_threshold_raw = getattr(self.config.stroke, "silence_threshold", 0.04)
+        open_threshold_db = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.04)
+        amp = self._coerce_amplitude_db(overall_amplitude)
 
         if silence_active:
             self._consecutive_silent_count += 1
@@ -620,7 +660,7 @@ class BeatIntelligence:
             self._silence_fade = max(0.0, self._silence_fade - self._silence_fade_rate)
 
             # Only arm post-silence ramp reset from true silence-open amplitude.
-            if amp < open_threshold:
+            if amp < open_threshold_db:
                 self._was_silent = True
 
             # Tempo reset after prolonged silence (once per silence episode)
@@ -1205,30 +1245,31 @@ class BeatIntelligence:
         self.energies.high += (float(energies.get("high", 0.0)) - self.energies.high) * self.band_ema_alpha
 
     def update_envelope(self, event: BeatEvent) -> None:
-        raw_rms = float(getattr(event, "raw_rms", 0.0) or 0.0)
-        target = max(0.0, raw_rms)
+        target = self._event_rms_db(event)
         alpha = self.rms_attack if target >= self.rms_envelope else self.rms_release
         self.rms_envelope += (target - self.rms_envelope) * alpha
 
     def get_overall_amplitude(self, event: BeatEvent) -> float:
-        # Keep silence-gate units aligned with console [Audio] raw_rms values.
-        raw_rms = float(getattr(event, "raw_rms", 0.0) or 0.0)
-        if raw_rms > 0.0:
-            return float(max(0.0, raw_rms))
-        return float(max(0.0, self.rms_envelope))
+        raw_rms_db = self._event_rms_db(event)
+        if np.isfinite(raw_rms_db):
+            return raw_rms_db
+        return float(np.clip(self.rms_envelope, RMS_DB_FLOOR, 12.0))
 
     def update_silence_deadzone_gate(self, overall_amplitude: float) -> bool:
-        open_threshold = float(getattr(self.config.stroke, "silence_threshold", 0.04) or 0.04)
-        open_threshold = max(0.0, open_threshold)
-        close_raw = float(getattr(self.config.stroke, "silence_close_threshold", open_threshold * 1.20) or (open_threshold * 1.20))
-        close_threshold = max(open_threshold + 1e-6, close_raw)
+        open_threshold_raw = getattr(self.config.stroke, "silence_threshold", 0.04)
+        close_threshold_raw = getattr(self.config.stroke, "silence_close_threshold", 0.05)
+        open_threshold = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.04)
+        close_threshold = silence_threshold_to_dbfs(close_threshold_raw, default_linear=0.05)
+        if close_threshold <= open_threshold:
+            close_threshold = float(min(12.0, open_threshold + 1.5))
+        level_db = self._coerce_amplitude_db(overall_amplitude)
 
-        if overall_amplitude < open_threshold:
+        if level_db < open_threshold:
             self.silence_open_count += 1
             self.silence_close_count = 0
             if self.silence_open_count >= 3:
                 self.silence_deadzone_active = True
-        elif overall_amplitude > close_threshold:
+        elif level_db > close_threshold:
             self.silence_close_count += 1
             self.silence_open_count = 0
             if self.silence_close_count >= 2:
@@ -1369,11 +1410,13 @@ class BeatIntelligence:
         flux_boost = float(np.clip(flux * flux_weight * 3.0, 0.0, 0.15))
 
         # Low-amp suppression: quiet music → dot stays very close to park
-        rms = self.rms_envelope
-        if rms < 0.02:
+        rms_db = self.rms_envelope
+        quiet_db = self._linear_to_dbfs(0.02)
+        full_db = self._linear_to_dbfs(0.08)
+        if rms_db < quiet_db:
             amp_gate = 0.0
-        elif rms < 0.08:
-            amp_gate = float((rms - 0.02) / 0.06)
+        elif rms_db < full_db:
+            amp_gate = float((rms_db - quiet_db) / max(1e-6, (full_db - quiet_db)))
         else:
             amp_gate = 1.0
 
@@ -1388,7 +1431,7 @@ class BeatIntelligence:
         scalar that stroke_mapper latches at journey start to decide
         whether max_radius should expand toward 1.0.
         """
-        rms = float(np.clip(self.rms_envelope, 0.0, 1.0))
+        rms = self._dbfs_to_unit(self.rms_envelope)
         sub = float(np.clip(self.energies.sub_bass, 0.0, 1.0))
         low = float(np.clip(self.energies.low_mid, 0.0, 1.0))
         mid = float(np.clip(self.energies.mid, 0.0, 1.0))

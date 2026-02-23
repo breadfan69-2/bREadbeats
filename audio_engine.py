@@ -25,6 +25,25 @@ except ImportError:
 from config import Config, BeatDetectionType
 
 
+RMS_DB_FLOOR = -120.0
+
+
+def rms_to_dbfs(rms: float, floor_db: float = RMS_DB_FLOOR) -> float:
+    value = max(float(rms), 1e-12)
+    return float(np.clip(20.0 * np.log10(value), floor_db, 12.0))
+
+
+def silence_threshold_to_dbfs(value: float | None, default_linear: float) -> float:
+    if value is None:
+        return rms_to_dbfs(default_linear)
+    numeric = float(value)
+    if not np.isfinite(numeric):
+        return rms_to_dbfs(default_linear)
+    if numeric <= 0.0:
+        return float(np.clip(numeric, RMS_DB_FLOOR, 12.0))
+    return rms_to_dbfs(float(np.clip(numeric, 0.0, 1.0)))
+
+
 class ZScorePeakDetector:
     """
     Real-time z-score peak detector for streaming data (Brakel, 2014).
@@ -126,6 +145,11 @@ class BeatEvent:
     monotonic_timestamp: float = 0.0  # Monotonic timestamp for drift-safe timing
     beat_features: Optional[dict] = None  # Beat-window features for adaptive runtime learning
     raw_rms: float = 0.0
+    raw_rms_db: float = RMS_DB_FLOOR
+
+    def __post_init__(self) -> None:
+        if (self.raw_rms_db <= RMS_DB_FLOOR) and (self.raw_rms > 0.0):
+            self.raw_rms_db = rms_to_dbfs(self.raw_rms)
 
 
 class AudioEngine:
@@ -434,13 +458,13 @@ class AudioEngine:
 
         self._session_started_at: float = 0.0
         self._session_frame_count: int = 0
-        self._session_raw_rms_min: float | None = None
-        self._session_raw_rms_max: float | None = None
+        self._session_raw_rms_db_min: float | None = None
+        self._session_raw_rms_db_max: float | None = None
         self._session_band_energy_min: float | None = None
         self._session_band_energy_max: float | None = None
         self._session_flux_min: float | None = None
         self._session_flux_max: float | None = None
-        self._session_raw_rms_sum: float = 0.0
+        self._session_raw_rms_db_sum: float = 0.0
         self._session_band_energy_sum: float = 0.0
         self._session_flux_sum: float = 0.0
         self._session_sample_times: list[float] = []
@@ -451,13 +475,13 @@ class AudioEngine:
     def _reset_session_stats(self) -> None:
         self._session_started_at = time.time()
         self._session_frame_count = 0
-        self._session_raw_rms_min = None
-        self._session_raw_rms_max = None
+        self._session_raw_rms_db_min = None
+        self._session_raw_rms_db_max = None
         self._session_band_energy_min = None
         self._session_band_energy_max = None
         self._session_flux_min = None
         self._session_flux_max = None
-        self._session_raw_rms_sum = 0.0
+        self._session_raw_rms_db_sum = 0.0
         self._session_band_energy_sum = 0.0
         self._session_flux_sum = 0.0
         self._session_sample_times = []
@@ -512,24 +536,24 @@ class AudioEngine:
 
     def _update_session_stats(
         self,
-        raw_rms: float,
+        raw_rms_db: float,
         band_energy: float,
         spectral_flux: float,
         peak_level: float,
         sample_time: float,
     ) -> None:
         self._session_frame_count += 1
-        self._session_raw_rms_sum += raw_rms
+        self._session_raw_rms_db_sum += raw_rms_db
         self._session_band_energy_sum += band_energy
         self._session_flux_sum += spectral_flux
         self._session_sample_times.append(sample_time)
         self._session_flux_samples.append(spectral_flux)
         self._session_peak_samples.append(peak_level)
         self._session_trough_samples.append(band_energy)
-        if self._session_raw_rms_min is None or raw_rms < self._session_raw_rms_min:
-            self._session_raw_rms_min = raw_rms
-        if self._session_raw_rms_max is None or raw_rms > self._session_raw_rms_max:
-            self._session_raw_rms_max = raw_rms
+        if self._session_raw_rms_db_min is None or raw_rms_db < self._session_raw_rms_db_min:
+            self._session_raw_rms_db_min = raw_rms_db
+        if self._session_raw_rms_db_max is None or raw_rms_db > self._session_raw_rms_db_max:
+            self._session_raw_rms_db_max = raw_rms_db
         if self._session_band_energy_min is None or band_energy < self._session_band_energy_min:
             self._session_band_energy_min = band_energy
         if self._session_band_energy_max is None or band_energy > self._session_band_energy_max:
@@ -588,15 +612,15 @@ class AudioEngine:
         }
 
     def _session_summary_payload(self, elapsed_s: float) -> dict:
-        raw_min = float(self._session_raw_rms_min or 0.0)
-        raw_max = float(self._session_raw_rms_max or 0.0)
+        raw_db_min = float(self._session_raw_rms_db_min or RMS_DB_FLOOR)
+        raw_db_max = float(self._session_raw_rms_db_max or RMS_DB_FLOOR)
         band_min = float(self._session_band_energy_min or 0.0)
         band_max = float(self._session_band_energy_max or 0.0)
         flux_min = float(self._session_flux_min or 0.0)
         flux_max = float(self._session_flux_max or 0.0)
 
         frame_count = float(self._session_frame_count)
-        raw_mean = self._session_raw_rms_sum / frame_count
+        raw_db_mean = self._session_raw_rms_db_sum / frame_count
         band_mean = self._session_band_energy_sum / frame_count
         flux_mean = self._session_flux_sum / frame_count
 
@@ -629,9 +653,9 @@ class AudioEngine:
             "session_ended_at": ended_at,
             "seconds": elapsed_s,
             "frames": self._session_frame_count,
-            "raw_rms_low": raw_min,
-            "raw_rms_high": raw_max,
-            "raw_rms_mean": raw_mean,
+            "raw_rms_db_low": raw_db_min,
+            "raw_rms_db_high": raw_db_max,
+            "raw_rms_db_mean": raw_db_mean,
             "band_energy_low": band_min,
             "band_energy_high": band_max,
             "band_energy_mean": band_mean,
@@ -668,10 +692,10 @@ class AudioEngine:
             "Shutdown levels summary",
             frames=self._session_frame_count,
             seconds=f"{elapsed_s:.1f}",
-            raw_rms_min=f"{payload['raw_rms_low']:.6f}",
-            raw_rms_max=f"{payload['raw_rms_high']:.6f}",
-            raw_rms_mean=f"{payload['raw_rms_mean']:.6f}",
-            raw_rms_span=f"{(payload['raw_rms_high'] - payload['raw_rms_low']):.6f}",
+            raw_rms_db_min=f"{payload['raw_rms_db_low']:.2f}",
+            raw_rms_db_max=f"{payload['raw_rms_db_high']:.2f}",
+            raw_rms_db_mean=f"{payload['raw_rms_db_mean']:.2f}",
+            raw_rms_db_span=f"{(payload['raw_rms_db_high'] - payload['raw_rms_db_low']):.2f}",
             band_energy_min=f"{payload['band_energy_low']:.6f}",
             band_energy_max=f"{payload['band_energy_high']:.6f}",
             band_energy_mean=f"{payload['band_energy_mean']:.6f}",
@@ -926,6 +950,7 @@ class AudioEngine:
                 self.waveform_data = mono.astype(np.float32, copy=True)
 
         raw_rms = np.sqrt(np.mean(mono ** 2))
+        raw_rms_db = rms_to_dbfs(raw_rms)
         
         # Note: Audio gain already applied to band_spectrum above, no need to apply again
         
@@ -953,7 +978,8 @@ class AudioEngine:
                 "INFO",
                 "Audio",
                 "Levels",
-                raw_rms=f"{raw_rms:.6f}",
+                raw_rms_lin=f"{raw_rms:.6f}",
+                raw_rms_db=f"{raw_rms_db:.2f}",
                 spectrum=f"{full_spectrum_energy:.6f}",
                 band_energy=f"{band_energy:.6f}",
                 flux=f"{spectral_flux:.4f}",
@@ -971,7 +997,7 @@ class AudioEngine:
         current_time = time.perf_counter()
 
         self._update_session_stats(
-            raw_rms=raw_rms,
+            raw_rms_db=raw_rms_db,
             band_energy=band_energy,
             spectral_flux=spectral_flux,
             peak_level=self.peak_envelope,
@@ -999,12 +1025,9 @@ class AudioEngine:
             self._reset_downbeat_pattern()  # Also reset pattern matching when tempo resets
             tempo_reset_flag = True
         
-        silence_threshold = float(np.clip(
-            getattr(getattr(self.config, 'stroke', None), 'silence_threshold', 0.02) or 0.02,
-            0.0,
-            1.0,
-        ))
-        silence_veto_active = bool(raw_rms < silence_threshold)
+        silence_threshold_raw = getattr(getattr(self.config, 'stroke', None), 'silence_threshold', 0.02)
+        silence_threshold_db = silence_threshold_to_dbfs(silence_threshold_raw, default_linear=0.02)
+        silence_veto_active = bool(raw_rms_db < silence_threshold_db)
         if silence_veto_active:
             spectral_flux = 0.0
             self.peak_envelope = 0.0
@@ -1134,7 +1157,8 @@ class AudioEngine:
                 "INFO",
                 "Audio",
                 "[SILENCE VETO] Beat ignored",
-                Amp=f"{raw_rms:.5f}",
+                AmpLin=f"{raw_rms:.5f}",
+                AmpDb=f"{raw_rms_db:.2f}",
             )
             is_beat = False
             is_downbeat_flag = False
@@ -1183,6 +1207,7 @@ class AudioEngine:
             monotonic_timestamp=current_time,
             beat_features=beat_features,
             raw_rms=float(raw_rms),
+            raw_rms_db=float(raw_rms_db),
         )
         
         # Notify callback

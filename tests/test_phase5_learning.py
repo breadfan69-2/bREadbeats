@@ -173,7 +173,7 @@ class TestFeatureExtraction(Phase5Mixin, unittest.TestCase):
         bi = self._bi()
         ev = self._event(raw_rms=0.05, peak_energy=0.9)
         features = bi._build_runtime_feature_values(ev)
-        self.assertAlmostEqual(features["rms"], 0.05, places=6)
+        self.assertAlmostEqual(features["rms"], 20.0 * math.log10(0.05), places=6)
 
     def test_log_energy_finite(self):
         bi = self._bi()

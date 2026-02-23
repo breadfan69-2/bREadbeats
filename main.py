@@ -2980,40 +2980,54 @@ class BREadbeatsWindow(QMainWindow):
         scroll_layout.setSpacing(10)
 
         # ===== Silence Gate Controls =====
-        silence_group = QGroupBox("Silence Gate (RMS)")
+        silence_group = QGroupBox("Silence Gate (dBFS)")
         silence_layout = QVBoxLayout(silence_group)
 
         silence_info = QLabel(
-            "These thresholds control the silence deadzone hysteresis using RMS amplitude units.\n"
-            "Open = enter silence (park), Close = exit silence (resume motion)."
+            "These thresholds control silence deadzone hysteresis in dBFS.\n"
+            "More negative = quieter/more permissive. Open = enter silence, Close = exit silence."
         )
         silence_info.setStyleSheet("color: #aaa; font-size: 11px;")
         silence_layout.addWidget(silence_info)
 
-        silence_open_slider = SliderWithLabel(
-            "No Motion Under (RMS)",
-            0.001,
-            0.250,
-            float(getattr(self.config.stroke, 'silence_threshold', 0.001) or 0.001),
-            3,
+        silence_open_db = self._silence_threshold_to_db(
+            getattr(self.config.stroke, 'silence_threshold', -40.0),
+            default_linear=0.001,
         )
-        silence_open_slider.setToolTip("Audio amplitude below this RMS level enters silence mode (motion stops, dot parks)")
+        silence_close_db = self._silence_threshold_to_db(
+            getattr(self.config.stroke, 'silence_close_threshold', -26.0),
+            default_linear=0.01,
+        )
+        if silence_close_db <= silence_open_db:
+            silence_close_db = float(min(0.0, silence_open_db + 1.5))
+
+        silence_open_slider = SliderWithLabel(
+            "No Motion Under (dBFS)",
+            -90.0,
+            -6.0,
+            silence_open_db,
+            1,
+        )
+        silence_open_slider.setToolTip("Audio level below this dBFS value enters silence mode (motion stops, dot parks)")
 
         silence_close_slider = SliderWithLabel(
-            "Limited Motion Under (RMS)",
-            0.001,
-            0.300,
-            float(getattr(self.config.stroke, 'silence_close_threshold', 0.01) or 0.01),
-            3,
+            "Limited Motion Under (dBFS)",
+            -90.0,
+            -3.0,
+            silence_close_db,
+            1,
         )
-        silence_close_slider.setToolTip("Audio amplitude must exceed this RMS level to exit silence mode (motion resumes)")
+        silence_close_slider.setToolTip("Audio level must exceed this dBFS value to exit silence mode (motion resumes)")
 
         def _set_silence_open(v: float) -> None:
             open_v = float(v)
             setattr(self.config.stroke, 'silence_threshold', open_v)
-            close_v = float(getattr(self.config.stroke, 'silence_close_threshold', 0.01) or 0.01)
+            close_v = self._silence_threshold_to_db(
+                getattr(self.config.stroke, 'silence_close_threshold', -26.0),
+                default_linear=0.01,
+            )
             if close_v <= open_v:
-                close_v = open_v + 0.001
+                close_v = float(min(0.0, open_v + 1.5))
                 setattr(self.config.stroke, 'silence_close_threshold', close_v)
                 silence_close_slider.blockSignals(True)
                 silence_close_slider.setValue(close_v)
@@ -3021,9 +3035,12 @@ class BREadbeatsWindow(QMainWindow):
 
         def _set_silence_close(v: float) -> None:
             close_v = float(v)
-            open_v = float(getattr(self.config.stroke, 'silence_threshold', 0.001) or 0.001)
+            open_v = self._silence_threshold_to_db(
+                getattr(self.config.stroke, 'silence_threshold', -40.0),
+                default_linear=0.001,
+            )
             if close_v <= open_v:
-                close_v = open_v + 0.001
+                close_v = float(min(0.0, open_v + 1.5))
                 silence_close_slider.blockSignals(True)
                 silence_close_slider.setValue(close_v)
                 silence_close_slider.blockSignals(False)
@@ -3662,7 +3679,7 @@ class BREadbeatsWindow(QMainWindow):
         units_label = QLabel(
             "Most Trigger Settings sliders use normalized units (0.0–1.0).\n"
             "• Amp (norm): 0 = no energy, 1 = near current peak envelope in active band.\n"
-            "• RMS-labeled controls use the same raw_rms units shown in console [Audio] logs.\n"
+            "• Silence Gate controls use dBFS thresholds (negative dB values).\n"
             "• Fill/Occupancy (norm): fraction of active FFT bins that pass threshold in selected bin range.\n"
             "• Mean/Δ/Var thresholds: unitless activity metrics over recent windows (not dB/Hz).\n"
             "• dB, Hz, BPM, ms, and % controls are absolute units.\n"
@@ -5968,18 +5985,21 @@ Like the app?<br>
         self.pulse_settings_btn.setStyleSheet("text-align: center;")
 
         self.main_silence_close_slider = SliderWithLabel(
-            "Volume/Motion Threshold",
+            "Volume/Motion Threshold (dBFS)",
             0.0,
             2.0,
             self._silence_close_to_normalized(
-                float(getattr(self.config.stroke, 'silence_close_threshold', 0.01) or 0.01)
+                self._silence_threshold_to_db(
+                    getattr(self.config.stroke, 'silence_close_threshold', -26.0),
+                    default_linear=0.01,
+                )
             ),
             2,
             step=0.01,
         )
         self.main_silence_close_slider.setToolTip(
-            "Normalized silence threshold factor (1.00 = baseline).\n"
-            "Adjusts both gate close and gate open together at a fixed 4:1 close/open ratio."
+            "Normalized dBFS threshold factor (1.00 = baseline).\n"
+            "Adjusts close/open together at a fixed 12 dB hysteresis width."
         )
         self.main_silence_close_slider.setMinimumWidth(260)
         self.main_silence_close_slider.valueChanged.connect(self._on_main_silence_close_change)
@@ -6018,22 +6038,33 @@ Like the app?<br>
         return float(np.clip(scale, 0.05, 20.0))
 
     def _silence_close_to_normalized(self, close_threshold: float) -> float:
-        min_close = 0.001
-        base_close = 0.048
-        max_close = 0.300
-        close_v = float(np.clip(float(close_threshold), min_close, max_close))
-        if close_v <= base_close:
-            return float((close_v - min_close) / max(1e-9, (base_close - min_close)))
-        return float(1.0 + ((close_v - base_close) / max(1e-9, (max_close - base_close))))
+        min_close_db = -90.0
+        base_close_db = self._silence_threshold_to_db(0.048, default_linear=0.048)
+        max_close_db = -3.0
+        close_v = float(np.clip(self._silence_threshold_to_db(close_threshold, default_linear=0.01), min_close_db, max_close_db))
+        if close_v <= base_close_db:
+            return float((close_v - min_close_db) / max(1e-9, (base_close_db - min_close_db)))
+        return float(1.0 + ((close_v - base_close_db) / max(1e-9, (max_close_db - base_close_db))))
 
     def _silence_normalized_to_close(self, normalized_value: float) -> float:
-        min_close = 0.001
-        base_close = 0.048
-        max_close = 0.300
+        min_close_db = -90.0
+        base_close_db = self._silence_threshold_to_db(0.048, default_linear=0.048)
+        max_close_db = -3.0
         norm_v = float(np.clip(float(normalized_value), 0.0, 2.0))
         if norm_v <= 1.0:
-            return float(min_close + ((base_close - min_close) * norm_v))
-        return float(base_close + ((max_close - base_close) * (norm_v - 1.0)))
+            return float(min_close_db + ((base_close_db - min_close_db) * norm_v))
+        return float(base_close_db + ((max_close_db - base_close_db) * (norm_v - 1.0)))
+
+    def _silence_threshold_to_db(self, threshold_value: float, default_linear: float = 0.01) -> float:
+        try:
+            value = float(threshold_value)
+        except Exception:
+            value = float(default_linear)
+        if not np.isfinite(value):
+            value = float(default_linear)
+        if value <= 0.0:
+            return float(np.clip(value, -120.0, 12.0))
+        return float(np.clip(20.0 * np.log10(max(min(value, 1.0), 1e-12)), -120.0, 12.0))
 
     def _on_fill_gate_scale_change(self, pct: float) -> None:
         setattr(
@@ -6103,18 +6134,13 @@ Like the app?<br>
             )
 
     def _on_main_silence_close_change(self, value: float) -> None:
-        ratio = 4.0  # Maintain fixed hysteresis shape: close/open
-        min_open = 0.001
-        max_open = 0.250
-        min_close = 0.001
-        max_close = 0.300
+        hysteresis_db = 12.0
 
-        close_v = self._silence_normalized_to_close(float(value))
-        open_v = float(np.clip(close_v / ratio, min_open, max_open))
-        close_v = float(np.clip(open_v * ratio, min_close, max_close))
+        close_v = float(np.clip(self._silence_normalized_to_close(float(value)), -90.0, -3.0))
+        open_v = float(np.clip(close_v - hysteresis_db, -120.0, 12.0))
 
         if close_v <= open_v:
-            close_v = min(max_close, open_v + 0.001)
+            close_v = float(min(12.0, open_v + 1.5))
 
         setattr(self.config.stroke, 'silence_threshold', open_v)
         setattr(self.config.stroke, 'silence_close_threshold', close_v)
