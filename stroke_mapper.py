@@ -291,7 +291,9 @@ class StrokeMapper:
 
     def process_beat(self, event: BeatEvent) -> Optional[TCodeCommand]:
         now = event.monotonic_timestamp if getattr(event, "monotonic_timestamp", 0.0) > 0 else time.perf_counter()
-        dt = max(1e-4, now - self.state.last_time) if self.state.last_time > 0 else (1.0 / 60.0)
+        raw_dt = (now - self.state.last_time) if self.state.last_time > 0 else (1.0 / 60.0)
+        dt = float(np.clip(raw_dt, 1e-4, 0.05))
+        hitch_soft_reset = bool(raw_dt > 0.25)
         self.state.last_time = now
 
         self._intelligence.set_audio_engine(self.audio_engine)
@@ -301,6 +303,20 @@ class StrokeMapper:
         self._last_trigger_kind = decision.trigger_kind
         self._lazy_glide_active = bool(getattr(decision, "lazy_glide_active", False))
         self._last_gate_fail = str(getattr(decision, "gate_fail", "") or "")
+
+        if hitch_soft_reset:
+            self._angular_velocity = 0.0
+            self._last_phase_for_velocity = self._orbit_phase
+
+            ramp = float(np.clip(
+                decision.silence_fade if decision.silence_active else decision.post_silence_ramp,
+                0.0,
+                1.0,
+            ))
+            volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
+            self.state.alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
+            self.state.beta = float(np.clip(self.state.beta, -1.0, 1.0))
+            return TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
 
         # ── Expression layer: per-frame updates ──
         self._update_expression_layer(decision=decision, dt=dt, now=now)
