@@ -1193,10 +1193,10 @@ class StrokeMapper:
                 if prior_mean > 0.08 and abs(prior_mean - recent_mean) / max(prior_mean, 0.08) > drop_needed:
                     self._orbit_direction *= -1
                     self._last_direction_change_time = now
-                    # §1: Direction change → new anchor may be chosen
-                    self._anchor_phrase_locked = False
-                    # Randomly choose +Y or -Y for next phrase
-                    self._anchor_sign = 1 if float(np.random.random()) > 0.5 else -1
+                    # §1: Choose one anchor per active segment (until silence reset).
+                    if not self._anchor_phrase_locked:
+                        self._anchor_sign = 1 if float(np.random.random()) > 0.5 else -1
+                        self._anchor_phrase_locked = True
 
     def _compute_bass_jitter_offsets(self, event: BeatEvent, dt: float) -> tuple[float, float]:
         if not bool(getattr(self.config.jitter, "enabled", True)):
