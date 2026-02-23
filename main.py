@@ -1749,7 +1749,7 @@ class BREadbeatsWindow(QMainWindow):
         self._motion_readiness_tab_content = None
         
         # Auto-align target BPM tracking (wall-clock time-based)
-        self._auto_align_target_enabled: bool = True  # Auto-align target BPM to metronome when stable
+        self._auto_align_target_enabled: bool = False  # Target BPM behavior disabled
         self._auto_align_stable_since: float = 0.0      # time.time() when stability started
         self._auto_align_is_stable: bool = False         # currently in stable state
         self._auto_align_required_seconds: float = 0.8   # seconds of stability before first alignment
@@ -5998,11 +5998,12 @@ Like the app?<br>
             step=0.01,
         )
         self.main_silence_close_slider.setToolTip(
-            "Normalized dBFS threshold factor (1.00 = baseline).\n"
-            "Adjusts close/open together at a fixed 12 dB hysteresis width."
+            "Controls the close threshold shown in dBFS.\n"
+            "Internally uses a normalized 0-2 control mapped to close/open thresholds with fixed 12 dB hysteresis."
         )
         self.main_silence_close_slider.setMinimumWidth(260)
         self.main_silence_close_slider.valueChanged.connect(self._on_main_silence_close_change)
+        self._set_main_silence_close_display(self.main_silence_close_slider.value())
 
         self._refresh_main_controls_value_label_colors()
 
@@ -6135,6 +6136,7 @@ Like the app?<br>
 
     def _on_main_silence_close_change(self, value: float) -> None:
         hysteresis_db = 12.0
+        self._set_main_silence_close_display(value)
 
         close_v = float(np.clip(self._silence_normalized_to_close(float(value)), -90.0, -3.0))
         open_v = float(np.clip(close_v - hysteresis_db, -120.0, 12.0))
@@ -6150,6 +6152,14 @@ Like the app?<br>
             self.main_silence_close_slider.blockSignals(True)
             self.main_silence_close_slider.setValue(normalized_close)
             self.main_silence_close_slider.blockSignals(False)
+            self._set_main_silence_close_display(normalized_close)
+
+    def _set_main_silence_close_display(self, normalized_value: float) -> None:
+        slider_widget = getattr(self, 'main_silence_close_slider', None)
+        if slider_widget is None or not hasattr(slider_widget, 'value_label'):
+            return
+        close_db = float(np.clip(self._silence_normalized_to_close(float(normalized_value)), -90.0, -3.0))
+        slider_widget.value_label.setText(f"{close_db:.1f} dBFS")
 
     def _capture_current_settings(self) -> dict:
         """Capture all current UI settings for revert functionality"""
@@ -6861,11 +6871,13 @@ Like the app?<br>
         """Master toggle for all metric auto-adjust checkboxes"""
         enabled = state == 2
         self.config.auto_adjust.metrics_global_enabled = enabled
-        # Enable/disable all individual metric checkboxes
-        for cb in (self.metric_peak_floor_cb, self.metric_audio_amp_cb,
-                    self.metric_flux_balance_cb, self.metric_target_bps_cb):
-            cb.setChecked(enabled)
-            cb.setEnabled(enabled)
+        # Only Audio Amp remains auto-adjustable; other metrics are manual-only.
+        self.metric_audio_amp_cb.setEnabled(enabled)
+        self.metric_audio_amp_cb.setChecked(enabled)
+        self.metric_target_bps_cb.blockSignals(True)
+        self.metric_target_bps_cb.setChecked(False)
+        self.metric_target_bps_cb.setEnabled(False)
+        self.metric_target_bps_cb.blockSignals(False)
         print(f"[Metric] Global auto-adjust {'enabled' if enabled else 'disabled'}")
     
     def _on_metric_toggle(self, metric: str, enabled: bool):
@@ -6880,15 +6892,8 @@ Like the app?<br>
         
         # Update status label
         active_metrics = []
-        if getattr(self, 'metric_peak_floor_cb', None) and self.metric_peak_floor_cb.isChecked():
-            active_metrics.append("FloorMargin")
-
         if getattr(self, 'metric_audio_amp_cb', None) and self.metric_audio_amp_cb.isChecked():
             active_metrics.append("AudioAmp")
-        if getattr(self, 'metric_flux_balance_cb', None) and self.metric_flux_balance_cb.isChecked():
-            active_metrics.append("FluxBal")
-        if getattr(self, 'metric_target_bps_cb', None) and self.metric_target_bps_cb.isChecked():
-            active_metrics.append("TargetBPS")
         
         status_text = f"Metrics: [{', '.join(active_metrics) if active_metrics else 'idle'}]"
         if hasattr(self, 'metric_status_label'):
@@ -6913,48 +6918,7 @@ Like the app?<br>
         adjustment = feedback_data.get('adjustment', 0.0)
         direction = feedback_data.get('direction', 'hold')
         
-        if metric == 'peak_floor' and adjustment != 0:
-            if not _slider_live('peak_floor_slider'):
-                return
-            current = self.peak_floor_slider.value()
-            new_val = current + adjustment
-            pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
-            new_val = max(pf_min, min(pf_max, new_val))
-            if abs(new_val - current) > 0.001:
-                self.peak_floor_slider.setValue(new_val)
-                valley = feedback_data.get('valley', 0)
-                margin = feedback_data.get('margin', 0)
-                print(f"[Metric] peak_floor: valley={valley:.4f} ({direction}) -> {new_val:.4f}")
-        
-        elif metric == 'target_bps' and adjustment != 0:
-            if not _slider_live('peak_floor_slider'):
-                return
-            # Adjust peak_floor to hit target BPS
-            # BUT: suppress lowering if valley-tracking wants to RAISE it (prevents oscillation)
-            if feedback_data.get('direction', '') == 'lower':
-                # Check if valley tracking is active and wants to raise
-                if (hasattr(self, 'audio_engine') and self.audio_engine is not None
-                    and self.audio_engine._metric_peak_floor_enabled
-                    and len(self.audio_engine._valley_history) >= 3):
-                    avg_valley = float(np.mean(self.audio_engine._valley_history))
-                    current_pf = self.config.beat.peak_floor
-                    if current_pf < avg_valley * 0.8:
-                        # Valley tracking would raise peak_floor, so suppress BPS lowering
-                        print(f"[Metric] target_bps: suppressed (valley={avg_valley:.4f} > pf={current_pf:.4f})")
-                        return
-            current = self.peak_floor_slider.value()
-            new_val = current + adjustment
-            pf_min, pf_max = BEAT_RANGE_LIMITS['peak_floor']
-            new_val = max(pf_min, min(pf_max, new_val))
-            if abs(new_val - current) > 0.001:
-                self.peak_floor_slider.setValue(new_val)
-                actual_bps = feedback_data.get('actual_bps', 0)
-                target_bps = feedback_data.get('target_bps', 0)
-                print(f"[Metric] target_bps: actual={actual_bps:.2f} target={target_bps:.2f} ({direction}) -> pf={new_val:.4f}")
-                # Update the BPM display if we have one
-                # bpm_actual_label now shows metronome BPM (updated in _on_beat)
-        
-        elif metric == 'audio_amp' and adjustment != 0:
+        if metric == 'audio_amp' and adjustment != 0:
             # Adjust audio amplification based on beat presence
             if not _slider_live('audio_gain_slider'):
                 return
@@ -6968,35 +6932,16 @@ Like the app?<br>
                 actual_bps = feedback_data.get('actual_bps', 0)
                 print(f"[Metric] audio_amp: {reason} ({direction}) -> {new_val:.4f}")
         
-        elif metric == 'flux_balance' and adjustment != 0:
-            # Adjust flux_mult to balance flux ≈ energy bar heights
-            if not _slider_live('flux_mult_slider'):
-                return
-            current = self.flux_mult_slider.value()
-            new_val = current + adjustment
-            fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
-            # Amplitude proportionality: flux_mult must always be >= 15% of audio_amp
-            amp_floor = self.config.audio.gain * 0.15
-            new_val = max(max(fm_min, amp_floor), min(fm_max, new_val))
-            if abs(new_val - current) > 0.005:
-                self.flux_mult_slider.setValue(new_val)
-                ratio = feedback_data.get('ratio', 0)
-                reason = feedback_data.get('reason', '')
-                print(f"[Metric] flux_balance: {reason} ({direction}) -> fm={new_val:.2f}")
+        elif metric in ('peak_floor', 'target_bps', 'flux_balance'):
+            return
     
     def _on_target_bpm_change(self, value: float):
-        """Handle target BPM spinbox change - converts to BPS for engine"""
-        bps = value / 60.0
-        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-            self.audio_engine.set_target_bps(bps)
-            print(f"[Config] Target BPM set to {value:.0f} ({bps:.2f} BPS)")
+        """Target BPM behavior disabled."""
+        return
     
     def _on_bpm_tolerance_change(self, value: float):
-        """Handle BPM tolerance spinbox change - converts to BPS for engine"""
-        bps_tol = value / 60.0
-        if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-            self.audio_engine.set_bps_tolerance(bps_tol)
-            print(f"[Config] BPM tolerance set to ±{value:.0f} (±{bps_tol:.2f} BPS)")
+        """Target BPM behavior disabled."""
+        return
 
     def _on_metric_response_speed_change(self, value: float):
         """Handle metric auto-adjust response speed change."""
@@ -7008,20 +6953,16 @@ Like the app?<br>
     # _on_bps_speed_change removed — speed hardcoded to max in audio_engine
 
     def _on_auto_align_toggle(self, enabled: bool):
-        """Handle auto-align target BPM checkbox toggle"""
-        self._auto_align_target_enabled = enabled
+        """Auto-align target BPM behavior disabled."""
+        self._auto_align_target_enabled = False
         self._auto_align_is_stable = False
         self._auto_align_stable_since = 0.0
         self._auto_align_last_adjust_time = 0.0
-        if enabled:
-            print("[Config] Auto-align target BPM enabled - will align to sensed BPM when stable")
-        else:
-            print("[Config] Auto-align target BPM disabled")
+        print("[Config] Auto-align target BPM disabled")
 
     def _on_auto_align_seconds_change(self, value: float):
-        """Handle auto-align seconds spinbox change"""
-        self._auto_align_required_seconds = value
-        print(f"[Config] Auto-align requires {value:.1f}s of stable tempo before aligning")
+        """Auto-align target BPM behavior disabled."""
+        return
 
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings with vertical scroll"""
@@ -7076,20 +7017,10 @@ Like the app?<br>
         # Metric controls row
         metric_ctrl_layout = QHBoxLayout()
         
-        self.metric_peak_floor_cb = QCheckBox("Depth Margin")
-        self.metric_peak_floor_cb.setToolTip("Auto-adjust depth threshold to track energy valley level (scales with amplification)")
-        self.metric_peak_floor_cb.stateChanged.connect(lambda state: self._on_metric_toggle('peak_floor', state == 2))
-        metric_ctrl_layout.addWidget(self.metric_peak_floor_cb)
-        
         self.metric_audio_amp_cb = QCheckBox("Audio Amp (Beat)")
         self.metric_audio_amp_cb.setToolTip("No beats → raise audio_amp 2%/1.1s | Excess beats → lower audio_amp")
         self.metric_audio_amp_cb.stateChanged.connect(lambda state: self._on_metric_toggle('audio_amp', state == 2))
         metric_ctrl_layout.addWidget(self.metric_audio_amp_cb)
-        
-        self.metric_flux_balance_cb = QCheckBox("Flux Balance")
-        self.metric_flux_balance_cb.setToolTip("Auto-adjust flux_mult to keep flux ≈ energy bar heights (0.01 steps/500ms)")
-        self.metric_flux_balance_cb.stateChanged.connect(lambda state: self._on_metric_toggle('flux_balance', state == 2))
-        metric_ctrl_layout.addWidget(self.metric_flux_balance_cb)
         
         metric_ctrl_layout.addStretch()
         metric_layout.addLayout(metric_ctrl_layout)
@@ -7107,9 +7038,10 @@ Like the app?<br>
         # ===== TARGET BPS CONTROLS =====
         bps_layout = QHBoxLayout()
         
-        self.metric_target_bps_cb = QCheckBox("Target BPM")
-        self.metric_target_bps_cb.setToolTip("Adjust depth threshold to achieve target beats per minute")
-        self.metric_target_bps_cb.stateChanged.connect(lambda state: self._on_metric_toggle('target_bps', state == 2))
+        self.metric_target_bps_cb = QCheckBox("Target BPM (manual only)")
+        self.metric_target_bps_cb.setToolTip("Auto-adjust for target BPM/depth is disabled.")
+        self.metric_target_bps_cb.setChecked(False)
+        self.metric_target_bps_cb.setEnabled(False)
         bps_layout.addWidget(self.metric_target_bps_cb)
         
         bps_layout.addWidget(QLabel("Target:"))
@@ -7120,8 +7052,8 @@ Like the app?<br>
         self.target_bpm_spin.setDecimals(0)
         self.target_bpm_spin.setFixedWidth(65)
         self.target_bpm_spin.setSuffix(" BPM")
-        self.target_bpm_spin.setToolTip("Target beats per minute (e.g., 110 BPM = 1.83 BPS)")
-        self.target_bpm_spin.valueChanged.connect(self._on_target_bpm_change)
+        self.target_bpm_spin.setToolTip("Target BPM behavior is disabled")
+        self.target_bpm_spin.setEnabled(False)
         bps_layout.addWidget(self.target_bpm_spin)
         
         bps_layout.addWidget(QLabel("±"))
@@ -7131,8 +7063,8 @@ Like the app?<br>
         self.bpm_tolerance_spin.setValue(30)
         self.bpm_tolerance_spin.setDecimals(0)
         self.bpm_tolerance_spin.setFixedWidth(60)
-        self.bpm_tolerance_spin.setToolTip("Tolerance: system accepts ±this range around target BPM")
-        self.bpm_tolerance_spin.valueChanged.connect(self._on_bpm_tolerance_change)
+        self.bpm_tolerance_spin.setToolTip("Target BPM behavior is disabled")
+        self.bpm_tolerance_spin.setEnabled(False)
         bps_layout.addWidget(self.bpm_tolerance_spin)
         
         # Speed slider removed — hardcoded to max in audio_engine
@@ -7142,9 +7074,9 @@ Like the app?<br>
         bps_layout.addWidget(self.bpm_actual_label)
         
         self.auto_align_target_cb = QCheckBox("Auto-align")
-        self.auto_align_target_cb.setToolTip("Automatically align target BPM to match sensed BPM when tempo is stable")
-        self.auto_align_target_cb.setChecked(True)
-        self.auto_align_target_cb.stateChanged.connect(lambda state: self._on_auto_align_toggle(state == 2))
+        self.auto_align_target_cb.setToolTip("Target BPM behavior is disabled")
+        self.auto_align_target_cb.setChecked(False)
+        self.auto_align_target_cb.setEnabled(False)
         bps_layout.addWidget(self.auto_align_target_cb)
         
         self.auto_align_seconds_spin = QDoubleSpinBox()
@@ -7154,8 +7086,8 @@ Like the app?<br>
         self.auto_align_seconds_spin.setDecimals(2)
         self.auto_align_seconds_spin.setSuffix("s")
         self.auto_align_seconds_spin.setFixedWidth(60)
-        self.auto_align_seconds_spin.setToolTip("Seconds of stable tempo required before auto-aligning target BPM")
-        self.auto_align_seconds_spin.valueChanged.connect(self._on_auto_align_seconds_change)
+        self.auto_align_seconds_spin.setToolTip("Target BPM behavior is disabled")
+        self.auto_align_seconds_spin.setEnabled(False)
         bps_layout.addWidget(self.auto_align_seconds_spin)
         
         bps_layout.addStretch()
@@ -7171,19 +7103,18 @@ Like the app?<br>
         
         # Enable metrics based on config (first load = True, then saved)
         global_on = self.config.auto_adjust.metrics_global_enabled
-        self.metric_peak_floor_cb.setChecked(global_on)
         self.metric_audio_amp_cb.setChecked(global_on)
-        self.metric_flux_balance_cb.setChecked(global_on)
-        self.metric_target_bps_cb.setChecked(global_on)
+        self.metric_target_bps_cb.setChecked(False)
+        self.metric_target_bps_cb.setEnabled(False)
         if global_on:
-            print("[Config] Auto-enabled 4 core metrics from config")
+            print("[Config] Auto-enabled Audio Amp metric from config")
 
         # ===== LEVELS: Audio Amplification, Sensitivity, Flux Multiplier =====
         levels_layout = auto_levels_layout
         
         # Frequency band selection with visibility toggle (red beat detection band)
         beat_slider_row = QHBoxLayout()
-        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 50, 20000, 0, log_scale=True)
+        self.freq_range_slider = RangeSliderWithLabel("Freq Range (Hz)", 30, 22050, 100, 8000, 0, log_scale=True)
         self.freq_range_slider.rangeChanged.connect(self._on_freq_band_change)
         beat_slider_row.addWidget(self.freq_range_slider)
         levels_layout.addLayout(beat_slider_row)
@@ -7201,7 +7132,7 @@ Like the app?<br>
         levels_layout.addWidget(self.sensitivity_slider)
         
         # Z-Score Threshold: lower = more z-score beats, higher = fewer (1.0-5.0)
-        self.zscore_threshold_slider = SliderWithLabel("Z-Score Sens", 1.0, 5.0, 2.5)
+        self.zscore_threshold_slider = SliderWithLabel("Z-Score Sens", 1.0, 5.0, 4.0)
         self.zscore_threshold_slider.valueChanged.connect(self._on_zscore_threshold_change)
         levels_layout.addWidget(self.zscore_threshold_slider)
         
@@ -8351,11 +8282,7 @@ Like the app?<br>
         if not self.audio_engine:
             return
         metric_map = {
-            'metric_peak_floor_cb': 'peak_floor',
-
             'metric_audio_amp_cb': 'audio_amp',
-            'metric_flux_balance_cb': 'flux_balance',
-            'metric_target_bps_cb': 'target_bps',
         }
         synced = []
         for attr, metric in metric_map.items():
@@ -8900,11 +8827,7 @@ Like the app?<br>
                     callback=self._on_metric_feedback
                 )
                 
-                # Get BPS (beats per second) metric and adjust peak_floor to hit target
-                actual_bps, bps_should_adjust, bps_direction = self.audio_engine.compute_bps_feedback(
-                    event.timestamp,
-                    callback=self._on_metric_feedback
-                )
+                # Target-BPM behavior disabled
             
             # Light up the beat indicator (green for any beat)
             if hasattr(self, 'beat_indicator') and self.beat_indicator is not None:
@@ -9197,70 +9120,8 @@ Like the app?<br>
             now = time.perf_counter()
             if _is_live_widget_attr('audio_gain_slider'):
                 self.audio_engine.compute_audio_amp_feedback(now, callback=self._on_metric_feedback)
-            if _is_live_widget_attr('flux_mult_slider'):
-                self.audio_engine.compute_flux_balance_feedback(now, callback=self._on_metric_feedback)
             
-            # ===== AUTO-ALIGN TARGET BPM (time-based) =====
-            if self._auto_align_target_enabled:
-                tempo_info = self.audio_engine.get_tempo_info()
-                sensed_bpm = tempo_info.get('stable_bpm', 0.0)
-                if sensed_bpm <= 0:
-                    sensed_bpm = tempo_info.get('bpm', 0.0)
-                    
-                if sensed_bpm > 30 and sensed_bpm < 240:  # Valid BPM range
-                    # Check if tempo is stable (stability > 0.5 or locked via downbeat matching)
-                    stability = tempo_info.get('stability', 0.0)
-                    consecutive_downbeats = tempo_info.get('consecutive_matching_downbeats', 0)
-                    locked = consecutive_downbeats >= 3
-                    
-                    if stability > 0.5 or locked:
-                        # Tempo is stable — start or continue timing
-                        if not self._auto_align_is_stable:
-                            self._auto_align_is_stable = True
-                            self._auto_align_stable_since = now
-                        self._last_sensed_bpm = sensed_bpm
-                    else:
-                        # Tempo unstable — reset timer immediately
-                        self._auto_align_is_stable = False
-                        self._auto_align_stable_since = 0.0
-                    
-                    acf_conf = float(np.clip(tempo_info.get('acf_confidence', 0.0), 0.0, 1.0))
-                    conf_boost = float(np.clip((acf_conf - 0.25) / 0.45, 0.0, 1.0))
-                    adaptive_required_seconds = self._auto_align_required_seconds * (1.0 - 0.50 * conf_boost)
-                    adaptive_cooldown = self._auto_align_cooldown * (1.0 - 0.67 * conf_boost)
-
-                    # Check if stable long enough to start aligning
-                    if (self._auto_align_is_stable and 
-                            (now - self._auto_align_stable_since) >= adaptive_required_seconds):
-                        target_bpm_spin = getattr(self, 'target_bpm_spin', None)
-                        if target_bpm_spin is not None:
-                            current_target = target_bpm_spin.value()
-                            diff = sensed_bpm - current_target
-                            
-                            # Only align if difference >= 1 BPM AND cooldown elapsed
-                            if abs(diff) >= 1.0 and (now - self._auto_align_last_adjust_time) >= adaptive_cooldown:
-                                step_bpm = 1
-                                if acf_conf >= 0.55 and abs(diff) >= 4.0:
-                                    step_bpm = 2
-                                if acf_conf >= 0.70 and abs(diff) >= 8.0:
-                                    step_bpm = 3
-                                if diff > 0:
-                                    new_target = min(int(current_target) + step_bpm, int(sensed_bpm))
-                                else:
-                                    new_target = max(int(current_target) - step_bpm, int(np.ceil(sensed_bpm)))
-                                
-                                if new_target != int(current_target):
-                                    target_bpm_spin.setValue(new_target)
-                                    self._auto_align_last_adjust_time = now
-                                    stable_elapsed = now - self._auto_align_stable_since
-                                    print(
-                                        f"[Auto-align] Target BPM: {int(current_target)} -> {new_target} "
-                                        f"(sensed: {sensed_bpm:.1f}, conf: {acf_conf:.2f}, stable for {stable_elapsed:.1f}s, step: {step_bpm})"
-                                    )
-                else:
-                    # Invalid BPM, reset stability
-                    self._auto_align_is_stable = False
-                    self._auto_align_stable_since = 0.0
+            # Target-BPM auto-align behavior disabled
             
             # Keep metric state polling active even though traffic-light UI is removed.
             self.audio_engine.get_metric_states()

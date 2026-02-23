@@ -25,14 +25,14 @@ class BeatDetectionConfig:
     """Beat detection parameters"""
     detection_type: BeatDetectionType = BeatDetectionType.COMBINED
     sensitivity: float = 0.48          # 0.0 - 1.0
-    peak_floor: float = 0.668          # Minimum threshold (aligned with reset defaults)
-    peak_decay: float = 0.443           # How fast peaks decay (0.0-1.0)
-    rise_sensitivity: float = 0.4     # How fast a peak must hit to register
+    peak_floor: float = 0.02          # Minimum threshold (aligned with reset defaults)
+    peak_decay: float = 0.3           # How fast peaks decay (0.0-1.0)
+    rise_sensitivity: float = 0.1     # How fast a peak must hit to register
     amplification: float = 1.0        # Audio amplification (slider 0-2)
-    flux_multiplier: float = 10.0      # Weight of spectral flux
+    flux_multiplier: float = 1.0      # Weight of spectral flux
     # Frequency band selection (Hz)
-    freq_low: float = 50.0            # Low cutoff frequency (Hz)
-    freq_high: float = 20000.0        # High cutoff frequency (Hz)
+    freq_low: float = 100.0            # Low cutoff frequency (Hz)
+    freq_high: float = 8000.0        # High cutoff frequency (Hz)
     motion_freq_cutoff: float = 180.0  # Only generate motion from bands below this Hz (0=disabled)
     silence_reset_ms: int = 180       # How long silence before resetting beat tracking (ms)
     
@@ -536,11 +536,11 @@ DEFAULT_CONFIG = Config()
 # Centralized parameter defaults/ranges (reference only; wiring remains in main.py widgets)
 BEAT_RESET_DEFAULTS = {
     'audio_amp': 0.15,
-    'peak_floor': 0.08,
-    'peak_decay': 0.999,
-    'rise_sens': 0.02,
+    'peak_floor': 0.02,
+    'peak_decay': 0.3,
+    'rise_sens': 0.10,
     'sensitivity': 0.1,
-    'flux_mult': 0.2,
+    'flux_mult': 1.0,
 }
 
 BEAT_RANGE_LIMITS = {
@@ -578,14 +578,14 @@ class BeatDetectionConfig:
     """Beat detection parameters"""
     detection_type: BeatDetectionType = BeatDetectionType.COMBINED
     sensitivity: float = 0.48          # 0.0 - 1.0
-    peak_floor: float = 0.566          # Minimum threshold (aligned with reset defaults)
-    peak_decay: float = 0.443           # How fast peaks decay (0.0-1.0)
-    rise_sensitivity: float = 0.4     # How fast a peak must hit to register
-    amplification: float = 5.0        # Audio amplification (slider 0-2)
-    flux_multiplier: float = 5.0      # Weight of spectral flux
+    peak_floor: float = 0.02          # Minimum threshold (aligned with reset defaults)
+    peak_decay: float = 0.3           # How fast peaks decay (0.0-1.0)
+    rise_sensitivity: float = 0.1     # How fast a peak must hit to register
+    amplification: float = 1.0        # Audio amplification (slider 0-2)
+    flux_multiplier: float = 1.0      # Weight of spectral flux
     # Frequency band selection (Hz)
-    freq_low: float = 50.0            # Low cutoff frequency (Hz)
-    freq_high: float = 20000.0        # High cutoff frequency (Hz)
+    freq_low: float = 100.0            # Low cutoff frequency (Hz)
+    freq_high: float = 8000.0        # High cutoff frequency (Hz)
     motion_freq_cutoff: float = 180.0  # Only generate motion from bands below this Hz (0=disabled)
     silence_reset_ms: int = 180       # How long silence before resetting beat tracking (ms)
     
@@ -1088,11 +1088,11 @@ DEFAULT_CONFIG = Config()
 # Centralized parameter defaults/ranges (reference only; wiring remains in main.py widgets)
 BEAT_RESET_DEFAULTS = {
     'audio_amp': 0.15,
-    'peak_floor': 0.08,
-    'peak_decay': 0.999,
-    'rise_sens': 0.02,
+    'peak_floor': 0.02,
+    'peak_decay': 0.3,
+    'rise_sens': 0.10,
     'sensitivity': 0.1,
-    'flux_mult': 0.2,
+    'flux_mult': 1.0,
 }
 
 BEAT_RANGE_LIMITS = {

@@ -61,7 +61,7 @@ class ZScorePeakDetector:
     __slots__ = ('lag', 'threshold', 'influence', 'buffer', 'filtered',
                  'mean', 'std', 'initialized', '_buf_len')
 
-    def __init__(self, lag: int = 30, threshold: float = 3.0, influence: float = 0.1):
+    def __init__(self, lag: int = 30, threshold: float = 4.0, influence: float = 0.1):
         self.lag = lag
         self.threshold = threshold
         self.influence = influence
@@ -1470,8 +1470,8 @@ class AudioEngine:
                 if 55 <= bpm_double <= 185:
                     candidates.append((bpm_double, double_val))
 
-        # Pick best candidate: prefer closest to target BPM if enabled
-        target_bpm_hint = self._target_bps * 60.0 if self._target_bps_enabled and self._target_bps > 0 else 0.0
+        # Target-BPM guided octave behavior disabled
+        target_bpm_hint = 0.0
         use_target_guided_octave = (
             target_bpm_hint > 0
             and len(candidates) > 1
@@ -2645,14 +2645,15 @@ class AudioEngine:
         
         # Check time since last beat
         time_since_beat = now - self.last_beat_time if self.last_beat_time > 0 else float('inf')
-        target_interval = 1.0 / self._target_bps if self._target_bps > 0 else 0.67
+        ref_bps = 1.5  # fixed reference; target-BPM behavior disabled
+        target_interval = 1.0 / ref_bps
         
         wants_adjustment = False
         if time_since_beat > target_interval * 3.0:
             # No beats detected for 3x expected interval -> wants to RAISE audio_amp
             wants_adjustment = True
         
-        # Check for excess beats: if BPS > 2x target for consecutive checks, LOWER audio_amp
+        # Check for excess beats: if BPS > 2x reference for consecutive checks, LOWER audio_amp
         wants_lower = False
         if self.last_beat_time > 0 and time_since_beat < target_interval:
             # Beats are coming - check if too many
@@ -2660,7 +2661,7 @@ class AudioEngine:
                 window_dur = self._bps_beat_times[-1] - self._bps_beat_times[0] if len(self._bps_beat_times) >= 2 else 1.0
                 if window_dur > 0:
                     actual_bps = (len(self._bps_beat_times) - 1) / window_dur
-                    if actual_bps > self._target_bps * 2.0:
+                    if actual_bps > ref_bps * 2.0:
                         wants_lower = True
         
         # Hysteresis: require 2 consecutive out-of-zone checks before adjusting
@@ -2679,7 +2680,7 @@ class AudioEngine:
                             'metric': 'audio_amp',
                             'adjustment': -lower_step,
                             'direction': 'lower',
-                            'reason': f'excess BPS > 2x target (2x confirmed)',
+                            'reason': f'excess BPS > 2x reference (2x confirmed)',
                         })
                 elif callback:
                     callback({
