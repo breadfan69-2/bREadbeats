@@ -6423,6 +6423,11 @@ Like the app?<br>
             tcode = max(0, min(9999, int(value)))
             return float(unit_min) + (float(tcode) / 9999.0) * (float(unit_max) - float(unit_min))
 
+        def _saved_tcode_units(config_min: int, config_max: int, unit_min: float, unit_max: float) -> tuple[float, float]:
+            lo_u = _tcode_to_unit(int(config_min), unit_min, unit_max)
+            hi_u = _tcode_to_unit(int(config_max), unit_min, unit_max)
+            return min(lo_u, hi_u), max(lo_u, hi_u)
+
         def _sync_sent_ranges_to_config() -> None:
             p0_out_min_hz, p0_out_max_hz = _effective_limits(self.config.device_limits.p0_freq_min, self.config.device_limits.p0_freq_max, 1.0, 100.0)
             c0_out_min_hz, c0_out_max_hz = _effective_limits(self.config.device_limits.c0_freq_min, self.config.device_limits.c0_freq_max, 500.0, 1500.0)
@@ -6448,14 +6453,6 @@ Like the app?<br>
             p3_sent_max = max(float(self.p3_sent_min_spin.value()), float(self.p3_sent_max_spin.value()))
             self.config.rise_time.tcode_min = _unit_to_tcode(p3_sent_min, p3_out_min, p3_out_max)
             self.config.rise_time.tcode_max = _unit_to_tcode(p3_sent_max, p3_out_min, p3_out_max)
-
-        autosave_timer = QTimer(widget)
-        autosave_timer.setSingleShot(True)
-        autosave_timer.setInterval(500)
-        autosave_timer.timeout.connect(lambda: save_config(self.config))
-
-        def _schedule_sent_range_autosave() -> None:
-            autosave_timer.start()
 
         class _RangeProxy:
             def __init__(self, low_get, high_get, low_set, high_set, parent_get, blockers):
@@ -6495,6 +6492,14 @@ Like the app?<br>
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
+        autosave_timer = QTimer(widget)
+        autosave_timer.setSingleShot(True)
+        autosave_timer.setInterval(500)
+        autosave_timer.timeout.connect(lambda: save_config(self.config))
+
+        def _schedule_pulse_spinbox_autosave() -> None:
+            autosave_timer.start()
+
         # ===== PULSE FREQUENCY =====
         pulse_group = CollapsibleGroupBox("Pulse Frequency - blue overlay on spectrum", collapsed=False)
         pulse_layout = QVBoxLayout(pulse_group)
@@ -6527,7 +6532,13 @@ Like the app?<br>
         self.p0_sent_min_spin.setRange(float(p0_out_min_hz), float(p0_out_max_hz))
         self.p0_sent_min_spin.setSingleStep(1.0)
         self.p0_sent_min_spin.setDecimals(1)
-        self.p0_sent_min_spin.setValue(float(p0_out_min_hz))
+        p0_saved_min_hz, p0_saved_max_hz = _saved_tcode_units(
+            int(getattr(self.config.pulse_freq, 'tcode_min', 2010) or 2010),
+            int(getattr(self.config.pulse_freq, 'tcode_max', 7035) or 7035),
+            p0_out_min_hz,
+            p0_out_max_hz,
+        )
+        self.p0_sent_min_spin.setValue(float(p0_saved_min_hz))
         self.p0_sent_min_spin.setSuffix(" Hz")
         p0_sent_row.addWidget(self.p0_sent_min_spin)
 
@@ -6536,7 +6547,7 @@ Like the app?<br>
         self.p0_sent_max_spin.setRange(float(p0_out_min_hz), float(p0_out_max_hz))
         self.p0_sent_max_spin.setSingleStep(1.0)
         self.p0_sent_max_spin.setDecimals(1)
-        self.p0_sent_max_spin.setValue(float(p0_out_max_hz))
+        self.p0_sent_max_spin.setValue(float(p0_saved_max_hz))
         self.p0_sent_max_spin.setSuffix(" Hz")
         p0_sent_row.addWidget(self.p0_sent_max_spin)
         p0_sent_row.addStretch()
@@ -6592,7 +6603,13 @@ Like the app?<br>
         self.f0_sent_min_spin.setRange(float(c0_out_min_hz), float(c0_out_max_hz))
         self.f0_sent_min_spin.setSingleStep(1.0)
         self.f0_sent_min_spin.setDecimals(1)
-        self.f0_sent_min_spin.setValue(float(c0_out_min_hz))
+        f0_saved_min_hz, f0_saved_max_hz = _saved_tcode_units(
+            int(getattr(self.config.carrier_freq, 'tcode_min', 0) or 0),
+            int(getattr(self.config.carrier_freq, 'tcode_max', 5000) or 5000),
+            c0_out_min_hz,
+            c0_out_max_hz,
+        )
+        self.f0_sent_min_spin.setValue(float(f0_saved_min_hz))
         self.f0_sent_min_spin.setSuffix(" Hz")
         f0_sent_row.addWidget(self.f0_sent_min_spin)
 
@@ -6601,7 +6618,7 @@ Like the app?<br>
         self.f0_sent_max_spin.setRange(float(c0_out_min_hz), float(c0_out_max_hz))
         self.f0_sent_max_spin.setSingleStep(1.0)
         self.f0_sent_max_spin.setDecimals(1)
-        self.f0_sent_max_spin.setValue(float(c0_out_max_hz))
+        self.f0_sent_max_spin.setValue(float(f0_saved_max_hz))
         self.f0_sent_max_spin.setSuffix(" Hz")
         f0_sent_row.addWidget(self.f0_sent_max_spin)
         f0_sent_row.addStretch()
@@ -6657,7 +6674,13 @@ Like the app?<br>
         self.p1_sent_min_spin.setRange(float(p1_out_min), float(p1_out_max))
         self.p1_sent_min_spin.setSingleStep(0.1)
         self.p1_sent_min_spin.setDecimals(1)
-        self.p1_sent_min_spin.setValue(float(p1_out_min))
+        p1_saved_min, p1_saved_max = _saved_tcode_units(
+            int(getattr(self.config.pulse_width, 'tcode_min', 1000) or 1000),
+            int(getattr(self.config.pulse_width, 'tcode_max', 8000) or 8000),
+            p1_out_min,
+            p1_out_max,
+        )
+        self.p1_sent_min_spin.setValue(float(p1_saved_min))
         self.p1_sent_min_spin.setSuffix(" cyc")
         p1_sent_row.addWidget(self.p1_sent_min_spin)
 
@@ -6666,7 +6689,7 @@ Like the app?<br>
         self.p1_sent_max_spin.setRange(float(p1_out_min), float(p1_out_max))
         self.p1_sent_max_spin.setSingleStep(0.1)
         self.p1_sent_max_spin.setDecimals(1)
-        self.p1_sent_max_spin.setValue(float(p1_out_max))
+        self.p1_sent_max_spin.setValue(float(p1_saved_max))
         self.p1_sent_max_spin.setSuffix(" cyc")
         p1_sent_row.addWidget(self.p1_sent_max_spin)
         p1_sent_row.addStretch()
@@ -6722,7 +6745,13 @@ Like the app?<br>
         self.p3_sent_min_spin.setRange(float(p3_out_min), float(p3_out_max))
         self.p3_sent_min_spin.setSingleStep(0.1)
         self.p3_sent_min_spin.setDecimals(1)
-        self.p3_sent_min_spin.setValue(float(p3_out_min))
+        p3_saved_min, p3_saved_max = _saved_tcode_units(
+            int(getattr(self.config.rise_time, 'tcode_min', 1000) or 1000),
+            int(getattr(self.config.rise_time, 'tcode_max', 8000) or 8000),
+            p3_out_min,
+            p3_out_max,
+        )
+        self.p3_sent_min_spin.setValue(float(p3_saved_min))
         self.p3_sent_min_spin.setSuffix(" cyc")
         p3_sent_row.addWidget(self.p3_sent_min_spin)
 
@@ -6731,7 +6760,7 @@ Like the app?<br>
         self.p3_sent_max_spin.setRange(float(p3_out_min), float(p3_out_max))
         self.p3_sent_max_spin.setSingleStep(0.1)
         self.p3_sent_max_spin.setDecimals(1)
-        self.p3_sent_max_spin.setValue(float(p3_out_max))
+        self.p3_sent_max_spin.setValue(float(p3_saved_max))
         self.p3_sent_max_spin.setSuffix(" cyc")
         p3_sent_row.addWidget(self.p3_sent_max_spin)
         p3_sent_row.addStretch()
@@ -6874,6 +6903,15 @@ Like the app?<br>
         self.p3_monitor_min_spin.valueChanged.connect(lambda *_: self._on_p3_band_change())
         self.p3_monitor_max_spin.valueChanged.connect(lambda *_: self._on_p3_band_change())
 
+        self.p0_monitor_min_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p0_monitor_max_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.f0_monitor_min_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.f0_monitor_max_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p1_monitor_min_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p1_monitor_max_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p3_monitor_min_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p3_monitor_max_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+
         self.p0_sent_min_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
         self.p0_sent_max_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
         self.f0_sent_min_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
@@ -6883,14 +6921,14 @@ Like the app?<br>
         self.p3_sent_min_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
         self.p3_sent_max_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
 
-        self.p0_sent_min_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
-        self.p0_sent_max_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
-        self.f0_sent_min_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
-        self.f0_sent_max_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
-        self.p1_sent_min_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
-        self.p1_sent_max_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
-        self.p3_sent_min_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
-        self.p3_sent_max_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
+        self.p0_sent_min_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p0_sent_max_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.f0_sent_min_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.f0_sent_max_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p1_sent_min_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p1_sent_max_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p3_sent_min_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
+        self.p3_sent_max_spin.valueChanged.connect(lambda *_: _schedule_pulse_spinbox_autosave())
         _sync_sent_ranges_to_config()
 
         layout.addStretch()
