@@ -7,7 +7,7 @@ Companion to:
 
 ## 1) Current Status Snapshot
 
-Progress is currently in **Stage 5 (optional audioflux sidecar)** with Stage 4 ownership switch completed behind flags.
+Progress is currently at **Stage 6 complete** with Stage 4 ownership switch and Stage 5 sidecar integration completed behind flags.
 
 What is done:
 - Stage 0 scaffold complete (`audio_modules` package, contracts, no-op module shells).
@@ -37,9 +37,14 @@ What is done:
   - metronome remains final owner when lock path is active
   - raw-onset fallback owner can switch to fusion detector when `new_trigger_fusion_enabled=True` and `new_trigger_shadow_mode=False`
   - immediate rollback preserved via flags
-- Stage 5 started and integrated:
+- Stage 5 complete:
   - `audioflux_adapter.py` now provides fail-open, bounded-buffer, stride-based optional `af_*` cues
   - `audio_engine.py` threads sidecar cues into `FeatureFrame` as soft modifiers only
+  - callback timing telemetry buckets are emitted in shadow telemetry (`frontend_ms`, `tempo_ms`, `detector_ms`, `sidecar_ms`)
+- Stage 6 complete:
+  - transient classifier + bass-dominance context are threaded into `beat_intelligence.py`
+  - transient confidence hints are now flag-gated (`transient_classification_enabled`) for baseline parity when disabled
+  - dedicated Stage 6-oriented tests added for transient classifier and bass-dominance weighting
 
 Validation status:
 - Repeated focused regression run after each slice:
@@ -147,10 +152,8 @@ If a migration step causes instability:
 
 ## 8) Open Items / TODO
 
-- `signal_frontend.py` currently placeholder.
-- `audioflux_adapter.py` now computes lightweight sidecar cues, but does not yet call native `audioflux` transforms directly.
-- Add session/runtime timing telemetry for frontend/tempo/detector/sidecar buckets.
-- Stage 6 motion-policy enrichment (`kick_like/hat_like/bass_dominance` into `beat_intelligence.py`) is still pending.
+- `audioflux_adapter.py` remains a fail-open optional sidecar and currently uses lightweight local feature approximations rather than direct native `audioflux` transform objects.
+- Future optional enhancement: broaden replay-fixture packs for larger A/B telemetry baselines.
 
 ---
 

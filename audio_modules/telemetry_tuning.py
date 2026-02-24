@@ -17,6 +17,10 @@ class TriggerTelemetry:
     acf_bpm: float = 0.0
     acf_confidence: float = 0.0
     phase_error_ms: float = 0.0
+    frontend_ms: float = 0.0
+    tempo_ms: float = 0.0
+    detector_ms: float = 0.0
+    sidecar_ms: float = 0.0
     smoothing_tag: str = ""
     wall_time: Optional[float] = None
 
@@ -39,6 +43,10 @@ class TelemetryTuning:
         self._cue_energy_delta_sum = 0.0
         self._cue_phase_align_sum = 0.0
         self._cue_sidecar_sum = 0.0
+        self._frontend_ms_sum = 0.0
+        self._tempo_ms_sum = 0.0
+        self._detector_ms_sum = 0.0
+        self._sidecar_ms_sum = 0.0
 
     def summary(self) -> dict[str, float | str]:
         seen = float(self._samples_seen)
@@ -49,6 +57,10 @@ class TelemetryTuning:
         cue_energy_delta_mean = (self._cue_energy_delta_sum / seen) if seen > 0 else 0.0
         cue_phase_align_mean = (self._cue_phase_align_sum / seen) if seen > 0 else 0.0
         cue_sidecar_mean = (self._cue_sidecar_sum / seen) if seen > 0 else 0.0
+        frontend_ms_mean = (self._frontend_ms_sum / seen) if seen > 0 else 0.0
+        tempo_ms_mean = (self._tempo_ms_sum / seen) if seen > 0 else 0.0
+        detector_ms_mean = (self._detector_ms_sum / seen) if seen > 0 else 0.0
+        sidecar_ms_mean = (self._sidecar_ms_sum / seen) if seen > 0 else 0.0
         return {
             "shadow_samples": self._samples_seen,
             "shadow_legacy_fire_count": self._legacy_fire_count,
@@ -62,6 +74,10 @@ class TelemetryTuning:
             "shadow_cue_energy_delta_mean": cue_energy_delta_mean,
             "shadow_cue_phase_align_mean": cue_phase_align_mean,
             "shadow_cue_sidecar_mean": cue_sidecar_mean,
+            "shadow_frontend_ms_mean": frontend_ms_mean,
+            "shadow_tempo_ms_mean": tempo_ms_mean,
+            "shadow_detector_ms_mean": detector_ms_mean,
+            "shadow_sidecar_ms_mean": sidecar_ms_mean,
             "shadow_last_smoothing_tag": self._last_tag,
         }
 
@@ -84,6 +100,10 @@ class TelemetryTuning:
         self._cue_energy_delta_sum += float(sample.cue_energy_delta)
         self._cue_phase_align_sum += float(sample.cue_phase_align)
         self._cue_sidecar_sum += float(sample.cue_sidecar)
+        self._frontend_ms_sum += max(0.0, float(sample.frontend_ms))
+        self._tempo_ms_sum += max(0.0, float(sample.tempo_ms))
+        self._detector_ms_sum += max(0.0, float(sample.detector_ms))
+        self._sidecar_ms_sum += max(0.0, float(sample.sidecar_ms))
 
         if sample.smoothing_tag:
             self._last_tag = str(sample.smoothing_tag)

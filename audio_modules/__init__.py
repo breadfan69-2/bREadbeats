@@ -5,6 +5,7 @@ from .contracts import (
     TempoState,
     TriggerDecision,
 )
+from .signal_frontend import SignalFrontend, SignalFrontendConfig
 from .replay_harness import ReplayFrame, ReplaySummary, run_shadow_replay
 
 __all__ = [
@@ -13,6 +14,8 @@ __all__ = [
     "TempoState",
     "TriggerDecision",
     "EngineDecision",
+    "SignalFrontend",
+    "SignalFrontendConfig",
     "ReplayFrame",
     "ReplaySummary",
     "run_shadow_replay",

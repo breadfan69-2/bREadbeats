@@ -594,12 +594,19 @@ class AudioEngine:
         af_rms = None
         af_onset_conf = None
         if sidecar_features:
-            af_entropy = float(sidecar_features.get('af_entropy')) if sidecar_features.get('af_entropy') is not None else None
-            af_flatness = float(sidecar_features.get('af_flatness')) if sidecar_features.get('af_flatness') is not None else None
-            af_hfc = float(sidecar_features.get('af_hfc')) if sidecar_features.get('af_hfc') is not None else None
-            af_novelty = float(sidecar_features.get('af_novelty')) if sidecar_features.get('af_novelty') is not None else None
-            af_rms = float(sidecar_features.get('af_rms')) if sidecar_features.get('af_rms') is not None else None
-            af_onset_conf = float(sidecar_features.get('af_onset_conf')) if sidecar_features.get('af_onset_conf') is not None else None
+            entropy_value = sidecar_features.get('af_entropy')
+            flatness_value = sidecar_features.get('af_flatness')
+            hfc_value = sidecar_features.get('af_hfc')
+            novelty_value = sidecar_features.get('af_novelty')
+            rms_value = sidecar_features.get('af_rms')
+            onset_conf_value = sidecar_features.get('af_onset_conf')
+
+            af_entropy = float(entropy_value) if entropy_value is not None else None
+            af_flatness = float(flatness_value) if flatness_value is not None else None
+            af_hfc = float(hfc_value) if hfc_value is not None else None
+            af_novelty = float(novelty_value) if novelty_value is not None else None
+            af_rms = float(rms_value) if rms_value is not None else None
+            af_onset_conf = float(onset_conf_value) if onset_conf_value is not None else None
 
         return FeatureFrame(
             flux_norm=flux_norm,
@@ -626,6 +633,10 @@ class AudioEngine:
         legacy_fire: bool,
         current_time: float,
         decision: TriggerDecision,
+        frontend_ms: float = 0.0,
+        tempo_ms: float = 0.0,
+        detector_ms: float = 0.0,
+        sidecar_ms: float = 0.0,
     ) -> None:
         if not self._new_trigger_telemetry_enabled:
             return
@@ -641,6 +652,10 @@ class AudioEngine:
                 cue_energy_delta=float(decision.c_energy_delta),
                 cue_phase_align=float(decision.c_phase_align),
                 cue_sidecar=float(decision.c_sidecar),
+                frontend_ms=float(frontend_ms),
+                tempo_ms=float(tempo_ms),
+                detector_ms=float(detector_ms),
+                sidecar_ms=float(sidecar_ms),
                 acf_bpm=float(self._acf_bpm_smoothed),
                 acf_confidence=float(self._acf_confidence),
                 phase_error_ms=float(self.phase_error_ms),
@@ -1025,6 +1040,8 @@ class AudioEngine:
         """PyAudio callback - process incoming audio data"""
         if not self.running:
             return (in_data, pyaudio.paContinue)
+
+        callback_started = time.perf_counter()
         
         # Convert bytes to numpy array
         indata = np.frombuffer(in_data, dtype=np.float32)
@@ -1090,6 +1107,8 @@ class AudioEngine:
 
         if latest_spectrum is None:
             return (in_data, pyaudio.paContinue)
+
+        frontend_ms = (time.perf_counter() - callback_started) * 1000.0
 
         spectrum = latest_spectrum
         band_energy = latest_band_energy
@@ -1191,6 +1210,8 @@ class AudioEngine:
         # Store last flux for flux balance metric
         self._last_spectral_flux = spectral_flux
         
+        tempo_started = time.perf_counter()
+
         # ===== ACF ONSET BUFFERING =====
         self._onset_buffer.append(spectral_flux)
         if len(self._onset_buffer) > self._onset_buffer_max:
@@ -1216,8 +1237,14 @@ class AudioEngine:
         self._advance_metronome(current_time, band_energy)
         self._predict_next_beat(current_time, wall_time)
 
+        tempo_ms = (time.perf_counter() - tempo_started) * 1000.0
+
+        sidecar_started = time.perf_counter()
         self._audioflux_adapter.push_audio(mono)
         audioflux_features = self._audioflux_adapter.get_latest_features()
+        sidecar_ms = (time.perf_counter() - sidecar_started) * 1000.0
+
+        detector_started = time.perf_counter()
         shadow_features = self._build_shadow_feature_frame(
             band_energy,
             spectral_flux,
@@ -1242,6 +1269,7 @@ class AudioEngine:
         accepted_raw_is_beat_new = bool(shadow_decision.is_beat_candidate) and bool(raw_acceptable)
         fusion_owner_active = bool(self._new_trigger_fusion_enabled and not self._new_trigger_shadow_mode)
         accepted_raw_is_beat = accepted_raw_is_beat_new if fusion_owner_active else accepted_raw_is_beat_legacy
+        detector_ms = (time.perf_counter() - detector_started) * 1000.0
 
         if accepted_raw_is_beat:
             self._last_accepted_raw_onset_time = current_time
@@ -1379,21 +1407,31 @@ class AudioEngine:
                 is_syncopated=bool(self._syncopation_detected),
             )
 
-            fired_now = {name for name, signal in self._band_zscore_signals.items() if signal == 1}
-            kick_hint = float(np.clip(shadow_decision.kick_like_conf, 0.0, 1.0))
-            hat_hint = float(np.clip(shadow_decision.hat_like_conf, 0.0, 1.0))
-            if any(name in fired_now for name in ("sub_bass", "low_mid")):
-                kick_hint = max(kick_hint, 0.75)
-            if "high" in fired_now:
-                hat_hint = max(hat_hint, 0.75)
+            transient_enabled = bool(getattr(self.config.beat, 'transient_classification_enabled', False))
+            kick_hint = 0.0
+            hat_hint = 0.0
+            mixed_hint = 0.0
+            if transient_enabled:
+                fired_now = {name for name, signal in self._band_zscore_signals.items() if signal == 1}
+                kick_hint = float(np.clip(shadow_decision.kick_like_conf, 0.0, 1.0))
+                hat_hint = float(np.clip(shadow_decision.hat_like_conf, 0.0, 1.0))
+                mixed_hint = float(np.clip(shadow_decision.mixed_conf, 0.0, 1.0))
+                if any(name in fired_now for name in ("sub_bass", "low_mid")):
+                    kick_hint = max(kick_hint, 0.75)
+                if "high" in fired_now:
+                    hat_hint = max(hat_hint, 0.75)
 
             beat_features.update({
                 'kick_like_conf': kick_hint,
                 'hat_like_conf': hat_hint,
-                'mixed_conf': float(np.clip(shadow_decision.mixed_conf, 0.0, 1.0)),
+                'mixed_conf': mixed_hint,
                 'bass_dominance': float(np.clip(shadow_features.bass_dominance, 0.0, 8.0)),
                 'new_beat_score': float(np.clip(shadow_decision.beat_score, 0.0, 1.0)),
                 'new_raw_onset_conf': float(np.clip(shadow_decision.raw_onset_conf, 0.0, 1.0)),
+                'frontend_ms': float(max(0.0, frontend_ms)),
+                'tempo_ms': float(max(0.0, tempo_ms)),
+                'detector_ms': float(max(0.0, detector_ms)),
+                'sidecar_ms': float(max(0.0, sidecar_ms)),
             })
             self._teach_last_beat_mono = current_time
         
@@ -1424,6 +1462,10 @@ class AudioEngine:
             legacy_fire=legacy_fire_for_telemetry,
             current_time=current_time,
             decision=shadow_decision,
+            frontend_ms=frontend_ms,
+            tempo_ms=tempo_ms,
+            detector_ms=detector_ms,
+            sidecar_ms=sidecar_ms,
         )
         
         # Notify callback
