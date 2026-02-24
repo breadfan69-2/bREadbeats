@@ -13,6 +13,33 @@ from typing import Any, Callable, Optional
 import time
 
 from logging_utils import log_event
+from audio_modules.feature_extractors import (
+    compute_bass_dominance,
+    compute_offbeat_score,
+    compute_teaching_confidence,
+    compute_multiband_energies,
+    estimate_dominant_frequency,
+    positive_spectral_flux,
+    rolling_percentile_norm,
+    select_primary_band_by_fire_history,
+    slice_spectrum_band,
+)
+from audio_modules.contracts import FeatureFrame, TempoState, TriggerDecision
+from audio_modules.audioflux_adapter import AudioFluxAdapter, AudioFluxAdapterConfig
+from audio_modules.event_detector import EventDetector, EventDetectorConfig
+from audio_modules.tempo_tracker import (
+    TempoTracker,
+    TempoTrackerConfig,
+    build_acf_octave_candidates,
+    dedup_window_seconds,
+    effective_phase_accept_window_s,
+    metronome_phase_error_s,
+    reference_bpm_for_onset_filters,
+    estimate_onset_bpm_from_times,
+    select_acf_octave_candidate,
+    within_dedup_window,
+)
+from audio_modules.telemetry_tuning import TelemetryTuning, TriggerTelemetry
 
 # Scipy for Butterworth bandpass filter
 try:
@@ -455,6 +482,30 @@ class AudioEngine:
         self._syncopation_had_offbeat: bool = False      # Off-beat onset seen in current beat period
         self._syncopation_confirmed: bool = False        # True after confirmation
         self._syncopation_armed: bool = False            # Armed on first off-beat, fires on second in same period
+        self._new_trigger_fusion_enabled: bool = bool(getattr(config.beat, 'new_trigger_fusion_enabled', False))
+        self._new_trigger_telemetry_enabled: bool = bool(getattr(config.beat, 'new_trigger_telemetry_enabled', True))
+        self._new_trigger_shadow_mode: bool = bool(getattr(config.beat, 'new_trigger_shadow_mode', True))
+        self._shadow_telemetry = TelemetryTuning()
+        self._last_acf_smoothing_tag: str = "none"
+        self._event_detector = EventDetector(
+            EventDetectorConfig(
+                enabled=True,
+                refractory_ms=float(getattr(config.beat, 'beat_refractory_ms', 170.0)),
+                bass_dominance_weighting_enabled=bool(getattr(config.beat, 'bass_dominance_weighting_enabled', False)),
+                transient_classification_enabled=bool(getattr(config.beat, 'transient_classification_enabled', False)),
+            )
+        )
+        self._audioflux_adapter = AudioFluxAdapter(
+            sample_rate=self.config.audio.sample_rate,
+            config=AudioFluxAdapterConfig(
+                enabled=bool(getattr(config.beat, 'audioflux_enabled', False)),
+                frame_stride=int(getattr(config.beat, 'audioflux_frame_stride', 2)),
+                fft_size=int(getattr(config.beat, 'audioflux_fft_size', 1024)),
+                emit_onset_confidence=bool(getattr(config.beat, 'audioflux_emit_onset_confidence', True)),
+            ),
+        )
+        self._shadow_prev_band_energy: float = 0.0
+        self._shadow_prev_flux: float = 0.0
 
         self._session_started_at: float = 0.0
         self._session_frame_count: int = 0
@@ -471,6 +522,18 @@ class AudioEngine:
         self._session_flux_samples: list[float] = []
         self._session_peak_samples: list[float] = []
         self._session_trough_samples: list[float] = []
+        self._tempo_tracker = TempoTracker(TempoTrackerConfig(enabled=True))
+
+    def _sync_tempo_tracker_state(self, tempo_locked: bool, is_downbeat: bool) -> None:
+        beat_phase = float(self._metronome_phase % 1.0) if self._metronome_bpm > 0 else 0.0
+        self._tempo_tracker.sync_runtime_state(
+            metronome_bpm=self._metronome_bpm,
+            acf_confidence=self._acf_confidence,
+            tempo_locked=tempo_locked,
+            phase_error_ms=self.phase_error_ms,
+            is_downbeat=is_downbeat,
+            beat_phase=beat_phase,
+        )
 
     def _reset_session_stats(self) -> None:
         self._session_started_at = time.time()
@@ -488,50 +551,137 @@ class AudioEngine:
         self._session_flux_samples = []
         self._session_peak_samples = []
         self._session_trough_samples = []
+        self._shadow_telemetry.reset()
+        self._event_detector.reset()
+        self._audioflux_adapter.reset()
+        self._shadow_prev_band_energy = 0.0
+        self._shadow_prev_flux = 0.0
+
+    def _build_shadow_feature_frame(
+        self,
+        band_energy: float,
+        spectral_flux: float,
+        sidecar_features: Optional[dict[str, float]] = None,
+    ) -> FeatureFrame:
+        peak_ref = max(1e-6, float(self.peak_envelope))
+        flux_ref = max(1e-6, max(self.flux_history[-20:] if self.flux_history else [0.0]))
+
+        energy_norm = float(np.clip(float(band_energy) / peak_ref, 0.0, 1.0))
+        flux_norm = float(np.clip(float(spectral_flux) / flux_ref, 0.0, 1.0))
+        energy_delta = float(np.clip((float(band_energy) - float(self._shadow_prev_band_energy)) / peak_ref, 0.0, 1.0))
+        flux_delta = float(np.clip((float(spectral_flux) - float(self._shadow_prev_flux)) / flux_ref, 0.0, 1.0))
+
+        sub_bass = float(self._band_energies.get('sub_bass', 0.0))
+        low_mid = float(self._band_energies.get('low_mid', 0.0))
+        mid = float(self._band_energies.get('mid', 0.0))
+        high = float(self._band_energies.get('high', 0.0))
+        total = max(1e-9, sub_bass + low_mid + mid + high)
+
+        hfc_proxy = float(np.clip(high / total, 0.0, 1.0))
+        band_sub = float(np.clip(sub_bass / total, 0.0, 1.0))
+        band_low = float(np.clip(low_mid / total, 0.0, 1.0))
+        band_mid = float(np.clip(mid / total, 0.0, 1.0))
+        band_high = float(np.clip(high / total, 0.0, 1.0))
+        bass_dominance = compute_bass_dominance(sub_bass, low_mid, mid, high)
+
+        self._shadow_prev_band_energy = float(band_energy)
+        self._shadow_prev_flux = float(spectral_flux)
+
+        af_entropy = None
+        af_flatness = None
+        af_hfc = None
+        af_novelty = None
+        af_rms = None
+        af_onset_conf = None
+        if sidecar_features:
+            af_entropy = float(sidecar_features.get('af_entropy')) if sidecar_features.get('af_entropy') is not None else None
+            af_flatness = float(sidecar_features.get('af_flatness')) if sidecar_features.get('af_flatness') is not None else None
+            af_hfc = float(sidecar_features.get('af_hfc')) if sidecar_features.get('af_hfc') is not None else None
+            af_novelty = float(sidecar_features.get('af_novelty')) if sidecar_features.get('af_novelty') is not None else None
+            af_rms = float(sidecar_features.get('af_rms')) if sidecar_features.get('af_rms') is not None else None
+            af_onset_conf = float(sidecar_features.get('af_onset_conf')) if sidecar_features.get('af_onset_conf') is not None else None
+
+        return FeatureFrame(
+            flux_norm=flux_norm,
+            energy_norm=energy_norm,
+            energy_delta=energy_delta,
+            flux_delta=flux_delta,
+            hfc_proxy=hfc_proxy,
+            sub_bass=band_sub,
+            low_mid=band_low,
+            mid=band_mid,
+            high=band_high,
+            bass_dominance=bass_dominance,
+            af_entropy=af_entropy,
+            af_flatness=af_flatness,
+            af_hfc=af_hfc,
+            af_novelty=af_novelty,
+            af_rms=af_rms,
+            af_onset_conf=af_onset_conf,
+        )
+
+    def _record_shadow_telemetry(
+        self,
+        *,
+        legacy_fire: bool,
+        current_time: float,
+        decision: TriggerDecision,
+    ) -> None:
+        if not self._new_trigger_telemetry_enabled:
+            return
+
+        new_fire = bool(decision.is_beat_candidate)
+        self._shadow_telemetry.record(
+            TriggerTelemetry(
+                legacy_fire=bool(legacy_fire),
+                new_fire=bool(new_fire),
+                beat_score=float(decision.beat_score),
+                cue_flux=float(decision.c_flux),
+                cue_band_spike=float(decision.c_band_spike),
+                cue_energy_delta=float(decision.c_energy_delta),
+                cue_phase_align=float(decision.c_phase_align),
+                cue_sidecar=float(decision.c_sidecar),
+                acf_bpm=float(self._acf_bpm_smoothed),
+                acf_confidence=float(self._acf_confidence),
+                phase_error_ms=float(self.phase_error_ms),
+                smoothing_tag=self._last_acf_smoothing_tag,
+                wall_time=float(current_time),
+            )
+        )
 
     def _reference_bpm_for_onset_filters(self) -> float:
-        if self._metronome_bpm > 0:
-            return self._metronome_bpm
-        if self._acf_bpm_smoothed > 0:
-            return self._acf_bpm_smoothed
-        if self.smoothed_tempo > 0:
-            return self.smoothed_tempo
-        return 0.0
+        return reference_bpm_for_onset_filters(
+            self._metronome_bpm,
+            self._acf_bpm_smoothed,
+            self.smoothed_tempo,
+        )
 
     def _effective_phase_accept_window_s(self) -> float:
-        base_ms = float(np.clip(self._phase_accept_window_ms, 10.0, 300.0))
-        low_conf_mult = float(np.clip(self._phase_accept_low_conf_mult, 1.0, 4.0))
-        conf = float(np.clip(self._acf_confidence, 0.0, 1.0))
-        if conf >= 0.25:
-            mult = 1.0
-        elif conf <= 0.05:
-            mult = low_conf_mult
-        else:
-            t = (conf - 0.05) / 0.20
-            mult = low_conf_mult + (1.0 - low_conf_mult) * t
-        return (base_ms * mult) / 1000.0
+        return effective_phase_accept_window_s(
+            self._phase_accept_window_ms,
+            self._phase_accept_low_conf_mult,
+            self._acf_confidence,
+        )
 
     def _accept_raw_onset(self, now: float) -> bool:
-        bpm_ref = self._reference_bpm_for_onset_filters()
-        if bpm_ref > 0:
-            beat_period_s = 60.0 / bpm_ref
-            dedup_frac = float(np.clip(self._beat_dedup_fraction, 0.05, 0.45))
-            dedup_window_s = dedup_frac * beat_period_s
-        else:
-            dedup_window_s = 0.10
+        if not self._is_raw_onset_acceptable(now):
+            return False
 
-        if self._last_accepted_raw_onset_time > 0 and (now - self._last_accepted_raw_onset_time) < dedup_window_s:
+        self._last_accepted_raw_onset_time = now
+        return True
+
+    def _is_raw_onset_acceptable(self, now: float) -> bool:
+        bpm_ref = self._reference_bpm_for_onset_filters()
+        dedup_window_s = dedup_window_seconds(bpm_ref, self._beat_dedup_fraction, default_window_s=0.10)
+
+        if within_dedup_window(self._last_accepted_raw_onset_time, now, dedup_window_s):
             return False
 
         if self._metronome_bpm > 0:
-            beat_period_s = 60.0 / self._metronome_bpm
-            phase_frac = self._metronome_phase % 1.0
-            phase_dist_frac = min(phase_frac, 1.0 - phase_frac)
-            phase_error_s = phase_dist_frac * beat_period_s
+            phase_error_s = metronome_phase_error_s(self._metronome_phase, self._metronome_bpm)
             if phase_error_s > self._effective_phase_accept_window_s():
                 return False
 
-        self._last_accepted_raw_onset_time = now
         return True
 
     def _update_session_stats(
@@ -648,7 +798,7 @@ class AudioEngine:
         )
 
         ended_at = time.time()
-        return {
+        payload = {
             "session_started_at": self._session_started_at,
             "session_ended_at": ended_at,
             "seconds": elapsed_s,
@@ -678,6 +828,9 @@ class AudioEngine:
             "trough_low_episode_mean_s": trough_low["episode_mean_s"],
             "trough_low_episode_max_s": trough_low["episode_max_s"],
         }
+        if self._new_trigger_telemetry_enabled:
+            payload.update(self._shadow_telemetry.summary())
+        return payload
 
     def _log_shutdown_summary(self) -> None:
         if self._session_frame_count <= 0:
@@ -1056,19 +1209,45 @@ class AudioEngine:
             self._last_acf_time = current_time
             self._estimate_tempo_acf()
         
-        # Raw beat detection (still runs for onset detection + phase-lock + fallback)
+        # Raw beat detection candidate (ownership selected later)
         raw_is_beat = False if silence_veto_active else self._detect_beat(band_energy, spectral_flux)
-        accepted_raw_is_beat = raw_is_beat and self._accept_raw_onset(current_time)
-        
-        # Track raw onset times for syncopation detection
-        if accepted_raw_is_beat:
-            self._raw_onset_times.append(current_time)
-            if len(self._raw_onset_times) > self._raw_onset_max:
-                self._raw_onset_times.pop(0)
         
         # Advance internal metronome (pass band_energy for energy-based downbeat detection)
         self._advance_metronome(current_time, band_energy)
         self._predict_next_beat(current_time, wall_time)
+
+        self._audioflux_adapter.push_audio(mono)
+        audioflux_features = self._audioflux_adapter.get_latest_features()
+        shadow_features = self._build_shadow_feature_frame(
+            band_energy,
+            spectral_flux,
+            sidecar_features=audioflux_features,
+        )
+        shadow_tempo = TempoState(
+            metronome_bpm=float(self._metronome_bpm),
+            acf_confidence=float(self._acf_confidence),
+            tempo_locked=False,
+            phase_error_ms=float(self.phase_error_ms),
+            is_downbeat=False,
+            beat_phase=float(self._metronome_phase % 1.0) if self._metronome_bpm > 0 else 0.0,
+        )
+        shadow_decision = self._event_detector.detect(
+            shadow_features,
+            shadow_tempo,
+            now_mono=current_time,
+        )
+
+        raw_acceptable = self._is_raw_onset_acceptable(current_time)
+        accepted_raw_is_beat_legacy = bool(raw_is_beat) and bool(raw_acceptable)
+        accepted_raw_is_beat_new = bool(shadow_decision.is_beat_candidate) and bool(raw_acceptable)
+        fusion_owner_active = bool(self._new_trigger_fusion_enabled and not self._new_trigger_shadow_mode)
+        accepted_raw_is_beat = accepted_raw_is_beat_new if fusion_owner_active else accepted_raw_is_beat_legacy
+
+        if accepted_raw_is_beat:
+            self._last_accepted_raw_onset_time = current_time
+            self._raw_onset_times.append(current_time)
+            if len(self._raw_onset_times) > self._raw_onset_max:
+                self._raw_onset_times.pop(0)
         
         # Phase-lock: nudge metronome when a strong onset is detected near a beat
         if accepted_raw_is_beat and self._metronome_bpm > 0:
@@ -1133,9 +1312,10 @@ class AudioEngine:
                     log_event("INFO", "Syncopation", "Predictive drop-off (no onset in window)")
         
         # Choose beat source: metronome (when running) or raw detection (fallback)
-        if self._acf_metronome_enabled and self._metronome_bpm > 0:
-            is_beat = self._metronome_beat_fired
-            is_downbeat_flag = self._metronome_downbeat_fired
+        metronome_owner_active = bool(self._acf_metronome_enabled and self._metronome_bpm > 0)
+        if metronome_owner_active:
+            legacy_is_beat = self._metronome_beat_fired
+            legacy_is_downbeat_flag = self._metronome_downbeat_fired
             current_bpm = self._metronome_bpm
             # Tempo is locked when ACF is confident enough.
             # Downbeat matching is a bonus confirmation, not a hard requirement.
@@ -1144,13 +1324,21 @@ class AudioEngine:
                                and (self.consecutive_matching_downbeats >= 1
                                     or self._acf_confidence > 0.35))
             # Update last_beat_time for tempo timeout check
-            if is_beat:
+            if legacy_is_beat:
                 self._metronome_last_beat_time = current_time
         else:
-            is_beat = accepted_raw_is_beat
-            is_downbeat_flag = self.is_downbeat if is_beat else False
+            legacy_is_beat = accepted_raw_is_beat_legacy
+            legacy_is_downbeat_flag = self.is_downbeat if legacy_is_beat else False
             current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else self.last_known_tempo
             tempo_is_locked = self.consecutive_matching_downbeats >= self.consecutive_match_threshold
+
+        is_beat = legacy_is_beat
+        is_downbeat_flag = legacy_is_downbeat_flag
+        if (not metronome_owner_active) and fusion_owner_active:
+            is_beat = accepted_raw_is_beat_new
+            is_downbeat_flag = self.is_downbeat if is_beat else False
+
+        legacy_fire_for_telemetry = bool(legacy_is_beat)
 
         if silence_veto_active and is_beat:
             log_event(
@@ -1162,6 +1350,11 @@ class AudioEngine:
             )
             is_beat = False
             is_downbeat_flag = False
+
+        if silence_veto_active and legacy_fire_for_telemetry:
+            legacy_fire_for_telemetry = False
+
+        self._sync_tempo_tracker_state(tempo_is_locked, bool(is_downbeat_flag))
         
         # Estimate dominant frequency in the configured depth band so
         # stroke depth mapping responds directly to depth band selection.
@@ -1185,6 +1378,23 @@ class AudioEngine:
                 is_downbeat=bool(is_downbeat_flag),
                 is_syncopated=bool(self._syncopation_detected),
             )
+
+            fired_now = {name for name, signal in self._band_zscore_signals.items() if signal == 1}
+            kick_hint = float(np.clip(shadow_decision.kick_like_conf, 0.0, 1.0))
+            hat_hint = float(np.clip(shadow_decision.hat_like_conf, 0.0, 1.0))
+            if any(name in fired_now for name in ("sub_bass", "low_mid")):
+                kick_hint = max(kick_hint, 0.75)
+            if "high" in fired_now:
+                hat_hint = max(hat_hint, 0.75)
+
+            beat_features.update({
+                'kick_like_conf': kick_hint,
+                'hat_like_conf': hat_hint,
+                'mixed_conf': float(np.clip(shadow_decision.mixed_conf, 0.0, 1.0)),
+                'bass_dominance': float(np.clip(shadow_features.bass_dominance, 0.0, 8.0)),
+                'new_beat_score': float(np.clip(shadow_decision.beat_score, 0.0, 1.0)),
+                'new_raw_onset_conf': float(np.clip(shadow_decision.raw_onset_conf, 0.0, 1.0)),
+            })
             self._teach_last_beat_mono = current_time
         
         event = BeatEvent(
@@ -1209,6 +1419,12 @@ class AudioEngine:
             raw_rms=float(raw_rms),
             raw_rms_db=float(raw_rms_db),
         )
+
+        self._record_shadow_telemetry(
+            legacy_fire=legacy_fire_for_telemetry,
+            current_time=current_time,
+            decision=shadow_decision,
+        )
         
         # Notify callback
         self.beat_callback(event)
@@ -1224,16 +1440,13 @@ class AudioEngine:
         """Filter spectrum to selected frequency band"""
         cfg = self.config.beat
         sr = self.config.audio.sample_rate
-        
-        # Calculate bin indices for frequency range
-        freq_per_bin = sr / (2 * len(spectrum))  # Nyquist / num_bins
-        low_bin = max(0, int(cfg.freq_low / freq_per_bin))
-        high_bin = min(len(spectrum) - 1, int(cfg.freq_high / freq_per_bin))
-        
-        if low_bin >= high_bin:
-            return spectrum  # Return full spectrum if range is invalid
-        
-        return spectrum[low_bin:high_bin+1]
+        return slice_spectrum_band(
+            spectrum,
+            sr,
+            cfg.freq_low,
+            cfg.freq_high,
+            fallback_full_if_invalid=True,
+        )
     
     def get_freq_band_bins(self) -> tuple:
         """Get the current frequency band as normalized positions (0-1) for visualization"""
@@ -1251,16 +1464,10 @@ class AudioEngine:
             # Reset if size changed (frequency band was adjusted)
             self.prev_spectrum = spectrum.copy()
             return 0.0
-            
-        # Only consider positive changes (onset detection)
-        diff = spectrum - self.prev_spectrum
-        flux = np.sum(np.maximum(0, diff))
-        
+
+        flux = positive_spectral_flux(self.prev_spectrum, spectrum)
         self.prev_spectrum = spectrum.copy()
-        
-        # Normalize
-        if len(spectrum) > 0:
-            flux = flux / len(spectrum)
+
         return flux * self.config.beat.flux_multiplier
 
     def _compute_teaching_features(
@@ -1295,24 +1502,12 @@ class AudioEngine:
             flux_mean = flux_peak = 0.0
             freq_mean = freq_delta = 0.0
 
-        def _norm(name: str, value: float) -> float:
-            hist = self._teach_history[name]
-            hist.append(float(value))
-            values = np.array(hist, dtype=float)
-            if values.size < 4:
-                return float(np.clip(value, 0.0, 1.0))
-            lo = float(np.percentile(values, 10))
-            hi = float(np.percentile(values, 90))
-            if hi <= lo + 1e-9:
-                return 0.5
-            return float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
-
-        energy_norm = _norm('energy_mean', energy_mean)
-        flux_norm = _norm('flux_mean', flux_mean)
-        pitch_norm = _norm('freq_mean', freq_mean)
-        motion_delta_norm = _norm('freq_delta', freq_delta)
-        offbeat_score = 1.0 if is_syncopated else float(np.clip(self._syncopation_streak / 2.0, 0.0, 1.0))
-        confidence = float(np.clip((self._acf_confidence * 0.7) + (0.3 if is_downbeat else 0.0), 0.0, 1.0))
+        energy_norm = rolling_percentile_norm(self._teach_history['energy_mean'], energy_mean)
+        flux_norm = rolling_percentile_norm(self._teach_history['flux_mean'], flux_mean)
+        pitch_norm = rolling_percentile_norm(self._teach_history['freq_mean'], freq_mean)
+        motion_delta_norm = rolling_percentile_norm(self._teach_history['freq_delta'], freq_delta)
+        offbeat_score = compute_offbeat_score(is_syncopated, self._syncopation_streak)
+        confidence = compute_teaching_confidence(self._acf_confidence, is_downbeat)
 
         return {
             'energy_mean': energy_mean,
@@ -1329,6 +1524,14 @@ class AudioEngine:
             'confidence': confidence,
         }
 
+    def _compute_bass_dominance(self) -> float:
+        return compute_bass_dominance(
+            self._band_energies.get('sub_bass', 0.0),
+            self._band_energies.get('low_mid', 0.0),
+            self._band_energies.get('mid', 0.0),
+            self._band_energies.get('high', 0.0),
+        )
+
     # ------------------------------------------------------------------
     # Multi-Band Z-Score
     # ------------------------------------------------------------------
@@ -1340,22 +1543,14 @@ class AudioEngine:
         Called once per audio frame from _audio_callback_pyaudio.
         """
         sr = self.config.audio.sample_rate
-        nyquist = sr / 2
         n_bins = len(spectrum)
         if n_bins == 0:
             return
-        freq_per_bin = nyquist / n_bins
         gain = self.config.audio.gain
+        band_energies = compute_multiband_energies(spectrum, sr, gain, self._zscore_bands)
 
         for name, low_hz, high_hz in self._zscore_bands:
-            low_bin  = max(0, int(low_hz / freq_per_bin))
-            high_bin = min(n_bins - 1, int(high_hz / freq_per_bin))
-            band_slice = spectrum[low_bin : high_bin + 1]
-
-            if len(band_slice) > 0:
-                energy = float(np.sqrt(np.mean(band_slice ** 2))) * gain
-            else:
-                energy = 0.0
+            energy = float(band_energies.get(name, 0.0))
 
             self._band_energies[name] = energy
 
@@ -1369,14 +1564,12 @@ class AudioEngine:
                 self._band_fire_history[name].pop(0)
 
         # ---- Select primary band (most consistent fires) ----
-        best_band = self._primary_beat_band
-        best_score = -1
-        for name, _, _ in self._zscore_bands:
-            hist = self._band_fire_history[name]
-            score = sum(hist) if len(hist) >= 10 else 0
-            if score > best_score:
-                best_score = score
-                best_band  = name
+        best_band, best_score = select_primary_band_by_fire_history(
+            self._primary_beat_band,
+            self._zscore_bands,
+            self._band_fire_history,
+            min_samples=10,
+        )
 
         # Hysteresis: only switch if new band is meaningfully better
         if best_band != self._primary_beat_band:
@@ -1450,55 +1643,30 @@ class AudioEngine:
         # Octave disambiguation: collect candidate tempos at 1x, 2x, and 0.5x
         # and pick the one closest to target BPM (if set), otherwise prefer
         # the faster tempo when the half-period peak is strong enough.
-        candidates = [(bpm, peak_value)]  # (bpm, confidence)
-
-        # Half-period candidate (double BPM)
-        half_lag = raw_lag // 2
-        if half_lag >= min_lag:
-            half_val = float(acf[half_lag])
-            if half_val > peak_value * 0.60:
-                bpm_half = 60.0 * fps / half_lag
-                if 55 <= bpm_half <= 185:
-                    candidates.append((bpm_half, half_val))
-
-        # Double-period candidate (half BPM)
-        double_lag = raw_lag * 2
-        if double_lag <= max_lag:
-            double_val = float(acf[double_lag])
-            if double_val > peak_value * 0.60:
-                bpm_double = 60.0 * fps / double_lag
-                if 55 <= bpm_double <= 185:
-                    candidates.append((bpm_double, double_val))
+        candidates = build_acf_octave_candidates(
+            bpm,
+            peak_value,
+            raw_lag,
+            min_lag,
+            max_lag,
+            fps,
+            acf,
+        )
 
         # Target-BPM guided octave behavior disabled
         target_bpm_hint = 0.0
-        use_target_guided_octave = (
-            target_bpm_hint > 0
-            and len(candidates) > 1
-            and self._acf_confidence < self._octave_target_bias_confidence_max
+        bpm, peak_value, octave_mode, ranked_candidates = select_acf_octave_candidate(
+            candidates,
+            peak_value,
+            self._acf_confidence,
+            self._octave_target_bias_confidence_max,
+            target_bpm_hint=target_bpm_hint,
         )
-        if use_target_guided_octave:
-            # Score by distance to target BPM, weighted by confidence
-            def octave_score(c):
-                bpm_c, conf_c = c
-                # Distance as ratio (penalises being far from target)
-                ratio = abs(bpm_c - target_bpm_hint) / target_bpm_hint
-                # Confidence bonus (higher confidence = better)
-                return ratio - conf_c * 0.3  # Lower score = better
-            candidates.sort(key=octave_score)
-            bpm, peak_value = candidates[0]
+        if octave_mode == "target-guided" and ranked_candidates is not None:
             log_event("DEBUG", "ACF", "Octave disambig (target-guided)",
                       target=f"{target_bpm_hint:.0f}",
                       chosen=f"{bpm:.1f}",
-                      candidates=str([(f"{c[0]:.1f}", f"{c[1]:.2f}") for c in candidates]))
-        else:
-            # No target BPM: prefer faster tempo if half-period peak is strong
-            if len(candidates) > 1:
-                # Sort by BPM descending (prefer faster), filter by reasonable confidence
-                fast = [c for c in candidates if c[1] > peak_value * 0.75]
-                if fast:
-                    fast.sort(key=lambda c: -c[0])
-                    bpm, peak_value = fast[0]
+                      candidates=str([(f"{c[0]:.1f}", f"{c[1]:.2f}") for c in ranked_candidates]))
 
         # Clamp to sane range
         if bpm < 55 or bpm > 185:
@@ -1507,56 +1675,41 @@ class AudioEngine:
         self._acf_confidence = float(peak_value)
         self._acf_bpm = bpm
 
-        # Smooth the BPM estimate
-        if self._acf_bpm_smoothed > 0:
-            ratio = abs(bpm - self._acf_bpm_smoothed) / self._acf_bpm_smoothed
-            if ratio < 0.15:  # Within 15% - smooth
-                self._acf_bpm_smoothed = 0.85 * self._acf_bpm_smoothed + 0.15 * bpm
-            elif peak_value > 0.25:  # Large jump but confident
-                # Guard against octave jumps when target BPM is set
-                # If the jump looks like a doubling/halving and we have a target,
-                # only accept if the new BPM is closer to target than current
-                if target_bpm_hint > 0 and (0.45 < ratio < 0.55 or 0.90 < ratio < 1.10):
-                    old_dist = abs(self._acf_bpm_smoothed - target_bpm_hint)
-                    new_dist = abs(bpm - target_bpm_hint)
-                    if new_dist < old_dist:
-                        self._acf_bpm_smoothed = bpm
-                        log_event("INFO", "ACF", "Tempo jump (target-validated)",
-                                  bpm=f"{bpm:.1f}", target=f"{target_bpm_hint:.0f}",
-                                  confidence=f"{peak_value:.3f}")
-                    else:
-                        log_event("INFO", "ACF", "Tempo jump REJECTED (farther from target)",
-                                  bpm=f"{bpm:.1f}", target=f"{target_bpm_hint:.0f}",
-                                  current=f"{self._acf_bpm_smoothed:.1f}")
-                else:
-                    self._acf_bpm_smoothed = bpm
-                    log_event("INFO", "ACF", "Tempo jump",
-                              bpm=f"{bpm:.1f}", confidence=f"{peak_value:.3f}")
-            # else: ignore noisy outlier
-        else:
-            self._acf_bpm_smoothed = bpm
+        smoothing = self._tempo_tracker.smooth_acf_bpm_with_jump_gating(
+            self._acf_bpm_smoothed,
+            bpm,
+            peak_value,
+            target_bpm_hint=target_bpm_hint,
+        )
+        self._last_acf_smoothing_tag = smoothing.decision_tag
+        self._acf_bpm_smoothed = smoothing.smoothed_bpm
+
+        if smoothing.decision_tag == "jump-target-validated":
+            log_event("INFO", "ACF", "Tempo jump (target-validated)",
+                      bpm=f"{bpm:.1f}", target=f"{target_bpm_hint:.0f}",
+                      confidence=f"{peak_value:.3f}")
+        elif smoothing.decision_tag == "jump-target-rejected":
+            log_event("INFO", "ACF", "Tempo jump REJECTED (farther from target)",
+                      bpm=f"{bpm:.1f}", target=f"{target_bpm_hint:.0f}",
+                      current=f"{self._acf_bpm_smoothed:.1f}")
+        elif smoothing.decision_tag == "jump":
+            log_event("INFO", "ACF", "Tempo jump",
+                      bpm=f"{bpm:.1f}", confidence=f"{peak_value:.3f}")
+        elif smoothing.decision_tag == "initial":
             log_event("INFO", "ACF", "Initial tempo lock",
                       bpm=f"{bpm:.1f}", confidence=f"{peak_value:.3f}",
                       fps=f"{fps:.1f}")
 
     def _estimate_onset_bpm(self) -> float:
         """Estimate BPM from recent raw onset intervals for fast fallback/fusion."""
-        if len(self._raw_onset_times) < 3:
-            return 0.0
-
-        intervals = np.diff(np.array(self._raw_onset_times[-8:], dtype=np.float64))
-        if len(intervals) == 0:
-            return 0.0
-
-        valid = intervals[(intervals >= 0.15) & (intervals <= 1.2)]
-        if len(valid) < 2:
-            return 0.0
-
-        median_interval = float(np.median(valid))
-        bpm = 60.0 / median_interval if median_interval > 0 else 0.0
-        if 55.0 <= bpm <= 185.0:
-            return bpm
-        return 0.0
+        return estimate_onset_bpm_from_times(
+            self._raw_onset_times,
+            max_points=8,
+            min_interval_s=0.15,
+            max_interval_s=1.2,
+            min_bpm=55.0,
+            max_bpm=185.0,
+        )
 
     def _advance_metronome(self, now: float, band_energy: float = 0.0):
         """Advance the internal metronome phase accumulator.
@@ -1572,18 +1725,13 @@ class AudioEngine:
 
         acf_conf = max(0.0, min(1.0, self._acf_confidence))
         onset_bpm = self._estimate_onset_bpm()
-        target_bpm = self._acf_bpm_smoothed
-        if onset_bpm > 0:
-            if target_bpm <= 0:
-                target_bpm = onset_bpm
-            else:
-                min_w = self._tempo_fusion_min_acf_weight
-                max_w = self._tempo_fusion_max_acf_weight
-                if max_w < min_w:
-                    min_w, max_w = max_w, min_w
-                acf_weight = min_w + (max_w - min_w) * acf_conf
-                acf_weight = max(min_w, min(max_w, acf_weight))
-                target_bpm = acf_weight * target_bpm + (1.0 - acf_weight) * onset_bpm
+        target_bpm = self._tempo_tracker.update_from_acf_inputs(
+            acf_confidence=acf_conf,
+            onset_bpm=onset_bpm,
+            acf_bpm_smoothed=self._acf_bpm_smoothed,
+            min_acf_weight=self._tempo_fusion_min_acf_weight,
+            max_acf_weight=self._tempo_fusion_max_acf_weight,
+        )
 
         if target_bpm <= 0 or (acf_conf < 0.10 and onset_bpm <= 0):
             if self._metronome_bpm > 0:
@@ -1634,15 +1782,13 @@ class AudioEngine:
         if dt <= 0 or dt > 0.5:  # Skip huge gaps
             return
 
-        # Advance phase
-        beats_per_sec = self._metronome_bpm / 60.0
-        old_phase = self._metronome_phase
-        self._metronome_phase += beats_per_sec * dt
+        self._metronome_phase, crossings = self._tempo_tracker.step_metronome_phase(
+            self._metronome_phase,
+            self._metronome_bpm,
+            dt,
+        )
 
-        # Detect beat boundary crossing
-        old_beat = int(old_phase)
-        new_beat = int(self._metronome_phase)
-        if new_beat > old_beat:
+        if crossings > 0:
             self._metronome_beat_fired = True
             self._metronome_beat_count += 1
             bpm = self.beats_per_measure
@@ -2183,12 +2329,18 @@ class AudioEngine:
         
     def get_tempo_info(self) -> dict:
         """Get current tempo information for UI display"""
+        tempo_state = self._tempo_tracker.get_state()
+        reported_metronome_bpm = tempo_state.metronome_bpm if tempo_state.metronome_bpm > 0 else self._metronome_bpm
+        reported_acf_confidence = tempo_state.acf_confidence if tempo_state.acf_confidence > 0 else self._acf_confidence
+        reported_phase_error_ms = tempo_state.phase_error_ms if abs(tempo_state.phase_error_ms) > 1e-9 else self.phase_error_ms
+        reported_is_downbeat = bool(tempo_state.is_downbeat) or bool(self.is_downbeat)
+
         # Use stable_tempo for display if available, otherwise fall back to smoothed
         display_bpm = self.stable_tempo if self.stable_tempo > 0 else self.smoothed_tempo
         # ACF metronome info (when active, these take priority)
-        acf_active = self._acf_metronome_enabled and self._metronome_bpm > 0
+        acf_active = self._acf_metronome_enabled and reported_metronome_bpm > 0
         if acf_active:
-            display_bpm = self._metronome_bpm
+            display_bpm = reported_metronome_bpm
             beat_pos = ((self._metronome_beat_count - 1) % self.beats_per_measure) + 1 if self._metronome_beat_count > 0 else 0
         else:
             beat_pos = self.beat_position_in_measure
@@ -2198,46 +2350,29 @@ class AudioEngine:
             'raw_bpm': self.smoothed_tempo,
             'stable_bpm': self.stable_tempo,
             'beat_position': beat_pos,
-            'is_downbeat': self.is_downbeat,
+            'is_downbeat': reported_is_downbeat,
             'predicted_next_beat': self.predicted_next_beat,
             'predicted_next_beat_mono': self.predicted_next_beat_mono,
             'interval_count': len(self.beat_intervals),
             'confidence': min(1.0, len(self.beat_intervals) / 4.0),
             'stability': self.beat_stability,
             'consecutive_matching_downbeats': self.consecutive_matching_downbeats,
-            'phase_error_ms': self.phase_error_ms,
+            'phase_error_ms': reported_phase_error_ms,
             # ACF metronome fields
             'acf_bpm': self._acf_bpm_smoothed,
-            'acf_confidence': self._acf_confidence,
+            'acf_confidence': reported_acf_confidence,
             'acf_active': acf_active,
-            'metronome_bpm': self._metronome_bpm,
+            'metronome_bpm': reported_metronome_bpm,
         }
             
     def _estimate_frequency(self, spectrum: np.ndarray, low_hz: Optional[float] = None, high_hz: Optional[float] = None) -> float:
         """Estimate dominant frequency from spectrum, optionally within a frequency band."""
-        if len(spectrum) == 0:
-            return 0.0
-
-        freq_per_bin = self.config.audio.sample_rate / (2 * len(spectrum))
-        low_bin = 0
-        high_bin = len(spectrum) - 1
-
-        if low_hz is not None and high_hz is not None:
-            low = max(0.0, float(low_hz))
-            high = max(low, float(high_hz))
-            low_bin = max(0, int(low / freq_per_bin))
-            high_bin = min(len(spectrum) - 1, int(high / freq_per_bin))
-            if high_bin <= low_bin:
-                low_bin = 0
-                high_bin = len(spectrum) - 1
-
-        band_slice = spectrum[low_bin:high_bin + 1]
-        if len(band_slice) == 0:
-            return 0.0
-
-        peak_offset = int(np.argmax(band_slice))
-        peak_bin = low_bin + peak_offset
-        return float(peak_bin * freq_per_bin)
+        return estimate_dominant_frequency(
+            spectrum,
+            self.config.audio.sample_rate,
+            low_hz,
+            high_hz,
+        )
         
     def get_spectrum(self) -> Optional[np.ndarray]:
         """Get current spectrum data for visualization"""

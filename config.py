@@ -71,6 +71,24 @@ class BeatDetectionConfig:
     target_bps_lock_gate_acf_conf: float = 0.4      # Minimum ACF confidence to consider lock-gating target-BPS metric
     target_bps_lock_gate_downbeats: int = 1          # Minimum consecutive downbeat matches to consider lock-gating target-BPS metric
 
+    # Motion trigger upgrade feature flags (Stage 0+)
+    new_trigger_fusion_enabled: bool = False          # Enable new confidence-fused trigger detector ownership
+    new_trigger_telemetry_enabled: bool = True        # Emit side-by-side legacy/new detector telemetry
+    new_trigger_shadow_mode: bool = True              # Run new detector without owning beat firing
+    bass_dominance_weighting_enabled: bool = False    # Enable bass-vs-treble adaptive cue weighting
+    transient_classification_enabled: bool = False    # Enable kick/hat/mixed transient classification outputs
+    transient_full_motion_min_kick_conf: float = 0.70           # Min kick confidence to unlock full-motion transient profile
+    transient_full_motion_min_bass_dom: float = 1.95            # Min bass dominance required for full motion on low-mid support
+    transient_full_motion_decisive_bass_dom: float = 2.55       # Strong bass-dominance override threshold for full motion
+    transient_full_motion_min_flux: float = 0.15                # Min spectral flux required (or fullness) for full-motion classification
+    transient_full_motion_min_energy_fullness: float = 0.34     # Min spectrum/loudness fullness required (or flux) for full motion
+
+    # Optional audioflux sidecar enrichment (fail-open)
+    audioflux_enabled: bool = False
+    audioflux_emit_onset_confidence: bool = True
+    audioflux_frame_stride: int = 2
+    audioflux_fft_size: int = 1024
+
     # Syncopation / double-stroke detection
     syncopation_enabled: bool = True             # Master on/off for syncopation detection
     syncopation_band: str = 'low_mid'                # Which z-score band triggers syncope: 'any', 'sub_bass', 'low_mid', 'mid', 'high'
@@ -116,8 +134,8 @@ class StrokeConfig:
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
     # Silence detection thresholds (fade-out when truly silent)
-    silence_threshold: float = 0.001      # Overall amplitude threshold for silence deadzone gate
-    silence_close_threshold: float = 0.01  # Overall amplitude threshold to exit silence deadzone gate
+    silence_threshold: float = -66.0      # dBFS threshold to enter silence deadzone gate (first-run tuned)
+    silence_close_threshold: float = -58.0  # dBFS threshold to exit silence deadzone gate
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup
@@ -669,8 +687,8 @@ class StrokeConfig:
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
     # Silence detection thresholds (fade-out when truly silent)
-    silence_threshold: float = 0.001      # Overall amplitude threshold for silence deadzone gate
-    silence_close_threshold: float = 0.01  # Overall amplitude threshold to exit silence deadzone gate
+    silence_threshold: float = -66.0      # dBFS threshold to enter silence deadzone gate (first-run tuned)
+    silence_close_threshold: float = -58.0  # dBFS threshold to exit silence deadzone gate
     silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
     silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
     silence_multiplier_locked: bool = True  # Lock sliders on startup

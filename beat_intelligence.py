@@ -12,6 +12,7 @@ import numpy as np
 
 from audio_engine import BeatEvent, RMS_DB_FLOOR, rms_to_dbfs, silence_threshold_to_dbfs
 from config import Config
+from logging_utils import log_event
 
 
 @dataclass
@@ -47,6 +48,8 @@ class BeatDecision:
     gate_fail: str = ""                # which gate rejected a beat-family event (empty = passed or N/A)
     energy_fullness: float = 0.0       # 0..1 how "full" the music is (drives max_radius expansion)
     session_intensity: float = 0.5     # long-term session energy envelope (0..1)
+    park_bounce_only: bool = False     # hat-only mode: keep parked and apply reactive bounce
+    park_bounce_gain: float = 0.0      # 0..1 gain for park+bounce response
 
     learning: LearningOutputs = field(default_factory=LearningOutputs)
 
@@ -69,6 +72,28 @@ class BeatIntelligence:
         self.silence_deadzone_active = False
         self.silence_open_count = 0
         self.silence_close_count = 0
+        self._silence_default_enter_db = -66.0
+        self._silence_default_exit_db = -58.0
+        self._silence_autocal_window_s = 2.5
+        self._silence_autocal_min_samples = 30
+        self._silence_autocal_started_mono = time.perf_counter()
+        self._silence_autocal_samples: deque = deque(maxlen=300)
+        self._silence_runtime_open_threshold_db: float | None = None
+        self._silence_runtime_close_threshold_db: float | None = None
+        self._silence_autocal_completed = False
+
+        configured_enter_db = silence_threshold_to_dbfs(
+            getattr(self.config.stroke, "silence_threshold", self._silence_default_enter_db),
+            default_linear=0.001,
+        )
+        configured_exit_db = silence_threshold_to_dbfs(
+            getattr(self.config.stroke, "silence_close_threshold", self._silence_default_exit_db),
+            default_linear=0.003,
+        )
+        self._silence_autocal_eligible = bool(
+            abs(configured_enter_db - self._silence_default_enter_db) <= 0.25
+            and abs(configured_exit_db - self._silence_default_exit_db) <= 0.25
+        )
 
         self.active_interval_beats = 8
         self.last_trigger_kind = "creep"
@@ -661,8 +686,8 @@ class BeatIntelligence:
         Returns (fade_scalar 0..1, request_tempo_reset bool).
         """
         request_reset = False
-        open_threshold_raw = getattr(self.config.stroke, "silence_threshold", 0.04)
-        open_threshold_db = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.04)
+        open_threshold_raw = getattr(self.config.stroke, "silence_threshold", -66.0)
+        open_threshold_db = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.001)
         amp = self._coerce_amplitude_db(overall_amplitude)
 
         if silence_active:
@@ -1266,24 +1291,76 @@ class BeatIntelligence:
             return raw_rms_db
         return float(np.clip(self.rms_envelope, RMS_DB_FLOOR, 12.0))
 
-    def update_silence_deadzone_gate(self, overall_amplitude: float) -> bool:
-        open_threshold_raw = getattr(self.config.stroke, "silence_threshold", 0.04)
-        close_threshold_raw = getattr(self.config.stroke, "silence_close_threshold", 0.05)
-        open_threshold = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.04)
-        close_threshold = silence_threshold_to_dbfs(close_threshold_raw, default_linear=0.05)
+    def _maybe_update_startup_silence_calibration(self, level_db: float, now: float) -> None:
+        if not self._silence_autocal_eligible or self._silence_autocal_completed:
+            return
+
+        self._silence_autocal_samples.append(float(np.clip(level_db, RMS_DB_FLOOR, 12.0)))
+        elapsed = float(now - self._silence_autocal_started_mono)
+        if elapsed < self._silence_autocal_window_s:
+            return
+
+        if len(self._silence_autocal_samples) < self._silence_autocal_min_samples:
+            self._silence_autocal_completed = True
+            return
+
+        floor_db = float(np.percentile(np.array(self._silence_autocal_samples, dtype=float), 20.0))
+        # If startup includes active program material, floor can be too loud and
+        # produce aggressive silence thresholds. In that case keep defaults.
+        if floor_db > -50.0:
+            self._silence_autocal_completed = True
+            log_event(
+                "INFO",
+                "SilenceAutoCal",
+                "Skipped startup silence calibration (non-idle startup)",
+                floor_db=f"{floor_db:.1f}",
+                default_open_db=f"{self._silence_default_enter_db:.1f}",
+                default_close_db=f"{self._silence_default_exit_db:.1f}",
+            )
+            return
+
+        open_db = float(np.clip(floor_db + 4.0, -96.0, -24.0))
+        close_db = float(np.clip(open_db + 8.0, open_db + 2.0, -8.0))
+
+        self._silence_runtime_open_threshold_db = open_db
+        self._silence_runtime_close_threshold_db = close_db
+        self._silence_autocal_completed = True
+        log_event(
+            "INFO",
+            "SilenceAutoCal",
+            "Startup calibration complete",
+            floor_db=f"{floor_db:.1f}",
+            enter_db=f"{open_db:.1f}",
+            exit_db=f"{close_db:.1f}",
+            samples=str(len(self._silence_autocal_samples)),
+        )
+
+    def update_silence_deadzone_gate(self, overall_amplitude: float, now: float | None = None) -> bool:
+        open_threshold_raw = getattr(self.config.stroke, "silence_threshold", -66.0)
+        close_threshold_raw = getattr(self.config.stroke, "silence_close_threshold", -58.0)
+        close_frames_required = 6
+        open_threshold = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.001)
+        close_threshold = silence_threshold_to_dbfs(close_threshold_raw, default_linear=0.003)
         if close_threshold <= open_threshold:
             close_threshold = float(min(12.0, open_threshold + 1.5))
         level_db = self._coerce_amplitude_db(overall_amplitude)
 
+        now_mono = float(now) if now is not None and np.isfinite(float(now)) else time.perf_counter()
+        self._maybe_update_startup_silence_calibration(level_db, now_mono)
+        if self._silence_runtime_open_threshold_db is not None:
+            open_threshold = float(self._silence_runtime_open_threshold_db)
+        if self._silence_runtime_close_threshold_db is not None:
+            close_threshold = float(max(open_threshold + 1.5, self._silence_runtime_close_threshold_db))
+
         if level_db < open_threshold:
             self.silence_open_count += 1
             self.silence_close_count = 0
-            if self.silence_open_count >= 3:
+            if self.silence_open_count >= 1:
                 self.silence_deadzone_active = True
         elif level_db > close_threshold:
             self.silence_close_count += 1
             self.silence_open_count = 0
-            if self.silence_close_count >= 2:
+            if self.silence_close_count >= close_frames_required:
                 self.silence_deadzone_active = False
         else:
             self.silence_open_count = max(0, self.silence_open_count - 1)
@@ -1332,6 +1409,10 @@ class BeatIntelligence:
         if not bool(getattr(self.config.beat, "strict_bass_motion_gate_enabled", False)):
             return True
 
+        profile_kind, _, _, _ = self._transient_motion_profile(event, self.compute_energy_fullness())
+        if profile_kind == "hat_only":
+            return True
+
         beat_band = str(getattr(event, "beat_band", "") or "")
         if beat_band in ("sub_bass", "low_mid"):
             return True
@@ -1343,6 +1424,71 @@ class BeatIntelligence:
                 return True
 
         return False
+
+    def _transient_motion_profile(self, event: BeatEvent, energy_fullness: float) -> tuple[str, float, bool, float]:
+        """Return (profile_kind, radius_mult, hat_only_limited, park_bounce_gain).
+
+        profile_kind:
+        - "kick_hat": full motion
+        - "kick_only": full motion
+        - "hat_only": park+bounce motion (no radius expansion)
+        - "neutral": no override
+        """
+        features = getattr(event, "beat_features", None)
+        if not isinstance(features, dict):
+            return "neutral", 1.0, False, 0.0
+
+        kick_conf = float(np.clip(features.get("kick_like_conf", 0.0) or 0.0, 0.0, 1.0))
+        hat_conf = float(np.clip(features.get("hat_like_conf", 0.0) or 0.0, 0.0, 1.0))
+        bass_dom = float(np.clip(features.get("bass_dominance", 1.0) or 1.0, 0.0, 8.0))
+
+        beat_band = str(getattr(event, "beat_band", "") or "")
+        fired = getattr(event, "fired_bands", None)
+        fired_set = {str(item) for item in fired} if isinstance(fired, (list, tuple, set)) else set()
+        bass_band_hit = bool(
+            beat_band in ("sub_bass", "low_mid")
+            or "sub_bass" in fired_set
+            or "low_mid" in fired_set
+        )
+        sub_bass_hit = bool(beat_band == "sub_bass" or "sub_bass" in fired_set)
+        low_mid_hit = bool(beat_band == "low_mid" or "low_mid" in fired_set)
+
+        has_hat = bool(hat_conf >= 0.50)
+
+        # Tightened kick evidence:
+        # - high-tone/voice-like frames should not unlock full motion unless
+        #   there is real bass support.
+        min_kick_conf = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_kick_conf", 0.70) or 0.70, 0.0, 1.0))
+        min_bass_dom = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_bass_dom", 1.95) or 1.95, 0.0, 8.0))
+        decisive_bass_dom_threshold = float(np.clip(getattr(self.config.beat, "transient_full_motion_decisive_bass_dom", 2.55) or 2.55, 0.0, 8.0))
+        min_flux_for_full = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_flux", 0.15) or 0.15, 0.0, 4.0))
+        min_fullness_for_full = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_energy_fullness", 0.34) or 0.34, 0.0, 1.0))
+
+        strong_kick_conf = bool(kick_conf >= min_kick_conf)
+        strong_bass_dom = bool(bass_dom >= min_bass_dom)
+        decisive_bass_dom = bool(bass_dom >= decisive_bass_dom_threshold)
+        flux_now = float(np.clip(getattr(event, "spectral_flux", 0.0) or 0.0, 0.0, 8.0))
+        full_spectrum_active = bool(flux_now >= min_flux_for_full or float(np.clip(energy_fullness, 0.0, 1.0)) >= min_fullness_for_full)
+        has_kick = bool(
+            (strong_kick_conf and (sub_bass_hit or (low_mid_hit and strong_bass_dom)))
+            or (decisive_bass_dom and kick_conf >= 0.55)
+        )
+        has_kick = bool(has_kick and full_spectrum_active)
+
+        # Explicit voice/hat guard: high-hat evidence without bass support is
+        # always limited park+bounce.
+        if has_hat and (not has_kick) and ((not sub_bass_hit) or bass_dom < min_bass_dom):
+            gain = float(np.clip(0.20 + (0.35 * hat_conf), 0.15, 0.60))
+            return "hat_only", 1.0, True, gain
+
+        if has_kick and has_hat:
+            return "kick_hat", 1.0, False, 0.0
+        if has_kick:
+            return "kick_only", 1.0, False, 0.0
+        if has_hat:
+            gain = float(np.clip(0.20 + (0.35 * hat_conf), 0.15, 0.60))
+            return "hat_only", 1.0, True, gain
+        return "neutral", 1.0, False, 0.0
 
     @staticmethod
     def interval_beats_for_trigger(trigger_kind: str) -> int:
@@ -1697,11 +1843,12 @@ class BeatIntelligence:
         self._update_flux_history(event)
         self._populate_rolling_deques(event)
 
+        energy_fullness_now = self.compute_energy_fullness()
+
         # Session arc: very slow EMA of energy fullness for long-term modulation
         if getattr(self.config.stroke, 'session_arc_enabled', True):
             session_alpha = float(getattr(self.config.stroke, 'session_arc_ema_alpha', 0.001) or 0.001)
-            energy_now = self.compute_energy_fullness()
-            self._session_intensity_ema += session_alpha * (energy_now - self._session_intensity_ema)
+            self._session_intensity_ema += session_alpha * (energy_fullness_now - self._session_intensity_ema)
         session_intensity = float(np.clip(self._session_intensity_ema, 0.0, 1.0))
 
         now = float(getattr(event, "monotonic_timestamp", 0.0) or 0.0)
@@ -1709,7 +1856,7 @@ class BeatIntelligence:
             now = time.perf_counter()
 
         overall_amplitude = self.get_overall_amplitude(event)
-        silence_active = self.update_silence_deadzone_gate(overall_amplitude)
+        silence_active = self.update_silence_deadzone_gate(overall_amplitude, now=now)
         if silence_override is not None:
             silence_active = bool(silence_override)
 
@@ -1774,7 +1921,7 @@ class BeatIntelligence:
                 silence_fade=float(silence_fade),
                 post_silence_ramp=float(post_silence_ramp),
                 lazy_glide_active=False,
-                energy_fullness=self.compute_energy_fullness(),
+                energy_fullness=energy_fullness_now,
                 session_intensity=session_intensity,
                 learning=LearningOutputs(),
             )
@@ -1785,6 +1932,10 @@ class BeatIntelligence:
         raw_trigger_kind = self.classify_trigger(event)
         trigger_kind = raw_trigger_kind
         gate_fail_reason = ""  # tracks which gate blocked a beat-family event
+        motion_profile, motion_radius_mult, hat_only_limited, park_bounce_gain = self._transient_motion_profile(
+            event,
+            energy_fullness_now,
+        )
 
         # Record beat times for hierarchy tracking
         self._record_beat_times(event, raw_trigger_kind, now)
@@ -1849,6 +2000,12 @@ class BeatIntelligence:
                 gate_fail_reason = "amp_fill"
 
             if gate_passed:
+                self._creep_consecutive_frames = 0
+            elif motion_profile == "hat_only" and gate_fail_reason in ("strict_bass", "low_band", "dual_band_db"):
+                # Insufficient bass should never open full beat motion for
+                # hat/voice-like content. Keep beat-family timing, but force
+                # limited park+bounce behavior via hat-only profile.
+                trigger_kind = raw_trigger_kind
                 self._creep_consecutive_frames = 0
             elif self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
                 # Gate failed but a beat-family journey is running — let it finish
@@ -1943,6 +2100,8 @@ class BeatIntelligence:
         else:
             interval_beats = self.interval_beats_for_trigger(trigger_kind)
 
+        park_bounce_only = bool(hat_only_limited and trigger_kind in ("beat", "syncopation") and not silence_active)
+
         # Apply learning divisor hint only at journey boundaries.
         # _committed_divisor_hint is latched from _learned_divisor_hint
         # inside update_journey_progress when a new journey actually starts,
@@ -1951,6 +2110,12 @@ class BeatIntelligence:
             interval_beats = max(interval_beats, self._committed_divisor_hint)
 
         radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
+        if park_bounce_only:
+            radius_bloom = 0.70
+        elif trigger_kind in ("beat", "syncopation", "downbeat") and motion_profile == "hat_only":
+            base = 0.70
+            span = max(0.0, radius_bloom - base)
+            radius_bloom = float(np.clip(base + (span * motion_radius_mult), base, 1.0))
 
         # Learning radius multiplier is applied as a snapshot inside StrokeMapper
         # at journey start, not per-frame here, to avoid mid-arc stepping.
@@ -1984,7 +2149,9 @@ class BeatIntelligence:
             post_silence_ramp=float(post_silence_ramp),
             lazy_glide_active=bool(self._lazy_glide_active),
             gate_fail=gate_fail_reason,
-            energy_fullness=self.compute_energy_fullness(),
+            energy_fullness=energy_fullness_now,
             session_intensity=session_intensity,
+            park_bounce_only=park_bounce_only,
+            park_bounce_gain=float(np.clip(park_bounce_gain, 0.0, 1.0)),
             learning=learning,
         )

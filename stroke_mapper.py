@@ -126,6 +126,8 @@ class StrokeMapper:
         # Bass-reactive jitter state (applied on creep only)
         self._bass_jitter_phase = 0.0
         self._bass_jitter_freq_ema = 0.5
+        self._hat_bounce_phase = 0.0
+        self._hat_bounce_amp = 0.0
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
 
@@ -269,6 +271,23 @@ class StrokeMapper:
         self._last_trigger_kind = decision.trigger_kind
         self._lazy_glide_active = bool(getattr(decision, "lazy_glide_active", False))
         self._last_gate_fail = str(getattr(decision, "gate_fail", "") or "")
+
+        if bool(getattr(decision, "park_bounce_only", False)) and not decision.silence_active:
+            ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+            alpha, beta, volume = self._apply_park_motion_frame(
+                event=event,
+                dt=dt,
+                fade=ramp,
+            )
+            self._last_journey_completion = 1.0
+            self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
+            self.state.beta = float(np.clip(beta, -1.0, 1.0))
+            return TCodeCommand(
+                alpha=self.state.alpha,
+                beta=self.state.beta,
+                duration_ms=25,
+                volume=volume,
+            )
 
         if hitch_soft_reset:
             self._angular_velocity = 0.0
@@ -521,8 +540,15 @@ class StrokeMapper:
                     fallback_progress=progress,
                 )
 
-                if progress >= 1.0 and not started_new_journey and self._last_journey_completion >= 1.0:
+                if progress >= 1.0 and not started_new_journey and decision.trigger_kind == "creep":
                     self._settle_active = False
+
+                    # Preserve visible continuity when a completed journey hands
+                    # off into park motion from an axis-aligned terminal pose.
+                    # Without this tiny nudge, deterministic frame timing can
+                    # repeatedly land on alpha≈0 and look like a hard snap.
+                    if abs(float(np.cos(self._orbit_phase))) < 0.02:
+                        self._orbit_phase = float((self._orbit_phase + 0.10) % (2.0 * np.pi))
 
                     ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                     alpha, beta, volume = self._apply_park_motion_frame(
@@ -595,6 +621,14 @@ class StrokeMapper:
                 angle = float(
                     self._journey_start_angle + (self._journey_total_rotation * progress)
                 )
+                if progress >= 1.0 and decision.trigger_kind != "creep":
+                    bpm_for_terminal = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+                    if bpm_for_terminal <= 0.0:
+                        bpm_for_terminal = float(getattr(event, "bpm", 0.0) or 0.0)
+                    bpm_for_terminal = float(np.clip(bpm_for_terminal if bpm_for_terminal > 0.0 else 120.0, 40.0, 240.0))
+                    fallback_terminal_speed = float((2.0 * np.pi) * (bpm_for_terminal / 60.0) * self._idle_loops_per_beat)
+                    terminal_speed = float(max(abs(self._angular_velocity), fallback_terminal_speed, 0.8))
+                    angle = float(self._orbit_phase + (terminal_speed * dt * float(self._orbit_direction)))
 
                 self._orbit_phase = float(angle % (2.0 * np.pi))
 
@@ -689,6 +723,12 @@ class StrokeMapper:
 
                 alpha = float(orbit_radius * np.cos(angle))
                 beta = float(total_center_y + (orbit_radius * np.sin(angle)))
+
+                if progress >= 1.0 and decision.trigger_kind != "creep" and abs(alpha) < 0.01:
+                    angle = float(angle + (0.08 * float(self._orbit_direction)))
+                    self._orbit_phase = float(angle % (2.0 * np.pi))
+                    alpha = float(orbit_radius * np.cos(angle))
+                    beta = float(total_center_y + (orbit_radius * np.sin(angle)))
 
                 # Apply post-silence ramp to volume
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
@@ -940,7 +980,30 @@ class StrokeMapper:
         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
         _ = jitter_alpha
         treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
-        return float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
+        hat_bump = self._compute_hat_bounce_offset(event=event, dt=dt)
+        return float(np.clip(jitter_beta + treble_bump + hat_bump, -0.30, 0.30))
+
+    def _compute_hat_bounce_offset(self, event: BeatEvent, dt: float) -> float:
+        features = getattr(event, "beat_features", None)
+        if not isinstance(features, dict):
+            self._hat_bounce_amp *= float(np.exp(-6.0 * max(1e-4, dt)))
+            return 0.0
+
+        hat_conf = float(np.clip(features.get("hat_like_conf", 0.0) or 0.0, 0.0, 1.0))
+        kick_conf = float(np.clip(features.get("kick_like_conf", 0.0) or 0.0, 0.0, 1.0))
+        bass_dom = float(np.clip(features.get("bass_dominance", 1.0) or 1.0, 0.0, 8.0))
+
+        hat_only = bool(hat_conf >= 0.42 and kick_conf < 0.35 and bass_dom < 1.15)
+        is_hat_trigger = bool(hat_only and (getattr(event, "is_beat", False) or getattr(event, "is_syncopated", False)))
+        if is_hat_trigger:
+            attack = float(np.clip(0.05 + (0.12 * hat_conf), 0.04, 0.20))
+            self._hat_bounce_amp = max(self._hat_bounce_amp, attack)
+
+        self._hat_bounce_amp *= float(np.exp(-6.0 * max(1e-4, dt)))
+
+        bounce_hz = float(7.0 + (5.0 * hat_conf))
+        self._hat_bounce_phase += float((2.0 * np.pi * bounce_hz) * max(1e-4, dt))
+        return float(np.clip(self._hat_bounce_amp * np.sin(self._hat_bounce_phase), -0.22, 0.22))
 
     @staticmethod
     def _normalize_journey_beats(interval_beats: int) -> int:
@@ -1008,7 +1071,8 @@ class StrokeMapper:
 
         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
         treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
-        self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
+        hat_bump = self._compute_hat_bounce_offset(event=event, dt=dt)
+        self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump + hat_bump, -0.30, 0.30))
 
         total_center_y = float(self._base_center_y + self._reactive_bounce_y)
         orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
