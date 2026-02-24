@@ -2710,6 +2710,8 @@ class BREadbeatsWindow(QMainWindow):
             self._apply_config_to_ui()
         layout.addWidget(content)
 
+        dialog.finished.connect(lambda _r: save_config(self.config))
+
         self._pulse_settings_dialog = dialog
         dialog.show()
         dialog.raise_()
@@ -6421,6 +6423,40 @@ Like the app?<br>
             tcode = max(0, min(9999, int(value)))
             return float(unit_min) + (float(tcode) / 9999.0) * (float(unit_max) - float(unit_min))
 
+        def _sync_sent_ranges_to_config() -> None:
+            p0_out_min_hz, p0_out_max_hz = _effective_limits(self.config.device_limits.p0_freq_min, self.config.device_limits.p0_freq_max, 1.0, 100.0)
+            c0_out_min_hz, c0_out_max_hz = _effective_limits(self.config.device_limits.c0_freq_min, self.config.device_limits.c0_freq_max, 500.0, 1500.0)
+            p1_out_min, p1_out_max = _effective_limits(self.config.device_limits.p1_cycles_min, self.config.device_limits.p1_cycles_max, 0.0, 20.0)
+            p3_out_min, p3_out_max = _effective_limits(self.config.device_limits.p3_cycles_min, self.config.device_limits.p3_cycles_max, 0.0, 20.0)
+
+            p0_sent_min = min(float(self.p0_sent_min_spin.value()), float(self.p0_sent_max_spin.value()))
+            p0_sent_max = max(float(self.p0_sent_min_spin.value()), float(self.p0_sent_max_spin.value()))
+            self.config.pulse_freq.tcode_min = _unit_to_tcode(p0_sent_min, p0_out_min_hz, p0_out_max_hz)
+            self.config.pulse_freq.tcode_max = _unit_to_tcode(p0_sent_max, p0_out_min_hz, p0_out_max_hz)
+
+            f0_sent_min = min(float(self.f0_sent_min_spin.value()), float(self.f0_sent_max_spin.value()))
+            f0_sent_max = max(float(self.f0_sent_min_spin.value()), float(self.f0_sent_max_spin.value()))
+            self.config.carrier_freq.tcode_min = _unit_to_tcode(f0_sent_min, c0_out_min_hz, c0_out_max_hz)
+            self.config.carrier_freq.tcode_max = _unit_to_tcode(f0_sent_max, c0_out_min_hz, c0_out_max_hz)
+
+            p1_sent_min = min(float(self.p1_sent_min_spin.value()), float(self.p1_sent_max_spin.value()))
+            p1_sent_max = max(float(self.p1_sent_min_spin.value()), float(self.p1_sent_max_spin.value()))
+            self.config.pulse_width.tcode_min = _unit_to_tcode(p1_sent_min, p1_out_min, p1_out_max)
+            self.config.pulse_width.tcode_max = _unit_to_tcode(p1_sent_max, p1_out_min, p1_out_max)
+
+            p3_sent_min = min(float(self.p3_sent_min_spin.value()), float(self.p3_sent_max_spin.value()))
+            p3_sent_max = max(float(self.p3_sent_min_spin.value()), float(self.p3_sent_max_spin.value()))
+            self.config.rise_time.tcode_min = _unit_to_tcode(p3_sent_min, p3_out_min, p3_out_max)
+            self.config.rise_time.tcode_max = _unit_to_tcode(p3_sent_max, p3_out_min, p3_out_max)
+
+        autosave_timer = QTimer(widget)
+        autosave_timer.setSingleShot(True)
+        autosave_timer.setInterval(500)
+        autosave_timer.timeout.connect(lambda: save_config(self.config))
+
+        def _schedule_sent_range_autosave() -> None:
+            autosave_timer.start()
+
         class _RangeProxy:
             def __init__(self, low_get, high_get, low_set, high_set, parent_get, blockers):
                 self._low_get = low_get
@@ -6837,6 +6873,25 @@ Like the app?<br>
         self.p1_monitor_max_spin.valueChanged.connect(lambda *_: self._on_p1_band_change())
         self.p3_monitor_min_spin.valueChanged.connect(lambda *_: self._on_p3_band_change())
         self.p3_monitor_max_spin.valueChanged.connect(lambda *_: self._on_p3_band_change())
+
+        self.p0_sent_min_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
+        self.p0_sent_max_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
+        self.f0_sent_min_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
+        self.f0_sent_max_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
+        self.p1_sent_min_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
+        self.p1_sent_max_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
+        self.p3_sent_min_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
+        self.p3_sent_max_spin.valueChanged.connect(lambda *_: _sync_sent_ranges_to_config())
+
+        self.p0_sent_min_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
+        self.p0_sent_max_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
+        self.f0_sent_min_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
+        self.f0_sent_max_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
+        self.p1_sent_min_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
+        self.p1_sent_max_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
+        self.p3_sent_min_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
+        self.p3_sent_max_spin.valueChanged.connect(lambda *_: _schedule_sent_range_autosave())
+        _sync_sent_ranges_to_config()
 
         layout.addStretch()
         scroll_area.setWidget(widget)
