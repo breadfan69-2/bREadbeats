@@ -78,3 +78,27 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
         if target not in {"size", "speed", "both"}:
             target = "both"
         config.stroke.intensity_ramp_target = target
+    
+        # Always persist trigger bus and related fields from config.beat
+        # These fields are not controlled by UI, so ensure they are saved
+        bus_fields = [
+            "trigger_bus_refractory_ms",
+            "trigger_bus_arm_threshold",
+            "trigger_bus_release_threshold",
+            "trigger_bus_sustain_frames",
+            "trigger_bus_weight_sub_bass",
+            "trigger_bus_weight_low_mid",
+            "trigger_bus_weight_mid",
+            "trigger_bus_weight_high",
+            "trigger_bus_mask_floor",
+            "bass_dominance_weighting_enabled",
+            "transient_classification_enabled",
+            "transient_full_motion_min_kick_conf",
+            "transient_full_motion_min_bass_dom",
+            "transient_full_motion_decisive_bass_dom",
+            "transient_full_motion_min_flux",
+            "transient_full_motion_min_energy_fullness",
+        ]
+        for field in bus_fields:
+            # No UI controls, so just ensure config.beat.<field> is present for persistence
+            setattr(config.beat, field, getattr(config.beat, field, None))
