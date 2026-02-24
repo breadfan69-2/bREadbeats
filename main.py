@@ -5132,8 +5132,9 @@ Like the app?<br>
                 self.config.stroke.min_interval_ms = 150
                 if hasattr(self, 'tempo_lock_required_cb'):
                     self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
-                if hasattr(self, 'metronome_lock_required_action'):
-                    self.metronome_lock_required_action.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
+                metronome_lock_required_action = getattr(self, 'metronome_lock_required_action', None)
+                if metronome_lock_required_action is not None:
+                    metronome_lock_required_action.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
                 if hasattr(self, 'intensity_ramp_spin'):
                     self.intensity_ramp_spin.setValue(
                         float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0)
@@ -8127,6 +8128,7 @@ Like the app?<br>
             return
 
         self._transport_transition = True
+        pending_transport_action: str | None = None
         try:
             if checked:
                 try:
@@ -8177,15 +8179,18 @@ Like the app?<br>
             # Stop wins over start when both were requested during transition.
             if self._transport_pending_stop and self.is_running:
                 self._transport_pending_stop = False
-                QTimer.singleShot(0, self._apply_pending_stop)
-                return
-
-            if self._transport_pending_start and not self.is_running:
+                pending_transport_action = 'stop'
+            elif self._transport_pending_start and not self.is_running:
                 self._transport_pending_start = False
-                QTimer.singleShot(0, self._apply_pending_start)
-                return
+                pending_transport_action = 'start'
+            elif self._transport_pending_play is not None and self.is_running:
+                pending_transport_action = 'play'
 
-            if self._transport_pending_play is not None and self.is_running:
+        if pending_transport_action == 'stop':
+            QTimer.singleShot(0, self._apply_pending_stop)
+        elif pending_transport_action == 'start':
+            QTimer.singleShot(0, self._apply_pending_start)
+        elif pending_transport_action == 'play':
                 QTimer.singleShot(0, self._apply_pending_play)
     
     def _on_play_pause(self, checked: bool | None = None):

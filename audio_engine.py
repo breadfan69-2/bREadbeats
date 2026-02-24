@@ -1973,16 +1973,16 @@ class AudioEngine:
                 # Calculate smoothed tempo using weighted average
                 # Recent beats get higher weight (madmom approach: prefer recent data)
                 weights = np.linspace(0.5, 1.5, len(self.beat_intervals))
-                weighted_avg_interval = np.average(self.beat_intervals, weights=weights)
+                weighted_avg_interval = float(np.average(self.beat_intervals, weights=weights))
                 # Convert to BPM
-                new_tempo = 60.0 / weighted_avg_interval if weighted_avg_interval > 0 else 0
+                new_tempo = float(60.0 / weighted_avg_interval) if weighted_avg_interval > 0 else 0.0
                 # Apply exponential smoothing for stability (like madmom's tempo state space)
                 smoothing_factor = 0.7  # Higher = more smooth (less responsive)
                 if self.smoothed_tempo > 0:
-                    self.smoothed_tempo = (smoothing_factor * self.smoothed_tempo + 
-                                          (1 - smoothing_factor) * new_tempo)
+                    smoothed_tempo = (smoothing_factor * self.smoothed_tempo) + ((1 - smoothing_factor) * new_tempo)
+                    self.smoothed_tempo = float(smoothed_tempo)
                 else:
-                    self.smoothed_tempo = new_tempo
+                    self.smoothed_tempo = float(new_tempo)
                 
                 # Beat stability metric (TISMIR PLP-inspired)
                 # Coefficient of variation of recent intervals: low = stable tempo
