@@ -60,6 +60,38 @@ class TriggerDecision:
     kick_like_conf: float = 0.0
     hat_like_conf: float = 0.0
     mixed_conf: float = 0.0
+    bus_scores: dict[str, float] = field(default_factory=dict)
+    bus_pass: dict[str, bool] = field(default_factory=dict)
+    bus_reason_codes: dict[str, list[str]] = field(default_factory=dict)
+    bus_raw_scores: dict[str, float] = field(default_factory=dict)
+    bus_masked_scores: dict[str, float] = field(default_factory=dict)
+    reason_codes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class BusState:
+    name: str
+    env: float = 0.0
+    noise_floor: float = 0.0
+    z_hist: list[float] = field(default_factory=list)
+    last_onset_mono: float = 0.0
+    refractory_ms: float = 170.0
+    arm_threshold: float = 0.58
+    release_threshold: float = 0.42
+    sustain_frames: int = 2
+    active_frames: int = 0
+    inactive_frames: int = 0
+
+
+@dataclass(slots=True)
+class BusDecision:
+    name: str
+    onset_conf: float = 0.0
+    sustain_conf: float = 0.0
+    passed_onset_gate: bool = False
+    passed_sustain_gate: bool = False
+    in_refractory: bool = False
+    eligible: bool = False
     reason_codes: list[str] = field(default_factory=list)
 
 

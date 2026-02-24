@@ -75,6 +75,15 @@ class BeatDetectionConfig:
     new_trigger_fusion_enabled: bool = False          # Enable new confidence-fused trigger detector ownership
     new_trigger_telemetry_enabled: bool = True        # Emit side-by-side legacy/new detector telemetry
     new_trigger_shadow_mode: bool = True              # Run new detector without owning beat firing
+    trigger_bus_refractory_ms: float = 170.0          # Per-bus refractory window in detector (ms)
+    trigger_bus_arm_threshold: float = 0.58           # Per-bus arm threshold
+    trigger_bus_release_threshold: float = 0.42       # Per-bus release threshold
+    trigger_bus_sustain_frames: int = 2               # Consecutive active frames before sustain gate
+    trigger_bus_weight_sub_bass: float = 0.36         # Fusion weight for sub-bass bus
+    trigger_bus_weight_low_mid: float = 0.30          # Fusion weight for low-mid bus
+    trigger_bus_weight_mid: float = 0.20              # Fusion weight for mid bus
+    trigger_bus_weight_high: float = 0.14             # Fusion weight for high bus
+    trigger_bus_mask_floor: float = 0.35              # Minimum anti-bleed mask factor
     bass_dominance_weighting_enabled: bool = False    # Enable bass-vs-treble adaptive cue weighting
     transient_classification_enabled: bool = False    # Enable kick/hat/mixed transient classification outputs
     transient_full_motion_min_kick_conf: float = 0.70           # Min kick confidence to unlock full-motion transient profile

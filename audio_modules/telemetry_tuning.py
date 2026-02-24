@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -23,6 +23,10 @@ class TriggerTelemetry:
     sidecar_ms: float = 0.0
     smoothing_tag: str = ""
     wall_time: Optional[float] = None
+    bus_raw_scores: dict[str, float] = field(default_factory=dict)
+    bus_masked_scores: dict[str, float] = field(default_factory=dict)
+    bus_pass: dict[str, bool] = field(default_factory=dict)
+    bus_reason_codes: dict[str, list[str]] = field(default_factory=dict)
 
 
 class TelemetryTuning:
@@ -47,6 +51,9 @@ class TelemetryTuning:
         self._tempo_ms_sum = 0.0
         self._detector_ms_sum = 0.0
         self._sidecar_ms_sum = 0.0
+        self._bus_raw_sums = {"sub_bass": 0.0, "low_mid": 0.0, "mid": 0.0, "high": 0.0}
+        self._bus_masked_sums = {"sub_bass": 0.0, "low_mid": 0.0, "mid": 0.0, "high": 0.0}
+        self._bus_pass_counts = {"sub_bass": 0, "low_mid": 0, "mid": 0, "high": 0}
 
     def summary(self) -> dict[str, float | str]:
         seen = float(self._samples_seen)
@@ -78,6 +85,18 @@ class TelemetryTuning:
             "shadow_tempo_ms_mean": tempo_ms_mean,
             "shadow_detector_ms_mean": detector_ms_mean,
             "shadow_sidecar_ms_mean": sidecar_ms_mean,
+            "shadow_bus_raw_sub_bass_mean": (self._bus_raw_sums["sub_bass"] / seen) if seen > 0 else 0.0,
+            "shadow_bus_raw_low_mid_mean": (self._bus_raw_sums["low_mid"] / seen) if seen > 0 else 0.0,
+            "shadow_bus_raw_mid_mean": (self._bus_raw_sums["mid"] / seen) if seen > 0 else 0.0,
+            "shadow_bus_raw_high_mean": (self._bus_raw_sums["high"] / seen) if seen > 0 else 0.0,
+            "shadow_bus_masked_sub_bass_mean": (self._bus_masked_sums["sub_bass"] / seen) if seen > 0 else 0.0,
+            "shadow_bus_masked_low_mid_mean": (self._bus_masked_sums["low_mid"] / seen) if seen > 0 else 0.0,
+            "shadow_bus_masked_mid_mean": (self._bus_masked_sums["mid"] / seen) if seen > 0 else 0.0,
+            "shadow_bus_masked_high_mean": (self._bus_masked_sums["high"] / seen) if seen > 0 else 0.0,
+            "shadow_bus_pass_sub_bass_count": self._bus_pass_counts["sub_bass"],
+            "shadow_bus_pass_low_mid_count": self._bus_pass_counts["low_mid"],
+            "shadow_bus_pass_mid_count": self._bus_pass_counts["mid"],
+            "shadow_bus_pass_high_count": self._bus_pass_counts["high"],
             "shadow_last_smoothing_tag": self._last_tag,
         }
 
@@ -104,6 +123,12 @@ class TelemetryTuning:
         self._tempo_ms_sum += max(0.0, float(sample.tempo_ms))
         self._detector_ms_sum += max(0.0, float(sample.detector_ms))
         self._sidecar_ms_sum += max(0.0, float(sample.sidecar_ms))
+
+        for bus in ("sub_bass", "low_mid", "mid", "high"):
+            self._bus_raw_sums[bus] += float(sample.bus_raw_scores.get(bus, 0.0))
+            self._bus_masked_sums[bus] += float(sample.bus_masked_scores.get(bus, 0.0))
+            if bool(sample.bus_pass.get(bus, False)):
+                self._bus_pass_counts[bus] += 1
 
         if sample.smoothing_tag:
             self._last_tag = str(sample.smoothing_tag)

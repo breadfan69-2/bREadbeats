@@ -1,4 +1,6 @@
 from .contracts import (
+    BusDecision,
+    BusState,
     EngineDecision,
     FeatureFrame,
     FrontendFrame,
@@ -9,6 +11,8 @@ from .signal_frontend import SignalFrontend, SignalFrontendConfig
 from .replay_harness import ReplayFrame, ReplaySummary, run_shadow_replay
 
 __all__ = [
+    "BusState",
+    "BusDecision",
     "FrontendFrame",
     "FeatureFrame",
     "TempoState",
