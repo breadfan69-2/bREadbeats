@@ -396,6 +396,13 @@ class AudioEngine:
         self._metronome_last_beat_time: float = 0.0      # When the metronome last ticked a beat
         self._metronome_conf_hold_s: float = 1.5          # Keep metronome coasting through ACF confidence dips (fix #3)
         self._metronome_conf_lost_at: float = 0.0         # Timestamp when ACF confidence dropped below threshold
+        # Tempo-lock hysteresis (prevents lock flapping from brief confidence dips)
+        self._tempo_lock_hysteresis_locked: bool = False
+        self._tempo_lock_enter_conf_base: float = 0.20
+        self._tempo_lock_enter_conf_strict: float = 0.35
+        self._tempo_lock_exit_conf_base: float = 0.15
+        self._tempo_lock_exit_hold_s: float = 0.90
+        self._tempo_lock_drop_started_at: float = 0.0
         self._metronome_bpm_alpha_slow: float = float(getattr(config.beat, 'metronome_bpm_alpha_slow', 0.03))
         self._metronome_bpm_alpha_fast: float = float(getattr(config.beat, 'metronome_bpm_alpha_fast', 0.22))
         self._metronome_pll_window: float = float(getattr(config.beat, 'metronome_pll_window', 0.35))
@@ -487,6 +494,37 @@ class AudioEngine:
             is_downbeat=is_downbeat,
             beat_phase=beat_phase,
         )
+
+    def _compute_tempo_lock_state(self, acf_confidence: float, downbeat_matches: int, now: float) -> bool:
+        """Return tempo lock with confidence hysteresis.
+
+        Enter lock quickly when confidence is high enough; unlock only after
+        sustained low confidence, so short dips do not flap the lock state.
+        """
+        conf = float(np.clip(acf_confidence, 0.0, 1.0))
+        has_match = int(downbeat_matches) >= 1
+
+        if not self._tempo_lock_hysteresis_locked:
+            enters = bool(
+                conf >= self._tempo_lock_enter_conf_base
+                and (has_match or conf >= self._tempo_lock_enter_conf_strict)
+            )
+            if enters:
+                self._tempo_lock_hysteresis_locked = True
+                self._tempo_lock_drop_started_at = 0.0
+            return self._tempo_lock_hysteresis_locked
+
+        # Locked path: only unlock after confidence remains low for hold duration.
+        if conf <= self._tempo_lock_exit_conf_base:
+            if self._tempo_lock_drop_started_at <= 0.0:
+                self._tempo_lock_drop_started_at = float(now)
+            elif (float(now) - self._tempo_lock_drop_started_at) >= self._tempo_lock_exit_hold_s:
+                self._tempo_lock_hysteresis_locked = False
+                self._tempo_lock_drop_started_at = 0.0
+        else:
+            self._tempo_lock_drop_started_at = 0.0
+
+        return self._tempo_lock_hysteresis_locked
 
     def _reset_session_stats(self) -> None:
         self._session_started_at = time.time()
@@ -1358,12 +1396,11 @@ class AudioEngine:
             legacy_is_beat = self._metronome_beat_fired
             legacy_is_downbeat_flag = self._metronome_downbeat_fired
             current_bpm = self._metronome_bpm
-            # Tempo is locked when ACF is confident enough.
-            # Downbeat matching is a bonus confirmation, not a hard requirement.
-            # This ensures tempo_locked=True even before downbeat pattern settles.
-            tempo_is_locked = (self._acf_confidence > 0.2
-                               and (self.consecutive_matching_downbeats >= 1
-                                    or self._acf_confidence > 0.35))
+            tempo_is_locked = self._compute_tempo_lock_state(
+                acf_confidence=self._acf_confidence,
+                downbeat_matches=self.consecutive_matching_downbeats,
+                now=current_time,
+            )
             # Update last_beat_time for tempo timeout check
             if legacy_is_beat:
                 self._metronome_last_beat_time = current_time
@@ -1977,6 +2014,8 @@ class AudioEngine:
         self._metronome_phase = 0.0
         self._metronome_beat_count = 0
         self._metronome_conf_lost_at = 0.0
+        self._tempo_lock_hysteresis_locked = False
+        self._tempo_lock_drop_started_at = 0.0
         self._metronome_bpm = 0.0
         self._metronome_beat_fired = False
         self._metronome_downbeat_fired = False
