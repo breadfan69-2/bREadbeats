@@ -1260,16 +1260,28 @@ class BeatIntelligence:
         # Tightened kick evidence:
         # - high-tone/voice-like frames should not unlock full motion unless
         #   there is real bass support.
-        min_kick_conf = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_kick_conf", 0.70) or 0.70, 0.0, 1.0))
+        # Defaults calibrated from training data (CH-Tranquilizer):
+        #   kick_conf: still-frames rarely exceed 0.5, active frames ~0.6+
+        #   bass_dom (low_high_ratio): slow=1.91 median, fast=2.15, P75=5.05
+        #   flux (P95-normed): still=0.14, moving=0.25, fast=0.35
+        #   energy_fullness: composite 0-1, slow sub_bass=0.02
+        min_kick_conf = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_kick_conf", 0.60) or 0.60, 0.0, 1.0))
         min_bass_dom = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_bass_dom", 1.95) or 1.95, 0.0, 8.0))
         decisive_bass_dom_threshold = float(np.clip(getattr(self.config.beat, "transient_full_motion_decisive_bass_dom", 2.55) or 2.55, 0.0, 8.0))
         min_flux_for_full = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_flux", 0.15) or 0.15, 0.0, 4.0))
-        min_fullness_for_full = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_energy_fullness", 0.34) or 0.34, 0.0, 1.0))
+        min_fullness_for_full = float(np.clip(getattr(self.config.beat, "transient_full_motion_min_energy_fullness", 0.18) or 0.18, 0.0, 1.0))
 
         strong_kick_conf = bool(kick_conf >= min_kick_conf)
         strong_bass_dom = bool(bass_dom >= min_bass_dom)
         decisive_bass_dom = bool(bass_dom >= decisive_bass_dom_threshold)
-        flux_now = float(np.clip(getattr(event, "spectral_flux", 0.0) or 0.0, 0.0, 8.0))
+        raw_flux = float(np.clip(getattr(event, "spectral_flux", 0.0) or 0.0, 0.0, 8.0))
+        # Normalize flux against rolling P95 so the threshold works at any volume
+        flux_history = list(self._recent_flux_values)
+        if len(flux_history) >= 10:
+            flux_p95 = float(np.percentile(flux_history, 95))
+            flux_now = float(np.clip(raw_flux / max(flux_p95, 1e-9), 0.0, 1.0))
+        else:
+            flux_now = raw_flux
         full_spectrum_active = bool(flux_now >= min_flux_for_full or float(np.clip(energy_fullness, 0.0, 1.0)) >= min_fullness_for_full)
         has_kick = bool(
             (strong_kick_conf and (sub_bass_hit or (low_mid_hit and strong_bass_dom)))

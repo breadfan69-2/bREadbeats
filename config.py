@@ -68,11 +68,12 @@ class BeatDetectionConfig:
     trigger_bus_mask_floor: float = 0.35
     bass_dominance_weighting_enabled: bool = True
     transient_classification_enabled: bool = True
-    transient_full_motion_min_kick_conf: float = 0.72
-    transient_full_motion_min_bass_dom: float = 0.65
-    transient_full_motion_decisive_bass_dom: float = 0.90
-    transient_full_motion_min_flux: float = 0.20
-    transient_full_motion_min_energy_fullness: float = 0.22
+    # ── Data-calibrated from CH-Tranquilizer (2026-02-25) ──
+    transient_full_motion_min_kick_conf: float = 0.60     # still < 0.5, active >= 0.6
+    transient_full_motion_min_bass_dom: float = 1.95      # low_high_ratio: slow=1.91, fast=2.15
+    transient_full_motion_decisive_bass_dom: float = 2.55  # clearly bass-heavy (P75=5.05)
+    transient_full_motion_min_flux: float = 0.15           # P95-normed: still=0.14, moving=0.25
+    transient_full_motion_min_energy_fullness: float = 0.18 # composite: low at slow speed
     # ------------------------------------------
 
     tempo_tracking_enabled: bool = True  
