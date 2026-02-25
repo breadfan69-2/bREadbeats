@@ -126,7 +126,7 @@ class BeatDetectionConfig:
     teaching_relax_phase1_gates: bool = False   
     teaching_ignore_traffic_lights: bool = True  
     tempo_lock_required: bool = False            
-    teaching_metronome_relaxed_confidence: float = 1.0  
+    teaching_metronome_relaxed_confidence: float = 0.05  
     teaching_stroke_ready_grace_ms: float = 1800.0  
     teaching_stroke_finish_beats: int = 4
 
