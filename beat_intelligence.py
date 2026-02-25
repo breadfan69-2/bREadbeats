@@ -83,6 +83,13 @@ class BeatIntelligence:
         self._creep_consecutive_frames: int = 0
         self._creep_hysteresis_threshold: int = 30  # ~0.5s at 60fps – slower drop to creep
 
+        # Journey preservation safety: count consecutive beat-family events
+        # that failed a gate but were preserved by the "let it finish" path.
+        # After N consecutive failures, let the journey expire to creep so
+        # a permanently stuck gate can't spin the orbit forever.
+        self._gate_fail_preserve_count: int = 0
+        self._gate_fail_preserve_limit: int = 4  # max consecutive beat-fail preservations
+
         self.journey_duration_s = 0.0
         self.journey_elapsed_s = 0.0
         self.journey_active = False
@@ -1328,8 +1335,21 @@ class BeatIntelligence:
             return True
         if bool(getattr(event, "tempo_locked", False)):
             return True
-        relaxed = float(getattr(self.config.beat, "teaching_metronome_relaxed_confidence", 0.14) or 0.14)
+
+        # Metronome-presence fallback: when the metronome is ticking at a
+        # musically valid BPM the tempo is known even if acf_confidence
+        # dips below the normal threshold.  Use a very low floor (0.05)
+        # so only truly random phases are rejected.
+        metro_bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+        if not np.isfinite(metro_bpm):
+            metro_bpm = 0.0
         acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+        if not np.isfinite(acf_conf):
+            acf_conf = 0.0
+        if 50.0 < metro_bpm < 200.0 and acf_conf >= 0.05:
+            return True
+
+        relaxed = float(getattr(self.config.beat, "teaching_metronome_relaxed_confidence", 0.14) or 0.14)
         return acf_conf >= relaxed
 
     def _strict_bass_motion_allowed(self, event: BeatEvent, trigger_kind: str) -> bool:
@@ -1921,17 +1941,24 @@ class BeatIntelligence:
 
             if gate_passed:
                 self._creep_consecutive_frames = 0
+                self._gate_fail_preserve_count = 0
             elif motion_profile == "hat_only" and gate_fail_reason in ("strict_bass", "low_band", "dual_band_db"):
                 # Insufficient bass should never open full beat motion for
                 # hat/voice-like content. Keep beat-family timing, but force
                 # limited park+bounce behavior via hat-only profile.
                 trigger_kind = raw_trigger_kind
                 self._creep_consecutive_frames = 0
-            elif self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
-                # Gate failed but a beat-family journey is running — let it finish
+            elif (self.journey_active
+                  and self.last_trigger_kind in ("syncopation", "beat", "downbeat")
+                  and self._gate_fail_preserve_count < self._gate_fail_preserve_limit):
+                # Gate failed but a beat-family journey is running — let it
+                # finish.  But only preserve for a limited number of
+                # consecutive failures to prevent infinite orbit loops.
                 trigger_kind = self.last_trigger_kind
+                self._gate_fail_preserve_count += 1
             else:
                 trigger_kind = "creep"
+                self._gate_fail_preserve_count = 0
 
         # Creep hysteresis: only enter creep after sustained non-beat frames
         if trigger_kind == "creep" and raw_trigger_kind == "creep":

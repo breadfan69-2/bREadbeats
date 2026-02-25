@@ -2129,8 +2129,14 @@ class AudioEngine:
             return
             
         # Calculate interval from last beat
-        if self.last_beat_time > 0:
-            interval = current_time - self.last_beat_time
+        prev_beat_time = self.last_beat_time
+        # Always advance last_beat_time so the next interval starts fresh.
+        # Without this, an out-of-range rejection causes the interval to grow
+        # monotonically on every subsequent call (stuck at 1.1 BPM forever).
+        self.last_beat_time = current_time
+
+        if prev_beat_time > 0:
+            interval = current_time - prev_beat_time
             
             # Strict tempo acceptance range (no octave correction)
             min_bpm = 60.0
@@ -2296,7 +2302,8 @@ class AudioEngine:
                                 energies="[" + ", ".join(f"{e:.2f}" for e in avg_energies) + "]"
                             )
         
-        self.last_beat_time = current_time
+        # last_beat_time is now advanced at the top of _update_tempo_tracking
+        # so that out-of-range early-returns don't cause stuck intervals.
     
     def _predict_next_beat(self, current_time: float, current_wall_time: float = 0.0):
         """Predict the time of the next beat using metronome when active."""

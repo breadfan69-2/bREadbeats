@@ -292,8 +292,10 @@ class StrokeMapper:
         path can produce a positional teleport.  The three-stage pipeline:
           1. Velocity EMA – smooths sudden *changes* in per-frame delta so
              the device never reverses or accelerates instantaneously.
-          2. Per-second rate cap – proportional to dt (3.6 units/s).
-          3. Per-frame hard cap – absolute ceiling (0.08) prevents dt-spike
+          2. *Radial* rate cap – clamps the 2D magnitude of the delta
+             vector (not each axis independently) so circular orbits
+             stay round instead of developing flat edges at the quadrants.
+          3. Per-frame hard cap – absolute ceiling prevents dt-spike
              frames from allowing oversized jumps.
         """
         max_delta_per_s = 3.6
@@ -312,9 +314,15 @@ class StrokeMapper:
         da = float(self._smoothed_da + smooth_factor * (raw_da - self._smoothed_da))
         db = float(self._smoothed_db + smooth_factor * (raw_db - self._smoothed_db))
 
-        # Position rate limiter
-        da = float(np.clip(da, -max_delta, max_delta))
-        db = float(np.clip(db, -max_delta, max_delta))
+        # Radial rate limiter: clamp the *magnitude* of the 2D delta
+        # vector so both axes scale proportionally.  This preserves the
+        # direction of motion (and therefore circular shape) unlike
+        # independent per-axis clamping which flattens corners.
+        mag = float(np.sqrt(da * da + db * db))
+        if mag > max_delta and mag > 1e-9:
+            scale = max_delta / mag
+            da = float(da * scale)
+            db = float(db * scale)
 
         # Store clamped value so EMA tracks actual movement, not desired
         self._smoothed_da = da
