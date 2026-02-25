@@ -180,42 +180,6 @@ class BeatEvent:
 
 
 class AudioEngine:
-    def reset_tempo_tracking(self) -> None:
-        """Public method to reset tempo and downbeat tracking immediately."""
-        self.last_known_tempo = self.smoothed_tempo
-        self.beat_intervals.clear()
-        self.beat_times.clear()
-        self.beat_position_in_measure = 0
-        self.is_downbeat = False
-        self.beat_stability = 0.0
-        self.stable_tempo = 0.0
-        # Reset energy-based downbeat accumulators
-        self.measure_energy_accum = [0.0] * self.beats_per_measure
-        self.measure_beat_counts = [0] * self.beats_per_measure
-        self.downbeat_confidence = 0.0
-        # Reset pattern matching state
-        self._reset_downbeat_pattern()
-        # Reset ACF metronome
-        if hasattr(self, '_acf_metronome_enabled'):
-            self._reset_acf_metronome()
-        # Reset syncopation detection
-        if hasattr(self, '_raw_onset_times'):
-            self._raw_onset_times.clear()
-            self._syncopation_detected = False
-            self._syncopation_streak = 0
-            self._syncopation_had_offbeat = False
-            self._syncopation_confirmed = False
-            self._any_band_onset = False
-            self._syncopation_armed = False
-        # Reset ALL multi-band z-score detectors so they get fresh baselines
-        if hasattr(self, '_zscore_detectors'):
-            for det in self._zscore_detectors.values():
-                det.reset()
-            # Reset fire history and confidence
-            for name in self._band_fire_history:
-                self._band_fire_history[name].clear()
-            self._primary_beat_band = 'sub_bass'
-
     def set_zscore_threshold(self, threshold: float):
         """Update the z-score threshold on ALL multi-band detectors at runtime."""
         if hasattr(self, '_zscore_detectors'):
@@ -385,16 +349,6 @@ class AudioEngine:
         self._audio_amp_hysteresis_count: int = 0       # Consecutive out-of-zone checks (hysteresis)
         self._metric_response_speed: float = float(getattr(config.auto_adjust, 'metric_response_speed', 1.0))
         
-        # Metric 5: Flux Balance (keep flux ~= energy bars at similar height)
-        self._metric_flux_balance_enabled: bool = False
-        self._flux_balance_check_interval_ms: float = 1000.0  # Check every 1s (was 500ms)
-        self._last_flux_balance_check: float = 0.0
-        self._flux_energy_ratios: list[float] = []       # Recent flux/energy ratios
-        self._flux_balance_target_low: float = 0.6       # Ratio zone: flux between 0.6x and 1.4x energy
-        self._flux_balance_target_high: float = 1.4
-        self._flux_balance_step_pct: float = 0.01        # 1% of range per check (fine-grained)
-        self._flux_balance_hysteresis_count: int = 0     # Consecutive out-of-zone checks (hysteresis)
-        
         # ===== PER-METRIC SETTLED STATE TRACKING =====
         # When a metric fires but no adjustment is needed (within target zone),
         # increment its settled counter.  After N consecutive settled checks,
@@ -406,27 +360,12 @@ class AudioEngine:
             'peak_floor': 0,
             'sensitivity': 0,
             'audio_amp': 0,
-            'flux_balance': 0,
         }
         self._metric_settled_flags: dict[str, bool] = {
             'peak_floor': False,
             'sensitivity': False,
             'audio_amp': False,
-            'flux_balance': False,
         }
-        
-        # ===== TARGET BPS SYSTEM (Beats Per Second) =====
-        # Tracks actual beats per second and adjusts parameters to achieve target rate
-        self._target_bps_enabled: bool = False          # User toggle
-        self._target_bps: float = 1.5                   # Target beats per second (default 90 BPM)
-        self._target_bps_tolerance: float = 0.2         # +/- tolerance (0.2 = accept 1.3-1.7 BPS if target is 1.5)
-        self._bps_window_seconds: float = 4.0           # Rolling window for BPS calculation
-        self._bps_beat_times: list[float] = []          # Timestamps of recent beats
-        self._bps_adjustment_speed: float = 1.0         # Hardcoded to max (was adjustable via slider)
-        self._bps_base_step: float = 0.002              # Base step for peak_floor adjustment
-        self._target_bps_lock_gate_enabled: bool = bool(getattr(config.beat, 'target_bps_lock_gate_enabled', True))
-        self._target_bps_lock_gate_acf_conf: float = float(getattr(config.beat, 'target_bps_lock_gate_acf_conf', 0.40))
-        self._target_bps_lock_gate_downbeats: int = int(getattr(config.beat, 'target_bps_lock_gate_downbeats', 1))
         
         # ===== ACF AUTO-METRONOME =====
         # Autocorrelation-based tempo estimator + internal metronome clock.
@@ -701,13 +640,6 @@ class AudioEngine:
             self._phase_accept_low_conf_mult,
             self._acf_confidence,
         )
-
-    def _accept_raw_onset(self, now: float) -> bool:
-        if not self._is_raw_onset_acceptable(now):
-            return False
-
-        self._last_accepted_raw_onset_time = now
-        return True
 
     def _is_raw_onset_acceptable(self, now: float) -> bool:
         bpm_ref = self._reference_bpm_for_onset_filters()
@@ -1528,16 +1460,6 @@ class AudioEngine:
             fallback_full_if_invalid=True,
         )
     
-    def get_freq_band_bins(self) -> tuple:
-        """Get the current frequency band as normalized positions (0-1) for visualization"""
-        cfg = self.config.beat
-        sr = self.config.audio.sample_rate
-        max_freq = sr / 2  # Nyquist
-        
-        low_norm = cfg.freq_low / max_freq
-        high_norm = cfg.freq_high / max_freq
-        return (low_norm, high_norm)
-        
     def _compute_spectral_flux(self, spectrum: np.ndarray) -> float:
         """Compute spectral flux (change in spectrum)"""
         if self.prev_spectrum is None or len(self.prev_spectrum) != len(spectrum):
@@ -1603,14 +1525,6 @@ class AudioEngine:
             'offbeat_score': offbeat_score,
             'confidence': confidence,
         }
-
-    def _compute_bass_dominance(self) -> float:
-        return compute_bass_dominance(
-            self._band_energies.get('sub_bass', 0.0),
-            self._band_energies.get('low_mid', 0.0),
-            self._band_energies.get('mid', 0.0),
-            self._band_energies.get('high', 0.0),
-        )
 
     # ------------------------------------------------------------------
     # Multi-Band Z-Score
@@ -2515,23 +2429,7 @@ class AudioEngine:
                 log_event("INFO", "MetricAutoRange", "Audio Amp metric enabled (beat-driven)")
             else:
                 log_event("INFO", "MetricAutoRange", "Audio Amp metric disabled")
-        elif metric == 'flux_balance':
-            self._metric_flux_balance_enabled = enable
-            if enable:
-                self._last_flux_balance_check = 0.0
-                self._flux_energy_ratios.clear()
-                self._metric_settled_counts['flux_balance'] = 0
-                self._metric_settled_flags['flux_balance'] = False
-                log_event("INFO", "MetricAutoRange", "Flux Balance metric enabled (bar-balance)")
-            else:
-                log_event("INFO", "MetricAutoRange", "Flux Balance metric disabled")
-        elif metric == 'target_bps':
-            self._target_bps_enabled = enable
-            if enable:
-                self._bps_beat_times.clear()
-                log_event("INFO", "MetricAutoRange", f"Target BPS enabled (target={self._target_bps:.2f})")
-            else:
-                log_event("INFO", "MetricAutoRange", "Target BPS disabled")
+
     
     def compute_energy_margin_feedback(self, band_energy: float, callback=None):
         """
@@ -2627,97 +2525,6 @@ class AudioEngine:
         
         return float(np.mean(self._energy_margin_history)), should_adjust, direction
 
-    def compute_bps_feedback(self, beat_time: float, callback=None):
-        """
-        Compute BPS (beats per second) feedback and adjust peak_floor to hit target.
-        
-        Tracks beats over a rolling window and compares actual BPS to target.
-        If actual < target: lower peak_floor to detect more beats
-        If actual > target: raise peak_floor to detect fewer beats
-        
-        Args:
-            beat_time: Timestamp of the detected beat
-            callback: Function to call with adjustment data
-            
-        Returns:
-            (actual_bps, should_adjust, adjustment_direction)
-        """
-        if not self._target_bps_enabled:
-            return 0.0, False, 0
-
-        if self._target_bps_lock_gate_enabled:
-            metronome_locked = (
-                self._acf_metronome_enabled
-                and self._metronome_bpm > 0
-                and self._acf_confidence >= self._target_bps_lock_gate_acf_conf
-                and self.consecutive_matching_downbeats >= self._target_bps_lock_gate_downbeats
-            )
-            if metronome_locked:
-                return 0.0, False, 0
-        
-        now = beat_time
-        
-        # Add this beat
-        self._bps_beat_times.append(now)
-        
-        # Prune beats outside the window
-        window_start = now - self._bps_window_seconds
-        self._bps_beat_times = [t for t in self._bps_beat_times if t >= window_start]
-        
-        # Need at least 2 beats to calculate BPS
-        if len(self._bps_beat_times) < 2:
-            return 0.0, False, 0
-        
-        # Calculate actual BPS
-        window_duration = self._bps_beat_times[-1] - self._bps_beat_times[0]
-        if window_duration <= 0:
-            return 0.0, False, 0
-        
-        actual_bps = (len(self._bps_beat_times) - 1) / window_duration
-        
-        # Check if we're within tolerance
-        target_low = self._target_bps - self._target_bps_tolerance
-        target_high = self._target_bps + self._target_bps_tolerance
-        
-        should_adjust = False
-        direction = 0
-        
-        if actual_bps < target_low:
-            # Too few beats - LOWER peak_floor to detect more
-            should_adjust = True
-            direction = -1
-        elif actual_bps > target_high:
-            # Too many beats - RAISE peak_floor to detect fewer
-            should_adjust = True
-            direction = +1
-        
-        if callback and should_adjust:
-            # Scale step by adjustment speed (0.5 = normal, 1.0 = 2x aggressive)
-            step = self._bps_base_step * (1.0 + self._bps_adjustment_speed)
-            step = self._scaled_metric_step(step)
-            callback({
-                'metric': 'target_bps',
-                'actual_bps': actual_bps,
-                'target_bps': self._target_bps,
-                'tolerance': self._target_bps_tolerance,
-                'adjustment': direction * step,
-                'direction': 'raise' if direction > 0 else 'lower'
-            })
-        
-        return actual_bps, should_adjust, direction
-
-    def set_target_bps(self, target: float):
-        """Set the target beats per second"""
-        self._target_bps = max(0.1, min(4.0, target))
-        
-    def set_bps_adjustment_speed(self, speed: float):
-        """Set the BPS adjustment speed (0.0=fine, 1.0=aggressive)"""
-        self._bps_adjustment_speed = max(0.0, min(1.0, speed))
-        
-    def set_bps_tolerance(self, tolerance: float):
-        """Set the BPS tolerance (how close to target before adjusting)"""
-        self._target_bps_tolerance = max(0.05, min(1.0, tolerance))
-
     def set_metric_response_speed(self, speed: float):
         """Set auto-range response speed (1.0=legacy, >1 faster, <1 slower)."""
         self._metric_response_speed = max(0.5, min(3.0, float(speed)))
@@ -2757,103 +2564,7 @@ class AudioEngine:
 
         if self._metric_audio_amp_enabled:
             states['audio_amp'] = 'SETTLED' if self._metric_settled_flags.get('audio_amp', False) else 'ADJUSTING'
-        if self._metric_flux_balance_enabled:
-            states['flux_balance'] = 'SETTLED' if self._metric_settled_flags.get('flux_balance', False) else 'ADJUSTING'
         return states
-
-    def compute_flux_balance_feedback(self, now: float, callback=None):
-        """
-        Timer-driven flux_mult adjustment to keep flux ~= energy (bar balance).
-        
-        Compares recent average flux to recent average energy.
-        If flux >> energy: LOWER flux_mult (shrink flux bar)
-        If flux << energy: RAISE flux_mult (grow flux bar)
-        
-        Uses current peak_envelope (energy) and last spectral_flux from BeatEvent.
-        Both are already scaled by gain, so the ratio reflects display bar heights.
-        
-        Called from _update_display (~30fps), acts every ~500ms.
-        """
-        if not self._metric_flux_balance_enabled:
-            return
-        
-        # Only check every ~500ms
-        if now - self._last_flux_balance_check < self._scaled_metric_interval_s(self._flux_balance_check_interval_ms):
-            return
-        self._last_flux_balance_check = now
-        
-        # If already settled, don't adjust
-        if self._metric_settled_flags.get('flux_balance', False):
-            return
-        
-        # Get current energy and flux values
-        energy = self.peak_envelope
-        flux = getattr(self, '_last_spectral_flux', 0.0)
-        
-        # Skip if either is negligible (no audio / silence)
-        if energy < 0.005 or flux < 0.001:
-            return
-        
-        # Compute ratio: flux / energy
-        ratio = flux / energy
-        
-        # Track rolling history (last 8 samples = ~4 seconds at 500ms interval)
-        self._flux_energy_ratios.append(ratio)
-        if len(self._flux_energy_ratios) > 8:
-            self._flux_energy_ratios.pop(0)
-        
-        # Need at least 3 samples for stability
-        if len(self._flux_energy_ratios) < 3:
-            return
-        
-        avg_ratio = float(np.mean(self._flux_energy_ratios))
-        
-        # Get range for step calculation
-        from config import BEAT_RANGE_LIMITS
-        fm_min, fm_max = BEAT_RANGE_LIMITS['flux_mult']
-        fm_range = fm_max - fm_min
-        step = fm_range * self._flux_balance_step_pct  # 1% of range
-        step = self._scaled_metric_step(step)
-        
-        wants_adjustment = False
-        adjustment_direction = 0
-        adjustment_reason = ''
-        
-        if avg_ratio > self._flux_balance_target_high:
-            # Flux bar too tall relative to energy -> wants to LOWER flux_mult
-            wants_adjustment = True
-            adjustment_direction = -1
-            adjustment_reason = f'flux/energy ratio {avg_ratio:.2f} > {self._flux_balance_target_high:.1f}'
-        elif avg_ratio < self._flux_balance_target_low:
-            # Flux bar too short relative to energy -> wants to RAISE flux_mult
-            wants_adjustment = True
-            adjustment_direction = +1
-            adjustment_reason = f'flux/energy ratio {avg_ratio:.2f} < {self._flux_balance_target_low:.1f}'
-        
-        # Hysteresis: require 2 consecutive out-of-zone checks before adjusting
-        if wants_adjustment:
-            self._flux_balance_hysteresis_count += 1
-            if self._flux_balance_hysteresis_count >= self._effective_metric_hysteresis_required():
-                # Actually adjust now
-                # Decay settled counter instead of hard reset (drop by 3, not to 0)
-                self._metric_settled_counts['flux_balance'] = max(0, self._metric_settled_counts.get('flux_balance', 0) - 3)
-                self._flux_balance_hysteresis_count = 0
-                if callback:
-                    callback({
-                        'metric': 'flux_balance',
-                        'adjustment': adjustment_direction * step,
-                        'direction': 'lower' if adjustment_direction < 0 else 'raise',
-                        'ratio': avg_ratio,
-                        'reason': f'{adjustment_reason} (2x confirmed)',
-                    })
-        else:
-            # In zone - reset hysteresis counter and increment settled
-            self._flux_balance_hysteresis_count = 0
-            self._metric_settled_counts['flux_balance'] = self._metric_settled_counts.get('flux_balance', 0) + 1
-            if self._metric_settled_counts['flux_balance'] >= self._effective_metric_settled_threshold():
-                self._metric_settled_flags['flux_balance'] = True
-                log_event("INFO", "Metric", "Flux Balance SETTLED",
-                          ratio=f"{avg_ratio:.2f}")
 
     def compute_audio_amp_feedback(self, now: float, callback=None):
         """
@@ -2898,11 +2609,11 @@ class AudioEngine:
         # Check for excess beats: if BPS > 2x reference for consecutive checks, LOWER audio_amp
         wants_lower = False
         if self.last_beat_time > 0 and time_since_beat < target_interval:
-            # Beats are coming - check if too many
-            if len(self._bps_beat_times) >= 2:
-                window_dur = self._bps_beat_times[-1] - self._bps_beat_times[0] if len(self._bps_beat_times) >= 2 else 1.0
+            # Beats are coming - check if too many using beat_times history
+            if len(self.beat_times) >= 2:
+                window_dur = self.beat_times[-1] - self.beat_times[0]
                 if window_dur > 0:
-                    actual_bps = (len(self._bps_beat_times) - 1) / window_dur
+                    actual_bps = (len(self.beat_times) - 1) / window_dur
                     if actual_bps > ref_bps * 2.0:
                         wants_lower = True
         

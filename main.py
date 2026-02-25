@@ -1806,12 +1806,6 @@ class BREadbeatsWindow(QMainWindow):
         self._motion_readiness_tab_content = None
         
         # Auto-align target BPM tracking (wall-clock time-based)
-        self._auto_align_target_enabled: bool = False  # Target BPM behavior disabled
-        self._auto_align_stable_since: float = 0.0      # time.time() when stability started
-        self._auto_align_is_stable: bool = False         # currently in stable state
-        self._auto_align_required_seconds: float = 0.8   # seconds of stability before first alignment
-        self._auto_align_last_adjust_time: float = 0.0   # time.time() of last ±1 BPM adjustment
-        self._auto_align_cooldown: float = 0.3            # seconds between each ±1 BPM step
         self._last_sensed_bpm: float = 0.0
         
         # State
@@ -5738,9 +5732,6 @@ Like the app?<br>
             'phase_accept_window_ms': getattr(self.config.beat, 'phase_accept_window_ms', 85.0),
             'phase_accept_low_conf_mult': getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0),
             'octave_target_bias_confidence_max': getattr(self.config.beat, 'octave_target_bias_confidence_max', 0.35),
-            'target_bps_lock_gate_enabled': getattr(self.config.beat, 'target_bps_lock_gate_enabled', True),
-            'target_bps_lock_gate_acf_conf': getattr(self.config.beat, 'target_bps_lock_gate_acf_conf', 0.40),
-            'target_bps_lock_gate_downbeats': getattr(self.config.beat, 'target_bps_lock_gate_downbeats', 1),
             'aggressive_tempo_snap_enabled': getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False),
             'aggressive_snap_confidence': getattr(self.config.beat, 'aggressive_snap_confidence', 0.55),
             'aggressive_snap_phase_error_ms': getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0),
@@ -5839,12 +5830,6 @@ Like the app?<br>
             self._on_phase_accept_low_conf_mult_change(preset_data['phase_accept_low_conf_mult'])
         if 'octave_target_bias_confidence_max' in preset_data:
             self._on_octave_target_bias_confidence_max_change(preset_data['octave_target_bias_confidence_max'])
-        if 'target_bps_lock_gate_enabled' in preset_data:
-            self._on_target_bps_lock_gate_toggle(bool(preset_data['target_bps_lock_gate_enabled']))
-        if 'target_bps_lock_gate_acf_conf' in preset_data:
-            self._on_target_bps_lock_gate_acf_conf_change(preset_data['target_bps_lock_gate_acf_conf'])
-        if 'target_bps_lock_gate_downbeats' in preset_data:
-            self._on_target_bps_lock_gate_downbeats_change(int(preset_data['target_bps_lock_gate_downbeats']))
         if 'aggressive_tempo_snap_enabled' in preset_data:
             self._on_aggressive_tempo_snap_toggle(bool(preset_data['aggressive_tempo_snap_enabled']))
         if 'aggressive_snap_confidence' in preset_data:
@@ -6507,10 +6492,6 @@ Like the app?<br>
         # Only Audio Amp remains auto-adjustable; other metrics are manual-only.
         self.metric_audio_amp_cb.setEnabled(enabled)
         self.metric_audio_amp_cb.setChecked(enabled)
-        self.metric_target_bps_cb.blockSignals(True)
-        self.metric_target_bps_cb.setChecked(False)
-        self.metric_target_bps_cb.setEnabled(False)
-        self.metric_target_bps_cb.blockSignals(False)
         print(f"[Metric] Global auto-adjust {'enabled' if enabled else 'disabled'}")
     
     def _on_metric_toggle(self, metric: str, enabled: bool):
@@ -6565,16 +6546,8 @@ Like the app?<br>
                 actual_bps = feedback_data.get('actual_bps', 0)
                 print(f"[Metric] audio_amp: {reason} ({direction}) -> {new_val:.4f}")
         
-        elif metric in ('peak_floor', 'target_bps', 'flux_balance'):
+        elif metric == 'peak_floor':
             return
-    
-    def _on_target_bpm_change(self, value: float):
-        """Target BPM behavior disabled."""
-        return
-    
-    def _on_bpm_tolerance_change(self, value: float):
-        """Target BPM behavior disabled."""
-        return
 
     def _on_metric_response_speed_change(self, value: float):
         """Handle metric auto-adjust response speed change."""
@@ -6582,20 +6555,6 @@ Like the app?<br>
         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
             self.audio_engine.set_metric_response_speed(value)
         print(f"[Metric] Auto-adjust speed set to {value:.2f}x")
-    
-    # _on_bps_speed_change removed — speed hardcoded to max in audio_engine
-
-    def _on_auto_align_toggle(self, enabled: bool):
-        """Auto-align target BPM behavior disabled."""
-        self._auto_align_target_enabled = False
-        self._auto_align_is_stable = False
-        self._auto_align_stable_since = 0.0
-        self._auto_align_last_adjust_time = 0.0
-        print("[Config] Auto-align target BPM disabled")
-
-    def _on_auto_align_seconds_change(self, value: float):
-        """Auto-align target BPM behavior disabled."""
-        return
 
     def _create_beat_detection_tab(self) -> QWidget:
         """Beat detection settings with vertical scroll"""
@@ -6668,64 +6627,6 @@ Like the app?<br>
         self.metric_speed_slider.valueChanged.connect(self._on_metric_response_speed_change)
         metric_layout.addWidget(self.metric_speed_slider)
         
-        # ===== TARGET BPS CONTROLS =====
-        bps_layout = QHBoxLayout()
-        
-        self.metric_target_bps_cb = QCheckBox("Target BPM (manual only)")
-        self.metric_target_bps_cb.setToolTip("Auto-adjust for target BPM/depth is disabled.")
-        self.metric_target_bps_cb.setChecked(False)
-        self.metric_target_bps_cb.setEnabled(False)
-        bps_layout.addWidget(self.metric_target_bps_cb)
-        
-        bps_layout.addWidget(QLabel("Target:"))
-        self.target_bpm_spin = QDoubleSpinBox()
-        self.target_bpm_spin.setRange(30, 240)
-        self.target_bpm_spin.setSingleStep(1)
-        self.target_bpm_spin.setValue(110)
-        self.target_bpm_spin.setDecimals(0)
-        self.target_bpm_spin.setFixedWidth(65)
-        self.target_bpm_spin.setSuffix(" BPM")
-        self.target_bpm_spin.setToolTip("Target BPM behavior is disabled")
-        self.target_bpm_spin.setEnabled(False)
-        bps_layout.addWidget(self.target_bpm_spin)
-        
-        bps_layout.addWidget(QLabel("±"))
-        self.bpm_tolerance_spin = QDoubleSpinBox()
-        self.bpm_tolerance_spin.setRange(3, 60)
-        self.bpm_tolerance_spin.setSingleStep(1)
-        self.bpm_tolerance_spin.setValue(30)
-        self.bpm_tolerance_spin.setDecimals(0)
-        self.bpm_tolerance_spin.setFixedWidth(60)
-        self.bpm_tolerance_spin.setToolTip("Target BPM behavior is disabled")
-        self.bpm_tolerance_spin.setEnabled(False)
-        bps_layout.addWidget(self.bpm_tolerance_spin)
-        
-        # Speed slider removed — hardcoded to max in audio_engine
-        
-        self.bpm_actual_label = QLabel("Metro: -- BPM")
-        self.bpm_actual_label.setStyleSheet("color: #AAA; font-size: 9px;")
-        bps_layout.addWidget(self.bpm_actual_label)
-        
-        self.auto_align_target_cb = QCheckBox("Auto-align")
-        self.auto_align_target_cb.setToolTip("Target BPM behavior is disabled")
-        self.auto_align_target_cb.setChecked(False)
-        self.auto_align_target_cb.setEnabled(False)
-        bps_layout.addWidget(self.auto_align_target_cb)
-        
-        self.auto_align_seconds_spin = QDoubleSpinBox()
-        self.auto_align_seconds_spin.setRange(0.1, 8.0)
-        self.auto_align_seconds_spin.setValue(0.8)
-        self.auto_align_seconds_spin.setSingleStep(0.1)
-        self.auto_align_seconds_spin.setDecimals(2)
-        self.auto_align_seconds_spin.setSuffix("s")
-        self.auto_align_seconds_spin.setFixedWidth(60)
-        self.auto_align_seconds_spin.setToolTip("Target BPM behavior is disabled")
-        self.auto_align_seconds_spin.setEnabled(False)
-        bps_layout.addWidget(self.auto_align_seconds_spin)
-        
-        bps_layout.addStretch()
-        metric_layout.addLayout(bps_layout)
-        
         # Metric status label only (traffic light moved to control panel)
         status_row = QHBoxLayout()
         self.metric_status_label = QLabel("Metrics: [idle]")
@@ -6737,8 +6638,6 @@ Like the app?<br>
         # Enable metrics based on config (first load = True, then saved)
         global_on = self.config.auto_adjust.metrics_global_enabled
         self.metric_audio_amp_cb.setChecked(global_on)
-        self.metric_target_bps_cb.setChecked(False)
-        self.metric_target_bps_cb.setEnabled(False)
         if global_on:
             print("[Config] Auto-enabled Audio Amp metric from config")
 
@@ -7100,24 +6999,6 @@ Like the app?<br>
         if self.audio_engine:
             self.audio_engine._octave_target_bias_confidence_max = value
 
-    def _on_target_bps_lock_gate_toggle(self, enabled: bool):
-        """Enable/disable lock-aware gating for target-BPS metric adjustments."""
-        self.config.beat.target_bps_lock_gate_enabled = enabled
-        if self.audio_engine:
-            self.audio_engine._target_bps_lock_gate_enabled = enabled
-
-    def _on_target_bps_lock_gate_acf_conf_change(self, value: float):
-        """Update confidence threshold for lock-aware target-BPS gating."""
-        self.config.beat.target_bps_lock_gate_acf_conf = value
-        if self.audio_engine:
-            self.audio_engine._target_bps_lock_gate_acf_conf = value
-
-    def _on_target_bps_lock_gate_downbeats_change(self, value: int):
-        """Update minimum downbeat matches for lock-aware target-BPS gating."""
-        self.config.beat.target_bps_lock_gate_downbeats = int(value)
-        if self.audio_engine:
-            self.audio_engine._target_bps_lock_gate_downbeats = int(value)
-
     def _on_aggressive_tempo_snap_toggle(self, enabled: bool):
         """Toggle confidence-gated aggressive metronome BPM snapping."""
         self.config.beat.aggressive_tempo_snap_enabled = enabled
@@ -7415,40 +7296,6 @@ Like the app?<br>
             "Only use target BPM to guide octave disambiguation below this ACF confidence."
         )
         tempo_resp_layout.addWidget(octave_target_bias_slider)
-
-        target_bps_lock_gate_cb = QCheckBox("Gate Target BPM metric when metronome lock is confident")
-        target_bps_lock_gate_cb.setChecked(getattr(self.config.beat, 'target_bps_lock_gate_enabled', True))
-        target_bps_lock_gate_cb.setToolTip("When enabled, target-BPM metric stops nudging peak_floor while metronome lock is strong.")
-        target_bps_lock_gate_cb.stateChanged.connect(lambda state: self._on_target_bps_lock_gate_toggle(state == 2))
-        tempo_resp_layout.addWidget(target_bps_lock_gate_cb)
-
-        target_bps_lock_conf_slider = SliderWithLabel(
-            "Target-BPS lock conf",
-            0.10,
-            0.90,
-            getattr(self.config.beat, 'target_bps_lock_gate_acf_conf', 0.40),
-            2,
-        )
-        target_bps_lock_conf_slider.valueChanged.connect(self._on_target_bps_lock_gate_acf_conf_change)
-        _set_slider_row_tooltip(
-            target_bps_lock_conf_slider,
-            "Minimum ACF confidence required before Target-BPS metric gating is applied."
-        )
-        tempo_resp_layout.addWidget(target_bps_lock_conf_slider)
-
-        target_bps_lock_match_row = QHBoxLayout()
-        target_bps_lock_match_label = QLabel("Target-BPS lock min downbeat matches:")
-        target_bps_lock_match_label.setStyleSheet("color: #ccc;")
-        target_bps_lock_match_row.addWidget(target_bps_lock_match_label)
-        target_bps_lock_match_spin = QSpinBox()
-        target_bps_lock_match_spin.setMinimum(0)
-        target_bps_lock_match_spin.setMaximum(4)
-        target_bps_lock_match_spin.setValue(int(getattr(self.config.beat, 'target_bps_lock_gate_downbeats', 1)))
-        target_bps_lock_match_label.setToolTip("Minimum consecutive matching downbeats required before Target-BPS metric gating applies.")
-        target_bps_lock_match_spin.setToolTip("Minimum consecutive matching downbeats required before Target-BPS metric gating applies.")
-        target_bps_lock_match_spin.valueChanged.connect(self._on_target_bps_lock_gate_downbeats_change)
-        target_bps_lock_match_row.addWidget(target_bps_lock_match_spin)
-        tempo_resp_layout.addLayout(target_bps_lock_match_row)
 
         aggressive_snap_cb = QCheckBox("Aggressive tempo snap when lock is confident")
         aggressive_snap_cb.setChecked(getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False))
@@ -8454,16 +8301,6 @@ Like the app?<br>
                     self.metronome_sync_indicator.setStyleSheet("color: #cc0; font-size: 20px;")  # Yellow: locking
                 else:
                     self.metronome_sync_indicator.setStyleSheet("color: #0f0; font-size: 20px;")  # Green: locked
-            except RuntimeError:
-                pass
-
-        # Update metronome BPM display (small label next to target BPM controls)
-        if hasattr(self, 'bpm_actual_label'):
-            try:
-                if metro_bpm > 0:
-                    self.bpm_actual_label.setText(f"Metro: {metro_bpm:.0f} BPM")
-                else:
-                    self.bpm_actual_label.setText("Metro: -- BPM")
             except RuntimeError:
                 pass
 
