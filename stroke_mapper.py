@@ -236,12 +236,16 @@ class StrokeMapper:
         path can produce a positional teleport.  The three-stage pipeline:
           1. Velocity EMA – smooths sudden *changes* in per-frame delta so
              the device never reverses or accelerates instantaneously.
-          2. Per-second rate cap – proportional to dt (3.6 units/s).
-          3. Per-frame hard cap – absolute ceiling (0.08) prevents dt-spike
+          2. Per-second rate cap – proportional to dt (6.5 units/s).
+          3. Per-frame hard cap – absolute ceiling (0.15) prevents dt-spike
              frames from allowing oversized jumps.
+
+        Rate limiting uses radial (magnitude) clamping so that the speed
+        cap is isotropic.  Per-axis clamping would allow √2× faster
+        diagonal movement, distorting circular orbits into squares.
         """
-        max_delta_per_s = 3.6
-        max_delta_per_frame = 0.08  # absolute safety ceiling per frame
+        max_delta_per_s = 6.5
+        max_delta_per_frame = 0.15  # absolute safety ceiling per frame
         max_delta = float(min(max_delta_per_s * max(dt, 1e-4), max_delta_per_frame))
 
         prev_a = float(self.state.alpha)
@@ -256,9 +260,14 @@ class StrokeMapper:
         da = float(self._smoothed_da + smooth_factor * (raw_da - self._smoothed_da))
         db = float(self._smoothed_db + smooth_factor * (raw_db - self._smoothed_db))
 
-        # Position rate limiter
-        da = float(np.clip(da, -max_delta, max_delta))
-        db = float(np.clip(db, -max_delta, max_delta))
+        # Radial position rate limiter – clamp the displacement *vector*
+        # magnitude so all directions are treated equally (preserves
+        # circular orbits instead of squashing them into diamonds).
+        delta_mag = float(np.hypot(da, db))
+        if delta_mag > max_delta:
+            scale = max_delta / delta_mag
+            da = float(da * scale)
+            db = float(db * scale)
 
         # Store clamped value so EMA tracks actual movement, not desired
         self._smoothed_da = da

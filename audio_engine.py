@@ -519,33 +519,64 @@ class AudioEngine:
         band_energy: float,
         spectral_flux: float,
         sidecar_features: Optional[dict[str, float]] = None,
+        silence_veto: bool = False,
     ) -> FeatureFrame:
-        # --- Rolling-peak normalization (10-second window) ---
-        # Track the peak energy and flux over ~10 seconds (~430 frames at 43 fps)
-        # so that if the OS volume is turned down, the *relative* energy still
-        # reaches levels that can trip the 0.42 gate.
-        self._rolling_peak_energy.append(float(band_energy))
-        self._rolling_peak_flux.append(float(spectral_flux))
-        candidate_peak = max(1e-6, float(max(self._rolling_peak_energy)))
-        candidate_flux = max(1e-6, float(max(self._rolling_peak_flux)))
-
-        if candidate_peak > self._last_peak_ref:
-            peak_ref = min(candidate_peak, self._last_peak_ref * 1.02)
+        # --- Silence bypass: force all norms to zero instantly ---
+        # When raw_rms_db is below the silence threshold the entire
+        # normalization is bypassed so the downstream pipeline sees
+        # true silence with no ghosting from a slowly-decaying ref.
+        if silence_veto:
+            self._last_peak_ref = 1e-6
+            self._last_flux_ref = 1e-6
+            self._rolling_peak_energy.clear()
+            self._rolling_peak_flux.clear()
+            self._shadow_prev_band_energy = 0.0
+            self._shadow_prev_flux = 0.0
+            energy_norm = 0.0
+            flux_norm = 0.0
+            energy_delta = 0.0
+            flux_delta = 0.0
         else:
-            peak_ref = candidate_peak
+            # --- Rolling-peak normalization (10-second window) ---
+            # Track the peak energy and flux over ~10 seconds (~430 frames at 43 fps)
+            # so that if the OS volume is turned down, the *relative* energy still
+            # reaches levels that can trip the 0.42 gate.
+            self._rolling_peak_energy.append(float(band_energy))
+            self._rolling_peak_flux.append(float(spectral_flux))
+            candidate_peak = max(1e-6, float(max(self._rolling_peak_energy)))
+            candidate_flux = max(1e-6, float(max(self._rolling_peak_flux)))
 
-        if candidate_flux > self._last_flux_ref:
-            flux_ref = min(candidate_flux, self._last_flux_ref * 1.02)
-        else:
-            flux_ref = candidate_flux
+            # Asymmetric slew limiter:
+            #  - Upward:  cap growth to 2% per frame (~1 s ramp on volume spikes)
+            #  - Downward: drop instantly to the candidate value
+            # Skip the cap when the ref is still at seed epsilon (first real
+            # frame after silence/reset) so music start isn't starved.
+            _SLEW_SEED = 1e-5  # anything at or below this is "unseeded"
 
-        self._last_peak_ref = max(1e-6, float(peak_ref))
-        self._last_flux_ref = max(1e-6, float(flux_ref))
+            if self._last_peak_ref <= _SLEW_SEED:
+                peak_ref = candidate_peak
+            elif candidate_peak > self._last_peak_ref:
+                peak_ref = min(candidate_peak, self._last_peak_ref * 1.02)
+            else:
+                peak_ref = candidate_peak  # instant drop
 
-        energy_norm = float(np.clip(float(band_energy) / peak_ref, 0.0, 1.0))
-        flux_norm = float(np.clip(float(spectral_flux) / flux_ref, 0.0, 1.0))
-        energy_delta = float(np.clip((float(band_energy) - float(self._shadow_prev_band_energy)) / peak_ref, 0.0, 1.0))
-        flux_delta = float(np.clip((float(spectral_flux) - float(self._shadow_prev_flux)) / flux_ref, 0.0, 1.0))
+            if self._last_flux_ref <= _SLEW_SEED:
+                flux_ref = candidate_flux
+            elif candidate_flux > self._last_flux_ref:
+                flux_ref = min(candidate_flux, self._last_flux_ref * 1.02)
+            else:
+                flux_ref = candidate_flux  # instant drop
+
+            self._last_peak_ref = max(1e-6, float(peak_ref))
+            self._last_flux_ref = max(1e-6, float(flux_ref))
+
+            energy_norm = float(np.clip(float(band_energy) / peak_ref, 0.0, 1.0))
+            flux_norm = float(np.clip(float(spectral_flux) / flux_ref, 0.0, 1.0))
+            energy_delta = float(np.clip((float(band_energy) - float(self._shadow_prev_band_energy)) / peak_ref, 0.0, 1.0))
+            flux_delta = float(np.clip((float(spectral_flux) - float(self._shadow_prev_flux)) / flux_ref, 0.0, 1.0))
+
+            self._shadow_prev_band_energy = float(band_energy)
+            self._shadow_prev_flux = float(spectral_flux)
 
         sub_bass = float(self._band_energies.get('sub_bass', 0.0))
         low_mid = float(self._band_energies.get('low_mid', 0.0))
@@ -559,9 +590,6 @@ class AudioEngine:
         band_mid = float(np.clip(mid / total, 0.0, 1.0))
         band_high = float(np.clip(high / total, 0.0, 1.0))
         bass_dominance = compute_bass_dominance(sub_bass, low_mid, mid, high)
-
-        self._shadow_prev_band_energy = float(band_energy)
-        self._shadow_prev_flux = float(spectral_flux)
 
         af_entropy = None
         af_flatness = None
@@ -1230,6 +1258,7 @@ class AudioEngine:
             band_energy,
             spectral_flux,
             sidecar_features=audioflux_features,
+            silence_veto=silence_veto_active,
         )
         shadow_tempo = TempoState(
             metronome_bpm=float(self._metronome_bpm),
