@@ -441,12 +441,6 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertGreater(late_offset, early_offset)
         self.assertAlmostEqual(landed_offset, 0.0, places=6)
 
-    def test_s_curve_hook_is_cubic(self):
-        mapper = StrokeMapper(Config())
-        p = 0.5
-        sp = mapper._s_curve(p)
-        self.assertAlmostEqual(sp, p * p * (3.0 - 2.0 * p), places=6)
-
     def test_radius_bloom_uses_continuous_smoothing(self):
         mapper = StrokeMapper(Config())
         target = 0.95

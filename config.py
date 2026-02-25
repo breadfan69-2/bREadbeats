@@ -68,11 +68,11 @@ class BeatDetectionConfig:
     trigger_bus_mask_floor: float = 0.35
     bass_dominance_weighting_enabled: bool = True
     transient_classification_enabled: bool = True
-    transient_full_motion_min_kick_conf: float = 0.60
-    transient_full_motion_min_bass_dom: float = 0.45
-    transient_full_motion_decisive_bass_dom: float = 0.70
-    transient_full_motion_min_flux: float = 0.15
-    transient_full_motion_min_energy_fullness: float = 0.10
+    transient_full_motion_min_kick_conf: float = 0.72
+    transient_full_motion_min_bass_dom: float = 0.65
+    transient_full_motion_decisive_bass_dom: float = 0.90
+    transient_full_motion_min_flux: float = 0.20
+    transient_full_motion_min_energy_fullness: float = 0.22
     # ------------------------------------------
 
     tempo_tracking_enabled: bool = True  
@@ -178,45 +178,6 @@ class StrokeConfig:
         "creep": {"center_y": 0.4, "park_radius": 0.70, "max_radius": 0.90},
     })
 
-    # Stroke timing cadence:
-    # - auto-select 2/4/8 beats per stroke from BPM cutoffs
-    # - beats_between_strokes acts as fallback when BPM is unavailable (2/4/8)
-    bpm_cutoff_2_to_4: float = 120          # BPM at/above this moves 2 -> 4 beats/stroke
-    bpm_cutoff_4_to_8: float = 150.0         # BPM at/above this moves 4 -> 8 beats/stroke
-    beats_between_strokes: int = 2           # Fallback cadence when BPM unavailable (2/4/8 only)
-    cadence_cutoff_bias_bpm: float = 0.0     # +/- BPM shift applied to cadence cutoffs (0 = disabled)
-
-    # Legacy compatibility-only note: noise_burst_* fields removed from schema.
-    # Legacy keys are accepted on load and ignored.
-    downbeat_jitter_vector_percent: float = 50.0  # % of current jitter vector added to downbeat arc points
-    noise_primary_mode: bool = True        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
-
-    # Legacy compatibility gate fields (runtime beat-family gate chain no longer
-    # blocks on low-band / dual-band / mid-trigger gates).
-    # These keys are retained for helper-method coverage, migration safety, and
-    # config/UI backward compatibility.
-    low_band_window_frames: int = 4
-    low_band_activity_threshold: float = 0.165
-    low_band_fullness_occupancy_threshold: float = 0.091
-    low_band_to_high_ratio_min: float = 0.58
-    mid_bass_support_enabled: bool = True
-    mid_bass_freq_low_hz: float = 200.0
-    mid_bass_freq_high_hz: float = 400.0
-    mid_bass_activity_threshold: float = 0.006
-    mid_bass_occupancy_threshold: float = 0.07
-    dual_band_db_gate_enabled: bool = False
-    dual_band_sub_bass_db_min: float = -40
-    dual_band_high_db_min: float = -80.0
-    high_tip_fullness_enabled: bool = False
-    high_tip_freq_low_hz: float = 15250.0
-    high_tip_freq_high_hz: float = 16000.0
-    high_tip_db_min: float = -80.0
-    high_tip_occupancy_threshold: float = 0.26
-    block_mid_trigger_range_enabled: bool = True
-    block_mid_trigger_low_hz: float = 1000.0
-    block_mid_trigger_high_hz: float = 2210.0
-    block_mid_trigger_window_frames: int = 8
-    block_mid_trigger_bass_to_mid_max_ratio: float = 0.5
     overall_amp_fill_gate_enabled: bool = True
     overall_amp_fill_target: float = 0.5
     overall_amp_fill_tolerance: float = 0.5
@@ -250,7 +211,6 @@ class StrokeConfig:
     beat_fill_bin_high: int = 10
     syncopation_fill_bin_low: int = 151
     syncopation_fill_bin_high: int = 153
-    downbeat_low_band_relax: float = 0.589
 
     # Fill duration gate (per phase): require sustained fullness over consecutive frames.
     # Values are frame counts (~16-23ms per frame at effective 43-60fps processing rate).
@@ -259,29 +219,8 @@ class StrokeConfig:
     beat_overall_amp_fill_sustain_frames: int = 2
     syncopation_overall_amp_fill_sustain_frames: int = 3
 
-    # High-band presence gate for beat/downbeat stroke generation.
-    # Requires upper range (mid+high) to be both filled and active.
-    # Presence pass:
-    #   mean >= threshold AND occupancy >= threshold
-    #   AND (delta >= threshold OR variance >= threshold)
-    # Final upper gate: presence status
-    high_band_gate_enabled: bool = True
-    high_band_window_frames: int = 4
-    high_band_mean_threshold: float = 0.12
-    high_band_floor_threshold: float = 0.031
-    high_band_occupancy_threshold: float = 0.2
-    high_band_delta_threshold: float = 0.05
-    high_band_variance_threshold: float = 0.0010
+    # High-band include mid: controls whether 'high' band visualization starts at 500 Hz or 2 kHz.
     high_band_include_mid: bool = True
-
-    # Overall full-spectrum quiet guard for beat/downbeat stroke generation.
-    # Blocks beat-based strokes only when BOTH spectral flux and peak energy
-    # are below these thresholds.
-    # Can be bypassed when new amplitude+fill gate is prioritized.
-    new_gate_priority_enabled: bool = True
-    overall_activity_guard_enabled: bool = True
-    overall_low_flux_threshold: float = 0.16
-    overall_low_energy_threshold: float = 0.18
 
     # Post-silence volume ramp: reduce volume after silence/track-change, ramp back up
     post_silence_vol_reduction: float = 0.47  # Fraction to reduce volume by (0.0-0.50, 0.15 = 15%)
@@ -539,9 +478,6 @@ def migrate_config(config: Config, loaded_version) -> None:
         version = 0
 
     if version < 1:
-        if getattr(config.stroke, 'downbeat_jitter_vector_percent', None) is None:
-            config.stroke.downbeat_jitter_vector_percent = 50.0
-
         if getattr(config.device_limits, 'p0_c0_sending_enabled', True) is None:
             config.device_limits.p0_c0_sending_enabled = True
         if getattr(config.device_limits, 'dont_show_on_startup', False) is None:
@@ -551,34 +487,12 @@ def migrate_config(config: Config, loaded_version) -> None:
         if getattr(config.device_limits, 'dry_run', False) is None:
             config.device_limits.dry_run = False
 
-    # Always clamp safety range for downbeat jitter blend
-    try:
-        value = float(getattr(config.stroke, 'downbeat_jitter_vector_percent', 50.0))
-    except Exception:
-        value = 50.0
-    config.stroke.downbeat_jitter_vector_percent = max(0.0, min(100.0, value))
-
     try:
         jitter_size = float(getattr(config.jitter, 'size', getattr(config.jitter, 'amplitude', 0.024)))
     except Exception:
         jitter_size = 0.024
     config.jitter.size = max(0.0, min(0.2, jitter_size))
     config.jitter.amplitude = config.jitter.size
-
-    try:
-        tip_low = float(getattr(config.stroke, 'high_tip_freq_low_hz', 3500.0) or 3500.0)
-    except Exception:
-        tip_low = 3500.0
-    try:
-        tip_high = float(getattr(config.stroke, 'high_tip_freq_high_hz', 16000.0) or 16000.0)
-    except Exception:
-        tip_high = 16000.0
-    tip_low = max(100.0, min(22000.0, tip_low))
-    tip_high = max(100.0, min(22000.0, tip_high))
-    if tip_high <= tip_low:
-        tip_high = min(22000.0, tip_low + 1000.0)
-    config.stroke.high_tip_freq_low_hz = tip_low
-    config.stroke.high_tip_freq_high_hz = tip_high
 
     config.version = CURRENT_CONFIG_VERSION
 

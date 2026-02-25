@@ -29,11 +29,6 @@ class StrokeState:
     last_time: float = 0.0
 
 
-class MotionMode:
-    FULL_STROKE = "full_stroke"
-    CREEP_MICRO = "creep_micro"
-
-
 class StrokeMapper:
     """Decision-based stroke mapper that consumes BeatIntelligence."""
 
@@ -100,12 +95,12 @@ class StrokeMapper:
         self._post_silence_radius_floor = 0.12 # start radius fraction after silence
         self._hold_start_pose_until_reactive = False
         self._idle_radius = self._min_radius
-        self._silence_decay_per_beat = 0.40
+        self._silence_decay_per_beat = 0.55
         self._idle_loops_per_beat = 0.125
 
         # Swirl-to-park state: tracks the spiral transition into idle
         self._swirl_progress = 0.0       # 0→1 S-curve interpolant
-        self._swirl_duration_s = 1.8     # total time to spirally arrive at park
+        self._swirl_duration_s = 1.2     # total time to spirally arrive at park
         self._swirl_start_center_y = self._baseline_center_y
         self._swirl_start_radius = self._park_radius
         self._swirl_entering = False     # True on first silence frame after motion
@@ -1370,11 +1365,6 @@ class StrokeMapper:
         return alpha, beta, volume
 
     @staticmethod
-    def _s_curve(progress: float) -> float:
-        p = float(np.clip(progress, 0.0, 1.0))
-        return float(p * p * (3.0 - (2.0 * p)))
-
-    @staticmethod
     def _quintic_ease(progress: float) -> float:
         """Quintic smoothstep (6t^5 - 15t^4 + 10t^3).
 
@@ -1434,38 +1424,6 @@ class StrokeMapper:
             eased -= 0.012 * float(np.sin(np.pi * t))     # pre-arrival cushion
 
         return float(np.clip(eased, 0.0, 1.02))
-
-    @staticmethod
-    def _s_curve_with_initial_velocity(
-        progress: float,
-        initial_slope: float,
-        end_slope: float = 0.0,
-        lazy_glide: bool = False,
-    ) -> float:
-        """Legacy cubic Hermite easing (kept for test compatibility)."""
-        p = float(np.clip(progress, 0.0, 1.0))
-        p_eval = p
-        carrying = end_slope > 1e-3  # carrying velocity through to next journey
-
-        if (not lazy_glide) and (not carrying) and (0.90 < p < 1.0):
-            # Arrival-only micro "time stretch" before +Y crossing.
-            # Skip when carrying velocity through to next journey.
-            t = (p - 0.90) / 0.10
-            p_eval = float(np.clip(p - (0.020 * np.sin(np.pi * t)), 0.0, 1.0))
-
-        m0 = float(np.clip(initial_slope, 0.0, 2.5))
-        m1 = float(np.clip(end_slope, 0.0, 2.5))
-        h10 = (p_eval * p_eval * p_eval) - (2.0 * p_eval * p_eval) + p_eval
-        h01 = (-2.0 * p_eval * p_eval * p_eval) + (3.0 * p_eval * p_eval)
-        h11 = (p_eval * p_eval * p_eval) - (p_eval * p_eval)
-        eased = (h10 * m0) + h01 + (h11 * m1)
-        if (not lazy_glide) and (not carrying) and p > 0.92:
-            # Landing overshoot - skip when carrying velocity through
-            t = (p - 0.92) / 0.08
-            overshoot = 0.025 * float(np.sin(t * np.pi))
-            eased += overshoot
-
-        return float(np.clip(eased, 0.0, 1.04))
 
     def _compute_initial_speed_slope(self, event: BeatEvent, interval_beats: int) -> float:
         """Map current angular velocity to a normalized easing start slope.
