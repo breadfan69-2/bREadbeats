@@ -157,18 +157,6 @@ class StrokeMapper:
         self._anchor_swing_deg: float = 10.0     # ±10° swing around y-axis
         self._anchor_phrase_locked: bool = False  # True once chosen for current phrase
 
-        # ── Expression pause spiral (§2/§3) ──
-        self._expr_pause_spiral_active: bool = False
-        self._expr_pause_spiral_progress: float = 0.0
-        self._expr_pause_spiral_duration_beats: float = 2.0
-        self._expr_pause_spiral_start_radius: float = 0.7
-        self._expr_pause_spiral_target_radius: float = 0.5
-        self._expr_pause_spiral_start_angle: float = 0.0
-        self._expr_pause_return_active: bool = False
-        self._expr_pause_return_progress: float = 0.0
-        self._expr_pause_return_start_angle: float = 0.0
-        self._expr_pause_return_start_radius: float = 0.5
-
         # ── Spiral-out (slingshot exit from park) ──
         self._spiral_out_active: bool = False       # True while spiralling out of park
         self._spiral_out_progress: float = 0.0      # 0→1 over spiral duration
@@ -200,12 +188,6 @@ class StrokeMapper:
         self._center_x_offset: float = 0.0
         self._center_y_offset: float = 0.0
         self._center_wander_phase: float = 0.0
-        self._tension_pause_active: bool = False
-        self._tension_pause_end_time: float = 0.0
-        self._tension_pause_last_time: float = 0.0
-        self._tension_pause_hold_alpha: float = 0.0
-        self._tension_pause_hold_beta: float = 0.0
-        self._tension_pause_fade_end: float = 0.0    # crossfade-back end time
         self._energy_history: deque = deque(maxlen=120)  # ~2s at 60fps
         self._session_energy_ema: float = 0.5
 
@@ -216,6 +198,10 @@ class StrokeMapper:
         self._intensity_ramp_floor: float = 0.25
         self._intensity_ramp_affect_size: bool = True
         self._intensity_ramp_affect_speed: bool = True
+
+        # ── Rate-limiter velocity state (for smoothing across ALL paths) ──
+        self._smoothed_da: float = 0.0
+        self._smoothed_db: float = 0.0
 
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
@@ -292,6 +278,55 @@ class StrokeMapper:
             self._learning_model = payload if isinstance(payload, dict) else None
         except Exception:
             self._learning_model = None
+
+    def _rate_limited_output(
+        self,
+        alpha: float,
+        beta: float,
+        volume: float,
+        dt: float,
+    ) -> TCodeCommand:
+        """Apply velocity-smoothed, per-frame-capped rate limiting and return TCodeCommand.
+
+        This MUST be the single exit point for every frame so that no code
+        path can produce a positional teleport.  The three-stage pipeline:
+          1. Velocity EMA – smooths sudden *changes* in per-frame delta so
+             the device never reverses or accelerates instantaneously.
+          2. Per-second rate cap – proportional to dt (3.6 units/s).
+          3. Per-frame hard cap – absolute ceiling (0.08) prevents dt-spike
+             frames from allowing oversized jumps.
+        """
+        max_delta_per_s = 3.6
+        max_delta_per_frame = 0.08  # absolute safety ceiling per frame
+        max_delta = float(min(max_delta_per_s * max(dt, 1e-4), max_delta_per_frame))
+
+        prev_a = float(self.state.alpha)
+        prev_b = float(self.state.beta)
+
+        raw_da = float(alpha - prev_a)
+        raw_db = float(beta - prev_b)
+
+        # Velocity EMA: smooths sudden direction/speed changes while
+        # converging quickly (~3 frames at factor=0.50) for steady motion.
+        smooth_factor = 0.50
+        da = float(self._smoothed_da + smooth_factor * (raw_da - self._smoothed_da))
+        db = float(self._smoothed_db + smooth_factor * (raw_db - self._smoothed_db))
+
+        # Position rate limiter
+        da = float(np.clip(da, -max_delta, max_delta))
+        db = float(np.clip(db, -max_delta, max_delta))
+
+        # Store clamped value so EMA tracks actual movement, not desired
+        self._smoothed_da = da
+        self._smoothed_db = db
+
+        alpha = float(np.clip(prev_a + da, -1.0, 1.0))
+        beta = float(np.clip(prev_b + db, -1.0, 1.0))
+
+        self.state.alpha = alpha
+        self.state.beta = beta
+
+        return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
 
     def get_current_position(self) -> tuple[float, float]:
         return self.state.alpha, self.state.beta
@@ -405,18 +440,14 @@ class StrokeMapper:
                 )
             
             self._last_journey_completion = 1.0
-            self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
-            self.state.beta = float(np.clip(beta, -1.0, 1.0))
-            return TCodeCommand(
-                alpha=self.state.alpha,
-                beta=self.state.beta,
-                duration_ms=25,
-                volume=volume,
-            )
+            return self._rate_limited_output(alpha, beta, volume, dt)
 
         if hitch_soft_reset:
             self._angular_velocity = 0.0
             self._last_phase_for_velocity = self._orbit_phase
+            # Reset velocity EMA on hitch so stale momentum doesn't linger
+            self._smoothed_da = 0.0
+            self._smoothed_db = 0.0
 
             ramp = float(np.clip(
                 decision.silence_fade if decision.silence_active else decision.post_silence_ramp,
@@ -534,14 +565,7 @@ class StrokeMapper:
                 fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
                 volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
                 self._last_journey_completion = 1.0
-                self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
-                self.state.beta = float(np.clip(beta, -1.0, 1.0))
-                return TCodeCommand(
-                    alpha=self.state.alpha,
-                    beta=self.state.beta,
-                    duration_ms=25,
-                    volume=volume,
-                )
+                return self._rate_limited_output(alpha, beta, volume, dt)
 
             # ── Swirl-to-park: spiral into 0.6y with S-curve interpolation ──
             # First silence frame: latch current center/radius as start.
@@ -645,14 +669,7 @@ class StrokeMapper:
                     fade=ramp,
                 )
                 self._last_journey_completion = 1.0
-                self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
-                self.state.beta = float(np.clip(beta, -1.0, 1.0))
-                return TCodeCommand(
-                    alpha=self.state.alpha,
-                    beta=self.state.beta,
-                    duration_ms=25,
-                    volume=volume,
-                )
+                return self._rate_limited_output(alpha, beta, volume, dt)
 
             if creep_motion_disabled and decision.trigger_kind == "creep":
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
@@ -780,14 +797,7 @@ class StrokeMapper:
                         fade=ramp,
                     )
                     self._last_journey_completion = 1.0
-                    self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
-                    self.state.beta = float(np.clip(beta, -1.0, 1.0))
-                    return TCodeCommand(
-                        alpha=self.state.alpha,
-                        beta=self.state.beta,
-                        duration_ms=25,
-                        volume=volume,
-                    )
+                    return self._rate_limited_output(alpha, beta, volume, dt)
 
                 # Use latched geometry while a journey/settle is in-flight.
                 # Only refresh from live trigger kind when fully parked.
@@ -957,13 +967,18 @@ class StrokeMapper:
                             )
                         else:
                             # Linked journey: expand from latched start radius to
-                            # target over first 15% of orbit for seamless hand-off.
+                            # target over first portion of orbit for seamless hand-off.
                             first_pass_progress = float(np.clip(
                                 (self._journey_total_rotation * progress) / (2.0 * np.pi),
                                 0.0,
                                 1.0,
                             ))
-                            link_window = 0.15
+                            # During post-silence ramp, use a wider window so
+                            # linked journeys also expand gradually.
+                            if self._post_silence_radius_ramp < 1.0:
+                                link_window = 0.90
+                            else:
+                                link_window = 0.40
                             link_t = float(np.clip(first_pass_progress / link_window, 0.0, 1.0))
                             link_blend = self._quintic_ease(link_t)
                             radius = float(
@@ -977,8 +992,8 @@ class StrokeMapper:
                                 0.0,
                                 1.0,
                             ))
-                            # Fast relink: expand from slingshot loop to full radius in ~15% of orbit
-                            relink_window = 0.15
+                            # Relink: expand from slingshot loop to full radius over ~40% of orbit
+                            relink_window = 0.40
                             relink_t = float(np.clip(first_pass_progress / relink_window, 0.0, 1.0))
                             # Quintic ease for buttery-smooth slingshot release
                             relink_blend = self._quintic_ease(relink_t)
@@ -1022,7 +1037,19 @@ class StrokeMapper:
                             + (center_blend * base_target_center)
                         )
                     else:
-                        self._base_center_y = float(base_target_center)
+                        # Gently approach target center rather than hard-snapping,
+                        # which prevents a jerk when journey completes and center
+                        # differs from the running orbit's center_y.
+                        center_gap = abs(self._base_center_y - base_target_center)
+                        if center_gap > 0.01:
+                            settle_rate = 3.0  # per-second exponential approach
+                            settle_t = float(1.0 - np.exp(-settle_rate * dt))
+                            self._base_center_y = float(
+                                self._base_center_y
+                                + ((base_target_center - self._base_center_y) * settle_t)
+                            )
+                        else:
+                            self._base_center_y = float(base_target_center)
 
                 wait_state = bool(decision.trigger_kind == "creep" and progress >= 1.0)
                 self._reactive_bounce_y = self._compute_reactive_bounce_y(
@@ -1052,43 +1079,6 @@ class StrokeMapper:
 
         # ── Expression layer: apply center Y wander offset only ──
         beta = float(beta + self._center_y_offset)
-
-        # ── §2/§3: Expression pause spiral override ──
-        if self._expr_pause_spiral_active:
-            # Logarithmic spiral inward: radius shrinks logarithmically
-            t_sp = self._quintic_ease(self._expr_pause_spiral_progress)
-            # Logarithmic interpolation: r = r_start * (r_target/r_start)^t
-            r_start = max(self._expr_pause_spiral_start_radius, 0.1)
-            r_target = max(self._expr_pause_spiral_target_radius, 0.05)
-            log_radius = float(r_start * ((r_target / r_start) ** t_sp))
-            # Phase keeps advancing (inherited angular velocity, slowing down)
-            total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-            alpha = float(log_radius * np.cos(self._orbit_phase))
-            beta = float(total_center_y + log_radius * np.sin(self._orbit_phase))
-
-        if self._expr_pause_return_active:
-            # §3: Spiral back out to normal orbit from pause, landing at anchor
-            t_ret = self._quintic_ease(self._expr_pause_return_progress)
-            r_start_ret = max(self._expr_pause_return_start_radius, 0.05)
-            r_target_ret = float(max(self._actual_radius, 0.5))
-            log_radius_ret = float(r_start_ret * ((r_target_ret / r_start_ret) ** t_ret))
-            total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-            alpha = float(log_radius_ret * np.cos(self._orbit_phase))
-            beta = float(total_center_y + log_radius_ret * np.sin(self._orbit_phase))
-
-        # ── Expression layer: tension pause override (legacy fade) ──
-        if self._tension_pause_active:
-            if now < self._tension_pause_end_time:
-                alpha = self._tension_pause_hold_alpha
-                beta = self._tension_pause_hold_beta
-            elif now < self._tension_pause_fade_end:
-                fade_dur = self._tension_pause_fade_end - self._tension_pause_end_time
-                t = float(np.clip((now - self._tension_pause_end_time) / max(fade_dur, 1e-3), 0.0, 1.0))
-                t = t * t * (3.0 - 2.0 * t)  # smoothstep
-                alpha = float(self._tension_pause_hold_alpha + t * (alpha - self._tension_pause_hold_alpha))
-                beta = float(self._tension_pause_hold_beta + t * (beta - self._tension_pause_hold_beta))
-            else:
-                self._tension_pause_active = False
 
         # ── §8: Entry journey gating — mark entry done when first journey completes ──
         if not self._post_silence_entry_done and not decision.silence_active:
@@ -1131,10 +1121,10 @@ class StrokeMapper:
         # Track silence state for next-frame transition detection
         self._was_silence_active = bool(decision.silence_active)
 
-        self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
-        self.state.beta = float(np.clip(beta, -1.0, 1.0))
-
-        return TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
+        # ── Universal per-frame rate-limited output ──
+        # All paths converge here via _rate_limited_output which applies
+        # velocity EMA smoothing + per-frame-capped position limiting.
+        return self._rate_limited_output(alpha, beta, volume, dt)
 
     # ── Expression layer ──────────────────────────────────────────────
 
@@ -1180,61 +1170,6 @@ class StrokeMapper:
             decay = float(max(0.0, 1.0 - 2.0 * dt))
             self._center_x_offset *= decay
             self._center_y_offset *= decay
-
-        # ── Tension pause detection (§2: spiral-in to radius ≤0.5) ──
-        if getattr(self.config.stroke, 'tension_pause_enabled', True) and not decision.silence_active:
-            cooldown = float(getattr(self.config.stroke, 'tension_pause_cooldown_s', 10.0) or 10.0)
-            drop_ratio = float(getattr(self.config.stroke, 'tension_pause_energy_drop', 0.40) or 0.40)
-
-            if (not self._tension_pause_active
-                    and not self._expr_pause_spiral_active
-                    and len(self._energy_history) >= 30
-                    and now - self._tension_pause_last_time > cooldown):
-                recent = list(self._energy_history)
-                recent_mean = float(np.mean(recent[-15:]))
-                prior_mean = float(np.mean(recent[-30:-15]))
-                # Only trigger when going from substantial energy to a real drop
-                if prior_mean > 0.20 and (prior_mean - recent_mean) / prior_mean > drop_ratio:
-                    # §2: Start logarithmic spiral-in instead of hard hold
-                    self._expr_pause_spiral_active = True
-                    self._expr_pause_spiral_progress = 0.0
-                    self._expr_pause_spiral_start_radius = float(max(self._actual_radius, 0.3))
-                    self._expr_pause_spiral_target_radius = 0.45  # ≤0.5
-                    self._expr_pause_spiral_start_angle = float(self._orbit_phase)
-                    self._expr_pause_spiral_duration_beats = 2.0
-                    self._tension_pause_last_time = now
-
-                    # After spiral-in, we'll need to spiral back out (§3)
-                    self._expr_pause_return_active = False
-                    self._expr_pause_return_progress = 0.0
-
-        # ── §2/§3: Advance expression pause spiral states ──
-        if self._expr_pause_spiral_active and not decision.silence_active:
-            bpm_for_spiral = float(getattr(self.audio_engine, '_metronome_bpm', 120.0) if self.audio_engine else 120.0)
-            bpm_for_spiral = float(np.clip(bpm_for_spiral if bpm_for_spiral > 0 else 120.0, 40.0, 240.0))
-            spiral_dur_s = float(self._expr_pause_spiral_duration_beats * 60.0 / bpm_for_spiral)
-            self._expr_pause_spiral_progress = float(np.clip(
-                self._expr_pause_spiral_progress + (dt / max(spiral_dur_s, 0.1)),
-                0.0, 1.0,
-            ))
-            if self._expr_pause_spiral_progress >= 1.0:
-                # Spiral-in complete → start spiral return (§3)
-                self._expr_pause_spiral_active = False
-                self._expr_pause_return_active = True
-                self._expr_pause_return_progress = 0.0
-                self._expr_pause_return_start_angle = float(self._orbit_phase)
-                self._expr_pause_return_start_radius = self._expr_pause_spiral_target_radius
-
-        if self._expr_pause_return_active and not decision.silence_active:
-            bpm_for_return = float(getattr(self.audio_engine, '_metronome_bpm', 120.0) if self.audio_engine else 120.0)
-            bpm_for_return = float(np.clip(bpm_for_return if bpm_for_return > 0 else 120.0, 40.0, 240.0))
-            return_dur_s = float(2.0 * 60.0 / bpm_for_return)  # 2 beats to return
-            self._expr_pause_return_progress = float(np.clip(
-                self._expr_pause_return_progress + (dt / max(return_dur_s, 0.1)),
-                0.0, 1.0,
-            ))
-            if self._expr_pause_return_progress >= 1.0:
-                self._expr_pause_return_active = False
 
         # ── §1: Anchor phrase management (direction change → new anchor) ──
         if getattr(self.config.stroke, 'direction_change_enabled', True) and not decision.silence_active:
