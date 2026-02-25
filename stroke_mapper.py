@@ -7,11 +7,9 @@ Legacy drawing/trajectory generation has been removed.
 
 from __future__ import annotations
 
-import json
 import time
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
@@ -29,11 +27,6 @@ class StrokeState:
     last_time: float = 0.0
 
 
-class MotionMode:
-    FULL_STROKE = "full_stroke"
-    CREEP_MICRO = "creep_micro"
-
-
 class StrokeMapper:
     """Decision-based stroke mapper that consumes BeatIntelligence."""
 
@@ -45,7 +38,6 @@ class StrokeMapper:
         audio_engine=None,
     ):
         self.config = config
-        self.send_callback = send_callback
         self.get_volume = get_volume if get_volume is not None else (lambda: 1.0)
         self.audio_engine = audio_engine
 
@@ -60,7 +52,6 @@ class StrokeMapper:
         self._journey_start_total_center_y = self._baseline_center_y
 
         self._orbit_phase = 0.0
-        self._active_interval_beats = 8
         self._last_trigger_kind = "creep"
         self._park_radius = 0.70
         self._max_radius = 1.0
@@ -83,11 +74,8 @@ class StrokeMapper:
         self._actual_radius = self._park_radius
         self._angular_velocity = 0.0
         self._last_phase_for_velocity = self._orbit_phase
-        self._journey_initial_speed_slope = 0.0
-        self._journey_nominal_angular_speed = 0.0  # nominal speed for continuation glide
         self._journey_target_radius = self._park_radius  # latched at journey start; never re-evaluated mid-arc
         self._orbit_phase_initialized = False  # True once orbit_phase has been actively tracked
-        self._lazy_glide_active = False
         self._journey_cold_start = True
         self._journey_linked = False
         self._journey_relink_active = False
@@ -99,8 +87,6 @@ class StrokeMapper:
         self._post_silence_radius_ramp = 1.0   # 0→1 over first beats after silence
         self._post_silence_radius_floor = 0.12 # start radius fraction after silence
         self._hold_start_pose_until_reactive = False
-        self._idle_radius = self._min_radius
-        self._silence_decay_per_beat = 0.40
         self._idle_loops_per_beat = 0.125
 
         # Swirl-to-park state: tracks the spiral transition into idle
@@ -129,18 +115,9 @@ class StrokeMapper:
 
         # Smooth landing / settle state (exponential lerp, no oscillation)
         self._settle_active = False
-        self._settle_elapsed = 0.0
-        self._settle_start_angle = self._park_angle
-        self._settle_decay_rate = 4.0  # higher = quicker settle, less tail linger
 
-        # Mid-journey crossfade state: buttery blend from old trajectory
-        # into new one when a beat fires before the previous journey ends.
+        # Mid-journey crossfade state
         self._crossfade_active = False
-        self._crossfade_elapsed = 0.0
-        self._crossfade_duration = 0.50   # seconds – long enough to feel smooth
-        self._crossfade_from_angle = 0.0  # angle at moment of transition
-        self._crossfade_from_center_y = self._baseline_center_y
-        self._crossfade_from_radius = self._park_radius
 
         # Bass-reactive jitter state (applied on creep only)
         self._bass_jitter_phase = 0.0
@@ -153,7 +130,6 @@ class StrokeMapper:
 
         # ── Fixed anchor state (§1) ──
         self._anchor_sign: int = 1               # +1 = +Y anchor, -1 = -Y anchor
-        self._anchor_angle: float = float(np.pi / 2.0)  # angle of anchor on orbit
         self._anchor_swing_deg: float = 10.0     # ±10° swing around y-axis
         self._anchor_phrase_locked: bool = False  # True once chosen for current phrase
 
@@ -177,15 +153,11 @@ class StrokeMapper:
         self._was_silence_active: bool = True           # tracks previous frame
 
         # ── Entry journey gating (§8) ──
-        self._post_silence_entry_done: bool = False  # True after first entry journey completes
         self._post_wait_reentry_active: bool = False
-        self._post_wait_reentry_progress: float = 0.0
-        self._post_wait_reentry_beats_remaining: float = 4.0
 
         # ── Expression layer state ──
         self._orbit_direction: int = 1           # 1=default, -1=reversed
         self._last_direction_change_time: float = 0.0
-        self._center_x_offset: float = 0.0
         self._center_y_offset: float = 0.0
         self._center_wander_phase: float = 0.0
         self._energy_history: deque = deque(maxlen=120)  # ~2s at 60fps
@@ -207,18 +179,14 @@ class StrokeMapper:
 
         self._learning_enabled = bool(getattr(self.config.beat, "teaching_learning_enabled", False))
         self._learning_use_fitted_rules = bool(getattr(self.config.beat, "teaching_use_fitted_rules", False))
-        self._learning_apply_in_circle_mode = bool(getattr(self.config.beat, "teaching_apply_in_circle_mode", False))
-        self._learning_isolation_mode = bool(getattr(self.config.beat, "teaching_isolation_mode", False))
         self._learning_strength = float(getattr(self.config.beat, "teaching_learning_strength", 0.0) or 0.0)
         self._learning_min_confidence = float(getattr(self.config.beat, "teaching_min_confidence", 0.0) or 0.0)
         self._learning_no_motion_bias = float(getattr(self.config.beat, "teaching_no_motion_bias", 1.0) or 1.0)
         self._learning_rule_fit_path = str(getattr(self.config.beat, "teaching_rule_fit_path", "") or "")
-        self._learning_model: Optional[dict] = None
-
         # Push initial learning config to intelligence
         self._sync_learning_to_intelligence()
 
-    def configure_geometry_rest_state(self, y_offset: float, sink_start_intensity: float = 0.25) -> None:
+    def configure_geometry_rest_state(self, y_offset: float) -> None:
         self._park_y = 0.20
         self._intelligence.set_park_y(self._park_y)
 
@@ -236,17 +204,10 @@ class StrokeMapper:
     ) -> None:
         self._learning_enabled = bool(enabled)
         self._learning_use_fitted_rules = bool(use_fitted_rules)
-        self._learning_apply_in_circle_mode = bool(apply_in_circle_mode)
-        self._learning_isolation_mode = bool(isolation_mode)
         self._learning_strength = float(learning_strength)
         self._learning_min_confidence = float(min_confidence)
         self._learning_no_motion_bias = float(no_motion_bias)
         self._learning_rule_fit_path = str(rule_fit_path or "")
-
-        if self._learning_enabled and self._learning_use_fitted_rules:
-            self._try_load_learning_model()
-        else:
-            self._learning_model = None
 
         # Forward to BeatIntelligence
         self._sync_learning_to_intelligence()
@@ -261,23 +222,6 @@ class StrokeMapper:
             no_motion_bias=self._learning_no_motion_bias,
             rule_fit_path=self._learning_rule_fit_path,
         )
-
-    def _try_load_learning_model(self) -> None:
-        path_text = str(self._learning_rule_fit_path or "").strip()
-        if not path_text:
-            self._learning_model = None
-            return
-
-        try:
-            path = Path(path_text)
-            if not path.exists() or not path.is_file():
-                self._learning_model = None
-                return
-            with path.open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-            self._learning_model = payload if isinstance(payload, dict) else None
-        except Exception:
-            self._learning_model = None
 
     def _rate_limited_output(
         self,
@@ -341,9 +285,7 @@ class StrokeMapper:
         self._intelligence.set_audio_engine(self.audio_engine)
         decision = self._intelligence.build_decision(event=event, dt=dt)
 
-        self._active_interval_beats = decision.interval_beats
         self._last_trigger_kind = decision.trigger_kind
-        self._lazy_glide_active = bool(getattr(decision, "lazy_glide_active", False))
         self._last_gate_fail = str(getattr(decision, "gate_fail", "") or "")
         self._last_decision = decision
 
@@ -500,7 +442,6 @@ class StrokeMapper:
             self._silence_exit_xfade_active = False
             self._silence_exit_xfade_progress = 0.0
             # Reset entry gating on silence
-            self._post_silence_entry_done = False
             self._post_wait_reentry_active = False
             self._anchor_phrase_locked = False
 
@@ -1080,16 +1021,6 @@ class StrokeMapper:
         # ── Expression layer: apply center Y wander offset only ──
         beta = float(beta + self._center_y_offset)
 
-        # ── §8: Entry journey gating — mark entry done when first journey completes ──
-        if not self._post_silence_entry_done and not decision.silence_active:
-            if decision.trigger_kind == "start" and decision.journey_completion >= 1.0:
-                self._post_silence_entry_done = True
-            elif decision.trigger_kind != "start" and decision.trigger_kind != "creep":
-                # Only allow entry journey types before unlocking; force creep otherwise
-                if not self._post_silence_entry_done and self._startup_beats_seen < 8:
-                    # Keep dot in entry mode by not overriding alpha/beta
-                    pass
-
         # ── Silence-exit position crossfade ──
         # Gradually blend from the latched park position to the computed
         # trajectory position over N beats so the device swirls out smoothly
@@ -1164,11 +1095,9 @@ class StrokeMapper:
             # Amplitude scales with energy: more wander when music is fuller
             amplitude = max_y * ((1.0 - e_scale) + e_scale * energy)
             self._center_y_offset = float(np.clip(raw * amplitude, -max_y, max_y))
-            self._center_x_offset = 0.0
         elif decision.silence_active:
             # Gently decay wander toward center during silence
             decay = float(max(0.0, 1.0 - 2.0 * dt))
-            self._center_x_offset *= decay
             self._center_y_offset *= decay
 
         # ── §1: Anchor phrase management (direction change → new anchor) ──
@@ -1362,11 +1291,6 @@ class StrokeMapper:
         return alpha, beta, volume
 
     @staticmethod
-    def _s_curve(progress: float) -> float:
-        p = float(np.clip(progress, 0.0, 1.0))
-        return float(p * p * (3.0 - (2.0 * p)))
-
-    @staticmethod
     def _quintic_ease(progress: float) -> float:
         """Quintic smoothstep (6t^5 - 15t^4 + 10t^3).
 
@@ -1376,110 +1300,6 @@ class StrokeMapper:
         """
         p = float(np.clip(progress, 0.0, 1.0))
         return float(p * p * p * (p * (p * 6.0 - 15.0) + 10.0))
-
-    @staticmethod
-    def _sine_ease_with_velocity(
-        progress: float,
-        initial_slope: float,
-        lazy_glide: bool = False,
-    ) -> float:
-        """Sine-based easing with velocity continuity for buttery-smooth motion.
-
-        Core curve: 0.5 * (1 - cos(pi * p)), providing:
-        - Smooth acceleration from rest at departure
-        - Peak angular speed at mid-journey
-        - Gradual deceleration to near-zero velocity at arrival
-        - No dead time: always moving until p=1.0
-
-        +Y axis crossing modulation: a very minute deceleration as
-        the dot crosses the +Y axis (start/end), with a minor
-        re-acceleration bump on departure.  Helps keep timing tight.
-
-        Velocity carry-over: initial_slope blends inherited angular
-        momentum into the first ~25% of the journey, fading to zero
-        so landing is always gentle.
-        """
-        p = float(np.clip(progress, 0.0, 1.0))
-        m0 = float(np.clip(initial_slope, 0.0, 2.5))
-
-        # ── Base: cosine interpolation (sine ease-in-out) ──
-        eased = 0.5 * (1.0 - float(np.cos(np.pi * p)))
-
-        # ── Velocity carry-over from prior journey / settle ──
-        # Blend inherited momentum into early phase; fades by p≈0.25
-        # so mid-journey and landing remain pure sine.
-        if m0 > 1e-3:
-            carry_window = 0.25
-            carry_fade = float(np.clip(1.0 - (p / carry_window), 0.0, 1.0))
-            carry_fade = carry_fade * carry_fade          # quadratic fade-out
-            carry = m0 * p * carry_fade * 0.25
-            eased += carry
-
-        # ── +Y axis crossing modulation ──
-        # Departure (p≈0): tiny extra slowdown, then minor re-acceleration.
-        # Arrival  (p≈1): gentle extra deceleration for velvety landing.
-        if p < 0.12:
-            t = p / 0.12
-            eased += 0.012 * float(np.sin(np.pi * t))     # post-departure bump
-        elif p > 0.88:
-            t = (p - 0.88) / 0.12
-            eased -= 0.012 * float(np.sin(np.pi * t))     # pre-arrival cushion
-
-        return float(np.clip(eased, 0.0, 1.02))
-
-    @staticmethod
-    def _s_curve_with_initial_velocity(
-        progress: float,
-        initial_slope: float,
-        end_slope: float = 0.0,
-        lazy_glide: bool = False,
-    ) -> float:
-        """Legacy cubic Hermite easing (kept for test compatibility)."""
-        p = float(np.clip(progress, 0.0, 1.0))
-        p_eval = p
-        carrying = end_slope > 1e-3  # carrying velocity through to next journey
-
-        if (not lazy_glide) and (not carrying) and (0.90 < p < 1.0):
-            # Arrival-only micro "time stretch" before +Y crossing.
-            # Skip when carrying velocity through to next journey.
-            t = (p - 0.90) / 0.10
-            p_eval = float(np.clip(p - (0.020 * np.sin(np.pi * t)), 0.0, 1.0))
-
-        m0 = float(np.clip(initial_slope, 0.0, 2.5))
-        m1 = float(np.clip(end_slope, 0.0, 2.5))
-        h10 = (p_eval * p_eval * p_eval) - (2.0 * p_eval * p_eval) + p_eval
-        h01 = (-2.0 * p_eval * p_eval * p_eval) + (3.0 * p_eval * p_eval)
-        h11 = (p_eval * p_eval * p_eval) - (p_eval * p_eval)
-        eased = (h10 * m0) + h01 + (h11 * m1)
-        if (not lazy_glide) and (not carrying) and p > 0.92:
-            # Landing overshoot - skip when carrying velocity through
-            t = (p - 0.92) / 0.08
-            overshoot = 0.025 * float(np.sin(t * np.pi))
-            eased += overshoot
-
-        return float(np.clip(eased, 0.0, 1.04))
-
-    def _compute_initial_speed_slope(self, event: BeatEvent, interval_beats: int) -> float:
-        """Map current angular velocity to a normalized easing start slope.
-
-        Short journeys (1-2 beats) use a lower slope cap to prevent
-        whip-like starts when inheriting velocity from a fast arc.
-        """
-        bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-        if bpm <= 0.0:
-            bpm = float(getattr(event, "bpm", 0.0) or 0.0)
-        bpm = float(np.clip(bpm if bpm > 0.0 else 120.0, 40.0, 240.0))
-
-        beats_per_second = bpm / 60.0
-        target_duration_s = float(max(1e-3, float(interval_beats) / max(1e-6, beats_per_second)))
-        progress_rate = 1.0 / target_duration_s
-
-        denom = max(1e-6, self._journey_total_rotation * progress_rate)
-        slope = self._angular_velocity / denom
-
-        # Cap slope based on journey length: short arcs must not whip-start
-        max_slope = 1.2 if int(interval_beats) <= 2 else 2.0
-        return float(np.clip(slope, 0.0, max_slope))
 
     @staticmethod
     def _wrapped_phase_delta(current: float, previous: float) -> float:
@@ -1496,12 +1316,8 @@ class StrokeMapper:
 
     def _radius_cap_for_center(self, center_y: float) -> float:
         """Maximum radius that keeps orbit inside normalized [-1, 1] bounds in both axes."""
-        # Include expression-layer Y wander in the cap math so boundary
-        # protection matches prior X-wander behavior and avoids D-shape clipping.
         effective_center_y = float(center_y + self._center_y_offset)
-        y_cap = float(max(0.0, min(1.0 - effective_center_y, 1.0 + effective_center_y)))
-        x_cap = float(max(0.0, 1.0 - abs(self._center_x_offset)))
-        return min(y_cap, x_cap)
+        return float(max(0.0, min(1.0 - effective_center_y, 1.0 + effective_center_y)))
 
     def _compute_landing_rotation(self, start_angle: float, interval_beats: int) -> float:
         _ = interval_beats
