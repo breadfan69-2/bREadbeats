@@ -72,6 +72,13 @@ POWERSHELL_BUILD_QUICKSTART.md
 build.log
 *finaldebug.txt
 scripts/*.beta.txt
+*_FINDINGS_*.md
+*_IMPLEMENTATION_PLAN_*.md
+*_IMPLEMENTATION_BLUEPRINT_*.md
+*_IMPLEMENTATION_HANDOFF_*.md
+*_UPGRADE_PLAN_*.md
+tools/gate_analysis_output.txt
+tools/test_failures.txt
 
 # Runtime-generated reports
 audio_session_report.json
