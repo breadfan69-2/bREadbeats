@@ -59,7 +59,7 @@ class StrokeMapper:
         self._reactive_bounce_y = 0.0
         self._journey_start_total_center_y = self._baseline_center_y
 
-        self._orbit_phase = float(np.pi / 2.0)  # start at park angle (+Y axis)
+        self._orbit_phase = 0.0
         self._active_interval_beats = 8
         self._last_trigger_kind = "creep"
         self._park_radius = 0.70
@@ -85,6 +85,7 @@ class StrokeMapper:
         self._last_phase_for_velocity = self._orbit_phase
         self._journey_initial_speed_slope = 0.0
         self._journey_nominal_angular_speed = 0.0  # nominal speed for continuation glide
+        self._journey_target_radius = self._park_radius  # latched at journey start; never re-evaluated mid-arc
         self._orbit_phase_initialized = False  # True once orbit_phase has been actively tracked
         self._lazy_glide_active = False
         self._journey_cold_start = True
@@ -171,11 +172,21 @@ class StrokeMapper:
         # ── Spiral-out (slingshot exit from park) ──
         self._spiral_out_active: bool = False       # True while spiralling out of park
         self._spiral_out_progress: float = 0.0      # 0→1 over spiral duration
-        self._spiral_out_beats: float = 1.5          # how many beats the spiral-out takes
+        self._spiral_out_beats: float = 3.0          # how many beats the spiral-out takes
         self._spiral_out_start_radius: float = self._park_idle_radius
         self._spiral_out_target_radius: float = self._park_radius
         self._spiral_out_start_center_y: float = self._baseline_center_y
         self._spiral_out_target_center_y: float = self._baseline_center_y
+
+        # ── Silence-exit position crossfade ──
+        # Blends from last park position to computed trajectory over N beats
+        # so the device swirls out gradually instead of teleporting.
+        self._silence_exit_xfade_active: bool = False
+        self._silence_exit_xfade_progress: float = 0.0
+        self._silence_exit_xfade_beats: float = 2.0   # duration in beats
+        self._silence_exit_latch_alpha: float = 0.0
+        self._silence_exit_latch_beta: float = 0.0
+        self._was_silence_active: bool = True           # tracks previous frame
 
         # ── Entry journey gating (§8) ──
         self._post_silence_entry_done: bool = False  # True after first entry journey completes
@@ -454,16 +465,13 @@ class StrokeMapper:
             # Reset spiral-out so next exit from park triggers it
             self._spiral_out_active = False
             self._spiral_out_progress = 0.0
+            # Reset silence-exit crossfade so it re-triggers on next exit
+            self._silence_exit_xfade_active = False
+            self._silence_exit_xfade_progress = 0.0
             # Reset entry gating on silence
             self._post_silence_entry_done = False
             self._post_wait_reentry_active = False
             self._anchor_phrase_locked = False
-            # Cancel expression overrides so they can't overwrite silence positions
-            self._expr_pause_spiral_active = False
-            self._expr_pause_spiral_progress = 0.0
-            self._expr_pause_return_active = False
-            self._expr_pause_return_progress = 0.0
-            self._tension_pause_active = False
 
             creep_motion_disabled = not bool(getattr(self.config.creep, "enabled", True))
             if creep_motion_disabled and decision.trigger_kind == "creep":
@@ -608,6 +616,13 @@ class StrokeMapper:
             self._swirl_progress = 0.0
             self._creep_park_active = False
             self._creep_park_progress = 0.0
+
+            # ── Silence-exit position crossfade: latch park position on transition ──
+            if self._was_silence_active and not self._silence_exit_xfade_active:
+                self._silence_exit_xfade_active = True
+                self._silence_exit_xfade_progress = 0.0
+                self._silence_exit_latch_alpha = float(self.state.alpha)
+                self._silence_exit_latch_beta = float(self.state.beta)
 
             # ── Spiral-out: launch on first beat/downbeat/syncopation after silence ──
             if not self._spiral_out_active and self._startup_beats_seen <= 1.0:
@@ -825,6 +840,29 @@ class StrokeMapper:
                 if started_new_journey:
                     self._journey_fixed_radius = bloom_target_radius
                     self._journey_latched_bloom = float(decision.radius_bloom)
+
+                    # ── Latch target radius at journey start ──
+                    # Prevents mid-arc knee when _is_upcoming_beat_expected
+                    # flips frame-to-frame after the unhook window saturates.
+                    continuation_expected_at_start = bool(
+                        self._journey_linked
+                        or self._is_upcoming_beat_expected(now=now, decision=decision)
+                    )
+                    if continuation_expected_at_start:
+                        self._journey_target_radius = float(np.clip(
+                            self._journey_latched_bloom, type_max_radius, 1.0
+                        ))
+                    else:
+                        self._journey_target_radius = type_max_radius
+
+                    # During post-silence ramp, cap target radius to the
+                    # ramp-scaled bloom so the orbit can't leap to full size
+                    # before the slow-ramp period has expired.
+                    if self._post_silence_radius_ramp < 1.0:
+                        self._journey_target_radius = float(
+                            min(self._journey_target_radius, bloom_target_radius)
+                        )
+
                     # Only overwrite _actual_radius if no mode transition is active
                     # (mode transition interpolation takes priority)
                     if not self._mode_transition_active:
@@ -890,20 +928,10 @@ class StrokeMapper:
                             + ((self._journey_fixed_radius - self._journey_start_radius) * self._quintic_ease(p))
                         )
                     else:
-                        # Determine the quintic-ease target radius.
-                        # If continuation is expected, fold the bloom expansion
-                        # INTO the target so the ramp smoothly reaches it instead
-                        # of a hard max() stomp on frame-1.
-                        continuation_expected = bool(
-                            self._journey_linked
-                            or self._is_upcoming_beat_expected(now=now, decision=decision)
-                        )
-                        if continuation_expected:
-                            target_radius = float(np.clip(
-                                self._journey_latched_bloom, type_max_radius, 1.0
-                            ))
-                        else:
-                            target_radius = type_max_radius
+                        # Use journey-start-latched target radius.
+                        # Evaluated once at journey start and frozen so mid-arc
+                        # prediction flips never cause a radius discontinuity.
+                        target_radius = self._journey_target_radius
 
                         if self._journey_cold_start:
                             first_pass_progress = float(np.clip(
@@ -911,8 +939,14 @@ class StrokeMapper:
                                 0.0,
                                 1.0,
                             ))
-                            # Expand to full radius within first 40% of orbit
-                            unhook_window = 0.40
+                            # During post-silence ramp, widen the unhook window
+                            # so radius expands over the full orbit instead of the
+                            # first 40%.  This prevents a sudden radius pop when
+                            # the first real beat fires after silence.
+                            if self._post_silence_radius_ramp < 1.0:
+                                unhook_window = 0.90
+                            else:
+                                unhook_window = 0.40
                             unhook_t = float(np.clip(first_pass_progress / unhook_window, 0.0, 1.0))
                             # Quintic ease from *current* radius to target — eliminates
                             # knee when new trigger geometry differs from the running orbit.
@@ -955,13 +989,15 @@ class StrokeMapper:
                             if relink_t >= 1.0:
                                 self._journey_relink_active = False
 
-                    # Allow smooth radius ramp during park-exit transitions;
-                    # the 0.70 floor is only appropriate in steady-state arcs.
-                    if (
-                        decision.trigger_kind == "start"
-                        or self._spiral_out_active
-                        or self._post_silence_radius_ramp < 1.0
-                    ):
+                    if decision.trigger_kind == "start":
+                        min_radius_bound = self._min_radius
+                    elif (self._spiral_out_active
+                          or self._post_silence_radius_ramp < 1.0
+                          or self._journey_cold_start):
+                        # Transitioning out of park / silence / mid-decay:
+                        # allow the orbit to start at its current small radius
+                        # and expand gradually via spiral-out / cold-start ramp.
+                        # Clamping to 0.70 here would teleport the device.
                         min_radius_bound = self._min_radius
                     else:
                         min_radius_bound = 0.70
@@ -975,8 +1011,10 @@ class StrokeMapper:
                     progress=progress,
                     silence_active=False,
                 )
-                # Center interpolation: unless mode transition is overriding
-                if not self._mode_transition_active:
+                # Center interpolation: unless mode transition or spiral-out is overriding.
+                # Spiral-out has its own quintic center_y blend; let it take priority
+                # so park→active center_y stays on the spiral-out curve.
+                if not self._mode_transition_active and not self._spiral_out_active:
                     if progress < 1.0:
                         center_blend = self._quintic_ease(progress)
                         self._base_center_y = float(
@@ -1015,8 +1053,8 @@ class StrokeMapper:
         # ── Expression layer: apply center Y wander offset only ──
         beta = float(beta + self._center_y_offset)
 
-        # ── §2/§3: Expression pause spiral override (never during silence) ──
-        if self._expr_pause_spiral_active and not decision.silence_active:
+        # ── §2/§3: Expression pause spiral override ──
+        if self._expr_pause_spiral_active:
             # Logarithmic spiral inward: radius shrinks logarithmically
             t_sp = self._quintic_ease(self._expr_pause_spiral_progress)
             # Logarithmic interpolation: r = r_start * (r_target/r_start)^t
@@ -1028,7 +1066,7 @@ class StrokeMapper:
             alpha = float(log_radius * np.cos(self._orbit_phase))
             beta = float(total_center_y + log_radius * np.sin(self._orbit_phase))
 
-        if self._expr_pause_return_active and not decision.silence_active:
+        if self._expr_pause_return_active:
             # §3: Spiral back out to normal orbit from pause, landing at anchor
             t_ret = self._quintic_ease(self._expr_pause_return_progress)
             r_start_ret = max(self._expr_pause_return_start_radius, 0.05)
@@ -1038,8 +1076,8 @@ class StrokeMapper:
             alpha = float(log_radius_ret * np.cos(self._orbit_phase))
             beta = float(total_center_y + log_radius_ret * np.sin(self._orbit_phase))
 
-        # ── Expression layer: tension pause override (legacy fade, never during silence) ──
-        if self._tension_pause_active and not decision.silence_active:
+        # ── Expression layer: tension pause override (legacy fade) ──
+        if self._tension_pause_active:
             if now < self._tension_pause_end_time:
                 alpha = self._tension_pause_hold_alpha
                 beta = self._tension_pause_hold_beta
@@ -1061,6 +1099,37 @@ class StrokeMapper:
                 if not self._post_silence_entry_done and self._startup_beats_seen < 8:
                     # Keep dot in entry mode by not overriding alpha/beta
                     pass
+
+        # ── Silence-exit position crossfade ──
+        # Gradually blend from the latched park position to the computed
+        # trajectory position over N beats so the device swirls out smoothly
+        # instead of teleporting on silence→active transition.
+        if self._silence_exit_xfade_active:
+            bpm_xf = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+            if bpm_xf <= 0.0:
+                bpm_xf = float(getattr(event, "bpm", 0.0) or 0.0)
+            bpm_xf = float(np.clip(bpm_xf if bpm_xf > 0.0 else 120.0, 40.0, 240.0))
+            beat_dur_xf = 60.0 / bpm_xf
+            xfade_dur_s = float(self._silence_exit_xfade_beats * beat_dur_xf)
+            self._silence_exit_xfade_progress = float(np.clip(
+                self._silence_exit_xfade_progress + (dt / max(xfade_dur_s, 1e-3)),
+                0.0,
+                1.0,
+            ))
+            xf_t = self._quintic_ease(self._silence_exit_xfade_progress)
+            alpha = float(
+                self._silence_exit_latch_alpha
+                + ((alpha - self._silence_exit_latch_alpha) * xf_t)
+            )
+            beta = float(
+                self._silence_exit_latch_beta
+                + ((beta - self._silence_exit_latch_beta) * xf_t)
+            )
+            if self._silence_exit_xfade_progress >= 1.0:
+                self._silence_exit_xfade_active = False
+
+        # Track silence state for next-frame transition detection
+        self._was_silence_active = bool(decision.silence_active)
 
         self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
         self.state.beta = float(np.clip(beta, -1.0, 1.0))
