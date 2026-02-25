@@ -1583,7 +1583,7 @@ class AudioEngine:
         Finds the dominant periodic peak in the spectral flux buffer.
         Called every ~500ms from the audio callback."""
         n = len(self._onset_buffer)
-        if n < 120:  # Need at least ~3 seconds of data
+        if n < 80:  # Need at least ~1.9 seconds of data
             return
 
         signal = np.array(self._onset_buffer, dtype=np.float64)
@@ -1850,8 +1850,8 @@ class AudioEngine:
                     if abs(self.phase_error_ms) > 10.0:  # Only correct meaningful errors
                         # Convert ms error to phase fraction
                         beat_period_ms = 60000.0 / self._metronome_bpm
-                        phase_correction = (self.phase_error_ms / beat_period_ms) * 0.15  # 15% correction
-                        phase_correction = max(-0.1, min(0.1, phase_correction))  # Clamp
+                        phase_correction = (self.phase_error_ms / beat_period_ms) * 0.30  # 30% correction
+                        phase_correction = max(-0.15, min(0.15, phase_correction))  # Clamp
                         self._metronome_phase += phase_correction
                         log_event("INFO", "Downbeat", "Phase correction from downbeat",
                                   error_ms=f"{self.phase_error_ms:.1f}",
@@ -1913,7 +1913,7 @@ class AudioEngine:
             gain = self._metronome_pll_base_gain + self._metronome_pll_conf_gain * conf
             error_scale = 0.5 + 0.5 * min(1.0, abs(error) / 0.25)
             correction = error * gain * min(1.0, onset_strength) * error_scale
-            correction = max(-0.14, min(0.14, correction))
+            correction = max(-0.20, min(0.20, correction))
             self._metronome_phase += correction
 
     def _reset_acf_metronome(self):

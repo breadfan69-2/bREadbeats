@@ -84,11 +84,11 @@ class BeatDetectionConfig:
     consecutive_match_threshold: int = 3       
     downbeat_pattern_enabled: bool = True      
     acf_interval_ms: float = 180.0              
-    metronome_bpm_alpha_slow: float = 0.06      
-    metronome_bpm_alpha_fast: float = 0.28      
+    metronome_bpm_alpha_slow: float = 0.08      
+    metronome_bpm_alpha_fast: float = 0.40      
     metronome_pll_window: float = 0.35          
-    metronome_pll_base_gain: float = 0.20       
-    metronome_pll_conf_gain: float = 0.12       
+    metronome_pll_base_gain: float = 0.28       
+    metronome_pll_conf_gain: float = 0.17       
     tempo_fusion_min_acf_weight: float = 0.15   
     tempo_fusion_max_acf_weight: float = 0.82   
     beat_dedup_fraction: float = 0.20            
@@ -110,7 +110,7 @@ class BeatDetectionConfig:
     syncopation_bpm_limit: float = 130.0         
     syncopation_arc_size: float = 0.82                
     syncopation_speed: float = 1.0                 
-    scheduled_lead_ms: int = 50                    
+    scheduled_lead_ms: int = 80                    
     strict_bass_motion_gate_enabled: bool = False  
     center_jitter_flux_guard_enabled: bool = True 
     center_jitter_flux_delta_threshold: float = 0.20  
