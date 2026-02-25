@@ -763,20 +763,14 @@ class StrokeMapper:
                     type_park_radius = float(geom["park_radius"])
                     type_max_radius = float(geom["max_radius"])
 
-# Latch learning modifiers at journey start so mid-arc
+# Latch learning speed_mult at journey start so mid-arc
                     # predictions never cause radius/speed discontinuities.
                     if started_new_journey:
                         learning = decision.learning
                         if learning.active:
-                            self._journey_learning_mult = float(np.clip(learning.radius_mult, 0.3, 2.5))
-                            # Syncopation-specific size/speed scaling
-                            if decision.trigger_kind == "syncopation":
-                                sync_size = float(np.clip(learning.sync_size_mult, 0.5, 2.0))
-                                self._journey_max_radius = float(np.clip(
-                                    self._journey_max_radius * sync_size,
-                                    self._journey_park_radius,
-                                    1.0,
-                                ))
+                            # speed_mult (0..1) scales motion amplitude:
+                            # 0 = stay parked, 1 = full bloom radius
+                            self._journey_learning_mult = float(np.clip(learning.speed_mult, 0.0, 1.0))
                         else:
                             self._journey_learning_mult = 1.0
 

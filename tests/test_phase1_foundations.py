@@ -58,7 +58,8 @@ class TestRollingDeques(Phase1Mixin, unittest.TestCase):
         bi = BeatIntelligence(Config())
         for _ in range(80):
             bi.build_decision(self._event(), dt=1 / 60)
-        self.assertEqual(len(bi._recent_flux_values), 60)
+        # _recent_flux_values holds ~10 s of history (600 frames @ 60 fps)
+        self.assertEqual(len(bi._recent_flux_values), 80)
         self.assertEqual(len(bi._recent_low_band_values), 60)
 
 

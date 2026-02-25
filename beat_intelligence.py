@@ -25,13 +25,14 @@ class BandEnergies:
 
 @dataclass
 class LearningOutputs:
-    """Bounded modifier outputs from the learning adapter."""
-    divisor_hint: int = 1              # beats-between-strokes hint from cadence_rule
-    radius_mult: float = 1.0           # scale arc radius
-    lead_ms: float = 0.0               # predictive arc timing offset
-    sync_size_mult: float = 1.0        # syncopation arc size multiplier
-    sync_speed_mult: float = 1.0       # syncopation arc speed multiplier
-    gate_bias: float = 0.0             # gate strictness bias (-1..+1)
+    """Cue-based speed prediction from the learning adapter.
+
+    The model answers one question: given recent audio, how fast should
+    motion be?  ``speed_mult`` (0 = still, 1 = full speed) is the sole
+    continuous output.  ``cadence_hint`` selects beats-between-strokes.
+    """
+    speed_mult: float = 0.5            # 0..1 target motion speed
+    cadence_hint: int = 1              # beats-between-strokes (1, 2, or 4)
     active: bool = False               # whether learning produced valid output
 
 
@@ -107,7 +108,7 @@ class BeatIntelligence:
         self.treble_lift_release = 0.16
 
         # ── Phase 1: Rolling history deques (#1) ──
-        self._recent_flux_values: deque = deque(maxlen=60)
+        self._recent_flux_values: deque = deque(maxlen=600)  # ~10 s for lookback features
         self._recent_low_band_values: deque = deque(maxlen=60)
         self._recent_mid_band_values: deque = deque(maxlen=60)
         self._recent_high_band_values: deque = deque(maxlen=60)
@@ -191,13 +192,9 @@ class BeatIntelligence:
         self._learning_cadence_rule: dict = {}
         self._learning_outputs: LearningOutputs = LearningOutputs()
         # Blended output fields (EMA-smoothed)
-        self._learned_divisor_hint: int = 1
+        self._learned_speed_mult: float = 0.5
+        self._learned_cadence_hint: int = 1
         self._committed_divisor_hint: int = 1   # only applied at journey start
-        self._learned_radius_mult: float = 1.0
-        self._learned_lead_ms: float = 0.0
-        self._learned_sync_size_mult: float = 1.0
-        self._learned_sync_speed_mult: float = 1.0
-        self._learned_gate_bias: float = 0.0
 
         # ── Phrase Commitment: measure-locked high-gear hold ──
         self._phrase_committed: bool = False
@@ -234,42 +231,6 @@ class BeatIntelligence:
         clipped = float(np.clip(value_db, floor_db, 0.0))
         return float(np.clip((clipped - floor_db) / max(1e-9, -floor_db), 0.0, 1.0))
 
-    def _volume_calibrated_rms_db(self, raw_rms_db: float) -> float:
-        """Offset raw_rms_db by the session volume level so learning features
-        behave as if OS volume were at 100%.
-
-        Uses the rolling RMS P50 (median) as the session baseline and
-        shifts toward the training distribution mean.  The *dynamics*
-        (distance from median) are preserved, only the offset changes.
-        """
-        if len(self._recent_rms_db) < 30:
-            return raw_rms_db  # not enough history to calibrate
-        session_median = float(np.percentile(list(self._recent_rms_db), 50))
-        # Always compute offset in dBFS space. If the model stored a linear
-        # mean, convert it to dBFS first so the offset is dimensionally correct.
-        if self._learning_expects_linear_rms():
-            linear_mean = float(self._learning_norm_mean.get("rms", 0.01))
-            training_mean = 20.0 * float(np.log10(max(1e-10, linear_mean)))
-        else:
-            training_mean = float(self._learning_norm_mean.get("rms", -34.0))
-        offset = training_mean - session_median
-        return float(raw_rms_db + offset)
-
-    def _volume_normalized_flux(self, raw_flux: float) -> float:
-        """Normalize raw spectral flux against recent P95 to 0..1 range,
-        then re-scale to the training flux mean so z-score normalization
-        produces volume-independent results."""
-        flux_history = list(self._recent_flux_values)
-        if len(flux_history) < 10:
-            return raw_flux  # not enough history
-        p95 = float(np.percentile(flux_history, 95))
-        ref = max(p95, 1e-9)
-        normed = float(np.clip(raw_flux / ref, 0.0, 1.0))
-        # Re-scale to training range so z-score normalization stays centred
-        training_mean = float(self._learning_norm_mean.get("spectral_flux", 0.1))
-        training_std = max(float(self._learning_norm_std.get("spectral_flux", 0.05)), 1e-8)
-        return float(training_mean + (normed - 0.5) * 2.0 * training_std)
-
     def _event_rms_db(self, event: BeatEvent) -> float:
         raw_rms_db = float(getattr(event, "raw_rms_db", RMS_DB_FLOOR) or RMS_DB_FLOOR)
         if np.isfinite(raw_rms_db) and raw_rms_db > RMS_DB_FLOOR:
@@ -288,13 +249,6 @@ class BeatIntelligence:
         if 0.0 < value <= 1.0:
             return self._linear_to_dbfs(value)
         return float(np.clip(value, RMS_DB_FLOOR, 12.0))
-
-    def _learning_expects_linear_rms(self) -> bool:
-        if not self._learning_model_loaded:
-            return False
-        mean = float(self._learning_norm_mean.get("rms", -999.0))
-        std = float(self._learning_norm_std.get("rms", -1.0))
-        return bool(0.0 <= mean <= 1.5 and 0.0 < std <= 1.0)
 
 
     def set_audio_engine(self, audio_engine) -> None:
@@ -373,70 +327,90 @@ class BeatIntelligence:
             self._learning_model_loaded = True
 
             targets = payload.get("target_columns", list(models.keys()))
-            print(f"[Learning] Loaded rule_fit: {len(feature_cols)} features → {len(targets)} targets")
+            print(f"[Learning] Loaded rule_fit: {len(feature_cols)} features -> {len(targets)} targets")
         except Exception as exc:
             print(f"[Learning] Failed to load rule_fit: {exc}")
             self._learning_model = None
             self._learning_model_loaded = False
 
     def _build_runtime_feature_values(self, event: BeatEvent) -> dict[str, float]:
-        """Map current BeatEvent + BandEnergies to the 13 model features (#10)."""
-        peak = float(getattr(event, "peak_energy", 0.0) or 0.0)
-        raw_rms_db = self._event_rms_db(event)
+        """Build the 14-feature vector that matches the cue-based training
+        pipeline.  Instantaneous features come from the current event /
+        BandEnergies; lookback aggregates are computed from rolling deques.
+
+        Band energies are already P95-normalised by update_band_energies,
+        and flux is P95-normalised here against the rolling deque, so all
+        volume-dependent columns are inherently volume-independent.
+        """
+        rms_db = self._event_rms_db(event)
         raw_flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
 
-        # Volume-calibrate absolute features so the learning model
-        # sees the same z-score distribution regardless of OS volume.
-        calibrated_rms_db = self._volume_calibrated_rms_db(raw_rms_db)
-        calibrated_flux = self._volume_normalized_flux(raw_flux)
-
-        if self._learning_expects_linear_rms():
-            calibrated_linear = float(10.0 ** (calibrated_rms_db / 20.0))
-            energy_mean = calibrated_linear if calibrated_linear > 0.0 else peak
-            log_energy = float(np.log10(max(1e-10, energy_mean)))
+        # P95-normalize flux against rolling history (matches training pipeline)
+        flux_history = list(self._recent_flux_values)
+        if len(flux_history) >= 10:
+            p95 = float(np.percentile(flux_history, 95))
+            flux_norm = float(np.clip(raw_flux / max(p95, 1e-9), 0.0, 1.0))
         else:
-            energy_mean = calibrated_rms_db if np.isfinite(calibrated_rms_db) else self._linear_to_dbfs(peak)
-            log_energy = energy_mean
+            flux_norm = 0.0  # not enough history yet
 
+        # Band energies are already P95-normalised (0..1) by update_band_energies
         sub = float(self.energies.sub_bass)
         low = float(self.energies.low_mid)
         mid = float(self.energies.mid)
         high = float(self.energies.high)
 
-        # Derived features
-        low_high_ratio = sub / max(high, 1e-10)
-        energy_norm = self._dbfs_to_unit(energy_mean)
+        # Derived & spectral features
+        eps = 1e-10
+        low_high_ratio = float((sub + low + eps) / (high + eps))
 
-        # Spectral features: use event fields if available, fallback to estimates
         centroid = float(getattr(event, "spectral_centroid_hz", 0.0) or 0.0)
-        bandwidth = float(getattr(event, "spectral_bandwidth_hz", 0.0) or 0.0)
-        rolloff = float(getattr(event, "spectral_rolloff_hz", 0.0) or 0.0)
         flatness = float(getattr(event, "spectral_flatness", 0.0) or 0.0)
 
-        # Estimate missing spectral features from band energies
+        # Fallback estimates when spectral features not available from audio engine
         if centroid <= 0.0:
-            centroid = 80.0 + 3000.0 * float(np.clip(high / max(sub + low + 1e-10, 1e-10), 0.0, 1.0))
-        if bandwidth <= 0.0:
-            bandwidth = 200.0 + 4000.0 * float(np.clip((mid + high) / max(sub + low + mid + high + 1e-10, 1e-10), 0.0, 1.0))
-        if rolloff <= 0.0:
-            rolloff = 1000.0 + 6000.0 * float(np.clip(high / max(sub + mid + 1e-10, 1e-10), 0.0, 1.0))
+            centroid = 80.0 + 3000.0 * float(np.clip(high / max(sub + low + eps, eps), 0.0, 1.0))
         if flatness <= 0.0:
+            energy_norm = self._dbfs_to_unit(rms_db)
             flatness = 0.35 + 0.50 * (1.0 - energy_norm)
 
+        # ── Lookback aggregate features (10-second window) ──
+        rms_list = list(self._recent_rms_db)
+        flux_list = flux_history  # already computed above
+        bass_list = list(self._band_energy_history.get("sub_bass", deque()))
+
+        if len(rms_list) >= 3:
+            rms_arr = np.asarray(rms_list, dtype=np.float64)
+            rms_mean_10s = float(np.mean(rms_arr))
+            rms_std_10s = float(np.std(rms_arr))
+            # Linear trend: slope of RMS over lookback window
+            x = np.arange(len(rms_arr), dtype=np.float64)
+            x_mean = np.mean(x)
+            y_mean = np.mean(rms_arr)
+            denom = float(np.sum(np.square(x - x_mean)))
+            energy_trend_10s = float(np.sum((x - x_mean) * (rms_arr - y_mean)) / max(denom, 1e-12))
+        else:
+            rms_mean_10s = rms_db
+            rms_std_10s = 0.0
+            energy_trend_10s = 0.0
+
+        flux_mean_10s = float(np.mean(flux_list)) if len(flux_list) >= 3 else flux_norm
+        bass_mean_10s = float(np.mean(bass_list)) if len(bass_list) >= 3 else sub
+
         return {
-            "rms": energy_mean,
-            "log_energy": log_energy,
-            "spectral_flux": calibrated_flux,
-            "flux_delta": 0.0,  # delta not tracked per-frame yet
+            "rms": rms_db,
+            "spectral_flux": flux_norm,
             "sub_bass_energy": sub,
             "low_mid_energy": low,
             "mid_energy": mid,
             "high_energy": high,
             "low_high_ratio": low_high_ratio,
             "spectral_centroid_hz": centroid,
-            "spectral_bandwidth_hz": bandwidth,
-            "spectral_rolloff_hz": rolloff,
             "spectral_flatness": flatness,
+            "rms_mean_10s": rms_mean_10s,
+            "rms_std_10s": rms_std_10s,
+            "flux_mean_10s": flux_mean_10s,
+            "bass_mean_10s": bass_mean_10s,
+            "energy_trend_10s": energy_trend_10s,
         }
 
     def _predict_learning_targets(self, features: dict[str, float]) -> dict[str, float]:
@@ -472,34 +446,28 @@ class BeatIntelligence:
         except Exception:
             return {}
 
-    def _derive_cadence_beats(self, features: dict[str, float]) -> int:
-        """Derive beats_between_strokes from cadence_rule + weighted RMS/flux."""
+    def _derive_cadence_beats(self, predicted_speed: float) -> int:
+        """Derive beats-between-strokes from cadence_rule thresholds applied
+        to the model's predicted speed_mult value."""
         rule = self._learning_cadence_rule
         if not rule:
             return 1
 
-        quiet_thresh = float(rule.get("quiet_threshold", -0.4))
-        mid_thresh = float(rule.get("mid_threshold", 0.08))
+        quiet_thresh = float(rule.get("quiet_threshold", 0.15))
+        mid_thresh = float(rule.get("mid_threshold", 0.45))
         mapping = rule.get("mapping", {})
 
-        # Use z-score normalized RMS for cadence decision
-        rms = features.get("rms", 0.0)
-        rms_mean = self._learning_norm_mean.get("rms", -34.0)
-        rms_std = max(self._learning_norm_std.get("rms", 8.0), 1e-8)
-        z_rms = (rms - rms_mean) / rms_std
-
-        if z_rms < quiet_thresh:
+        if predicted_speed < quiet_thresh:
             return int(mapping.get("quiet", 4))
-        elif z_rms < mid_thresh:
+        elif predicted_speed < mid_thresh:
             return int(mapping.get("mid", 2))
         else:
             return int(mapping.get("loud", 1))
 
     def _update_learning_adapter(self, event: BeatEvent) -> LearningOutputs:
-        """Runtime teaching blend (#18): extract features, predict, blend outputs.
-
-        Only runs on beat events when learning is enabled. Outputs are bounded
-        modifiers, never direct command writers.
+        """Cue-based speed prediction: extract lookback features, predict
+        speed_mult, derive cadence.  Only fires on beat events when learning
+        is enabled.  The single output is ``speed_mult`` (0 = still, 1 = full).
         """
         outputs = LearningOutputs()
 
@@ -526,66 +494,25 @@ class BeatIntelligence:
             return self._learning_outputs
 
         strength = self._learning_strength
-        no_motion_bias = self._learning_no_motion_bias
 
-        # Clamp raw predictions to valid ranges
-        arc_size = float(np.clip(predictions.get("arc_size", 0.5), 0.0, 1.0))
-        arc_dur_frac = float(np.clip(predictions.get("arc_duration_frac", 1.0), 0.1, 4.0))
-        jitter_mix = float(np.clip(predictions.get("jitter_mix", 0.0), 0.0, 1.0))
-        creep_mix = float(np.clip(predictions.get("creep_mix", 0.5), 0.0, 1.0))
-        gate_strict = float(np.clip(predictions.get("gate_strictness", 0.5), 0.0, 1.0))
-        burst_prob = float(np.clip(predictions.get("burst_prob", 0.2), 0.0, 1.0))
+        # Clamp raw predicted speed_mult to 0..1
+        raw_speed = float(np.clip(predictions.get("speed_mult", 0.5), 0.0, 1.0))
 
-        # Derive cadence hint
-        cadence_beats = self._derive_cadence_beats(features)
+        # Blend toward neutral (0.5) at low strength
+        blended_speed = 0.5 + strength * (raw_speed - 0.5)
+        blended_speed = float(np.clip(blended_speed, 0.0, 1.0))
 
-        # Apply strength blending (0 = no influence, 1 = full)
-        # Blend toward neutral defaults at low strength
-        radius_mult = 1.0 + strength * (arc_size * 2.0 - 1.0)  # map 0..1 → 0..2, blend
-        radius_mult = float(np.clip(radius_mult, 0.3, 2.5))
+        # Derive cadence from predicted speed
+        cadence_beats = self._derive_cadence_beats(raw_speed)
 
-        sync_size_mult = 1.0 + strength * (arc_size - 0.5)
-        sync_size_mult = float(np.clip(sync_size_mult, 0.5, 2.0))
-
-        sync_speed_mult = 1.0 + strength * (1.0 / max(arc_dur_frac, 0.1) - 1.0)
-        sync_speed_mult = float(np.clip(sync_speed_mult, 0.3, 3.0))
-
-        # creep_mix drives no-motion holdback: higher creep = less motion
-        gate_bias = strength * (gate_strict - 0.5) * 2.0 * no_motion_bias
-        gate_bias = float(np.clip(gate_bias, -1.0, 1.0))
-
-        # lead_ms from jitter_mix: mix drives anticipation
-        lead_ms = strength * jitter_mix * 50.0  # 0..50ms predictive offset
-        lead_ms = float(np.clip(lead_ms, 0.0, 100.0))
+        # EMA smooth speed_mult (slow smoothing to avoid mid-journey jumps)
+        alpha = 0.15
+        self._learned_speed_mult += alpha * (blended_speed - self._learned_speed_mult)
+        self._learned_cadence_hint = cadence_beats  # discrete, no smoothing
 
         outputs = LearningOutputs(
-            divisor_hint=cadence_beats,
-            radius_mult=radius_mult,
-            lead_ms=lead_ms,
-            sync_size_mult=sync_size_mult,
-            sync_speed_mult=sync_speed_mult,
-            gate_bias=gate_bias,
-            active=True,
-        )
-
-        # EMA smooth the blended outputs
-        alpha = 0.3  # smoothing factor
-        alpha_radius = 0.1  # slower smoothing for radius to avoid mid-journey stepping
-        self._learned_divisor_hint = cadence_beats  # discrete, no smoothing
-        self._learned_radius_mult += alpha_radius * (outputs.radius_mult - self._learned_radius_mult)
-        self._learned_lead_ms += alpha * (outputs.lead_ms - self._learned_lead_ms)
-        self._learned_sync_size_mult += alpha * (outputs.sync_size_mult - self._learned_sync_size_mult)
-        self._learned_sync_speed_mult += alpha * (outputs.sync_speed_mult - self._learned_sync_speed_mult)
-        self._learned_gate_bias += alpha * (outputs.gate_bias - self._learned_gate_bias)
-
-        # Write back smoothed values
-        outputs = LearningOutputs(
-            divisor_hint=self._learned_divisor_hint,
-            radius_mult=float(np.clip(self._learned_radius_mult, 0.3, 2.5)),
-            lead_ms=float(np.clip(self._learned_lead_ms, 0.0, 100.0)),
-            sync_size_mult=float(np.clip(self._learned_sync_size_mult, 0.5, 2.0)),
-            sync_speed_mult=float(np.clip(self._learned_sync_speed_mult, 0.3, 3.0)),
-            gate_bias=float(np.clip(self._learned_gate_bias, -1.0, 1.0)),
+            speed_mult=float(np.clip(self._learned_speed_mult, 0.0, 1.0)),
+            cadence_hint=self._learned_cadence_hint,
             active=True,
         )
         self._learning_outputs = outputs
@@ -981,12 +908,6 @@ class BeatIntelligence:
 
         fill_ratio = self._get_spectrum_fill_ratio(trigger_kind)
         required = self._get_overall_amp_fill_required(trigger_kind)
-
-        # Apply learning gate_bias: negative bias lowers the bar (more motion),
-        # positive bias raises it (less motion).  Scaled to ±20% of required.
-        if self._learning_outputs.active and abs(self._learning_outputs.gate_bias) > 1e-3:
-            bias_shift = float(self._learning_outputs.gate_bias * 0.20 * required)
-            required = float(np.clip(required + bias_shift, 0.02, 0.99))
 
         # Check instant fill pass/fail
         instant_passed = fill_ratio >= required
@@ -1556,15 +1477,6 @@ class BeatIntelligence:
             else:
                 self.journey_duration_s = target_duration
 
-            # Apply learning lead_ms: shorten journey so orbit arrives
-            # slightly ahead of the next beat.  Clamped so timing stays sane.
-            if self._learning_outputs.active and self._learning_outputs.lead_ms > 0.5:
-                lead_s = float(np.clip(self._learning_outputs.lead_ms / 1000.0, 0.0, 0.10))
-                self.journey_duration_s = float(max(
-                    self.journey_duration_s * 0.70,
-                    self.journey_duration_s - lead_s,
-                ))
-
             # Apply scheduled pipeline-latency lead (config.beat.scheduled_lead_ms).
             # The audio callback fires AFTER the audio buffer is captured (buffer
             # latency) plus WASAPI loopback delay, so beat timestamps arrive late.
@@ -1587,9 +1499,9 @@ class BeatIntelligence:
             self.journey_elapsed_s = 0.0
             self.journey_active = True
             self._lazy_glide_active = False
-            # Latch pending learning divisor: cadence changes only take
+            # Latch pending learning cadence: cadence changes only take
             # effect at journey boundaries, never mid-arc.
-            self._committed_divisor_hint = self._learned_divisor_hint
+            self._committed_divisor_hint = self._learned_cadence_hint
             return 0.0
 
         if self._journey_duration_blend_frames_remaining > 0:
@@ -1948,8 +1860,8 @@ class BeatIntelligence:
 
         park_bounce_only = bool(hat_only_limited and trigger_kind in ("beat", "syncopation") and not silence_active)
 
-        # Apply learning divisor hint only at journey boundaries.
-        # _committed_divisor_hint is latched from _learned_divisor_hint
+        # Apply learning cadence hint only at journey boundaries.
+        # _committed_divisor_hint is latched from _learned_cadence_hint
         # inside update_journey_progress when a new journey actually starts,
         # so cadence changes never cause mid-arc discontinuities.
         if learning.active and self._committed_divisor_hint > 1:
@@ -1963,7 +1875,7 @@ class BeatIntelligence:
             span = max(0.0, radius_bloom - base)
             radius_bloom = float(np.clip(base + (span * motion_radius_mult), base, 1.0))
 
-        # Learning radius multiplier is applied as a snapshot inside StrokeMapper
+        # Learning speed_mult is applied as a snapshot inside StrokeMapper
         # at journey start, not per-frame here, to avoid mid-arc stepping.
 
         if no_beat_timed_out:

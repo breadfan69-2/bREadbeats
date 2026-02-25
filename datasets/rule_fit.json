@@ -2,174 +2,83 @@
   "status": "ok",
   "feature_columns": [
     "rms",
-    "log_energy",
     "spectral_flux",
-    "flux_delta",
     "sub_bass_energy",
     "low_mid_energy",
     "mid_energy",
     "high_energy",
     "low_high_ratio",
     "spectral_centroid_hz",
-    "spectral_bandwidth_hz",
-    "spectral_rolloff_hz",
-    "spectral_flatness"
+    "spectral_flatness",
+    "rms_mean_10s",
+    "rms_std_10s",
+    "flux_mean_10s",
+    "bass_mean_10s",
+    "energy_trend_10s"
   ],
   "target_columns": [
-    "arc_size",
-    "arc_duration_frac",
-    "jitter_mix",
-    "creep_mix",
-    "gate_strictness",
-    "burst_prob"
+    "speed_mult"
   ],
   "ridge_alpha": 1.0,
-  "unscripted_weight": 3.0,
+  "still_weight": 3.0,
   "normalization": {
     "mean": {
-      "rms": 0.017669098500230976,
-      "log_energy": -5.876129468020745,
-      "spectral_flux": 0.0,
-      "flux_delta": 0.0,
-      "sub_bass_energy": 2.2406600689368124,
-      "low_mid_energy": 0.00012788898530215385,
-      "mid_energy": 5.715032479341495e-06,
-      "high_energy": 2.752757808971113e-07,
-      "low_high_ratio": 3355124.6740021976,
-      "spectral_centroid_hz": 3.0293248212790624,
-      "spectral_bandwidth_hz": 6.201067615540925,
-      "spectral_rolloff_hz": 8.981720322702314,
-      "spectral_flatness": 0.5869658693079559
+      "rms": -16.27799704153831,
+      "spectral_flux": 0.3118263037369923,
+      "sub_bass_energy": 0.29999018124243615,
+      "low_mid_energy": 0.3929876717388018,
+      "mid_energy": 0.36287926307082047,
+      "high_energy": 0.3304165204958559,
+      "low_high_ratio": 11.786433949005364,
+      "spectral_centroid_hz": 2163.0734004277065,
+      "spectral_flatness": 0.32038078067602827,
+      "rms_mean_10s": -16.2305523696592,
+      "rms_std_10s": 5.75548394182001,
+      "flux_mean_10s": 0.3116706380831566,
+      "bass_mean_10s": 0.3011309959111881,
+      "energy_trend_10s": -0.00025140461643259637
     },
     "std": {
-      "rms": 0.025525707342709373,
-      "log_energy": 3.7273634068678243,
-      "spectral_flux": 1e-06,
-      "flux_delta": 1e-06,
-      "sub_bass_energy": 3.2369752393521036,
-      "low_mid_energy": 0.00018475496590657445,
-      "mid_energy": 8.25607183935185e-06,
-      "high_energy": 1e-06,
-      "low_high_ratio": 3999631.3812386594,
-      "spectral_centroid_hz": 3.6112436070249823,
-      "spectral_bandwidth_hz": 7.3922718676372146,
-      "spectral_rolloff_hz": 10.70706576784709,
-      "spectral_flatness": 0.4923760084773439
+      "rms": 10.833838874130661,
+      "spectral_flux": 0.26833828857112973,
+      "sub_bass_energy": 0.3075944622976816,
+      "low_mid_energy": 0.2658508043670886,
+      "mid_energy": 0.28158363610360304,
+      "high_energy": 0.2843801029024475,
+      "low_high_ratio": 87.08770327824877,
+      "spectral_centroid_hz": 1183.0094852830618,
+      "spectral_flatness": 0.18684724641527273,
+      "rms_mean_10s": 7.053291427503124,
+      "rms_std_10s": 5.574007554363306,
+      "flux_mean_10s": 0.14954046236629387,
+      "bass_mean_10s": 0.19682964781499904,
+      "energy_trend_10s": 0.026081697804421974
     }
   },
   "models": {
-    "arc_size": {
-      "intercept": 0.42824062892354764,
+    "speed_mult": {
+      "intercept": 0.35988399725794695,
       "coefficients": {
-        "rms": 0.010568132491720256,
-        "log_energy": -0.003451580930964845,
-        "spectral_flux": 0.0,
-        "flux_delta": 0.0,
-        "sub_bass_energy": 0.010568133198387647,
-        "low_mid_energy": 0.010568099555401096,
-        "mid_energy": 0.010567450707381361,
-        "high_energy": 0.004201771790117984,
-        "low_high_ratio": -0.004501693730538156,
-        "spectral_centroid_hz": -0.004539571183471151,
-        "spectral_bandwidth_hz": -0.004500545255515367,
-        "spectral_rolloff_hz": -0.004539808771311949,
-        "spectral_flatness": 0.004539807417385142
-      }
-    },
-    "arc_duration_frac": {
-      "intercept": 1.2076284049024042,
-      "coefficients": {
-        "rms": -0.01911432238986454,
-        "log_energy": 0.008577811385580739,
-        "spectral_flux": 0.0,
-        "flux_delta": 0.0,
-        "sub_bass_energy": -0.01911432376619058,
-        "low_mid_energy": -0.01911425668350457,
-        "mid_energy": -0.019112961146912424,
-        "high_energy": -0.0075995065914667755,
-        "low_high_ratio": 0.01062973043635772,
-        "spectral_centroid_hz": 0.01070368446634946,
-        "spectral_bandwidth_hz": 0.010627488069908255,
-        "spectral_rolloff_hz": 0.010704146874876613,
-        "spectral_flatness": -0.010704147862809382
-      }
-    },
-    "jitter_mix": {
-      "intercept": 0.17383821622813536,
-      "coefficients": {
-        "rms": 0.007447554908257759,
-        "log_energy": -0.002800836875827727,
-        "spectral_flux": 0.0,
-        "flux_delta": 0.0,
-        "sub_bass_energy": 0.007447555458255292,
-        "low_mid_energy": 0.007447530751698457,
-        "mid_energy": 0.007447054219984012,
-        "high_energy": 0.002961043556920782,
-        "low_high_ratio": -0.003564950203509474,
-        "spectral_centroid_hz": -0.0035925024517782724,
-        "spectral_bandwidth_hz": -0.0035641148206708,
-        "spectral_rolloff_hz": -0.003592674818254371,
-        "spectral_flatness": 0.0035926751312997714
-      }
-    },
-    "creep_mix": {
-      "intercept": 0.5818259059486861,
-      "coefficients": {
-        "rms": -0.016296153716264604,
-        "log_energy": 0.007657389813164694,
-        "spectral_flux": 0.0,
-        "flux_delta": 0.0,
-        "sub_bass_energy": -0.01629615496235374,
-        "low_mid_energy": -0.016296096805777285,
-        "mid_energy": -0.0162949742489989,
-        "high_energy": -0.00647903411325479,
-        "low_high_ratio": 0.00942927876328464,
-        "spectral_centroid_hz": 0.009493132081727336,
-        "spectral_bandwidth_hz": 0.009427342678928636,
-        "spectral_rolloff_hz": 0.009493531509296632,
-        "spectral_flatness": -0.009493532306273894
-      }
-    },
-    "gate_strictness": {
-      "intercept": 0.5911631818249555,
-      "coefficients": {
-        "rms": 0.015683295483179243,
-        "log_energy": -0.009792250341435075,
-        "spectral_flux": 0.0,
-        "flux_delta": 0.0,
-        "sub_bass_energy": 0.015683296818314364,
-        "low_mid_energy": 0.01568323434285236,
-        "mid_energy": 0.015682027332819176,
-        "high_energy": 0.0062352333161541,
-        "low_high_ratio": -0.011655847763621939,
-        "spectral_centroid_hz": -0.011722950295068868,
-        "spectral_bandwidth_hz": -0.011653813167412968,
-        "spectral_rolloff_hz": -0.011723369860201545,
-        "spectral_flatness": 0.011723371228831665
-      }
-    },
-    "burst_prob": {
-      "intercept": 0.1975561670049968,
-      "coefficients": {
-        "rms": 0.005976288208889964,
-        "log_energy": -0.003314132098678392,
-        "spectral_flux": 0.0,
-        "flux_delta": 0.0,
-        "sub_bass_energy": 0.005976288695043459,
-        "low_mid_energy": 0.005976265999273969,
-        "mid_energy": 0.005975827855542865,
-        "high_energy": 0.0023760267819979333,
-        "low_high_ratio": -0.003997002536406797,
-        "spectral_centroid_hz": -0.004021599410491462,
-        "spectral_bandwidth_hz": -0.0039962567390168895,
-        "spectral_rolloff_hz": -0.0040217532922941,
-        "spectral_flatness": 0.004021753599652721
+        "rms": 0.0042891609534134265,
+        "spectral_flux": 0.02580901771279758,
+        "sub_bass_energy": 0.027448544381764847,
+        "low_mid_energy": 0.018483381496946883,
+        "mid_energy": -0.03278820738220851,
+        "high_energy": 0.008244237327518158,
+        "low_high_ratio": 0.0033854856240572422,
+        "spectral_centroid_hz": -0.01620620844263032,
+        "spectral_flatness": -0.006540169133022203,
+        "rms_mean_10s": -0.018812742763097353,
+        "rms_std_10s": -0.008204866379349566,
+        "flux_mean_10s": 0.07276197103361103,
+        "bass_mean_10s": 0.08888404093782386,
+        "energy_trend_10s": 0.039317212340622514
       }
     }
   },
   "cadence_rule": {
-    "quiet_threshold": -0.41532479228892216,
-    "mid_threshold": 0.0785620706362788,
+    "quiet_threshold": 0.30023980848923154,
+    "mid_threshold": 0.47367365111881204,
     "mapping": {
       "quiet": 4,
       "mid": 2,
