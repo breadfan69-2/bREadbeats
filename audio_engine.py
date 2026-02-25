@@ -565,6 +565,8 @@ class AudioEngine:
         self._audioflux_adapter.reset()
         self._shadow_prev_band_energy = 0.0
         self._shadow_prev_flux = 0.0
+        self._rolling_peak_energy = deque(maxlen=430)
+        self._rolling_peak_flux = deque(maxlen=430)
 
     def _build_shadow_feature_frame(
         self,
@@ -572,8 +574,14 @@ class AudioEngine:
         spectral_flux: float,
         sidecar_features: Optional[dict[str, float]] = None,
     ) -> FeatureFrame:
-        peak_ref = max(1e-6, float(self.peak_envelope))
-        flux_ref = max(1e-6, max(self.flux_history[-20:] if self.flux_history else [0.0]))
+        # --- Rolling-peak normalization (10-second window) ---
+        # Track the peak energy and flux over ~10 seconds (~430 frames at 43 fps)
+        # so that if the OS volume is turned down, the *relative* energy still
+        # reaches levels that can trip the 0.42 gate.
+        self._rolling_peak_energy.append(float(band_energy))
+        self._rolling_peak_flux.append(float(spectral_flux))
+        peak_ref = max(1e-6, float(max(self._rolling_peak_energy)))
+        flux_ref = max(1e-6, float(max(self._rolling_peak_flux)))
 
         energy_norm = float(np.clip(float(band_energy) / peak_ref, 0.0, 1.0))
         flux_norm = float(np.clip(float(spectral_flux) / flux_ref, 0.0, 1.0))

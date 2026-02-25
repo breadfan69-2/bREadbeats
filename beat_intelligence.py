@@ -74,26 +74,6 @@ class BeatIntelligence:
         self.silence_close_count = 0
         self._silence_default_enter_db = -66.0
         self._silence_default_exit_db = -58.0
-        self._silence_autocal_window_s = 2.5
-        self._silence_autocal_min_samples = 30
-        self._silence_autocal_started_mono = time.perf_counter()
-        self._silence_autocal_samples: deque = deque(maxlen=300)
-        self._silence_runtime_open_threshold_db: float | None = None
-        self._silence_runtime_close_threshold_db: float | None = None
-        self._silence_autocal_completed = False
-
-        configured_enter_db = silence_threshold_to_dbfs(
-            getattr(self.config.stroke, "silence_threshold", self._silence_default_enter_db),
-            default_linear=0.001,
-        )
-        configured_exit_db = silence_threshold_to_dbfs(
-            getattr(self.config.stroke, "silence_close_threshold", self._silence_default_exit_db),
-            default_linear=0.003,
-        )
-        self._silence_autocal_eligible = bool(
-            abs(configured_enter_db - self._silence_default_enter_db) <= 0.25
-            and abs(configured_exit_db - self._silence_default_exit_db) <= 0.25
-        )
 
         self.active_interval_beats = 8
         self.last_trigger_kind = "creep"
@@ -1291,64 +1271,6 @@ class BeatIntelligence:
             return raw_rms_db
         return float(np.clip(self.rms_envelope, RMS_DB_FLOOR, 12.0))
 
-    def _maybe_update_startup_silence_calibration(self, level_db: float, now: float) -> None:
-        if not self._silence_autocal_eligible or self._silence_autocal_completed:
-            return
-
-        self._silence_autocal_samples.append(float(np.clip(level_db, RMS_DB_FLOOR, 12.0)))
-        elapsed = float(now - self._silence_autocal_started_mono)
-        if elapsed < self._silence_autocal_window_s:
-            return
-
-        if len(self._silence_autocal_samples) < self._silence_autocal_min_samples:
-            self._silence_autocal_completed = True
-            return
-
-        samples = np.array(self._silence_autocal_samples, dtype=float)
-        floor_db = float(np.percentile(samples, 20.0))
-        p90_db = float(np.percentile(samples, 90.0))
-        dynamic_span_db = float(max(0.0, p90_db - floor_db))
-
-        # If startup contains active program material, avoid calibrating from it.
-        # However, if the signal is mostly stable (small dynamic span), treat it
-        # as a valid idle/noise floor even when the absolute floor is relatively loud.
-        if floor_db > -50.0 and dynamic_span_db > 8.0:
-            self._silence_autocal_completed = True
-            log_event(
-                "INFO",
-                "SilenceAutoCal",
-                "Skipped startup silence calibration (non-idle startup)",
-                floor_db=f"{floor_db:.1f}",
-                span_db=f"{dynamic_span_db:.1f}",
-                default_open_db=f"{self._silence_default_enter_db:.1f}",
-                default_close_db=f"{self._silence_default_exit_db:.1f}",
-            )
-            return
-
-        if floor_db > -50.0:
-            open_offset = 2.5
-            close_offset = 5.0
-        else:
-            open_offset = 4.0
-            close_offset = 8.0
-
-        open_db = float(np.clip(floor_db + open_offset, -96.0, -24.0))
-        close_db = float(np.clip(open_db + close_offset, open_db + 2.0, -8.0))
-
-        self._silence_runtime_open_threshold_db = open_db
-        self._silence_runtime_close_threshold_db = close_db
-        self._silence_autocal_completed = True
-        log_event(
-            "INFO",
-            "SilenceAutoCal",
-            "Startup calibration complete",
-            floor_db=f"{floor_db:.1f}",
-            span_db=f"{dynamic_span_db:.1f}",
-            enter_db=f"{open_db:.1f}",
-            exit_db=f"{close_db:.1f}",
-            samples=str(len(self._silence_autocal_samples)),
-        )
-
     def update_silence_deadzone_gate(self, overall_amplitude: float, now: float | None = None) -> bool:
         open_threshold_raw = getattr(self.config.stroke, "silence_threshold", -66.0)
         close_threshold_raw = getattr(self.config.stroke, "silence_close_threshold", -58.0)
@@ -1358,13 +1280,6 @@ class BeatIntelligence:
         if close_threshold <= open_threshold:
             close_threshold = float(min(12.0, open_threshold + 1.5))
         level_db = self._coerce_amplitude_db(overall_amplitude)
-
-        now_mono = float(now) if now is not None and np.isfinite(float(now)) else time.perf_counter()
-        self._maybe_update_startup_silence_calibration(level_db, now_mono)
-        if self._silence_runtime_open_threshold_db is not None:
-            open_threshold = float(self._silence_runtime_open_threshold_db)
-        if self._silence_runtime_close_threshold_db is not None:
-            close_threshold = float(max(open_threshold + 1.5, self._silence_runtime_close_threshold_db))
 
         if level_db < open_threshold:
             self.silence_open_count += 1
