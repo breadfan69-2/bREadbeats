@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QMenuBar, QMenu, QMessageBox,
     QSplashScreen, QScrollArea, QInputDialog, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF, QEvent
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QPixmap
 from typing import Any, Optional
 
@@ -84,6 +84,7 @@ from transport_wiring import (
     trigger_network_test,
 )
 from stroke_mapper import StrokeMapper
+from keyboard_teacher import KeyboardTeacher
 from version import __version__
 
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
@@ -522,6 +523,23 @@ class PositionCanvas(pg.PlotWidget):
         # Current position marker
         self.position_scatter = pg.ScatterPlotItem(size=12, brush=pg.mkBrush('#00ffff'), pen=None)
         self.addItem(self.position_scatter)
+
+        # Keyboard-teaching preview marker (ghost intent dot)
+        self.teacher_preview_scatter = pg.ScatterPlotItem(
+            size=10,
+            brush=pg.mkBrush('#ffd54f'),
+            pen=pg.mkPen('#ffb300', width=1),
+        )
+        self.addItem(self.teacher_preview_scatter)
+
+        self._last_x_display = 0.0
+        self._last_y_display = 0.0
+        self._ghost_theta: Optional[float] = None
+        self._ghost_radius: float = 0.70
+        self._ghost_last_real_theta: Optional[float] = None
+        self._ghost_last_update_time: float = time.perf_counter()
+        self._ghost_last_speed_scale: float = 1.0
+        self._ghost_is_parked: bool = False
         
         self.get_rotation = get_rotation
 
@@ -553,6 +571,45 @@ class PositionCanvas(pg.PlotWidget):
         
         # Update position marker
         self.position_scatter.setData([x_display], [y_display])
+        self._last_x_display = float(x_display)
+        self._last_y_display = float(y_display)
+
+    # Fixed orbit radius for the ghost — decoupled from device position so it's
+    # always visible regardless of whether the device is parked/silenced.
+    _GHOST_ORBIT_RADIUS: float = 0.65
+
+    def update_teacher_preview(self, is_parked: bool, speed_scale: float, bpm: float):
+        """Show a ghost dot that orbits at a fixed radius to preview teaching speed.
+
+        - Orbits CCW at base_omega = 2π * bpm / 240  rad/s  (1 rotation per measure).
+        - speed_scale multiplies that angular velocity.
+        - is_parked: ghost freezes at its current angle (shows a stationary dot).
+        - Ghost radius is fixed at _GHOST_ORBIT_RADIUS; decoupled from device position.
+        """
+        import math
+        now = time.perf_counter()
+        dt = float(np.clip(now - self._ghost_last_update_time, 1e-3, 0.20))
+        self._ghost_last_update_time = now
+
+        if self._ghost_theta is None:
+            self._ghost_theta = 0.0   # start at right edge (3 o'clock)
+
+        self._ghost_is_parked = bool(is_parked)
+        self._ghost_last_speed_scale = float(speed_scale)
+
+        if not is_parked:
+            safe_bpm = max(float(bpm), 20.0)
+            base_omega = 2.0 * math.pi * safe_bpm / 240.0   # rad/s
+            self._ghost_theta = float(
+                self._ghost_theta + base_omega * float(speed_scale) * dt
+            )
+
+        preview_x = self._GHOST_ORBIT_RADIUS * float(np.cos(self._ghost_theta))
+        preview_y = self._GHOST_ORBIT_RADIUS * float(np.sin(self._ghost_theta))
+        self.teacher_preview_scatter.setData([preview_x], [preview_y])
+
+    def clear_teacher_preview(self):
+        self.teacher_preview_scatter.setData([], [])
 
 
 class RangeSlider(QWidget):
@@ -1773,6 +1830,13 @@ class BREadbeatsWindow(QMainWindow):
         
         # Auto-connect TCP on startup
         self._auto_connect_tcp()
+
+        # ── Keyboard Teaching Mode (dev-only) ──────────────────────────
+        self._keyboard_teacher = KeyboardTeacher(base_dir=Path(__file__).parent)
+        self._keyboard_teacher_label: Optional[QLabel] = None
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         # Mark transport UI as ready on the first event-loop turn.
         # This guarantees an early single Start click is queued then applied,
@@ -4030,16 +4094,29 @@ class BREadbeatsWindow(QMainWindow):
         _add_fill_bin_range_row("Sync fill bins", 'syncopation_fill_bin_low', 'syncopation_fill_bin_high', 'sync_fill_bin_range')
         _add_fill_sustain_slider("Syncopation", 'syncopation_overall_amp_fill_sustain_frames')
 
-        dual_band_gate_cb = QCheckBox("Enable Sub-Bass + Treble Lock")
+        legacy_gate_toggle = QCheckBox("Show Legacy Compatibility Gates")
+        legacy_gate_toggle.setChecked(False)
+        legacy_gate_toggle.setToolTip("Shows deprecated gate controls kept for backward compatibility.")
+        gate_layout.addWidget(legacy_gate_toggle)
+
+        legacy_gate_container = QWidget()
+        legacy_gate_layout = QVBoxLayout(legacy_gate_container)
+        legacy_gate_layout.setContentsMargins(16, 0, 0, 0)
+        legacy_gate_layout.setSpacing(6)
+        legacy_gate_container.setVisible(False)
+        legacy_gate_toggle.toggled.connect(legacy_gate_container.setVisible)
+        gate_layout.addWidget(legacy_gate_container)
+
+        dual_band_gate_cb = QCheckBox("Enable Sub-Bass + Treble Lock (legacy)")
         dual_band_gate_cb.setChecked(bool(getattr(self.config.stroke, 'dual_band_db_gate_enabled', False)))
-        dual_band_gate_cb.setToolTip("Require BOTH sub-bass energy AND high-frequency presence before strokes fire (prevents bass-only or treble-only false positives)")
+        dual_band_gate_cb.setToolTip("Legacy compatibility toggle: runtime beat-family gating no longer blocks on dual-band dB gate.")
         dual_band_gate_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'dual_band_db_gate_enabled', state == 2)
         )
-        gate_layout.addWidget(dual_band_gate_cb)
+        legacy_gate_layout.addWidget(dual_band_gate_cb)
 
         dual_sub_bass_db_slider = SliderWithLabel(
-            "Sub-Bass Minimum Energy (dB)",
+            "Sub-Bass Minimum Energy (dB, legacy)",
             -100.0,
             -50.0,
             float(getattr(self.config.stroke, 'dual_band_sub_bass_db_min', -80.0) or -80.0),
@@ -4051,11 +4128,11 @@ class BREadbeatsWindow(QMainWindow):
                 _show_freqdb_ghost_ref('dual_sub_bass_db_min', float(v), 'Dual sub-bass dB', '#5CFF9A', band='low', mode='db_line')
             )
         )
-        dual_sub_bass_db_slider.setToolTip("Sub-bass must be this strong (in dB) for the gate to pass. Lower (more negative) = more permissive; higher (closer to 0) = stricter")
-        gate_layout.addWidget(dual_sub_bass_db_slider)
+        dual_sub_bass_db_slider.setToolTip("Legacy helper threshold only (runtime beat-family gating no longer blocks on dual-band dB gate).")
+        legacy_gate_layout.addWidget(dual_sub_bass_db_slider)
 
         dual_high_db_slider = SliderWithLabel(
-            "Treble Minimum Energy (dB)",
+            "Treble Minimum Energy (dB, legacy)",
             -100.0,
             -50.0,
             float(getattr(self.config.stroke, 'dual_band_high_db_min', -80.0) or -80.0),
@@ -4067,19 +4144,19 @@ class BREadbeatsWindow(QMainWindow):
                 _show_freqdb_ghost_ref('dual_high_db_min', float(v), 'Dual high dB', '#FF9AD9', band='high', mode='db_line')
             )
         )
-        dual_high_db_slider.setToolTip("Treble/high-band must be this strong (in dB) for gate to pass. Lower = more permissive; higher = stricter")
-        gate_layout.addWidget(dual_high_db_slider)
+        dual_high_db_slider.setToolTip("Legacy helper threshold only (runtime beat-family gating no longer blocks on dual-band dB gate).")
+        legacy_gate_layout.addWidget(dual_high_db_slider)
 
-        high_tip_gate_cb = QCheckBox("Enable high-tip fullness gate")
+        high_tip_gate_cb = QCheckBox("Enable high-tip fullness gate (legacy)")
         high_tip_gate_cb.setChecked(bool(getattr(self.config.stroke, 'high_tip_fullness_enabled', False)))
-        high_tip_gate_cb.setToolTip("Require high-tip presence (frequency range + dB floor + occupancy) after dual-band dB gate")
+        high_tip_gate_cb.setToolTip("Legacy compatibility toggle: runtime beat-family gating no longer blocks on high-tip/dual-band helper gates.")
         high_tip_gate_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'high_tip_fullness_enabled', state == 2)
         )
-        gate_layout.addWidget(high_tip_gate_cb)
+        legacy_gate_layout.addWidget(high_tip_gate_cb)
 
         high_tip_range_row = QHBoxLayout()
-        high_tip_range_row.addWidget(QLabel("High-tip range (Hz):"))
+        high_tip_range_row.addWidget(QLabel("High-tip range (Hz, legacy):"))
 
         high_tip_low_spin = QSpinBox()
         high_tip_low_spin.setRange(100, 22000)
@@ -4134,11 +4211,11 @@ class BREadbeatsWindow(QMainWindow):
 
         high_tip_low_spin.valueChanged.connect(_on_high_tip_low_change)
         high_tip_high_spin.valueChanged.connect(_on_high_tip_high_change)
-        gate_layout.addLayout(high_tip_range_row)
+        legacy_gate_layout.addLayout(high_tip_range_row)
         _emit_high_tip_range_ghost()
 
         high_tip_db_slider = SliderWithLabel(
-            "High-tip dB min",
+            "High-tip dB min (legacy)",
             -100.0,
             -40.0,
             float(getattr(self.config.stroke, 'high_tip_db_min', -90.0) or -90.0),
@@ -4150,11 +4227,11 @@ class BREadbeatsWindow(QMainWindow):
                 _show_freqdb_ghost_ref('high_tip_db_min', float(v), 'High-tip dB', '#FFB3F0', dashed=True, band='high', mode='db_line')
             )
         )
-        high_tip_db_slider.setToolTip("Minimum dB floor for high-tip occupancy gate")
-        gate_layout.addWidget(high_tip_db_slider)
+        high_tip_db_slider.setToolTip("Legacy helper threshold only (runtime beat-family gating no longer blocks on high-tip gate).")
+        legacy_gate_layout.addWidget(high_tip_db_slider)
 
         high_tip_occ_slider = SliderWithLabel(
-            "High-tip occupancy",
+            "High-tip occupancy (legacy)",
             0.0,
             1.0,
             float(getattr(self.config.stroke, 'high_tip_occupancy_threshold', 0.20) or 0.20),
@@ -4167,19 +4244,19 @@ class BREadbeatsWindow(QMainWindow):
                 _show_freqdb_ghost_ref('high_tip_occ', float(v), 'High-tip occ', '#FFC8F4', dashed=True, band='high', range_box=True, mode='occupancy')
             )
         )
-        high_tip_occ_slider.setToolTip("Required occupancy in the high-tip gate window")
-        gate_layout.addWidget(high_tip_occ_slider)
+        high_tip_occ_slider.setToolTip("Legacy helper occupancy only (runtime beat-family gating no longer blocks on high-tip gate).")
+        legacy_gate_layout.addWidget(high_tip_occ_slider)
 
-        mid_block_cb = QCheckBox("Block triggers when mid is high and bass is too low")
+        mid_block_cb = QCheckBox("Block triggers when mid is high and bass is too low (legacy)")
         mid_block_cb.setChecked(bool(getattr(self.config.stroke, 'block_mid_trigger_range_enabled', False)))
         mid_block_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'block_mid_trigger_range_enabled', state == 2)
         )
         mid_block_cb.setToolTip(
-            "When enabled, beat/downbeat triggers are blocked if detected frequency is in the configured mid range and\n"
-            "rolling bass activity is below threshold."
+            "Legacy compatibility toggle: runtime beat-family gating no longer blocks on mid-trigger gate.\n"
+            "Kept for helper-method compatibility and migration."
         )
-        gate_layout.addWidget(mid_block_cb)
+        legacy_gate_layout.addWidget(mid_block_cb)
 
         mid_block_row = QHBoxLayout()
         mid_block_low_spin = QSpinBox()
@@ -4187,7 +4264,7 @@ class BREadbeatsWindow(QMainWindow):
         mid_block_low_spin.setSingleStep(10)
         mid_block_low_spin.setValue(int(float(getattr(self.config.stroke, 'block_mid_trigger_low_hz', 1000.0) or 1000.0)))
         mid_block_low_spin.setSuffix(" Hz")
-        mid_block_row.addWidget(QLabel("Mid block low:"))
+        mid_block_row.addWidget(QLabel("Mid block low (legacy):"))
         mid_block_row.addWidget(mid_block_low_spin)
 
         mid_block_high_spin = QSpinBox()
@@ -4195,7 +4272,7 @@ class BREadbeatsWindow(QMainWindow):
         mid_block_high_spin.setSingleStep(10)
         mid_block_high_spin.setValue(int(float(getattr(self.config.stroke, 'block_mid_trigger_high_hz', 2200.0) or 2200.0)))
         mid_block_high_spin.setSuffix(" Hz")
-        mid_block_row.addWidget(QLabel("high:"))
+        mid_block_row.addWidget(QLabel("high (legacy):"))
         mid_block_row.addWidget(mid_block_high_spin)
         mid_block_row.addStretch()
 
@@ -4223,10 +4300,10 @@ class BREadbeatsWindow(QMainWindow):
 
         mid_block_low_spin.valueChanged.connect(_on_mid_block_low_change)
         mid_block_high_spin.valueChanged.connect(_on_mid_block_high_change)
-        gate_layout.addLayout(mid_block_row)
+        legacy_gate_layout.addLayout(mid_block_row)
 
         mid_block_window_row = QHBoxLayout()
-        mid_block_window_row.addWidget(QLabel("Mid block avg window:"))
+        mid_block_window_row.addWidget(QLabel("Mid block avg window (legacy):"))
         mid_block_window_spin = QSpinBox()
         mid_block_window_spin.setRange(1, 60)
         mid_block_window_spin.setSingleStep(1)
@@ -4235,17 +4312,17 @@ class BREadbeatsWindow(QMainWindow):
         )
         mid_block_window_spin.setSuffix(" frames")
         mid_block_window_spin.setToolTip(
-            "Rolling average window used by the mid-block gate (larger = smoother, slower response)."
+            "Legacy helper window only (runtime beat-family gating no longer blocks on mid-trigger gate)."
         )
         mid_block_window_spin.valueChanged.connect(
             lambda v: setattr(self.config.stroke, 'block_mid_trigger_window_frames', int(v))
         )
         mid_block_window_row.addWidget(mid_block_window_spin)
         mid_block_window_row.addStretch()
-        gate_layout.addLayout(mid_block_window_row)
+        legacy_gate_layout.addLayout(mid_block_window_row)
 
         mid_block_bass_ratio_slider = SliderWithLabel(
-            "Mid block bass/mid max ratio",
+            "Mid block bass/mid max ratio (legacy)",
             0.0,
             2.0,
             float(
@@ -4262,9 +4339,9 @@ class BREadbeatsWindow(QMainWindow):
             lambda v: setattr(self.config.stroke, 'block_mid_trigger_bass_to_mid_max_ratio', float(v))
         )
         mid_block_bass_ratio_slider.setToolTip(
-            "Mid-trigger block closes when rolling bass activity is at or below (rolling mid activity × this ratio)."
+            "Legacy helper ratio only (runtime beat-family gating no longer blocks on mid-trigger gate)."
         )
-        gate_layout.addWidget(mid_block_bass_ratio_slider)
+        legacy_gate_layout.addWidget(mid_block_bass_ratio_slider)
 
         scroll_layout.addWidget(gate_group)
 
@@ -4338,9 +4415,22 @@ class BREadbeatsWindow(QMainWindow):
         )
         flux_layout.addWidget(flux_scaling_slider)
 
-        low_band_info = QLabel("Beat gate = low-band mean/fullness/ratio checks.")
+        legacy_flux_toggle = QCheckBox("Show Legacy Compatibility Gates")
+        legacy_flux_toggle.setChecked(False)
+        legacy_flux_toggle.setToolTip("Shows deprecated low-band helper controls kept for backward compatibility.")
+        flux_layout.addWidget(legacy_flux_toggle)
+
+        legacy_flux_container = QWidget()
+        legacy_flux_layout = QVBoxLayout(legacy_flux_container)
+        legacy_flux_layout.setContentsMargins(16, 0, 0, 0)
+        legacy_flux_layout.setSpacing(6)
+        legacy_flux_container.setVisible(False)
+        legacy_flux_toggle.toggled.connect(legacy_flux_container.setVisible)
+        flux_layout.addWidget(legacy_flux_container)
+
+        low_band_info = QLabel("Legacy helper gates (low-band/mid-trigger/dual-band) are compatibility-only and no longer runtime blockers.")
         low_band_info.setStyleSheet("color: #999; font-size: 10px;")
-        flux_layout.addWidget(low_band_info)
+        legacy_flux_layout.addWidget(low_band_info)
 
         def _set_stroke_attr_with_ref(
             attr_name: str,
@@ -4408,25 +4498,25 @@ class BREadbeatsWindow(QMainWindow):
             return _handler
 
         low_band_window_row = QHBoxLayout()
-        low_band_window_label = QLabel("Low-band gate window (frames):")
+        low_band_window_label = QLabel("Low-band gate window (frames, legacy):")
         low_band_window_label.setStyleSheet("color: #ccc;")
         low_band_window_row.addWidget(low_band_window_label)
         low_band_window_spin = QSpinBox()
         low_band_window_spin.setMinimum(8)
         low_band_window_spin.setMaximum(60)
         low_band_window_spin.setValue(int(getattr(self.config.stroke, 'low_band_window_frames', 18) or 18))
-        low_band_window_spin.setToolTip("Low-band gate history window (frames)")
-        low_band_window_label.setToolTip("Low-band gate history window (frames)")
+        low_band_window_spin.setToolTip("Legacy helper window only (runtime beat-family gating no longer blocks on low-band gate).")
+        low_band_window_label.setToolTip("Legacy helper window only (runtime beat-family gating no longer blocks on low-band gate).")
         low_band_window_spin.valueChanged.connect(
             lambda v: (
                 setattr(self.config.stroke, 'low_band_window_frames', int(v)),
             )
         )
         low_band_window_row.addWidget(low_band_window_spin)
-        flux_layout.addLayout(low_band_window_row)
+        legacy_flux_layout.addLayout(low_band_window_row)
 
         low_band_mean_slider = SliderWithLabel(
-            "Low-band mean threshold (norm)",
+            "Low-band mean threshold (norm, legacy)",
             0.001,
             2.00,
             float(getattr(self.config.stroke, 'low_band_activity_threshold', 0.20) or 0.20),
@@ -4435,10 +4525,10 @@ class BREadbeatsWindow(QMainWindow):
         )
         low_band_mean_slider.valueChanged.connect(_set_stroke_attr_with_ref('low_band_activity_threshold', 'low_band_mean', 'Low mean', '#32FF32', ghost_band='low'))
         _style_ref_slider(low_band_mean_slider, '#32FF32', 'Low mean')
-        flux_layout.addWidget(low_band_mean_slider)
+        legacy_flux_layout.addWidget(low_band_mean_slider)
 
         low_band_occ_slider = SliderWithLabel(
-            "Low-band fullness occupancy (0-1)",
+            "Low-band fullness occupancy (0-1, legacy)",
             0.00,
             1.00,
             float(getattr(self.config.stroke, 'low_band_fullness_occupancy_threshold', 0.62) or 0.62),
@@ -4456,10 +4546,10 @@ class BREadbeatsWindow(QMainWindow):
             ghost_mode='occupancy',
         ))
         _style_ref_slider(low_band_occ_slider, '#66FFAA', 'Low fullness occ')
-        flux_layout.addWidget(low_band_occ_slider)
+        legacy_flux_layout.addWidget(low_band_occ_slider)
 
         low_high_ratio_slider = SliderWithLabel(
-            "Low:high mean ratio min (unitless)",
+            "Low:high mean ratio min (unitless, legacy)",
             0.10,
             3.00,
             float(getattr(self.config.stroke, 'low_band_to_high_ratio_min', 0.58) or 0.58),
@@ -4477,14 +4567,14 @@ class BREadbeatsWindow(QMainWindow):
             ghost_mode='threshold',
         ))
         _style_ref_slider(low_high_ratio_slider, '#99FFCC', 'Low:high ratio')
-        flux_layout.addWidget(low_high_ratio_slider)
+        legacy_flux_layout.addWidget(low_high_ratio_slider)
 
-        mid_bass_support_cb = QCheckBox("Enable mid-bass support fallback")
+        mid_bass_support_cb = QCheckBox("Enable mid-bass support fallback (legacy)")
         mid_bass_support_cb.setChecked(bool(getattr(self.config.stroke, 'mid_bass_support_enabled', True)))
         mid_bass_support_cb.stateChanged.connect(
             lambda state: setattr(self.config.stroke, 'mid_bass_support_enabled', state == 2)
         )
-        flux_layout.addWidget(mid_bass_support_cb)
+        legacy_flux_layout.addWidget(mid_bass_support_cb)
 
         mid_bass_range_row = QHBoxLayout()
         mid_bass_range_row.addWidget(QLabel("Mid-bass support range (Hz):"))
@@ -4541,7 +4631,7 @@ class BREadbeatsWindow(QMainWindow):
 
         mid_bass_low_spin.valueChanged.connect(_on_mid_bass_low_change)
         mid_bass_high_spin.valueChanged.connect(_on_mid_bass_high_change)
-        flux_layout.addLayout(mid_bass_range_row)
+        legacy_flux_layout.addLayout(mid_bass_range_row)
         _emit_mid_bass_range_ghost()
 
         mid_bass_activity_slider = SliderWithLabel(
@@ -4563,7 +4653,7 @@ class BREadbeatsWindow(QMainWindow):
             ghost_mode='threshold',
         ))
         _style_ref_slider(mid_bass_activity_slider, '#7DFFB0', 'Mid-bass activity')
-        flux_layout.addWidget(mid_bass_activity_slider)
+        legacy_flux_layout.addWidget(mid_bass_activity_slider)
 
         mid_bass_occ_slider = SliderWithLabel(
             "Mid-bass occupancy (0-1)",
@@ -4584,7 +4674,7 @@ class BREadbeatsWindow(QMainWindow):
             ghost_mode='occupancy',
         ))
         _style_ref_slider(mid_bass_occ_slider, '#A2FFC8', 'Mid-bass occ')
-        flux_layout.addWidget(mid_bass_occ_slider)
+        legacy_flux_layout.addWidget(mid_bass_occ_slider)
 
         downbeat_relax_slider = SliderWithLabel(
             "Downbeat gate relax",
@@ -4605,7 +4695,7 @@ class BREadbeatsWindow(QMainWindow):
             ghost_mode='threshold',
             ghost_value_resolver=lambda relax: float(getattr(self.config.stroke, 'low_band_activity_threshold', 0.20) or 0.20) * float(relax),
         ))
-        flux_layout.addWidget(downbeat_relax_slider)
+        legacy_flux_layout.addWidget(downbeat_relax_slider)
 
         high_gate_cb = QCheckBox("Require upper-band presence/pattern for beat strokes")
         high_gate_cb.setChecked(bool(getattr(self.config.stroke, 'high_band_gate_enabled', True)))
@@ -5864,6 +5954,12 @@ Like the app?<br>
         self.alpha_label.setVisible(False)
         self.beta_label = QLabel("β: 0.00")
         self.beta_label.setVisible(False)
+
+        # Keyboard teaching indicator (dev-only, hidden until activated with Ctrl+Shift+K)
+        self._keyboard_teacher_label = QLabel("🎹 OFF")
+        self._keyboard_teacher_label.setStyleSheet("color: #666; font-size: 11px;")
+        self._keyboard_teacher_label.setVisible(False)
+        layout.addWidget(self._keyboard_teacher_label)
 
         return widget
     
@@ -8433,6 +8529,22 @@ Like the app?<br>
         # Emit signal for thread-safe GUI update
         self.signals.beat_detected.emit(event)
 
+        # ── Keyboard Teaching: record frame (runs on audio thread; lock-guarded inside) ──
+        teacher = getattr(self, '_keyboard_teacher', None)
+        if teacher is not None and teacher.active:
+            decision = None
+            gate_state = None
+            mapper = getattr(self, 'stroke_mapper', None)
+            if mapper is not None:
+                decision = getattr(mapper, '_last_decision', None)
+                intelligence = getattr(mapper, '_intelligence', None)
+                if intelligence is not None:
+                    try:
+                        gate_state = intelligence.snapshot_gate_state()
+                    except Exception:
+                        pass
+            teacher.on_frame(event, decision, gate_state)
+
         # Get spectrum for visualization
         spectrum = None
         if self.audio_engine:
@@ -9081,6 +9193,14 @@ Like the app?<br>
             self.alpha_label.setText(f"α: {alpha:.2f}")
             self.beta_label.setText(f"β: {beta:.2f}")
 
+        # Refresh keyboard teaching overlay at display rate
+        teacher = getattr(self, '_keyboard_teacher', None)
+        if teacher is not None and teacher.active:
+            self.position_canvas.update_teacher_preview(teacher.is_parked, teacher.speed_scale, teacher._last_bpm)
+            self._update_keyboard_teacher_label()
+        else:
+            self.position_canvas.clear_teacher_preview()
+
         # Sync widget states to cached values for thread-safe reading by audio thread.
         # Some controls may not exist yet (e.g., optional dialogs/tabs not instantiated),
         # so fall back to cached state instead of raising per-frame AttributeError.
@@ -9224,9 +9344,131 @@ Like the app?<br>
             # Keep metric state polling active even though traffic-light UI is removed.
             self.audio_engine.get_metric_states()
 
+    # ── Keyboard Teaching Mode: key events ─────────────────────────
+
+    _ARROW_MAP = {
+        Qt.Key.Key_Up: "up",
+        Qt.Key.Key_Down: "down",
+        Qt.Key.Key_Left: "left",
+        Qt.Key.Key_Right: "right",
+    }
+
+    def _toggle_keyboard_teaching(self) -> None:
+        """Start or stop a keyboard teaching session (dev-only)."""
+        teacher = self._keyboard_teacher
+        if teacher.active:
+            saved = teacher.stop_session()
+            print(f"[KeyboardTeacher] Session stopped → {saved}")
+            self._update_keyboard_teacher_label()
+        else:
+            path = teacher.start_session()
+            print(f"[KeyboardTeacher] Session started → {path}")
+            self._update_keyboard_teacher_label()
+
+    def _update_keyboard_teacher_label(self) -> None:
+        label = getattr(self, '_keyboard_teacher_label', None)
+        if label is None:
+            return
+        teacher = self._keyboard_teacher
+        try:
+            if teacher.active:
+                gate = teacher.last_gate_fail or "open"
+                is_parked = teacher.is_parked
+                scale = teacher.speed_scale
+                step = teacher.speed_step
+                bpm = teacher._last_bpm
+                if is_parked:
+                    state_str = "PARK"
+                    color = "#ff8800"
+                elif scale >= 1.0:
+                    state_str = f"{scale:.3g}x"
+                    color = "#ff4444"
+                else:
+                    denom = round(1.0 / scale)
+                    state_str = f"1/{denom}x"
+                    color = "#ff4444"
+                label.setText(
+                    f"🎹 [{state_str}]  step:{step:+d}  {bpm:.0f}bpm  gate:{gate}"
+                )
+                label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 11px;")
+                label.setVisible(True)
+            else:
+                label.setText("🎹 OFF")
+                label.setStyleSheet("color: #666; font-size: 11px;")
+                label.setVisible(True)
+        except RuntimeError:
+            pass
+
+    def _handle_keyboard_teacher_key_event(self, event, is_press: bool) -> bool:
+        teacher = getattr(self, '_keyboard_teacher', None)
+        if teacher is None:
+            return False
+
+        if is_press:
+            if (event.key() == Qt.Key.Key_K
+                    and event.modifiers() == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)):
+                self._toggle_keyboard_teaching()
+                self._update_keyboard_teacher_label()
+                return True
+
+            direction = self._ARROW_MAP.get(event.key())
+            if direction and teacher.active and not event.isAutoRepeat():
+                teacher.on_arrow_down(direction)
+                self._update_keyboard_teacher_label()
+                return True
+        else:
+            direction = self._ARROW_MAP.get(event.key())
+            if direction and teacher.active and not event.isAutoRepeat():
+                teacher.on_arrow_up(direction)
+                self._update_keyboard_teacher_label()
+                return True
+        return False
+
+    def eventFilter(self, obj, event):
+        try:
+            if event.type() == QEvent.Type.KeyPress:
+                if self._handle_keyboard_teacher_key_event(event, is_press=True):
+                    event.accept()
+                    return True
+            elif event.type() == QEvent.Type.KeyRelease:
+                if self._handle_keyboard_teacher_key_event(event, is_press=False):
+                    event.accept()
+                    return True
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event) -> None:
+        if self._handle_keyboard_teacher_key_event(event, is_press=True):
+            event.accept()
+            return
+
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event) -> None:
+        if self._handle_keyboard_teacher_key_event(event, is_press=False):
+            event.accept()
+            return
+
+        super().keyReleaseEvent(event)
+
     def closeEvent(self, event):
         """Cleanup on close - ensure all threads are stopped before UI is destroyed"""
         self._is_shutting_down = True
+
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
+
+        # Stop keyboard teaching session (flush captured data)
+        teacher = getattr(self, '_keyboard_teacher', None)
+        if teacher is not None and teacher.active:
+            saved = teacher.stop_session()
+            if saved:
+                print(f"[KeyboardTeacher] Session saved to {saved}")
 
         for timer_name in ('update_timer', '_spectrum_timer', 'beat_timer', 'downbeat_timer'):
             timer = getattr(self, timer_name, None)

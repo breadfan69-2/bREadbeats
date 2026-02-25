@@ -140,6 +140,7 @@ class StrokeMapper:
         self._hat_bounce_amp = 0.0
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
+        self._last_decision = None      # latest BeatDecision (for keyboard teacher snapshot)
 
         # ── Fixed anchor state (§1) ──
         self._anchor_sign: int = 1               # +1 = +Y anchor, -1 = -Y anchor
@@ -281,6 +282,7 @@ class StrokeMapper:
         self._last_trigger_kind = decision.trigger_kind
         self._lazy_glide_active = bool(getattr(decision, "lazy_glide_active", False))
         self._last_gate_fail = str(getattr(decision, "gate_fail", "") or "")
+        self._last_decision = decision
 
         # ── Mode transition detection: smooth spiral between park_bounce_only ↔ full arc ──
         current_mode_is_park_bounce = bool(getattr(decision, "park_bounce_only", False)) and not decision.silence_active

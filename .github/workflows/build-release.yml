@@ -24,26 +24,22 @@ jobs:
     
     - name: Install dependencies
       run: |
-        .venv\Scripts\activate
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
+        .venv\Scripts\python.exe -m pip install --upgrade pip
+        .venv\Scripts\python.exe -m pip install -r requirements.txt
+        .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
     
     - name: Show version info
       run: |
-        .venv\Scripts\activate  
-        python version.py
+        .venv\Scripts\python.exe version.py
     
     - name: Build executable
       run: |
-        .venv\Scripts\activate
-        python build.py
+        .venv\Scripts\python.exe build.py
     
     - name: Get version for release
       id: version
       run: |
-        .venv\Scripts\activate
-        $VERSION = python -c "from version import __version__; print(__version__)"
+        $VERSION = .venv\Scripts\python.exe -c "from version import __version__; print(__version__)"
         echo "version=$VERSION" >> $env:GITHUB_OUTPUT
         echo "Version: $VERSION"
     

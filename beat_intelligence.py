@@ -1304,23 +1304,36 @@ class BeatIntelligence:
             self._silence_autocal_completed = True
             return
 
-        floor_db = float(np.percentile(np.array(self._silence_autocal_samples, dtype=float), 20.0))
-        # If startup includes active program material, floor can be too loud and
-        # produce aggressive silence thresholds. In that case keep defaults.
-        if floor_db > -50.0:
+        samples = np.array(self._silence_autocal_samples, dtype=float)
+        floor_db = float(np.percentile(samples, 20.0))
+        p90_db = float(np.percentile(samples, 90.0))
+        dynamic_span_db = float(max(0.0, p90_db - floor_db))
+
+        # If startup contains active program material, avoid calibrating from it.
+        # However, if the signal is mostly stable (small dynamic span), treat it
+        # as a valid idle/noise floor even when the absolute floor is relatively loud.
+        if floor_db > -50.0 and dynamic_span_db > 8.0:
             self._silence_autocal_completed = True
             log_event(
                 "INFO",
                 "SilenceAutoCal",
                 "Skipped startup silence calibration (non-idle startup)",
                 floor_db=f"{floor_db:.1f}",
+                span_db=f"{dynamic_span_db:.1f}",
                 default_open_db=f"{self._silence_default_enter_db:.1f}",
                 default_close_db=f"{self._silence_default_exit_db:.1f}",
             )
             return
 
-        open_db = float(np.clip(floor_db + 4.0, -96.0, -24.0))
-        close_db = float(np.clip(open_db + 8.0, open_db + 2.0, -8.0))
+        if floor_db > -50.0:
+            open_offset = 2.5
+            close_offset = 5.0
+        else:
+            open_offset = 4.0
+            close_offset = 8.0
+
+        open_db = float(np.clip(floor_db + open_offset, -96.0, -24.0))
+        close_db = float(np.clip(open_db + close_offset, open_db + 2.0, -8.0))
 
         self._silence_runtime_open_threshold_db = open_db
         self._silence_runtime_close_threshold_db = close_db
@@ -1330,6 +1343,7 @@ class BeatIntelligence:
             "SilenceAutoCal",
             "Startup calibration complete",
             floor_db=f"{floor_db:.1f}",
+            span_db=f"{dynamic_span_db:.1f}",
             enter_db=f"{open_db:.1f}",
             exit_db=f"{close_db:.1f}",
             samples=str(len(self._silence_autocal_samples)),
@@ -1985,16 +1999,7 @@ class BeatIntelligence:
             elif not self._strict_bass_motion_allowed(event, raw_trigger_kind):
                 gate_passed = False
                 gate_fail_reason = "strict_bass"
-            elif self._is_mid_trigger_blocked(event):
-                gate_passed = False
-                gate_fail_reason = "mid_trigger"
-            # Phase 3 gates: low-band → dual-band → spectrum fill
-            elif not self._is_low_band_full_enough(event, raw_trigger_kind, bpm):
-                gate_passed = False
-                gate_fail_reason = "low_band"
-            elif not self._passes_dual_band_db_gate(event):
-                gate_passed = False
-                gate_fail_reason = "dual_band_db"
+            # Phase 3 gates: spectrum fill
             elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
                 gate_passed = False
                 gate_fail_reason = "amp_fill"
@@ -2155,3 +2160,89 @@ class BeatIntelligence:
             park_bounce_gain=float(np.clip(park_bounce_gain, 0.0, 1.0)),
             learning=learning,
         )
+
+    # ── Gate-state snapshot (for keyboard teacher) ───────────────────
+
+    def snapshot_gate_state(self) -> dict:
+        """Return a flat dict of internal gate/condition state for teaching capture.
+
+        Every value is a plain float/int/bool/str safe for CSV serialisation.
+        Prefixed ``gs_`` (gate-state) so columns don't collide with other snapshots.
+        """
+        now = time.perf_counter()
+
+        # Rolling band means (last N frames)
+        def _mean(dq: deque) -> float:
+            vals = list(dq)
+            return float(np.mean(vals)) if vals else 0.0
+
+        flux_vals = list(self._recent_flux_values)
+        flux_mean = float(np.mean(flux_vals)) if flux_vals else 0.0
+        flux_std = float(np.std(flux_vals)) if len(flux_vals) >= 2 else 0.0
+
+        # Flux delta: mean of last 4 vs mean of preceding 4
+        flux_recent4 = float(np.mean(flux_vals[-4:])) if len(flux_vals) >= 4 else flux_mean
+        flux_prev4 = float(np.mean(flux_vals[-8:-4])) if len(flux_vals) >= 8 else flux_recent4
+        flux_delta = flux_recent4 - flux_prev4
+
+        return {
+            # ── Band energies (EMA-smoothed) ──
+            "gs_sub_bass": round(self.energies.sub_bass, 5),
+            "gs_low_mid": round(self.energies.low_mid, 5),
+            "gs_mid": round(self.energies.mid, 5),
+            "gs_high": round(self.energies.high, 5),
+
+            # ── Rolling means ──
+            "gs_flux_mean": round(flux_mean, 5),
+            "gs_flux_std": round(flux_std, 5),
+            "gs_flux_delta": round(flux_delta, 5),
+            "gs_low_band_mean": round(_mean(self._recent_low_band_values), 5),
+            "gs_mid_band_mean": round(_mean(self._recent_mid_band_values), 5),
+            "gs_high_band_mean": round(_mean(self._recent_high_band_values), 5),
+            "gs_mid_bass_mean": round(_mean(self._recent_mid_bass_values), 5),
+
+            # ── Envelope / loudness ──
+            "gs_rms_envelope_db": round(self.rms_envelope, 2),
+            "gs_energy_fullness": round(self.compute_energy_fullness(), 4),
+
+            # ── Silence state ──
+            "gs_silence_active": int(self.silence_deadzone_active),
+            "gs_silence_fade": round(self._silence_fade, 4),
+            "gs_consecutive_silent": self._consecutive_silent_count,
+
+            # ── Readiness / gate state ──
+            "gs_stroke_ready": int(self._stroke_ready),
+            "gs_stroke_ready_reason": self._stroke_ready_reason,
+            "gs_phrase_committed": int(self._phrase_committed),
+            "gs_phrase_beats_remaining": self._phrase_beats_remaining,
+            "gs_creep_consecutive": self._creep_consecutive_frames,
+            "gs_entry_gate_armed": int(not self._post_silence_entry_complete),
+
+            # ── Journey state ──
+            "gs_journey_active": int(self.journey_active),
+            "gs_journey_elapsed_s": round(self.journey_elapsed_s, 4),
+            "gs_journey_duration_s": round(self.journey_duration_s, 4),
+            "gs_is_recovering": int(self.is_recovering),
+
+            # ── Trigger / kind ──
+            "gs_last_trigger_kind": self.last_trigger_kind,
+            "gs_active_interval_beats": self.active_interval_beats,
+
+            # ── Tempo state ──
+            "gs_stabilized_bpm": round(self._stabilized_bpm, 2),
+            "gs_tempo_unlock_hold": int(self._tempo_unlock_hold_active),
+
+            # ── Beat timing ──
+            "gs_time_since_last_beat_s": round(now - self._last_any_beat_time, 4) if self._last_any_beat_time > 0 else -1.0,
+
+            # ── Session arc ──
+            "gs_session_intensity": round(self._session_intensity_ema, 4),
+
+            # ── Auto-fill gate state ──
+            "gs_fill_ema_downbeat": round(self._auto_fill_ema.get("downbeat", 0.5), 4),
+            "gs_fill_ema_beat": round(self._auto_fill_ema.get("beat", 0.5), 4),
+            "gs_fill_ema_syncopation": round(self._auto_fill_ema.get("syncopation", 0.5), 4),
+            "gs_fill_offset_downbeat": round(self._auto_fill_offsets.get("downbeat", 0.0), 4),
+            "gs_fill_offset_beat": round(self._auto_fill_offsets.get("beat", 0.0), 4),
+            "gs_fill_offset_syncopation": round(self._auto_fill_offsets.get("syncopation", 0.0), 4),
+        }

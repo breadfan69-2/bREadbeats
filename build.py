@@ -49,8 +49,8 @@ def main():
     if os.path.exists('build'): 
         run_command('rmdir /s /q build', "Cleaning build directory")
     
-    # Run PyInstaller
-    run_command('.venv/Scripts/pyinstaller.exe bREadbeats.spec', "Building with PyInstaller")
+    # Run PyInstaller using the active interpreter for reliability across shells/environments
+    run_command(f'"{sys.executable}" -m PyInstaller bREadbeats.spec', "Building with PyInstaller")
     
     # Check if the build was successful
     exe_path = Path('dist/bREadbeats.exe')

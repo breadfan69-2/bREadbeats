@@ -191,10 +191,10 @@ class StrokeConfig:
     downbeat_jitter_vector_percent: float = 50.0  # % of current jitter vector added to downbeat arc points
     noise_primary_mode: bool = True        # True: noise fires strokes, metronome verifies; False: metronome fires, noise supplements
 
-    # Low-band activity gate for beat-based stroke generation
-    # Uses sub_bass + low_mid activity window in StrokeMapper.
-    # Beat strokes require low-band mean/fullness thresholds.
-    # Downbeats use the same concept with a slightly relaxed threshold multiplier.
+    # Legacy compatibility gate fields (runtime beat-family gate chain no longer
+    # blocks on low-band / dual-band / mid-trigger gates).
+    # These keys are retained for helper-method coverage, migration safety, and
+    # config/UI backward compatibility.
     low_band_window_frames: int = 4
     low_band_activity_threshold: float = 0.165
     low_band_fullness_occupancy_threshold: float = 0.091

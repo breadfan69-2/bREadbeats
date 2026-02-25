@@ -90,7 +90,7 @@ class TestLowBandFullnessGate(Phase3Mixin, unittest.TestCase):
 
     def test_low_mean_blocks(self):
         """Mean below threshold without mid-bass support → blocks."""
-        bi = self._bi(mid_bass_support_enabled=False)
+        bi = self._bi(mid_bass_support_enabled=False, low_band_window_frames=18)
         for _ in range(20):
             bi._recent_low_band_values.append(0.05)
             bi._recent_high_band_values.append(0.10)
@@ -99,7 +99,7 @@ class TestLowBandFullnessGate(Phase3Mixin, unittest.TestCase):
 
     def test_low_occupancy_blocks(self):
         """Some frames above threshold but too few → blocks."""
-        bi = self._bi(mid_bass_support_enabled=False)
+        bi = self._bi(mid_bass_support_enabled=False, low_band_window_frames=18)
         # Mix: 3 above threshold, 15 below → occupancy ~0.17
         values = [0.30] * 3 + [0.01] * 15
         for v in values:
@@ -113,7 +113,8 @@ class TestLowBandFullnessGate(Phase3Mixin, unittest.TestCase):
 
     def test_downbeat_gets_relaxed_threshold(self):
         """Downbeat uses downbeat_low_band_relax multiplier."""
-        bi = self._bi(mid_bass_support_enabled=False, downbeat_low_band_relax=0.85)
+        bi = self._bi(mid_bass_support_enabled=False, downbeat_low_band_relax=0.85,
+                      low_band_window_frames=18, low_band_activity_threshold=0.20)
         # Value that fails normal threshold (0.20) but passes relaxed (0.17)
         for _ in range(20):
             bi._recent_low_band_values.append(0.18)
@@ -134,7 +135,8 @@ class TestLowBandFullnessGate(Phase3Mixin, unittest.TestCase):
 
     def test_low_high_ratio_blocks(self):
         """When high dominates low, gate blocks (treble-only content)."""
-        bi = self._bi(mid_bass_support_enabled=False, low_band_to_high_ratio_min=0.58)
+        bi = self._bi(mid_bass_support_enabled=False, low_band_to_high_ratio_min=0.58,
+                      low_band_window_frames=18)
         for _ in range(20):
             bi._recent_low_band_values.append(0.25)    # passes mean + occupancy
             bi._recent_high_band_values.append(0.80)   # ratio = 0.25/0.80 = 0.31 < 0.58
@@ -142,7 +144,7 @@ class TestLowBandFullnessGate(Phase3Mixin, unittest.TestCase):
         self.assertFalse(result)
 
     def test_wired_into_build_decision(self):
-        """In build_decision, low-band gate blocks beat when conditions fail."""
+        """In build_decision, low-band helper no longer blocks beat runtime."""
         bi = self._bi(mid_bass_support_enabled=False)
         # Prime with downbeat and allow protected journey to finish
         bi.build_decision(self._event(is_downbeat=True), dt=1/60, silence_override=False)
@@ -152,11 +154,11 @@ class TestLowBandFullnessGate(Phase3Mixin, unittest.TestCase):
         bi.energies.low_mid = 0.02
         for _ in range(20):
             bi._populate_rolling_deques(self._event())
-        # Try a beat — should be blocked by low-band gate
+        # Try a beat — low-band helper is not a runtime blocker anymore
         decision = bi.build_decision(
             self._event(is_beat=True), dt=1/60, silence_override=False
         )
-        self.assertEqual(decision.trigger_kind, "creep")
+        self.assertEqual(decision.trigger_kind, "beat")
 
 
 # ── §5 Mid-bass support ────────────────────────────────────────────────────
@@ -182,7 +184,7 @@ class TestMidBassSupport(Phase3Mixin, unittest.TestCase):
         self.assertTrue(bi._mid_bass_support_passes("beat"))
 
     def test_low_mid_bass_blocks(self):
-        bi = self._bi()
+        bi = self._bi(low_band_window_frames=18, mid_bass_activity_threshold=0.035)
         for _ in range(20):
             bi._recent_mid_bass_values.append(0.01)
         self.assertFalse(bi._mid_bass_support_passes("beat"))
@@ -214,7 +216,10 @@ class TestDualBandDbGate(Phase3Mixin, unittest.TestCase):
 
     def test_low_sub_bass_blocks(self):
         """Sub-bass below -15 dB threshold blocks."""
-        bi = self._bi(high_tip_fullness_enabled=False)
+        bi = self._bi(high_tip_fullness_enabled=False,
+                      dual_band_db_gate_enabled=True,
+                      dual_band_sub_bass_db_min=-15.0,
+                      dual_band_high_db_min=-30.0)
         bi.energies.sub_bass = 0.10   # -20 dB < -15 dB
         bi.energies.high = 0.10       # -20 dB > -30 dB
         # Use frequency outside bass fallback range and low peak_energy
@@ -224,7 +229,10 @@ class TestDualBandDbGate(Phase3Mixin, unittest.TestCase):
 
     def test_low_high_band_blocks(self):
         """High-band below -30 dB threshold blocks."""
-        bi = self._bi(high_tip_fullness_enabled=False)
+        bi = self._bi(high_tip_fullness_enabled=False,
+                      dual_band_db_gate_enabled=True,
+                      dual_band_sub_bass_db_min=-15.0,
+                      dual_band_high_db_min=-30.0)
         bi.energies.sub_bass = 0.30   # -10.5 dB > -15 dB
         bi.energies.high = 0.001      # -60 dB < -30 dB
         self.assertFalse(bi._passes_dual_band_db_gate(self._event()))
@@ -251,7 +259,13 @@ class TestDualBandDbGate(Phase3Mixin, unittest.TestCase):
 
     def test_high_tip_fullness_sub_gate(self):
         """High-tip fullness blocks when high-band occupancy is low."""
-        bi = self._bi(high_tip_fullness_enabled=True)
+        bi = self._bi(high_tip_fullness_enabled=True,
+                      dual_band_db_gate_enabled=True,
+                      dual_band_sub_bass_db_min=-15.0,
+                      dual_band_high_db_min=-30.0,
+                      high_tip_db_min=-28.0,
+                      high_tip_occupancy_threshold=0.50,
+                      low_band_window_frames=18)
         bi.energies.sub_bass = 0.30
         bi.energies.high = 0.10
         # Fill high-band deque with near-zero values → low occupancy
@@ -260,7 +274,7 @@ class TestDualBandDbGate(Phase3Mixin, unittest.TestCase):
         self.assertFalse(bi._passes_dual_band_db_gate(self._event()))
 
     def test_wired_into_build_decision(self):
-        """In build_decision, dual-band gate blocks when sub-bass too low."""
+        """In build_decision, dual-band helper no longer blocks beat runtime."""
         bi = self._bi(high_tip_fullness_enabled=False)
         # Prime with downbeat and allow protected journey to finish
         bi.build_decision(self._event(is_downbeat=True), dt=1/60, silence_override=False)
@@ -278,7 +292,7 @@ class TestDualBandDbGate(Phase3Mixin, unittest.TestCase):
             self._event(is_beat=True, frequency=600.0, peak_energy=0.001),
             dt=1/60, silence_override=False,
         )
-        self.assertEqual(decision.trigger_kind, "creep")
+        self.assertEqual(decision.trigger_kind, "beat")
 
 
 # ── §6 High-tip fullness sub-gate ──────────────────────────────────────────
@@ -304,7 +318,8 @@ class TestHighTipFullness(Phase3Mixin, unittest.TestCase):
         self.assertTrue(bi._high_tip_fullness_passes())
 
     def test_low_occupancy_blocks(self):
-        bi = self._bi()
+        bi = self._bi(high_tip_db_min=-28.0, high_tip_occupancy_threshold=0.50,
+                      low_band_window_frames=18)
         # -28 dB linear ≈ 0.0398, most values below that
         for _ in range(20):
             bi._recent_high_band_values.append(0.01)
@@ -512,7 +527,8 @@ class TestAutoFillAdaptation(Phase3Mixin, unittest.TestCase):
 
     def test_fill_required_respects_offset(self):
         """_get_overall_amp_fill_required includes auto-fill offset."""
-        bi = self._bi()
+        bi = self._bi(beat_overall_amp_fill_required=0.70,
+                      overall_amp_fill_required_scale=1.0)
         base = bi._get_overall_amp_fill_required("beat")
         bi._auto_fill_offsets["beat"] = -0.10
         relaxed = bi._get_overall_amp_fill_required("beat")

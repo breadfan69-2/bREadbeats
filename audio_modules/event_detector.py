@@ -22,12 +22,12 @@ class EventDetectorConfig:
     arm_threshold: float = 0.62
     release_threshold: float = 0.45
     refractory_ms: float = 170.0
-    bus_arm_threshold: float = 0.58
-    bus_release_threshold: float = 0.42
+    bus_arm_threshold: float = 0.42
+    bus_release_threshold: float = 0.30
     bus_refractory_ms: float = 170.0
     bus_sustain_frames: int = 2
     bus_hist_size: int = 48
-    bus_mask_floor: float = 0.35
+    bus_mask_floor: float = 0.25
     w_bus_sub: float = 0.36
     w_bus_low: float = 0.30
     w_bus_mid: float = 0.20

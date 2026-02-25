@@ -286,6 +286,8 @@ class TestStrokeMapperContract(unittest.TestCase):
     def test_voice_like_high_only_is_forced_to_limited_park_bounce(self):
         cfg = Config()
         cfg.beat.tempo_lock_required = False
+        cfg.beat.transient_full_motion_min_energy_fullness = 0.34
+        cfg.beat.transient_full_motion_min_flux = 0.15
 
         intelligence = BeatIntelligence(cfg)
         intelligence.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
@@ -314,6 +316,9 @@ class TestStrokeMapperContract(unittest.TestCase):
     def test_voice_like_low_mid_plus_high_still_requires_sub_bass_for_full_motion(self):
         cfg = Config()
         cfg.beat.tempo_lock_required = False
+        cfg.beat.transient_full_motion_min_bass_dom = 1.95
+        cfg.beat.transient_full_motion_decisive_bass_dom = 2.55
+        cfg.beat.transient_full_motion_min_energy_fullness = 0.34
 
         intelligence = BeatIntelligence(cfg)
         intelligence.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
@@ -341,6 +346,8 @@ class TestStrokeMapperContract(unittest.TestCase):
     def test_full_motion_requires_min_flux_or_fullness_even_with_strong_bass(self):
         cfg = Config()
         cfg.beat.tempo_lock_required = False
+        cfg.beat.transient_full_motion_min_energy_fullness = 0.34
+        cfg.beat.transient_full_motion_min_flux = 0.15
 
         intelligence = BeatIntelligence(cfg)
         intelligence.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
@@ -719,6 +726,32 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertIsNotNone(cmd)
         assert cmd is not None
         self.assertGreater(cmd.beta, 0.20)
+
+    def test_silence_hard_parks_when_creep_disabled(self):
+        cfg = Config()
+        cfg.creep.enabled = False
+        mapper = StrokeMapper(cfg)
+
+        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
+            trigger_kind="creep",
+            interval_beats=8,
+            radius_bloom=0.70,
+            silence_active=True,
+            journey_completion=1.0,
+            silence_fade=0.5,
+        )
+
+        cmd1 = mapper.process_beat(self._event(is_beat=False, raw_rms=0.0, raw_rms_db=-80.0))
+        cmd2 = mapper.process_beat(self._event(is_beat=False, raw_rms=0.0, raw_rms_db=-80.0))
+
+        self.assertIsNotNone(cmd1)
+        self.assertIsNotNone(cmd2)
+        assert cmd1 is not None
+        assert cmd2 is not None
+        self.assertAlmostEqual(cmd1.alpha, 0.0, places=6)
+        self.assertAlmostEqual(cmd1.beta, mapper._baseline_center_y, places=6)
+        self.assertAlmostEqual(cmd2.alpha, cmd1.alpha, places=6)
+        self.assertAlmostEqual(cmd2.beta, cmd1.beta, places=6)
 
     def test_base_center_target_migrates_start_over_full_journey(self):
         mapper = StrokeMapper(Config())

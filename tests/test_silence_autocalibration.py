@@ -45,6 +45,40 @@ class TestSilenceAutoCalibration(unittest.TestCase):
             intelligence._silence_runtime_open_threshold_db,
         )
 
+    def test_startup_autocal_handles_stable_high_noise_floor(self):
+        cfg = Config()
+        intelligence = BeatIntelligence(cfg)
+
+        t0 = time.perf_counter()
+        for i in range(180):
+            now = t0 + (i * (1.0 / 60.0))
+            event = self._event(mono=now, raw_rms_db=-44.0)
+            intelligence.build_decision(event=event, dt=1.0 / 60.0)
+
+        self.assertIsNotNone(intelligence._silence_runtime_open_threshold_db)
+        self.assertIsNotNone(intelligence._silence_runtime_close_threshold_db)
+        assert intelligence._silence_runtime_open_threshold_db is not None
+        assert intelligence._silence_runtime_close_threshold_db is not None
+        self.assertGreater(intelligence._silence_runtime_open_threshold_db, -44.0)
+        self.assertGreater(
+            intelligence._silence_runtime_close_threshold_db,
+            intelligence._silence_runtime_open_threshold_db,
+        )
+
+    def test_startup_autocal_skips_dynamic_non_idle_startup(self):
+        cfg = Config()
+        intelligence = BeatIntelligence(cfg)
+
+        t0 = time.perf_counter()
+        for i in range(180):
+            now = t0 + (i * (1.0 / 60.0))
+            raw_db = -12.0 if (i % 2 == 0) else -30.0
+            event = self._event(mono=now, raw_rms_db=raw_db)
+            intelligence.build_decision(event=event, dt=1.0 / 60.0)
+
+        self.assertIsNone(intelligence._silence_runtime_open_threshold_db)
+        self.assertIsNone(intelligence._silence_runtime_close_threshold_db)
+
 
 if __name__ == "__main__":
     unittest.main()

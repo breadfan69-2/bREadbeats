@@ -194,7 +194,7 @@ class TestNoBeatTimeout(Phase1Mixin, unittest.TestCase):
 
 
 class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
-    def test_mid_freq_beat_blocked(self):
+    def test_mid_freq_beat_not_runtime_blocked(self):
         cfg = Config()
         cfg.beat.tempo_lock_required = False
         cfg.stroke.block_mid_trigger_range_enabled = True
@@ -212,11 +212,11 @@ class TestMidTriggerBlock(Phase1Mixin, unittest.TestCase):
             bi._recent_low_band_values.append(0.01)
             bi._recent_mid_band_values.append(0.9)
 
-        # Beat at 1500 Hz (configured mid-block range) should be blocked
+        # Mid-trigger helper exists, but runtime chain no longer blocks on it.
         decision = bi.build_decision(
             self._event(is_beat=True, frequency=1500.0), dt=1 / 60, silence_override=False
         )
-        self.assertEqual(decision.trigger_kind, "creep")
+        self.assertEqual(decision.trigger_kind, "beat")
 
     def test_mid_freq_with_strong_bass_not_blocked(self):
         cfg = Config()
