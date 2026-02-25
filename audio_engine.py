@@ -457,6 +457,8 @@ class AudioEngine:
         )
         self._shadow_prev_band_energy: float = 0.0
         self._shadow_prev_flux: float = 0.0
+        self._last_peak_ref: float = 1e-6
+        self._last_flux_ref: float = 1e-6
 
         self._session_started_at: float = 0.0
         self._session_frame_count: int = 0
@@ -507,6 +509,8 @@ class AudioEngine:
         self._audioflux_adapter.reset()
         self._shadow_prev_band_energy = 0.0
         self._shadow_prev_flux = 0.0
+        self._last_peak_ref = 1e-6
+        self._last_flux_ref = 1e-6
         self._rolling_peak_energy = deque(maxlen=430)
         self._rolling_peak_flux = deque(maxlen=430)
 
@@ -522,8 +526,21 @@ class AudioEngine:
         # reaches levels that can trip the 0.42 gate.
         self._rolling_peak_energy.append(float(band_energy))
         self._rolling_peak_flux.append(float(spectral_flux))
-        peak_ref = max(1e-6, float(max(self._rolling_peak_energy)))
-        flux_ref = max(1e-6, float(max(self._rolling_peak_flux)))
+        candidate_peak = max(1e-6, float(max(self._rolling_peak_energy)))
+        candidate_flux = max(1e-6, float(max(self._rolling_peak_flux)))
+
+        if candidate_peak > self._last_peak_ref:
+            peak_ref = min(candidate_peak, self._last_peak_ref * 1.02)
+        else:
+            peak_ref = candidate_peak
+
+        if candidate_flux > self._last_flux_ref:
+            flux_ref = min(candidate_flux, self._last_flux_ref * 1.02)
+        else:
+            flux_ref = candidate_flux
+
+        self._last_peak_ref = max(1e-6, float(peak_ref))
+        self._last_flux_ref = max(1e-6, float(flux_ref))
 
         energy_norm = float(np.clip(float(band_energy) / peak_ref, 0.0, 1.0))
         flux_norm = float(np.clip(float(spectral_flux) / flux_ref, 0.0, 1.0))
