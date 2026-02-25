@@ -113,6 +113,18 @@ class BeatIntelligence:
         self._recent_high_band_values: deque = deque(maxlen=60)
         self._recent_mid_bass_values: deque = deque(maxlen=60)
 
+        # Rolling RMS history for dynamic amp-gate (adapts to current volume)
+        self._recent_rms_db: deque = deque(maxlen=600)  # ~10 s at 60 fps
+
+        # Rolling band energy history for volume-adaptive normalization.
+        # Raw band energies scale with OS volume; these deques let us normalize
+        # each band against its own recent P95 so music "intensity" is volume-independent.
+        self._band_energy_history: dict[str, deque] = {
+            "sub_bass": deque(maxlen=600),
+            "low_mid": deque(maxlen=600),
+            "mid": deque(maxlen=600),
+            "high": deque(maxlen=600),
+        }
 
         # ── Phase 1: FluxTracker (#2) ──
         self._flux_history: deque = deque()  # (timestamp, flux) tuples
@@ -221,6 +233,42 @@ class BeatIntelligence:
     def _dbfs_to_unit(value_db: float, floor_db: float = RMS_DB_FLOOR) -> float:
         clipped = float(np.clip(value_db, floor_db, 0.0))
         return float(np.clip((clipped - floor_db) / max(1e-9, -floor_db), 0.0, 1.0))
+
+    def _volume_calibrated_rms_db(self, raw_rms_db: float) -> float:
+        """Offset raw_rms_db by the session volume level so learning features
+        behave as if OS volume were at 100%.
+
+        Uses the rolling RMS P50 (median) as the session baseline and
+        shifts toward the training distribution mean.  The *dynamics*
+        (distance from median) are preserved, only the offset changes.
+        """
+        if len(self._recent_rms_db) < 30:
+            return raw_rms_db  # not enough history to calibrate
+        session_median = float(np.percentile(list(self._recent_rms_db), 50))
+        # Always compute offset in dBFS space. If the model stored a linear
+        # mean, convert it to dBFS first so the offset is dimensionally correct.
+        if self._learning_expects_linear_rms():
+            linear_mean = float(self._learning_norm_mean.get("rms", 0.01))
+            training_mean = 20.0 * float(np.log10(max(1e-10, linear_mean)))
+        else:
+            training_mean = float(self._learning_norm_mean.get("rms", -34.0))
+        offset = training_mean - session_median
+        return float(raw_rms_db + offset)
+
+    def _volume_normalized_flux(self, raw_flux: float) -> float:
+        """Normalize raw spectral flux against recent P95 to 0..1 range,
+        then re-scale to the training flux mean so z-score normalization
+        produces volume-independent results."""
+        flux_history = list(self._recent_flux_values)
+        if len(flux_history) < 10:
+            return raw_flux  # not enough history
+        p95 = float(np.percentile(flux_history, 95))
+        ref = max(p95, 1e-9)
+        normed = float(np.clip(raw_flux / ref, 0.0, 1.0))
+        # Re-scale to training range so z-score normalization stays centred
+        training_mean = float(self._learning_norm_mean.get("spectral_flux", 0.1))
+        training_std = max(float(self._learning_norm_std.get("spectral_flux", 0.05)), 1e-8)
+        return float(training_mean + (normed - 0.5) * 2.0 * training_std)
 
     def _event_rms_db(self, event: BeatEvent) -> float:
         raw_rms_db = float(getattr(event, "raw_rms_db", RMS_DB_FLOOR) or RMS_DB_FLOOR)
@@ -335,14 +383,19 @@ class BeatIntelligence:
         """Map current BeatEvent + BandEnergies to the 13 model features (#10)."""
         peak = float(getattr(event, "peak_energy", 0.0) or 0.0)
         raw_rms_db = self._event_rms_db(event)
-        raw_rms_linear = float(10.0 ** (raw_rms_db / 20.0))
-        flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
+        raw_flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
+
+        # Volume-calibrate absolute features so the learning model
+        # sees the same z-score distribution regardless of OS volume.
+        calibrated_rms_db = self._volume_calibrated_rms_db(raw_rms_db)
+        calibrated_flux = self._volume_normalized_flux(raw_flux)
 
         if self._learning_expects_linear_rms():
-            energy_mean = raw_rms_linear if raw_rms_linear > 0.0 else peak
+            calibrated_linear = float(10.0 ** (calibrated_rms_db / 20.0))
+            energy_mean = calibrated_linear if calibrated_linear > 0.0 else peak
             log_energy = float(np.log10(max(1e-10, energy_mean)))
         else:
-            energy_mean = raw_rms_db if np.isfinite(raw_rms_db) else self._linear_to_dbfs(peak)
+            energy_mean = calibrated_rms_db if np.isfinite(calibrated_rms_db) else self._linear_to_dbfs(peak)
             log_energy = energy_mean
 
         sub = float(self.energies.sub_bass)
@@ -373,7 +426,7 @@ class BeatIntelligence:
         return {
             "rms": energy_mean,
             "log_energy": log_energy,
-            "spectral_flux": flux,
+            "spectral_flux": calibrated_flux,
             "flux_delta": 0.0,  # delta not tracked per-frame yet
             "sub_bass_energy": sub,
             "low_mid_energy": low,
@@ -1038,16 +1091,34 @@ class BeatIntelligence:
         self._recent_mid_bass_values.append(self._get_mid_bass_activity(event))
 
     def update_band_energies(self) -> None:
-        energies = {}
+        raw_energies = {}
         if self.audio_engine is not None and hasattr(self.audio_engine, "_band_energies"):
             maybe = getattr(self.audio_engine, "_band_energies", None)
             if isinstance(maybe, dict):
-                energies = maybe
+                raw_energies = maybe
 
-        self.energies.sub_bass += (float(energies.get("sub_bass", 0.0)) - self.energies.sub_bass) * self.band_ema_alpha
-        self.energies.low_mid += (float(energies.get("low_mid", 0.0)) - self.energies.low_mid) * self.band_ema_alpha
-        self.energies.mid += (float(energies.get("mid", 0.0)) - self.energies.mid) * self.band_ema_alpha
-        self.energies.high += (float(energies.get("high", 0.0)) - self.energies.high) * self.band_ema_alpha
+        for band_name in ("sub_bass", "low_mid", "mid", "high"):
+            raw = float(raw_energies.get(band_name, 0.0))
+            hist = self._band_energy_history.get(band_name)
+            if hist is not None:
+                hist.append(raw)
+            # Volume-adaptive normalization: map raw energy into 0..1
+            # using the rolling 95th percentile as the ceiling.
+            # This makes band energies represent *relative* activity
+            # regardless of OS volume level.
+            if hist is not None and len(hist) >= 30:
+                p95 = float(np.percentile(list(hist), 95))
+                ref = max(p95, 1e-9)
+                normed = float(np.clip(raw / ref, 0.0, 1.0))
+            else:
+                # Not enough history — pass through raw (clamped)
+                normed = float(np.clip(raw, 0.0, 1.0))
+            old_val = getattr(self.energies, band_name, 0.0)
+            setattr(
+                self.energies,
+                band_name,
+                old_val + (normed - old_val) * self.band_ema_alpha,
+            )
 
     def update_envelope(self, event: BeatEvent) -> None:
         target = self._event_rms_db(event)
@@ -1293,17 +1364,38 @@ class BeatIntelligence:
         bass_power = bass_fill ** 2.0
 
         # Spectral flux influence: flux adds extra bloom proportional to config weight
+        # Normalize flux against its rolling P95 so bloom contribution is
+        # volume-independent.
         flux = 0.0
         flux_weight = 1.0
         if event is not None:
-            flux = float(getattr(event, 'spectral_flux', 0.0) or 0.0)
+            raw_flux = float(getattr(event, 'spectral_flux', 0.0) or 0.0)
             flux_weight = float(getattr(self.config.stroke, 'flux_scaling_weight', 1.0) or 1.0)
-        flux_boost = float(np.clip(flux * flux_weight * 3.0, 0.0, 0.15))
+            flux_history = list(self._recent_flux_values)
+            if len(flux_history) >= 10:
+                p95 = float(np.percentile(flux_history, 95))
+                flux = float(np.clip(raw_flux / max(p95, 1e-9), 0.0, 1.0))
+            else:
+                flux = raw_flux
+        flux_boost = float(np.clip(flux * flux_weight * 0.15, 0.0, 0.15))
 
-        # Low-amp suppression: quiet music → dot stays very close to park
+        # Dynamic amp-gate: derive quiet/full thresholds from the rolling
+        # RMS history so the gate adapts to whatever OS volume the user is
+        # listening at.  Uses 5th percentile as "quiet" and 90th as "full".
+        # Falls back to conservative fixed thresholds until enough history.
         rms_db = self.rms_envelope
-        quiet_db = self._linear_to_dbfs(0.02)
-        full_db = self._linear_to_dbfs(0.08)
+        self._recent_rms_db.append(rms_db)
+        if len(self._recent_rms_db) >= 30:
+            rms_list = list(self._recent_rms_db)
+            quiet_db = float(np.percentile(rms_list, 5))
+            full_db = float(np.percentile(rms_list, 90))
+            # Ensure a minimum spread so the gate isn't binary
+            if full_db - quiet_db < 6.0:
+                full_db = quiet_db + 6.0
+        else:
+            # Not enough history yet — use permissive fixed fallback
+            quiet_db = self._linear_to_dbfs(0.005)
+            full_db = self._linear_to_dbfs(0.03)
         if rms_db < quiet_db:
             amp_gate = 0.0
         elif rms_db < full_db:
@@ -1322,7 +1414,17 @@ class BeatIntelligence:
         scalar that stroke_mapper latches at journey start to decide
         whether max_radius should expand toward 1.0.
         """
-        rms = self._dbfs_to_unit(self.rms_envelope)
+        # Use rolling-relative RMS so fullness adapts to OS volume.
+        # When enough history exists, map current RMS into the recent
+        # dynamic range (P5..P95) instead of the absolute -120..0 dBFS scale.
+        if len(self._recent_rms_db) >= 30:
+            rms_list = list(self._recent_rms_db)
+            lo_db = float(np.percentile(rms_list, 5))
+            hi_db = float(np.percentile(rms_list, 95))
+            spread = max(hi_db - lo_db, 6.0)
+            rms = float(np.clip((self.rms_envelope - lo_db) / spread, 0.0, 1.0))
+        else:
+            rms = self._dbfs_to_unit(self.rms_envelope)
         sub = float(np.clip(self.energies.sub_bass, 0.0, 1.0))
         low = float(np.clip(self.energies.low_mid, 0.0, 1.0))
         mid = float(np.clip(self.energies.mid, 0.0, 1.0))

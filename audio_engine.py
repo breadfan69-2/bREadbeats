@@ -537,17 +537,20 @@ class AudioEngine:
             energy_delta = 0.0
             flux_delta = 0.0
         else:
-            # --- Rolling-peak normalization (10-second window) ---
-            # Track the peak energy and flux over ~10 seconds (~430 frames at 43 fps)
-            # so that if the OS volume is turned down, the *relative* energy still
-            # reaches levels that can trip the 0.42 gate.
+            # --- Rolling-percentile normalization (10-second window) ---
+            # Use the 90th-percentile energy/flux over ~10 seconds instead of
+            # the absolute max.  This stops rare loud peaks from squashing the
+            # normalization ceiling so that regular beats still carry full weight.
+            # A 0.85 headroom multiplier keeps most beats above 1.0 for
+            # aggressive motion.
             self._rolling_peak_energy.append(float(band_energy))
             self._rolling_peak_flux.append(float(spectral_flux))
-            candidate_peak = max(1e-6, float(max(self._rolling_peak_energy)))
-            candidate_flux = max(1e-6, float(max(self._rolling_peak_flux)))
+            _HEADROOM = 0.92
+            candidate_peak = max(1e-6, float(np.percentile(list(self._rolling_peak_energy), 95)) * _HEADROOM)
+            candidate_flux = max(1e-6, float(np.percentile(list(self._rolling_peak_flux), 95)) * _HEADROOM)
 
             # Asymmetric slew limiter:
-            #  - Upward:  cap growth to 2% per frame (~1 s ramp on volume spikes)
+            #  - Upward:  cap growth to 10% per frame (fast ramp on volume spikes)
             #  - Downward: drop instantly to the candidate value
             # Skip the cap when the ref is still at seed epsilon (first real
             # frame after silence/reset) so music start isn't starved.
@@ -556,14 +559,14 @@ class AudioEngine:
             if self._last_peak_ref <= _SLEW_SEED:
                 peak_ref = candidate_peak
             elif candidate_peak > self._last_peak_ref:
-                peak_ref = min(candidate_peak, self._last_peak_ref * 1.02)
+                peak_ref = min(candidate_peak, self._last_peak_ref * 1.10)
             else:
                 peak_ref = candidate_peak  # instant drop
 
             if self._last_flux_ref <= _SLEW_SEED:
                 flux_ref = candidate_flux
             elif candidate_flux > self._last_flux_ref:
-                flux_ref = min(candidate_flux, self._last_flux_ref * 1.02)
+                flux_ref = min(candidate_flux, self._last_flux_ref * 1.10)
             else:
                 flux_ref = candidate_flux  # instant drop
 
