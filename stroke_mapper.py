@@ -59,7 +59,7 @@ class StrokeMapper:
         self._reactive_bounce_y = 0.0
         self._journey_start_total_center_y = self._baseline_center_y
 
-        self._orbit_phase = 0.0
+        self._orbit_phase = float(np.pi / 2.0)  # start at park angle (+Y axis)
         self._active_interval_beats = 8
         self._last_trigger_kind = "creep"
         self._park_radius = 0.70
@@ -955,7 +955,13 @@ class StrokeMapper:
                             if relink_t >= 1.0:
                                 self._journey_relink_active = False
 
-                    if decision.trigger_kind == "start":
+                    # Allow smooth radius ramp during park-exit transitions;
+                    # the 0.70 floor is only appropriate in steady-state arcs.
+                    if (
+                        decision.trigger_kind == "start"
+                        or self._spiral_out_active
+                        or self._post_silence_radius_ramp < 1.0
+                    ):
                         min_radius_bound = self._min_radius
                     else:
                         min_radius_bound = 0.70
