@@ -564,8 +564,15 @@ class AudioEngine:
         # normalization is bypassed so the downstream pipeline sees
         # true silence with no ghosting from a slowly-decaying ref.
         if silence_veto:
-            self._last_peak_ref = 1e-6
-            self._last_flux_ref = 1e-6
+            # Seed refs to a conservatively high floor so the first
+            # frames after silence don't over-normalise against a
+            # quiet intro.  The ref will drop instantly via the
+            # asymmetric slew once the rolling window fills, but the
+            # 10% upward cap prevents spikes that precede full volume.
+            _SILENCE_EXIT_FLOOR_PEAK = 0.30
+            _SILENCE_EXIT_FLOOR_FLUX = 0.30
+            self._last_peak_ref = _SILENCE_EXIT_FLOOR_PEAK
+            self._last_flux_ref = _SILENCE_EXIT_FLOOR_FLUX
             self._rolling_peak_energy.clear()
             self._rolling_peak_flux.clear()
             self._shadow_prev_band_energy = 0.0
@@ -592,12 +599,20 @@ class AudioEngine:
             #  - Downward: drop instantly to the candidate value
             # Skip the cap when the ref is still at seed epsilon (first real
             # frame after silence/reset) so music start isn't starved.
+            #
+            # Post-silence grace period: while the rolling window is still
+            # short (< _RAMP_WINDOW samples, ~1 s) downward drops are also
+            # capped at 5% per frame.  This stops the ref from chasing a
+            # single quiet sample and over-normalising a soft intro.
             _SLEW_SEED = 1e-5  # anything at or below this is "unseeded"
+            _RAMP_WINDOW = 50  # symmetric slew while window is sparse
 
             if self._last_peak_ref <= _SLEW_SEED:
                 peak_ref = candidate_peak
             elif candidate_peak > self._last_peak_ref:
                 peak_ref = min(candidate_peak, self._last_peak_ref * 1.10)
+            elif len(self._rolling_peak_energy) < _RAMP_WINDOW:
+                peak_ref = max(candidate_peak, self._last_peak_ref * 0.95)
             else:
                 peak_ref = candidate_peak  # instant drop
 
@@ -605,6 +620,8 @@ class AudioEngine:
                 flux_ref = candidate_flux
             elif candidate_flux > self._last_flux_ref:
                 flux_ref = min(candidate_flux, self._last_flux_ref * 1.10)
+            elif len(self._rolling_peak_flux) < _RAMP_WINDOW:
+                flux_ref = max(candidate_flux, self._last_flux_ref * 0.95)
             else:
                 flux_ref = candidate_flux  # instant drop
 
