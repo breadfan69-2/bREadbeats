@@ -1235,17 +1235,32 @@ class AudioEngine:
             sample_time=wall_time,
         )
             
-        # Check for tempo timeout (no beats for 2000ms)
+        # Check for tempo timeout.
+        # Use a BPM-aware floor so low/halftime metronome periods don't
+        # constantly trip resets when one beat arrives slightly late.
         time_since_last_beat = (current_time - self.last_beat_time) * 1000 if self.last_beat_time > 0 else 0
+        tempo_timeout_ms = float(self.tempo_timeout_ms)
+        bpm_ref = 0.0
+        if self._metronome_bpm > 0:
+            bpm_ref = float(self._metronome_bpm)
+        elif self.smoothed_tempo > 0:
+            bpm_ref = float(self.smoothed_tempo)
+        elif self.last_known_tempo > 0:
+            bpm_ref = float(self.last_known_tempo)
+        if bpm_ref > 0:
+            beat_period_ms = 60000.0 / max(1.0, bpm_ref)
+            # Require nearly two beat periods before declaring timeout.
+            tempo_timeout_ms = max(tempo_timeout_ms, beat_period_ms * 1.85)
         
         tempo_reset_flag = False
-        if time_since_last_beat > self.tempo_timeout_ms and len(self.beat_intervals) > 0:
+        if time_since_last_beat > tempo_timeout_ms and len(self.beat_intervals) > 0:
             # Timeout reached - reset tempo tracking but preserve last known tempo
             log_event(
                 "INFO",
                 "Tempo",
                 "No beats detected, resetting tracker",
                 idle_ms=f"{time_since_last_beat:.0f}",
+                timeout_ms=f"{tempo_timeout_ms:.0f}",
                 bpm=f"{self.smoothed_tempo:.1f}"
             )
             self.last_known_tempo = self.smoothed_tempo  # Preserve current tempo
