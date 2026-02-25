@@ -1241,7 +1241,10 @@ class BeatIntelligence:
         bpm = float(np.clip(bpm, 40.0, 240.0))
 
         tempo_locked = bool(getattr(event, "tempo_locked", False))
-        if tempo_locked:
+        acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+        # Fix #7: Only latch last-locked BPM when confidence is meaningful
+        # so a garbage low-confidence value can't poison future clamping.
+        if tempo_locked and acf_conf >= 0.15 and 50.0 <= bpm <= 200.0:
             self._last_locked_bpm = bpm
 
         # Stabilize: cap jump ratio relative to last locked BPM

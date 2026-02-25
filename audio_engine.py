@@ -437,6 +437,9 @@ class AudioEngine:
         self._onset_buffer_max: int = 260               # ~6 seconds at ~43 fps (44100/1024)
         self._onset_callback_count: int = 0             # For computing effective sample rate
         self._onset_first_time: float = 0.0             # Timestamp of first onset sample
+        # Rolling FPS calibration (fix #4: avoid drift over long sessions)
+        self._fps_calibration_times: list[float] = []   # Recent callback timestamps
+        self._fps_calibration_window: int = 512          # ~12s of callbacks for rolling estimate
         # ACF estimation
         self._acf_interval_ms: float = float(getattr(config.beat, 'acf_interval_ms', 250.0))
         self._last_acf_time: float = 0.0
@@ -452,7 +455,7 @@ class AudioEngine:
         self._metronome_beat_fired: bool = False         # Did metronome fire a beat THIS frame?
         self._metronome_downbeat_fired: bool = False     # Did metronome fire a downbeat THIS frame?
         self._metronome_last_beat_time: float = 0.0      # When the metronome last ticked a beat
-        self._metronome_conf_hold_s: float = 0.25         # Keep metronome running only through very brief ACF confidence dips
+        self._metronome_conf_hold_s: float = 1.5          # Keep metronome coasting through ACF confidence dips (fix #3)
         self._metronome_conf_lost_at: float = 0.0         # Timestamp when ACF confidence dropped below threshold
         self._metronome_bpm_alpha_slow: float = float(getattr(config.beat, 'metronome_bpm_alpha_slow', 0.03))
         self._metronome_bpm_alpha_fast: float = float(getattr(config.beat, 'metronome_bpm_alpha_fast', 0.22))
@@ -1234,17 +1237,25 @@ class AudioEngine:
         tempo_started = time.perf_counter()
 
         # ===== ACF ONSET BUFFERING =====
-        self._onset_buffer.append(spectral_flux)
-        if len(self._onset_buffer) > self._onset_buffer_max:
-            self._onset_buffer.pop(0)
-        # Calibrate effective onset sample rate
+        # Fix #1: Don't feed silence-zeroed flux into the ACF buffer —
+        # it poisons the autocorrelation and produces 0-BPM readings.
+        if not silence_veto_active:
+            self._onset_buffer.append(spectral_flux)
+            if len(self._onset_buffer) > self._onset_buffer_max:
+                self._onset_buffer.pop(0)
+        # Fix #4: Rolling FPS calibration (avoids drift over long sessions).
+        # Use a sliding window of recent callback timestamps instead of
+        # all-time average which drifts with CPU load / buffer changes.
         self._onset_callback_count += 1
+        self._fps_calibration_times.append(current_time)
+        if len(self._fps_calibration_times) > self._fps_calibration_window:
+            self._fps_calibration_times = self._fps_calibration_times[-self._fps_calibration_window:]
         if self._onset_first_time == 0.0:
             self._onset_first_time = current_time
-        elif self._onset_callback_count > 60:  # After ~1.5 seconds, calibrate fps
-            elapsed = current_time - self._onset_first_time
-            if elapsed > 0:
-                self._acf_onset_fps = self._onset_callback_count / elapsed
+        if len(self._fps_calibration_times) >= 60:
+            fps_elapsed = self._fps_calibration_times[-1] - self._fps_calibration_times[0]
+            if fps_elapsed > 0:
+                self._acf_onset_fps = (len(self._fps_calibration_times) - 1) / fps_elapsed
         
         # Run ACF tempo estimation periodically
         if current_time - self._last_acf_time > self._acf_interval_ms / 1000.0:
@@ -1378,7 +1389,10 @@ class AudioEngine:
         else:
             legacy_is_beat = accepted_raw_is_beat_legacy
             legacy_is_downbeat_flag = self.is_downbeat if legacy_is_beat else False
-            current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else self.last_known_tempo
+            # Fix #2: Fall through ACF smoothed BPM before giving up with 0.
+            current_bpm = self.smoothed_tempo if self.smoothed_tempo > 0 else (
+                self._acf_bpm_smoothed if self._acf_bpm_smoothed > 0 else self.last_known_tempo
+            )
             tempo_is_locked = self.consecutive_matching_downbeats >= self.consecutive_match_threshold
 
         is_beat = legacy_is_beat
@@ -1686,7 +1700,9 @@ class AudioEngine:
         peak_value = float(search[peak_idx])
 
         if peak_value < 0.08:  # Below noise floor - no clear tempo
-            self._acf_confidence *= 0.9  # Fade confidence
+            # Fix #5: Decay confidence but keep a floor so the metronome
+            # doesn't die from a brief dip.  Floor = 0.05.
+            self._acf_confidence = max(0.05, self._acf_confidence * 0.9)
             return
 
         # Parabolic interpolation for sub-sample precision
@@ -1719,8 +1735,13 @@ class AudioEngine:
             acf,
         )
 
-        # Target-BPM guided octave behavior disabled
+        # Fix #8: Use last stable/smoothed BPM as octave anchor so the
+        # ACF doesn't freely jump to half/double tempo.
         target_bpm_hint = 0.0
+        if self._acf_bpm_smoothed > 0.0:
+            target_bpm_hint = self._acf_bpm_smoothed
+        elif self.smoothed_tempo > 0.0:
+            target_bpm_hint = self.smoothed_tempo
         bpm, peak_value, octave_mode, ranked_candidates = select_acf_octave_candidate(
             candidates,
             peak_value,
@@ -1803,8 +1824,13 @@ class AudioEngine:
             if self._metronome_bpm > 0:
                 if self._metronome_conf_lost_at <= 0:
                     self._metronome_conf_lost_at = now
-                if (now - self._metronome_conf_lost_at) <= self._metronome_conf_hold_s:
-                    target_bpm = self._metronome_bpm
+                hold_elapsed = now - self._metronome_conf_lost_at
+                if hold_elapsed <= self._metronome_conf_hold_s:
+                    # Fix #3: Coast at current BPM during confidence dip.
+                    # Apply gentle decay so the metronome doesn't snap from
+                    # full speed to zero when the hold expires.
+                    decay_factor = max(0.0, 1.0 - (hold_elapsed / max(0.01, self._metronome_conf_hold_s)) * 0.15)
+                    target_bpm = self._metronome_bpm * decay_factor
                 else:
                     self._metronome_bpm = 0.0
                     self._metronome_conf_lost_at = 0.0
@@ -1981,6 +2007,7 @@ class AudioEngine:
         self._onset_buffer.clear()
         self._onset_callback_count = 0
         self._onset_first_time = 0.0
+        self._fps_calibration_times.clear()
         self._acf_bpm = 0.0
         self._acf_bpm_smoothed = 0.0
         self._acf_confidence = 0.0
@@ -2164,10 +2191,15 @@ class AudioEngine:
                 return
             if interval > 0.2:
                 # Outlier rejection: if interval is way off from average, it might be a false beat
+                # Fix #6: Relax rejection when we have few intervals (post-timeout
+                # recovery) — allow 0.35x-2.8x so genuine tempo changes aren't blocked.
                 if len(self.beat_intervals) > 0:
                     avg_interval = np.mean(self.beat_intervals)
-                    # Accept if within 0.5x to 2.0x of average (allows tempo changes but rejects glitches)
-                    if interval < (0.5 * avg_interval) or interval > (2.0 * avg_interval):
+                    if len(self.beat_intervals) <= 3:
+                        lo_mult, hi_mult = 0.35, 2.8  # relaxed after timeout/restart
+                    else:
+                        lo_mult, hi_mult = 0.5, 2.0
+                    if interval < (lo_mult * avg_interval) or interval > (hi_mult * avg_interval):
                         log_event("INFO", "Tempo", "Outlier interval rejected", interval=f"{interval:.3f}s", avg=f"{avg_interval:.3f}s")
                         return
                 
@@ -2200,6 +2232,8 @@ class AudioEngine:
                     smoothed_tempo = (smoothing_factor * self.smoothed_tempo) + ((1 - smoothing_factor) * new_tempo)
                     self.smoothed_tempo = float(smoothed_tempo)
                 else:
+                    # Fix #2: Also seed from ACF if available, so we don't
+                    # stay at 0.0 waiting for raw beat intervals.
                     self.smoothed_tempo = float(new_tempo)
                 
                 # Beat stability metric (TISMIR PLP-inspired)

@@ -29,6 +29,11 @@ class StrokeState:
     last_time: float = 0.0
 
 
+class MotionMode:
+    FULL_STROKE = "full_stroke"
+    CREEP_MICRO = "creep_micro"
+
+
 class StrokeMapper:
     """Decision-based stroke mapper that consumes BeatIntelligence."""
 
@@ -95,12 +100,12 @@ class StrokeMapper:
         self._post_silence_radius_floor = 0.12 # start radius fraction after silence
         self._hold_start_pose_until_reactive = False
         self._idle_radius = self._min_radius
-        self._silence_decay_per_beat = 0.55
+        self._silence_decay_per_beat = 0.40
         self._idle_loops_per_beat = 0.125
 
         # Swirl-to-park state: tracks the spiral transition into idle
         self._swirl_progress = 0.0       # 0→1 S-curve interpolant
-        self._swirl_duration_s = 1.2     # total time to spirally arrive at park
+        self._swirl_duration_s = 1.8     # total time to spirally arrive at park
         self._swirl_start_center_y = self._baseline_center_y
         self._swirl_start_radius = self._park_radius
         self._swirl_entering = False     # True on first silence frame after motion
@@ -287,10 +292,8 @@ class StrokeMapper:
         path can produce a positional teleport.  The three-stage pipeline:
           1. Velocity EMA – smooths sudden *changes* in per-frame delta so
              the device never reverses or accelerates instantaneously.
-          2. *Radial* rate cap – clamps the 2D magnitude of the delta
-             vector (not each axis independently) so circular orbits
-             stay round instead of developing flat edges at the quadrants.
-          3. Per-frame hard cap – absolute ceiling prevents dt-spike
+          2. Per-second rate cap – proportional to dt (3.6 units/s).
+          3. Per-frame hard cap – absolute ceiling (0.08) prevents dt-spike
              frames from allowing oversized jumps.
         """
         max_delta_per_s = 3.6
@@ -309,15 +312,9 @@ class StrokeMapper:
         da = float(self._smoothed_da + smooth_factor * (raw_da - self._smoothed_da))
         db = float(self._smoothed_db + smooth_factor * (raw_db - self._smoothed_db))
 
-        # Radial rate limiter: clamp the *magnitude* of the 2D delta
-        # vector so both axes scale proportionally.  This preserves the
-        # direction of motion (and therefore circular shape) unlike
-        # independent per-axis clamping which flattens corners.
-        mag = float(np.sqrt(da * da + db * db))
-        if mag > max_delta and mag > 1e-9:
-            scale = max_delta / mag
-            da = float(da * scale)
-            db = float(db * scale)
+        # Position rate limiter
+        da = float(np.clip(da, -max_delta, max_delta))
+        db = float(np.clip(db, -max_delta, max_delta))
 
         # Store clamped value so EMA tracks actual movement, not desired
         self._smoothed_da = da
@@ -1365,6 +1362,11 @@ class StrokeMapper:
         return alpha, beta, volume
 
     @staticmethod
+    def _s_curve(progress: float) -> float:
+        p = float(np.clip(progress, 0.0, 1.0))
+        return float(p * p * (3.0 - (2.0 * p)))
+
+    @staticmethod
     def _quintic_ease(progress: float) -> float:
         """Quintic smoothstep (6t^5 - 15t^4 + 10t^3).
 
@@ -1424,6 +1426,38 @@ class StrokeMapper:
             eased -= 0.012 * float(np.sin(np.pi * t))     # pre-arrival cushion
 
         return float(np.clip(eased, 0.0, 1.02))
+
+    @staticmethod
+    def _s_curve_with_initial_velocity(
+        progress: float,
+        initial_slope: float,
+        end_slope: float = 0.0,
+        lazy_glide: bool = False,
+    ) -> float:
+        """Legacy cubic Hermite easing (kept for test compatibility)."""
+        p = float(np.clip(progress, 0.0, 1.0))
+        p_eval = p
+        carrying = end_slope > 1e-3  # carrying velocity through to next journey
+
+        if (not lazy_glide) and (not carrying) and (0.90 < p < 1.0):
+            # Arrival-only micro "time stretch" before +Y crossing.
+            # Skip when carrying velocity through to next journey.
+            t = (p - 0.90) / 0.10
+            p_eval = float(np.clip(p - (0.020 * np.sin(np.pi * t)), 0.0, 1.0))
+
+        m0 = float(np.clip(initial_slope, 0.0, 2.5))
+        m1 = float(np.clip(end_slope, 0.0, 2.5))
+        h10 = (p_eval * p_eval * p_eval) - (2.0 * p_eval * p_eval) + p_eval
+        h01 = (-2.0 * p_eval * p_eval * p_eval) + (3.0 * p_eval * p_eval)
+        h11 = (p_eval * p_eval * p_eval) - (p_eval * p_eval)
+        eased = (h10 * m0) + h01 + (h11 * m1)
+        if (not lazy_glide) and (not carrying) and p > 0.92:
+            # Landing overshoot - skip when carrying velocity through
+            t = (p - 0.92) / 0.08
+            overshoot = 0.025 * float(np.sin(t * np.pi))
+            eased += overshoot
+
+        return float(np.clip(eased, 0.0, 1.04))
 
     def _compute_initial_speed_slope(self, event: BeatEvent, interval_beats: int) -> float:
         """Map current angular velocity to a normalized easing start slope.
