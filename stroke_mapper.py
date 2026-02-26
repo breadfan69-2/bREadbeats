@@ -174,6 +174,7 @@ class StrokeMapper:
         # ── Rate-limiter velocity state (for smoothing across ALL paths) ──
         self._smoothed_da: float = 0.0
         self._smoothed_db: float = 0.0
+        self._rate_limiter_clipped: bool = False  # True when rate limiter clamped last frame
 
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
 
@@ -234,18 +235,19 @@ class StrokeMapper:
 
         This MUST be the single exit point for every frame so that no code
         path can produce a positional teleport.  The three-stage pipeline:
-          1. Velocity EMA – smooths sudden *changes* in per-frame delta so
-             the device never reverses or accelerates instantaneously.
-          2. Per-second rate cap – proportional to dt (6.5 units/s).
-          3. Per-frame hard cap – absolute ceiling (0.15) prevents dt-spike
+          1. Adaptive velocity EMA – fast tracking for normal orbital
+             direction changes, quintic-scale slow ramp for large target
+             jumps (ensures transitions ease over ~2 beats).
+          2. Per-second rate cap – proportional to dt (5.0 units/s).
+          3. Per-frame hard cap – absolute ceiling (0.10) prevents dt-spike
              frames from allowing oversized jumps.
 
         Rate limiting uses radial (magnitude) clamping so that the speed
         cap is isotropic.  Per-axis clamping would allow √2× faster
         diagonal movement, distorting circular orbits into squares.
         """
-        max_delta_per_s = 6.5
-        max_delta_per_frame = 0.15  # absolute safety ceiling per frame
+        max_delta_per_s = 3.5
+        max_delta_per_frame = 0.06  # absolute safety ceiling per frame
         max_delta = float(min(max_delta_per_s * max(dt, 1e-4), max_delta_per_frame))
 
         prev_a = float(self.state.alpha)
@@ -254,9 +256,23 @@ class StrokeMapper:
         raw_da = float(alpha - prev_a)
         raw_db = float(beta - prev_b)
 
-        # Velocity EMA: smooths sudden direction/speed changes while
-        # converging quickly (~3 frames at factor=0.50) for steady motion.
-        smooth_factor = 0.50
+        # Adaptive velocity EMA: two-tier smoothing keeps orbital
+        # direction changes responsive while quintic-scaling large
+        # target jumps over ~2 beats.
+        #   cold start (smoothed ≈ 0):  factor=0.20 → gentle initial motion
+        #   small delta_diff (<0.02):   factor=0.30 → orbital direction tracking
+        #   large delta_diff (>0.02):   factor=0.02 → ~110 frames (~4 beats @ 130 BPM)
+        delta_diff = float(np.hypot(
+            raw_da - self._smoothed_da,
+            raw_db - self._smoothed_db,
+        ))
+        smoothed_mag = float(np.hypot(self._smoothed_da, self._smoothed_db))
+        if smoothed_mag < 0.001:
+            smooth_factor = 0.20  # gentle ramp from rest
+        elif delta_diff < 0.02:
+            smooth_factor = 0.30  # orbital direction tracking
+        else:
+            smooth_factor = 0.02  # slow for large target jumps (~4 beats)
         da = float(self._smoothed_da + smooth_factor * (raw_da - self._smoothed_da))
         db = float(self._smoothed_db + smooth_factor * (raw_db - self._smoothed_db))
 
@@ -268,13 +284,27 @@ class StrokeMapper:
             scale = max_delta / delta_mag
             da = float(da * scale)
             db = float(db * scale)
+            self._rate_limiter_clipped = True
+        else:
+            self._rate_limiter_clipped = False
 
         # Store clamped value so EMA tracks actual movement, not desired
         self._smoothed_da = da
         self._smoothed_db = db
 
-        alpha = float(np.clip(prev_a + da, -1.0, 1.0))
-        beta = float(np.clip(prev_b + db, -1.0, 1.0))
+        alpha = float(prev_a + da)
+        beta = float(prev_b + db)
+
+        # Unit-circle clamp: ensure alpha²+beta² ≤ 1.0 so the dot
+        # never draws outside the boundary circle on the display.
+        mag_sq = alpha * alpha + beta * beta
+        if mag_sq > 1.0:
+            inv_mag = 1.0 / float(np.sqrt(mag_sq))
+            alpha = float(alpha * inv_mag)
+            beta = float(beta * inv_mag)
+
+        alpha = float(np.clip(alpha, -1.0, 1.0))
+        beta = float(np.clip(beta, -1.0, 1.0))
 
         self.state.alpha = alpha
         self.state.beta = beta
@@ -298,39 +328,59 @@ class StrokeMapper:
         self._last_gate_fail = str(getattr(decision, "gate_fail", "") or "")
         self._last_decision = decision
 
+        # ── Resync orbit to output when rate limiter clipped last frame ──
+        # Prevents the parametric orbit from diverging from the actual
+        # output position, which would cause straight-line chasing.
+        if self._rate_limiter_clipped:
+            self._resync_orbit_to_output()
+
         # ── Mode transition detection: smooth spiral between park_bounce_only ↔ full arc ──
         current_mode_is_park_bounce = bool(getattr(decision, "park_bounce_only", False)) and not decision.silence_active
-        mode_changed = current_mode_is_park_bounce != self._last_mode_was_park_bounce
 
-        if mode_changed and not self._mode_transition_active:
-            # Start new transition
-            self._mode_transition_active = True
-            self._mode_transition_progress = 0.0
-            self._mode_transition_start_radius = float(self._actual_radius)
-            self._mode_transition_start_center_y = float(self._base_center_y + self._reactive_bounce_y)
-            
-            # Reset swirl state to prevent interference with mode transition
-            self._swirl_entering = False
-            self._swirl_progress = 0.0
-            
-            # Determine target geometry based on new mode
-            if current_mode_is_park_bounce:
-                # Transitioning TO park_bounce_only: spiral into small idle orbit
-                self._mode_transition_target_radius = float(self._park_idle_radius)
-                self._mode_transition_target_center_y = float(self._baseline_center_y)
-            else:
-                # Transitioning TO full arc: spiral out to journey geometry
-                # Use current decision's trigger geometry, or default to park_radius
-                geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
-                    "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
-                })
-                self._mode_transition_target_radius = float(geom["park_radius"])
-                self._mode_transition_target_center_y = float(geom["center_y"])
+        # During silence, suppress mode transition detection entirely.
+        # current_mode_is_park_bounce is forced False during silence (due to
+        # `not decision.silence_active`), so a brief silence→active→silence
+        # flap would trigger a FALSE mode change (park_bounce→full_arc) that
+        # inflates the orbit radius to 0.70 during silence – causing the
+        # sharp center→edge excursion at v=0.00.  Resetting the tracking
+        # state during silence prevents this.
+        if decision.silence_active:
+            self._mode_transition_active = False
+            self._last_mode_was_park_bounce = False
+        else:
+            mode_changed = current_mode_is_park_bounce != self._last_mode_was_park_bounce
 
-        self._last_mode_was_park_bounce = current_mode_is_park_bounce
+            if mode_changed and not self._mode_transition_active:
+                # Start new transition — resync orbit so start geometry
+                # matches rate-limited output (prevents straight-line chase)
+                self._resync_orbit_to_output()
+                self._mode_transition_active = True
+                self._mode_transition_progress = 0.0
+                self._mode_transition_start_radius = float(self._actual_radius)
+                self._mode_transition_start_center_y = float(self._base_center_y + self._reactive_bounce_y)
+                
+                # Reset swirl state to prevent interference with mode transition
+                self._swirl_entering = False
+                self._swirl_progress = 0.0
+                
+                # Determine target geometry based on new mode
+                if current_mode_is_park_bounce:
+                    # Transitioning TO park_bounce_only: spiral into small idle orbit
+                    self._mode_transition_target_radius = float(self._park_idle_radius)
+                    self._mode_transition_target_center_y = float(self._baseline_center_y)
+                else:
+                    # Transitioning TO full arc: spiral out to journey geometry
+                    # Use current decision's trigger geometry, or default to park_radius
+                    geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
+                        "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
+                    })
+                    self._mode_transition_target_radius = float(geom["park_radius"])
+                    self._mode_transition_target_center_y = float(geom["center_y"])
 
-        # ── Advance mode transition if active ──
-        if self._mode_transition_active:
+            self._last_mode_was_park_bounce = current_mode_is_park_bounce
+
+        # ── Advance mode transition if active (never during silence) ──
+        if self._mode_transition_active and not decision.silence_active:
             self._mode_transition_progress = float(np.clip(
                 self._mode_transition_progress + (dt / max(self._mode_transition_duration_s, 1e-3)),
                 0.0,
@@ -464,6 +514,7 @@ class StrokeMapper:
                 if not self._creep_park_active:
                     self._creep_park_active = True
                     self._creep_park_progress = 0.0
+                    self._resync_orbit_to_output()
                     self._creep_park_start_radius = float(self._actual_radius)
                     self._creep_park_start_center_y = float(self._base_center_y)
 
@@ -522,6 +573,7 @@ class StrokeMapper:
             if not self._swirl_entering:
                 self._swirl_entering = True
                 self._swirl_progress = 0.0
+                self._resync_orbit_to_output()
                 self._swirl_start_center_y = float(self._base_center_y)
                 self._swirl_start_radius = float(max(self._actual_radius, self._park_idle_radius))
 
@@ -601,6 +653,7 @@ class StrokeMapper:
             # ── Spiral-out: launch on first beat/downbeat/syncopation after silence ──
             if not self._spiral_out_active and self._startup_beats_seen <= 1.0:
                 if decision.trigger_kind in ("beat", "downbeat", "syncopation"):
+                    self._resync_orbit_to_output()
                     geom_so = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
                         "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
                     })
@@ -681,7 +734,9 @@ class StrokeMapper:
                     self._journey_start_alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
                     self._journey_start_beta = float(np.clip(self.state.beta, -1.0, 1.0))
                     if self._orbit_phase_initialized:
-                        # Continuous phase — avoids atan2 roundtrip jitter
+                        # Re-sync orbit from actual output to prevent
+                        # straight-line chase when rate limiter has lagged
+                        self._resync_orbit_to_output()
                         self._journey_start_angle = float(self._orbit_phase)
                         self._journey_start_radius = float(np.clip(self._actual_radius, self._min_radius, 1.0))
                     else:
@@ -803,8 +858,11 @@ class StrokeMapper:
                         or self._is_upcoming_beat_expected(now=now, decision=decision)
                     )
                     if continuation_expected_at_start:
-                        self._journey_target_radius = float(np.clip(
-                            self._journey_latched_bloom, type_max_radius, 1.0
+                        # Cap at type_max_radius — never expand beyond configured max.
+                        # Previous code clipped to [max_radius, 1.0] which allowed
+                        # the orbit to overshoot the boundary circle.
+                        self._journey_target_radius = float(min(
+                            self._journey_latched_bloom, type_max_radius
                         ))
                     else:
                         self._journey_target_radius = type_max_radius
@@ -1238,10 +1296,37 @@ class StrokeMapper:
         elapsed = float(max(0.0, now - self._journey_start_time_mono))
         return float(np.clip(elapsed / duration_s, 0.0, 1.0))
 
+    def _resync_orbit_to_output(self) -> None:
+        """Re-sync parametric orbit (phase, radius) to actual output position.
+
+        During transitions the rate limiter may cap per-frame movement,
+        so _actual_radius / _orbit_phase can diverge from state.alpha/beta.
+        Latching a transition start from stale parametric state causes a
+        large target-output gap that the rate limiter chases in a
+        straight line.  Re-inferring orbit parameters from the real
+        output position keeps subsequent arcs circular and smooth.
+        """
+        if not self._orbit_phase_initialized:
+            return
+        # Strip expression wander (added post-orbit) and use orbit center
+        center_y = float(self._base_center_y + self._reactive_bounce_y)
+        effective_beta = float(self.state.beta - self._center_y_offset)
+        inferred_r = float(np.hypot(float(self.state.alpha), effective_beta - center_y))
+        if inferred_r > self._actual_radius + 0.05:
+            # Actual output implies a larger orbit than parametric state;
+            # re-infer phase via atan2 and adopt the larger radius so
+            # the next transition starts from the real device position.
+            dy = float(effective_beta - center_y)
+            inferred_phase = float(np.arctan2(dy, float(self.state.alpha)))
+            self._orbit_phase = float(inferred_phase % (2.0 * np.pi))
+            self._actual_radius = float(inferred_r)
+            self._last_phase_for_velocity = self._orbit_phase
+
     def _apply_park_motion_frame(self, event: BeatEvent, dt: float, fade: float) -> tuple[float, float, float]:
         if not self._swirl_entering:
             self._swirl_entering = True
             self._swirl_progress = 0.0
+            self._resync_orbit_to_output()
             self._swirl_start_center_y = float(self._base_center_y)
             self._swirl_start_radius = float(max(self._actual_radius, self._park_idle_radius))
 

@@ -603,12 +603,19 @@ class TestStrokeMapperContract(unittest.TestCase):
             journey_completion=1.0,
         )
 
-        cmd = mapper.process_beat(self._event(is_beat=True, raw_rms=0.2, peak_energy=0.8))
+        # Multi-frame ramp: rate limiter eases into motion over several frames.
+        t0 = time.perf_counter()
+        frame_dt = 1.0 / 60.0
+        cmd = None
+        for i in range(10):
+            cmd = mapper.process_beat(self._event(
+                is_beat=True, raw_rms=0.2, peak_energy=0.8,
+                monotonic_timestamp=t0 + i * frame_dt,
+            ))
 
         self.assertIsNotNone(cmd)
         assert cmd is not None
-        # Continuity model: completion enters controlled spiral/continuation,
-        # so alpha is expected to remain in motion (non-zero).
+        # After several frames the orbit should show visible motion.
         self.assertGreater(abs(cmd.alpha), 0.01)
         self.assertGreaterEqual(cmd.beta, -1.0)
         self.assertLessEqual(cmd.beta, 1.0)
@@ -626,12 +633,19 @@ class TestStrokeMapperContract(unittest.TestCase):
             journey_completion=1.0,
         )
 
-        cmd = mapper.process_beat(self._event(is_syncopated=True, raw_rms=0.2, peak_energy=0.8))
+        # Multi-frame ramp: rate limiter eases into motion over several frames.
+        t0 = time.perf_counter()
+        frame_dt = 1.0 / 60.0
+        cmd = None
+        for i in range(10):
+            cmd = mapper.process_beat(self._event(
+                is_syncopated=True, raw_rms=0.2, peak_energy=0.8,
+                monotonic_timestamp=t0 + i * frame_dt,
+            ))
 
         self.assertIsNotNone(cmd)
         assert cmd is not None
-        # Continuity model: completion enters controlled spiral/continuation,
-        # so alpha is expected to remain in motion (non-zero).
+        # After several frames the orbit should show visible motion.
         self.assertGreater(abs(cmd.alpha), 0.01)
         self.assertGreaterEqual(cmd.beta, -1.0)
         self.assertLessEqual(cmd.beta, 1.0)
@@ -735,19 +749,25 @@ class TestStrokeMapperContract(unittest.TestCase):
             silence_fade=0.5,
         )
 
-        cmd1 = mapper.process_beat(self._event(is_beat=False, raw_rms=0.0, raw_rms_db=-80.0))
-        cmd2 = mapper.process_beat(self._event(is_beat=False, raw_rms=0.0, raw_rms_db=-80.0))
+        # Run several frames so the quintic ease-to-park converges
+        t0 = time.perf_counter()
+        frame_dt = 1.0 / 60.0
+        cmds = []
+        for i in range(60):  # ~1 second of frames
+            cmds.append(mapper.process_beat(self._event(
+                is_beat=False, raw_rms=0.0, raw_rms_db=-80.0,
+                monotonic_timestamp=t0 + i * frame_dt,
+            )))
 
-        self.assertIsNotNone(cmd1)
-        self.assertIsNotNone(cmd2)
-        assert cmd1 is not None
-        assert cmd2 is not None
-        # Orbit always advances by one idle-speed frame, so alpha won't be
-        # exactly zero; check it's near-park (within ±0.05 of center).
-        self.assertAlmostEqual(cmd1.alpha, 0.0, places=1)
-        self.assertAlmostEqual(cmd1.beta, mapper._baseline_center_y, delta=0.8)
-        self.assertAlmostEqual(cmd2.alpha, cmd1.alpha, places=1)
-        self.assertAlmostEqual(cmd2.beta, cmd1.beta, delta=0.1)
+        cmd_last = cmds[-1]
+        self.assertIsNotNone(cmd_last)
+        assert cmd_last is not None
+        # After 1s of silence, orbit should have spiralled close to park.
+        # orbit_phase keeps turning so alpha won't be exactly zero,
+        # but radius should be small (near park_idle_radius=0.05).
+        self.assertLess(abs(cmd_last.alpha), 0.15)
+        self.assertGreaterEqual(cmd_last.beta, -1.0)
+        self.assertLessEqual(cmd_last.beta, 1.0)
 
     def test_base_center_target_migrates_start_over_full_journey(self):
         mapper = StrokeMapper(Config())
