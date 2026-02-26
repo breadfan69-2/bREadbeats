@@ -969,6 +969,229 @@ def on_advanced_controls(win, scroll_to_flux: bool = False, as_tab: bool = False
     scroll_layout = QVBoxLayout(scroll_content)
     scroll_layout.setSpacing(10)
 
+    # ===== Silence Gate Controls =====
+    silence_group = QGroupBox("Silence Gate (dBFS)")
+    silence_layout = QVBoxLayout(silence_group)
+
+    silence_info = QLabel(
+        "These thresholds control silence deadzone hysteresis in dBFS.\n"
+        "More negative = quieter/more permissive. Open = enter silence, Close = exit silence."
+    )
+    silence_info.setStyleSheet("color: #aaa; font-size: 11px;")
+    silence_layout.addWidget(silence_info)
+
+    silence_open_db = win._silence_threshold_to_db(
+        getattr(win.config.stroke, 'silence_threshold', -40.0),
+        default_linear=0.001,
+    )
+    silence_close_db = win._silence_threshold_to_db(
+        getattr(win.config.stroke, 'silence_close_threshold', -26.0),
+        default_linear=0.01,
+    )
+    if silence_close_db <= silence_open_db:
+        silence_close_db = float(min(0.0, silence_open_db + 1.5))
+
+    silence_open_slider = SliderWithLabel(
+        "No Motion Under (dBFS)",
+        -90.0,
+        -6.0,
+        silence_open_db,
+        1,
+    )
+    silence_open_slider.setToolTip("Audio level below this dBFS value enters silence mode (motion stops, dot parks)")
+
+    silence_close_slider = SliderWithLabel(
+        "Limited Motion Under (dBFS)",
+        -90.0,
+        -3.0,
+        silence_close_db,
+        1,
+    )
+    silence_close_slider.setToolTip("Audio level must exceed this dBFS value to exit silence mode (motion resumes)")
+
+    def _set_silence_open(v: float) -> None:
+        open_v = float(v)
+        setattr(win.config.stroke, 'silence_threshold', open_v)
+        close_v = win._silence_threshold_to_db(
+            getattr(win.config.stroke, 'silence_close_threshold', -26.0),
+            default_linear=0.01,
+        )
+        if close_v <= open_v:
+            close_v = float(min(0.0, open_v + 1.5))
+            setattr(win.config.stroke, 'silence_close_threshold', close_v)
+            silence_close_slider.blockSignals(True)
+            silence_close_slider.setValue(close_v)
+            silence_close_slider.blockSignals(False)
+
+    def _set_silence_close(v: float) -> None:
+        close_v = float(v)
+        open_v = win._silence_threshold_to_db(
+            getattr(win.config.stroke, 'silence_threshold', -40.0),
+            default_linear=0.001,
+        )
+        if close_v <= open_v:
+            close_v = float(min(0.0, open_v + 1.5))
+            silence_close_slider.blockSignals(True)
+            silence_close_slider.setValue(close_v)
+            silence_close_slider.blockSignals(False)
+        setattr(win.config.stroke, 'silence_close_threshold', close_v)
+
+    silence_open_slider.valueChanged.connect(_set_silence_open)
+    silence_close_slider.valueChanged.connect(_set_silence_close)
+    silence_layout.addWidget(silence_open_slider)
+    silence_layout.addWidget(silence_close_slider)
+    scroll_layout.addWidget(silence_group)
+
+    # ===== Expression Layer Controls =====
+    expression_group = QGroupBox("Expression Layer")
+    expression_layout = QVBoxLayout(expression_group)
+
+    expr_info = QLabel(
+        "Artistic expression: center wandering,\n"
+        "direction changes, tension pauses, and session arc."
+    )
+    expr_info.setStyleSheet("color: #aaa; font-size: 11px;")
+    expression_layout.addWidget(expr_info)
+
+    wander_cb = QCheckBox("Center wandering (orbit drifts horizontally)")
+    wander_cb.setChecked(bool(getattr(win.config.stroke, 'center_wander_enabled', True)))
+    wander_cb.stateChanged.connect(
+        lambda state: setattr(win.config.stroke, 'center_wander_enabled', state == 2)
+    )
+    expression_layout.addWidget(wander_cb)
+
+    wander_max_slider = SliderWithLabel(
+        "Wander max offset",
+        0.0, 0.50,
+        float(getattr(win.config.stroke, 'center_wander_max_x', 0.20) or 0.20),
+        2,
+    )
+    wander_max_slider.valueChanged.connect(
+        lambda v: setattr(win.config.stroke, 'center_wander_max_x', float(v))
+    )
+    expression_layout.addWidget(wander_max_slider)
+
+    wander_cycle_slider = SliderWithLabel(
+        "Wander cycle (seconds)",
+        5.0, 60.0,
+        float(getattr(win.config.stroke, 'center_wander_cycle_s', 25.0) or 25.0),
+        1,
+    )
+    wander_cycle_slider.valueChanged.connect(
+        lambda v: setattr(win.config.stroke, 'center_wander_cycle_s', float(v))
+    )
+    expression_layout.addWidget(wander_cycle_slider)
+
+    wander_energy_slider = SliderWithLabel(
+        "Wander energy influence",
+        0.0, 1.0,
+        float(getattr(win.config.stroke, 'center_wander_energy_scale', 0.6) or 0.6),
+        2,
+    )
+    wander_energy_slider.valueChanged.connect(
+        lambda v: setattr(win.config.stroke, 'center_wander_energy_scale', float(v))
+    )
+    expression_layout.addWidget(wander_energy_slider)
+
+    direction_cb = QCheckBox("Direction changes at phrase boundaries")
+    direction_cb.setChecked(bool(getattr(win.config.stroke, 'direction_change_enabled', True)))
+    direction_cb.stateChanged.connect(
+        lambda state: setattr(win.config.stroke, 'direction_change_enabled', state == 2)
+    )
+    expression_layout.addWidget(direction_cb)
+
+    direction_interval_slider = SliderWithLabel(
+        "Min interval between reversals (s)",
+        5.0, 60.0,
+        float(getattr(win.config.stroke, 'direction_change_interval_s', 15.0) or 15.0),
+        1,
+    )
+    direction_interval_slider.valueChanged.connect(
+        lambda v: setattr(win.config.stroke, 'direction_change_interval_s', float(v))
+    )
+    expression_layout.addWidget(direction_interval_slider)
+
+    direction_drop_slider = SliderWithLabel(
+        "Energy change to trigger reversal",
+        0.10, 0.80,
+        float(getattr(win.config.stroke, 'direction_change_energy_drop', 0.35) or 0.35),
+        2,
+    )
+    direction_drop_slider.valueChanged.connect(
+        lambda v: setattr(win.config.stroke, 'direction_change_energy_drop', float(v))
+    )
+    expression_layout.addWidget(direction_drop_slider)
+
+    session_cb = QCheckBox("Session arc (gradual long-term intensity evolution)")
+    session_cb.setChecked(bool(getattr(win.config.stroke, 'session_arc_enabled', True)))
+    session_cb.stateChanged.connect(
+        lambda state: setattr(win.config.stroke, 'session_arc_enabled', state == 2)
+    )
+    expression_layout.addWidget(session_cb)
+
+    session_influence_slider = SliderWithLabel(
+        "Session arc radius influence",
+        0.0, 0.30,
+        float(getattr(win.config.stroke, 'session_arc_radius_influence', 0.10) or 0.10),
+        2,
+    )
+    session_influence_slider.valueChanged.connect(
+        lambda v: setattr(win.config.stroke, 'session_arc_radius_influence', float(v))
+    )
+    expression_layout.addWidget(session_influence_slider)
+
+    scroll_layout.addWidget(expression_group)
+
+    # ===== Post-Silence Volume Ramp =====
+    silence_ramp_group = QGroupBox("Post-Silence Volume Ramp")
+    silence_ramp_layout = QVBoxLayout(silence_ramp_group)
+
+    silence_ramp_info = QLabel("After silence (track change), reduce volume and slowly\nraise it back over a configurable duration.")
+    silence_ramp_info.setStyleSheet("color: #aaa; font-size: 11px;")
+    silence_ramp_layout.addWidget(silence_ramp_info)
+
+    vol_reduction_slider = SliderWithLabel(
+        "Volume reduction (%)",
+        0.0,
+        0.50,
+        float(getattr(win.config.stroke, 'post_silence_vol_reduction', 0.15) or 0.15),
+        2,
+    )
+    vol_reduction_slider.valueChanged.connect(
+        lambda v: setattr(win.config.stroke, 'post_silence_vol_reduction', v)
+    )
+    silence_ramp_layout.addWidget(vol_reduction_slider)
+
+    ramp_dur_slider = SliderWithLabel(
+        "Ramp duration (seconds)",
+        1.0,
+        8.0,
+        float(getattr(win.config.stroke, 'post_silence_ramp_seconds', 4.0) or 4.0),
+        1,
+    )
+    ramp_dur_slider.valueChanged.connect(
+        lambda v: setattr(win.config.stroke, 'post_silence_ramp_seconds', v)
+    )
+    silence_ramp_layout.addWidget(ramp_dur_slider)
+
+    fade_drop_row = QHBoxLayout()
+    fade_drop_label = QLabel("Fade max drop points (out of 100):")
+    fade_drop_label.setStyleSheet("color: #ccc;")
+    fade_drop_row.addWidget(fade_drop_label)
+    fade_drop_spin = QSpinBox()
+    fade_drop_spin.setRange(0, 10)
+    fade_drop_spin.setSingleStep(1)
+    fade_drop_spin.setValue(int(np.clip(getattr(win.config.stroke, 'silence_fade_drop_points', 10) or 10, 0, 10)))
+    fade_drop_spin.setToolTip("Caps runtime fade reduction to this many volume points (0-10)")
+    fade_drop_spin.valueChanged.connect(
+        lambda v: setattr(win.config.stroke, 'silence_fade_drop_points', int(v))
+    )
+    fade_drop_row.addWidget(fade_drop_spin)
+    fade_drop_row.addStretch()
+    silence_ramp_layout.addLayout(fade_drop_row)
+
+    scroll_layout.addWidget(silence_ramp_group)
+
     # ===== Syncopation Controls =====
     syncope_group = QGroupBox("Syncopation / Double-Stroke")
     syncope_layout = QVBoxLayout(syncope_group)
