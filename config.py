@@ -234,12 +234,6 @@ class StrokeConfig:
     orbit_speed_min_turns: float = 0.75       # turns at lowest energy
     orbit_speed_max_turns: float = 1.5        # turns at highest energy
 
-    # Tension pauses: brief orbit freeze during dramatic energy drops
-    tension_pause_enabled: bool = True
-    tension_pause_energy_drop: float = 0.40   # energy drop ratio to trigger pause
-    tension_pause_hold_s: float = 0.45        # hold duration (seconds)
-    tension_pause_cooldown_s: float = 10.0    # minimum seconds between pauses
-
     # Center wandering: orbit center drifts horizontally over time
     center_wander_enabled: bool = True
     center_wander_max_x: float = 0.20         # max horizontal center offset

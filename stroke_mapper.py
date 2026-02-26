@@ -116,9 +116,6 @@ class StrokeMapper:
         # Smooth landing / settle state (exponential lerp, no oscillation)
         self._settle_active = False
 
-        # Mid-journey crossfade state
-        self._crossfade_active = False
-
         # Bass-reactive jitter state (applied on creep only)
         self._bass_jitter_phase = 0.0
         self._bass_jitter_freq_ema = 0.5
@@ -152,8 +149,27 @@ class StrokeMapper:
         self._silence_exit_latch_beta: float = 0.0
         self._was_silence_active: bool = True           # tracks previous frame
 
-        # ── Entry journey gating (§8) ──
-        self._post_wait_reentry_active: bool = False
+        # ── Funscript idle-fill loop (extracted from NoodleDude Megamix @ 11:00.545) ──
+        # Ping-pong looped: plays forward then reverse, seamlessly.
+        # Alpha: vibrating ramp 0→100→40 with ~30Hz zigzag tremolo.
+        # Beta: rapid oscillation centered at 50 with ±15 deviation.
+        # Each sample is ~33ms apart (30 Hz).  Normalized 0-100 → 0.0-1.0.
+        self._idle_loop_alpha: tuple[float, ...] = (
+            0.00, 0.15, 0.30, 0.20, 0.09, 0.25, 0.40, 0.30, 0.20, 0.35,
+            0.50, 0.40, 0.29, 0.44, 0.60, 0.50, 0.40, 0.55, 0.70, 0.60,
+            0.50, 0.65, 0.80, 0.70, 0.60, 0.75, 0.90, 0.80, 0.70, 0.85,
+            1.00, 0.85, 0.70, 0.80, 0.90, 0.75, 0.59, 0.70, 0.80, 0.65,
+            0.50, 0.60, 0.70, 0.55, 0.40,
+        )
+        self._idle_loop_beta: tuple[float, ...] = (
+            0.50, 0.65, 0.50, 0.60, 0.50, 0.35, 0.50, 0.60, 0.50, 0.65,
+            0.50, 0.40, 0.50, 0.65, 0.50, 0.60, 0.50, 0.35, 0.50, 0.60,
+            0.50, 0.35, 0.50, 0.40, 0.50, 0.65, 0.50, 0.40, 0.50, 0.64,
+            0.50, 0.35, 0.50, 0.60, 0.50, 0.35, 0.50, 0.60, 0.50, 0.65,
+            0.50, 0.40, 0.50, 0.65, 0.50,
+        )
+        self._idle_loop_phase: float = 0.0       # continuous phase counter
+        self._idle_loop_rate_hz: float = 30.0     # native playback rate
 
         # ── Expression layer state ──
         self._orbit_direction: int = 1           # 1=default, -1=reversed
@@ -500,8 +516,6 @@ class StrokeMapper:
             # Reset silence-exit crossfade so it re-triggers on next exit
             self._silence_exit_xfade_active = False
             self._silence_exit_xfade_progress = 0.0
-            # Reset entry gating on silence
-            self._post_wait_reentry_active = False
             self._anchor_phrase_locked = False
 
             creep_motion_disabled = not bool(getattr(self.config.creep, "enabled", True))
@@ -691,11 +705,6 @@ class StrokeMapper:
                     self._journey_linked = bool(prior_completion < 0.999)
                     self._journey_cold_start = not self._journey_linked
                     self._journey_relink_active = False
-
-                    # Crossfade disabled for trajectory stability.
-                    # Hard switching to the new arc preserves circular motion
-                    # and avoids blended-path squiggles at trigger boundaries.
-                    self._crossfade_active = False
 
                     self._settle_active = False  # cancel any active settle
 
@@ -1323,6 +1332,12 @@ class StrokeMapper:
             self._last_phase_for_velocity = self._orbit_phase
 
     def _apply_park_motion_frame(self, event: BeatEvent, dt: float, fade: float) -> tuple[float, float, float]:
+        """Idle-fill motion using extracted funscript loop (ping-pong).
+
+        Replaces the old tiny-orbit park.  While transitioning in (swirl),
+        crossfades from orbital motion to the looped funscript pattern.
+        Once fully arrived, plays the pattern continuously.
+        """
         if not self._swirl_entering:
             self._swirl_entering = True
             self._swirl_progress = 0.0
@@ -1335,6 +1350,7 @@ class StrokeMapper:
             bpm = float(getattr(event, "bpm", 0.0) or 0.0)
         bpm = float(np.clip(bpm if bpm > 0.0 else 120.0, 40.0, 240.0))
 
+        # ── Swirl-in transition (radius + center_y blend toward park) ──
         self._swirl_progress = float(np.clip(
             self._swirl_progress + (dt / max(self._swirl_duration_s, 1e-3)),
             0.0,
@@ -1352,7 +1368,9 @@ class StrokeMapper:
         )
         radius = float(np.clip(swirl_radius, self._park_idle_radius, 1.0))
         self._actual_radius = radius
+        self._base_center_y = swirl_center_y
 
+        # ── Orbital component (fades out as swirl_t → 1.0) ──
         idle_angular_speed = float((2.0 * np.pi) * (bpm / 60.0) * self._idle_loops_per_beat)
         current_speed = max(abs(self._angular_velocity), idle_angular_speed)
         blended_speed = float(
@@ -1362,8 +1380,6 @@ class StrokeMapper:
         self._angular_velocity = float(blended_speed)
         self._last_phase_for_velocity = self._orbit_phase
 
-        self._base_center_y = swirl_center_y
-
         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
         treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
         hat_bump = self._compute_hat_bounce_offset(event=event, dt=dt)
@@ -1372,11 +1388,57 @@ class StrokeMapper:
         total_center_y = float(self._base_center_y + self._reactive_bounce_y)
         orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
 
-        angle = float(self._orbit_phase)
-        alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
-        beta = float(total_center_y + (orbit_radius * np.sin(angle)))
+        # Old orbit position (for crossfade during swirl-in)
+        orbit_alpha = float(orbit_radius * np.cos(self._orbit_phase)) + float(jitter_alpha * 0.3)
+        orbit_beta = float(total_center_y + (orbit_radius * np.sin(self._orbit_phase)))
+
+        # ── Funscript idle-fill loop (ping-pong) ──
+        loop_alpha, loop_beta = self._sample_idle_loop(dt=dt)
+        # Scale from normalized [0,1] to stroke-mapper coordinates:
+        # alpha: centered at 0.0, range ±idle_gain
+        # beta: centered at baseline_center_y, range ±idle_gain
+        idle_gain = 0.15
+        mapped_alpha = float((loop_alpha - 0.5) * 2.0 * idle_gain) + float(jitter_alpha * 0.3)
+        mapped_beta = float(total_center_y + (loop_beta - 0.5) * 2.0 * idle_gain)
+
+        # ── Crossfade: orbit → idle loop as swirl completes ──
+        alpha = float(orbit_alpha + (mapped_alpha - orbit_alpha) * swirl_t)
+        beta = float(orbit_beta + (mapped_beta - orbit_beta) * swirl_t)
+
         volume = float(np.clip(self.get_volume() * float(np.clip(fade, 0.0, 1.0)), 0.0, 1.0))
         return alpha, beta, volume
+
+    def _sample_idle_loop(self, dt: float) -> tuple[float, float]:
+        """Advance and sample the ping-pong funscript idle loop.
+
+        Returns (alpha, beta) in normalized [0, 1] space.
+        The loop plays forward through all samples, then reverses,
+        creating a seamless ping-pong cycle.
+        """
+        n = len(self._idle_loop_alpha)  # 45 samples
+        # Ping-pong cycle length: forward (0→n-1) + reverse (n-1→0) = 2*(n-1) steps
+        cycle_len = float(2 * (n - 1))  # 88
+
+        # Advance phase by dt * playback_rate (samples per second)
+        self._idle_loop_phase += dt * self._idle_loop_rate_hz
+        self._idle_loop_phase = float(self._idle_loop_phase % cycle_len)
+
+        # Convert phase to sample index with ping-pong
+        phase = self._idle_loop_phase
+        if phase < float(n - 1):
+            # Forward leg
+            idx_f = phase
+        else:
+            # Reverse leg: mirror around (n-1)
+            idx_f = cycle_len - phase
+
+        # Linearly interpolate between adjacent samples
+        idx_lo = int(idx_f)
+        idx_hi = min(idx_lo + 1, n - 1)
+        frac = float(idx_f - idx_lo)
+        alpha = float(self._idle_loop_alpha[idx_lo] + (self._idle_loop_alpha[idx_hi] - self._idle_loop_alpha[idx_lo]) * frac)
+        beta = float(self._idle_loop_beta[idx_lo] + (self._idle_loop_beta[idx_hi] - self._idle_loop_beta[idx_lo]) * frac)
+        return alpha, beta
 
     @staticmethod
     def _quintic_ease(progress: float) -> float:

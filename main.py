@@ -3221,46 +3221,6 @@ class BREadbeatsWindow(QMainWindow):
         )
         expression_layout.addWidget(direction_drop_slider)
 
-        tension_cb = QCheckBox("Tension pauses (dramatic freeze on energy drops)")
-        tension_cb.setChecked(bool(getattr(self.config.stroke, 'tension_pause_enabled', True)))
-        tension_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'tension_pause_enabled', state == 2)
-        )
-        expression_layout.addWidget(tension_cb)
-
-        tension_drop_slider = SliderWithLabel(
-            "Energy drop to trigger pause",
-            0.15, 0.80,
-            float(getattr(self.config.stroke, 'tension_pause_energy_drop', 0.40) or 0.40),
-            2,
-        )
-        tension_drop_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'tension_pause_energy_drop', float(v))
-        )
-        expression_layout.addWidget(tension_drop_slider)
-
-        tension_hold_slider = SliderWithLabel(
-            "Pause hold duration (s)",
-            0.10, 1.50,
-            float(getattr(self.config.stroke, 'tension_pause_hold_s', 0.45) or 0.45),
-            2,
-        )
-        tension_hold_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'tension_pause_hold_s', float(v))
-        )
-        expression_layout.addWidget(tension_hold_slider)
-
-        tension_cooldown_slider = SliderWithLabel(
-            "Pause cooldown (s)",
-            2.0, 30.0,
-            float(getattr(self.config.stroke, 'tension_pause_cooldown_s', 10.0) or 10.0),
-            1,
-        )
-        tension_cooldown_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'tension_pause_cooldown_s', float(v))
-        )
-        expression_layout.addWidget(tension_cooldown_slider)
-
         session_cb = QCheckBox("Session arc (gradual long-term intensity evolution)")
         session_cb.setChecked(bool(getattr(self.config.stroke, 'session_arc_enabled', True)))
         session_cb.stateChanged.connect(
