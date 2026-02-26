@@ -740,14 +740,7 @@ class StrokeMapper:
                 and not decision.silence_active
                 and self._orbit_phase_initialized):
             cycle_s = float(getattr(self.config.stroke, 'center_wander_cycle_s', 25.0) or 25.0)
-            max_y = float(
-                getattr(
-                    self.config.stroke,
-                    'center_wander_max_y',
-                    getattr(self.config.stroke, 'center_wander_max_x', 0.20),
-                )
-                or 0.20
-            )
+            max_y = float(getattr(self.config.stroke, 'center_wander_max_x', 0.20) or 0.20)
             e_scale = float(getattr(self.config.stroke, 'center_wander_energy_scale', 0.6) or 0.6)
 
             self._center_wander_phase += dt / max(cycle_s, 1.0)

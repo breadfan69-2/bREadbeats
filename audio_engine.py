@@ -1271,9 +1271,10 @@ class AudioEngine:
             self._reset_downbeat_pattern()  # Also reset pattern matching when tempo resets
             tempo_reset_flag = True
         
-        silence_threshold_raw = getattr(getattr(self.config, 'stroke', None), 'silence_threshold', 0.02)
-        silence_threshold_db = silence_threshold_to_dbfs(silence_threshold_raw, default_linear=0.02)
-        silence_veto_active = bool(raw_rms_db < silence_threshold_db)
+        # Fixed generous threshold for beat-detection veto — only veto
+        # near-digital silence.  The real adaptive silence gate lives in
+        # BeatIntelligence.update_silence_deadzone_gate().
+        silence_veto_active = bool(raw_rms_db < -96.0)
         if silence_veto_active:
             spectral_flux = 0.0
             self.peak_envelope = 0.0

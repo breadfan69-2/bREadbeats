@@ -106,6 +106,11 @@ class BeatIntelligence:
         # Rolling RMS history for dynamic amp-gate (adapts to current volume)
         self._recent_rms_db: deque = deque(maxlen=600)  # ~10 s at 60 fps
 
+        # Auto-calibrated noise floor (dBFS).  P5 of _recent_rms_db, updated
+        # each frame in update_silence_deadzone_gate.  Used to lift silence
+        # thresholds above the WASAPI noise floor at any Windows volume.
+        self._noise_floor_db: float = RMS_DB_FLOOR
+
         # Rolling band energy history for volume-adaptive normalization.
         # Raw band energies scale with OS volume; these deques let us normalize
         # each band against its own recent P95 so music "intensity" is volume-independent.
@@ -633,7 +638,9 @@ class BeatIntelligence:
         """
         request_reset = False
         open_threshold_raw = getattr(self.config.stroke, "silence_threshold", -66.0)
-        open_threshold_db = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.001)
+        cfg_open_db = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.001)
+        # Use the same auto-calibrated floor as the gate
+        open_threshold_db = max(cfg_open_db, self._noise_floor_db + 6.0)
         amp = self._coerce_amplitude_db(overall_amplitude)
 
         if silence_active:
@@ -1000,14 +1007,32 @@ class BeatIntelligence:
         return float(np.clip(self.rms_envelope, RMS_DB_FLOOR, 12.0))
 
     def update_silence_deadzone_gate(self, overall_amplitude: float, now: float | None = None) -> bool:
+        # --- Config thresholds (dBFS, may be stale/too-low) ---
         open_threshold_raw = getattr(self.config.stroke, "silence_threshold", -66.0)
         close_threshold_raw = getattr(self.config.stroke, "silence_close_threshold", -58.0)
         close_frames_required = 6
-        open_threshold = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.001)
-        close_threshold = silence_threshold_to_dbfs(close_threshold_raw, default_linear=0.003)
+        cfg_open = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.001)
+        cfg_close = silence_threshold_to_dbfs(close_threshold_raw, default_linear=0.003)
+
+        level_db = self._coerce_amplitude_db(overall_amplitude)
+
+        # --- Auto-calibrated noise floor (dBFS) ---
+        # P5 of rolling 10-second RMS history = the quietest 5 % of recent
+        # frames.  Same pattern already proven in compute_radius_bloom_from_sub_bass.
+        if len(self._recent_rms_db) >= 30:
+            self._noise_floor_db = float(np.percentile(list(self._recent_rms_db), 5))
+        # else keep previous / RMS_DB_FLOOR
+
+        # Effective thresholds: whichever is higher — the user's slider or
+        # the auto-calibrated floor plus a fixed margin.  This means the
+        # gate auto-adapts to WASAPI noise at any Windows volume, while
+        # still honouring a user who deliberately raises the slider.
+        auto_open = self._noise_floor_db + 6.0   # 6 dB above noise floor
+        auto_close = self._noise_floor_db + 12.0  # 12 dB above noise floor
+        open_threshold = max(cfg_open, auto_open)
+        close_threshold = max(cfg_close, auto_close)
         if close_threshold <= open_threshold:
             close_threshold = float(min(12.0, open_threshold + 1.5))
-        level_db = self._coerce_amplitude_db(overall_amplitude)
 
         if level_db < open_threshold:
             self.silence_open_count += 1
