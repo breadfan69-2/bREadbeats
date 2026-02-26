@@ -267,69 +267,6 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         self.assertEqual(cmd.duration_ms, 25)
 
-    def test_bass_jitter_not_called_during_fill(self):
-        """Funscript fill bypasses jitter — jitter phase must not advance."""
-        mapper = StrokeMapper(Config())
-        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="creep",
-            interval_beats=8,
-            radius_bloom=0.70,
-            silence_active=False,
-            journey_completion=1.0,
-        )
-
-        phase_before = mapper._bass_jitter_phase
-        mapper.process_beat(self._event(is_beat=False, frequency=220.0))
-        self.assertAlmostEqual(mapper._bass_jitter_phase, phase_before, places=7)
-
-    def test_bass_jitter_requires_jitter_enabled(self):
-        cfg = Config()
-        cfg.jitter.enabled = False
-        mapper = StrokeMapper(cfg)
-        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="creep",
-            interval_beats=8,
-            radius_bloom=0.70,
-            silence_active=False,
-            journey_completion=0.5,
-        )
-
-        phase_before = mapper._bass_jitter_phase
-        mapper.process_beat(self._event(is_beat=False, frequency=220.0))
-        self.assertAlmostEqual(mapper._bass_jitter_phase, phase_before, places=7)
-
-    def test_bass_jitter_frequency_changes_phase_rate(self):
-        """Jitter function itself still responds to frequency (called directly)."""
-        mapper_low = StrokeMapper(Config())
-        mapper_high = StrokeMapper(Config())
-
-        mapper_low._compute_bass_jitter_offsets(
-            event=self._event(is_beat=False, frequency=30.0), dt=1.0 / 60.0,
-        )
-        mapper_high._compute_bass_jitter_offsets(
-            event=self._event(is_beat=False, frequency=220.0), dt=1.0 / 60.0,
-        )
-
-        self.assertGreater(mapper_high._bass_jitter_phase, mapper_low._bass_jitter_phase)
-
-    def test_bass_jitter_frequency_changes_offset_magnitude(self):
-        mapper_low = StrokeMapper(Config())
-        mapper_high = StrokeMapper(Config())
-
-        alpha_low, beta_low = mapper_low._compute_bass_jitter_offsets(
-            event=self._event(is_beat=False, frequency=30.0),
-            dt=1.0 / 60.0,
-        )
-        alpha_high, beta_high = mapper_high._compute_bass_jitter_offsets(
-            event=self._event(is_beat=False, frequency=220.0),
-            dt=1.0 / 60.0,
-        )
-
-        # Recover jitter amplitude independent of phase.
-        amp_low = (alpha_low ** 2 + ((beta_low / 0.70) ** 2)) ** 0.5
-        amp_high = (alpha_high ** 2 + ((beta_high / 0.70) ** 2)) ** 0.5
-        self.assertGreater(amp_high, amp_low)
-
     def test_fill_parks_motion_when_jitter_off(self):
         """Fill mode: dot parks gracefully (not instant park)."""
         cfg = Config()

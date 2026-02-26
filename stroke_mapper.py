@@ -82,20 +82,21 @@ class StrokeMapper:
         self._idle_loops_per_beat = 0.125
 
         # ── Funscript idle-fill loop data (extracted from NoodleDude Megamix at 11:00.545) ──
-        # 45 samples, normalized 0→1, ~33ms intervals.  Ping-pong looped.
+        # 45 samples, ~33ms intervals.  Ping-pong looped.
+        # Rescaled to [0.15, 0.75] so Y output maps to -0.5 → +0.7.
         self._idle_loop_alpha: tuple[float, ...] = (
-            0.00, 0.15, 0.30, 0.20, 0.09, 0.25, 0.40, 0.30, 0.20, 0.35,
-            0.50, 0.40, 0.29, 0.44, 0.60, 0.50, 0.40, 0.55, 0.70, 0.60,
-            0.50, 0.65, 0.80, 0.70, 0.60, 0.75, 0.90, 0.80, 0.70, 0.85,
-            1.00, 0.85, 0.70, 0.80, 0.90, 0.75, 0.59, 0.70, 0.80, 0.65,
-            0.50, 0.60, 0.70, 0.55, 0.40,
+            0.15, 0.24, 0.33, 0.27, 0.20, 0.30, 0.39, 0.33, 0.27, 0.36,
+            0.45, 0.39, 0.32, 0.41, 0.51, 0.45, 0.39, 0.48, 0.57, 0.51,
+            0.45, 0.54, 0.63, 0.57, 0.51, 0.60, 0.69, 0.63, 0.57, 0.66,
+            0.75, 0.66, 0.57, 0.63, 0.69, 0.60, 0.50, 0.57, 0.63, 0.54,
+            0.45, 0.51, 0.57, 0.48, 0.39,
         )
         self._idle_loop_beta: tuple[float, ...] = (
-            0.50, 0.55, 0.60, 0.52, 0.45, 0.50, 0.58, 0.62, 0.55, 0.48,
-            0.53, 0.60, 0.65, 0.58, 0.50, 0.55, 0.62, 0.68, 0.60, 0.52,
-            0.48, 0.55, 0.63, 0.70, 0.62, 0.55, 0.50, 0.58, 0.65, 0.72,
-            0.65, 0.58, 0.50, 0.55, 0.62, 0.68, 0.60, 0.52, 0.48, 0.55,
-            0.50, 0.45, 0.50, 0.55, 0.50,
+            0.53, 0.56, 0.58, 0.54, 0.51, 0.53, 0.57, 0.59, 0.56, 0.52,
+            0.55, 0.58, 0.61, 0.57, 0.53, 0.56, 0.59, 0.62, 0.58, 0.54,
+            0.52, 0.56, 0.60, 0.63, 0.59, 0.56, 0.53, 0.57, 0.61, 0.64,
+            0.61, 0.57, 0.53, 0.56, 0.59, 0.62, 0.58, 0.54, 0.52, 0.56,
+            0.53, 0.51, 0.53, 0.56, 0.53,
         )
         self._idle_loop_phase: float = 0.0       # continuous sample counter
         self._idle_loop_rate_hz: float = 30.0    # samples per second
@@ -113,10 +114,6 @@ class StrokeMapper:
         _fc_sweep = float(np.mean(self._idle_loop_alpha))   # sweep data → -Y axis
         self._fill_center_out_alpha: float = float(_fc_wobble * 2.0 - 1.0)
         self._fill_center_out_beta: float = float(-(_fc_sweep * 2.0 - 1.0))
-
-        # Bass-reactive jitter state (applied during fill)
-        self._bass_jitter_phase = 0.0
-        self._bass_jitter_freq_ema = 0.5
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
         self._last_decision = None      # latest BeatDecision (for keyboard teacher snapshot)
@@ -829,41 +826,6 @@ class StrokeMapper:
                     if not self._anchor_phrase_locked:
                         self._anchor_sign = 1 if float(np.random.random()) > 0.5 else -1
                         self._anchor_phrase_locked = True
-
-    def _compute_bass_jitter_offsets(self, event: BeatEvent, dt: float) -> tuple[float, float]:
-        if not bool(getattr(self.config.jitter, "enabled", True)):
-            return 0.0, 0.0
-
-        base_amp = float(getattr(self.config.jitter, "amplitude", 0.0) or 0.0)
-        base_speed = float(getattr(self.config.jitter, "intensity", 0.0) or 0.0)
-        if base_amp <= 0.0 or base_speed <= 0.0:
-            return 0.0, 0.0
-
-        freq = float(getattr(event, "frequency", 0.0) or 0.0)
-        lo_hz, hi_hz = 30.0, 220.0
-        norm = float(np.clip((freq - lo_hz) / max(hi_hz - lo_hz, 1e-6), 0.0, 1.0))
-
-        # Smooth frequency-derived jitter control to avoid frame-to-frame flicker
-        self._bass_jitter_freq_ema += 0.2 * (norm - self._bass_jitter_freq_ema)
-        norm_smooth = float(np.clip(self._bass_jitter_freq_ema, 0.0, 1.0))
-
-        # Dominant-frequency map dictates jitter speed and size with ±50% envelope
-        # around base values: 0.5x..1.5x.
-        centered = float((2.0 * norm_smooth) - 1.0)   # -1..1
-        delta = float(0.5 * centered)                 # -0.5..0.5
-        speed_mult = float(np.clip(1.0 + delta, 0.5, 1.5))
-        size_mult = float(np.clip(1.0 + delta, 0.5, 1.5))
-
-        jitter_speed = max(0.0, base_speed * speed_mult)
-        jitter_amp = max(0.0, base_amp * size_mult)
-
-        self._bass_jitter_phase += float(jitter_speed * max(dt, 1e-4))
-        phase = float(self._bass_jitter_phase)
-
-        # Slight ellipse keeps movement feeling organic, not perfectly circular
-        jitter_alpha = float(jitter_amp * np.sin(phase))
-        jitter_beta = float((jitter_amp * 0.70) * np.cos(phase))
-        return jitter_alpha, jitter_beta
 
     def _is_upcoming_beat_expected(self, now: float, decision: BeatDecision) -> bool:
         if decision.trigger_kind == "creep":

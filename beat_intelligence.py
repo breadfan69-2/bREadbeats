@@ -77,11 +77,6 @@ class BeatIntelligence:
         self.active_interval_beats = 8
         self.last_trigger_kind = "creep"
 
-        # Fill-entry hysteresis: require consecutive non-beat frames before
-        # switching to fill (funscript pattern) — prevents momentary gate blips
-        self._creep_consecutive_frames: int = 0
-        self._creep_hysteresis_threshold: int = 10  # ~0.17s at 60fps
-
         # Journey preservation safety: count consecutive beat-family events
         # that failed a gate but were preserved by the "let it finish" path.
         # After N consecutive failures, let the journey expire to fill so
@@ -136,14 +131,6 @@ class BeatIntelligence:
 
         # ── Phase 1: No-beat timeout (#4) ──
         self._no_beat_timeout_s: float = 2.0
-
-        # ── §8: Entry gating state ──
-        # Entry gate should apply only after an actual silence transition.
-        # Startup begins unlocked; silence handling will re-arm this gate.
-        self._post_silence_entry_complete: bool = True
-        self._post_wait_reentry_beats: int = 0            # beats remaining in reentry
-        self._entry_gate_started_mono: float = 0.0
-        self._entry_gate_timeout_s: float = 2.5
 
         # ── Phase 2: ReadinessState (#17) ──
         self._stroke_ready: bool = False
@@ -1574,10 +1561,6 @@ class BeatIntelligence:
         if silence_active:
             self._was_silence_active = True
             self.is_recovering = False
-            # §8: Reset entry gating on silence
-            self._post_silence_entry_complete = False
-            self._post_wait_reentry_beats = 0
-            self._entry_gate_started_mono = 0.0
             # §5: Cancel unlock hold on silence
             self._tempo_unlock_hold_active = False
         elif self._was_silence_active:
@@ -1618,10 +1601,6 @@ class BeatIntelligence:
             if journey_completion <= 1e-9:
                 self.active_interval_beats = interval_beats
                 self.last_trigger_kind = trigger_kind
-            # §8: Mark entry complete when recovery journey finishes
-            if journey_completion >= 1.0:
-                self._post_silence_entry_complete = True
-
             return BeatDecision(
                 trigger_kind=trigger_kind,
                 interval_beats=interval_beats,
@@ -1662,28 +1641,8 @@ class BeatIntelligence:
         # active journey is preserved (not killed to fill) — it finishes
         # naturally on its own timing.
         #
-        # §8: After silence, the entry gate forces fill (creep) for
-        # _entry_gate_timeout_s seconds so the funscript pattern plays
-        # before beat-reactive orbits begin.
-        entry_gate_armed = (not self._post_silence_entry_complete and not self.is_recovering and not silence_active)
-        if entry_gate_armed:
-            if self._entry_gate_started_mono <= 0.0:
-                self._entry_gate_started_mono = now
-            elif (now - self._entry_gate_started_mono) >= self._entry_gate_timeout_s:
-                self._post_silence_entry_complete = True
-                self._entry_gate_started_mono = 0.0
-                entry_gate_armed = False
-        else:
-            self._entry_gate_started_mono = 0.0
-
-        if entry_gate_armed:
-            # Entry not done yet — play fill pattern, suppress beat orbits
-            trigger_kind = "creep"
-            if raw_trigger_kind in ("syncopation", "beat", "downbeat"):
-                gate_fail_reason = "entry_gate"
-        elif raw_trigger_kind == "creep" and self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
+        if raw_trigger_kind == "creep" and self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
             trigger_kind = self.last_trigger_kind
-            self._creep_consecutive_frames = 0
         elif raw_trigger_kind in ("syncopation", "beat", "downbeat") and not silence_active:
             gate_passed = True
             gate_fail_reason = ""
@@ -1703,7 +1662,6 @@ class BeatIntelligence:
                 gate_fail_reason = "amp_fill"
 
             if gate_passed:
-                self._creep_consecutive_frames = 0
                 self._gate_fail_preserve_count = 0
             elif (self.journey_active
                   and self.last_trigger_kind in ("syncopation", "beat", "downbeat")
@@ -1716,16 +1674,6 @@ class BeatIntelligence:
             else:
                 trigger_kind = "creep"
                 self._gate_fail_preserve_count = 0
-
-        # Fill hysteresis: only enter fill after sustained non-beat frames
-        if trigger_kind == "creep" and raw_trigger_kind == "creep":
-            self._creep_consecutive_frames += 1
-            if self._creep_consecutive_frames < self._creep_hysteresis_threshold and self.journey_active:
-                # Not enough consecutive non-beat frames yet — hold current journey
-                trigger_kind = self.last_trigger_kind
-        else:
-            if trigger_kind != "creep":
-                self._creep_consecutive_frames = 0
 
         # ── Phrase Commitment: musical phrase locking ──
         # When switching from fill to beat, 
@@ -1910,8 +1858,6 @@ class BeatIntelligence:
             "gs_stroke_ready_reason": self._stroke_ready_reason,
             "gs_phrase_committed": int(self._phrase_committed),
             "gs_phrase_beats_remaining": self._phrase_beats_remaining,
-            "gs_creep_consecutive": self._creep_consecutive_frames,
-            "gs_entry_gate_armed": int(not self._post_silence_entry_complete),
 
             # ── Journey state ──
             "gs_journey_active": int(self.journey_active),
