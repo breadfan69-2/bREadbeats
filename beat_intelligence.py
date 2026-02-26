@@ -1013,15 +1013,23 @@ class BeatIntelligence:
         # "Flat" = P95-P5 spread of recent RMS < 3 dB (all frames similar).
         # "Active" = spread >= 6 dB (real dynamic content).
         # Hysteresis band between 3-6 dB prevents chatter.
+        #
+        # Uses a SHORT recent window (last ~1 s) so silence is detected
+        # within ~1 second, not after 10 s of flushing old samples.
         flat_open_spread = 3.0   # enter silence when spread < this
         flat_close_spread = 6.0  # exit silence when spread > this
+        flatness_window = 60     # frames (~1 s at 60 fps)
 
-        if len(self._recent_rms_db) >= 30:
-            rms_list = list(self._recent_rms_db)
-            p5 = float(np.percentile(rms_list, 5))
-            p95 = float(np.percentile(rms_list, 95))
+        n_available = len(self._recent_rms_db)
+        if n_available >= 15:
+            # Short window for fast reaction
+            recent_slice = list(self._recent_rms_db)[-min(flatness_window, n_available):]
+            p5 = float(np.percentile(recent_slice, 5))
+            p95 = float(np.percentile(recent_slice, 95))
             spread = p95 - p5
-            self._noise_floor_db = p5  # keep for other consumers
+            # Noise floor from full history (stable)
+            if n_available >= 30:
+                self._noise_floor_db = float(np.percentile(list(self._recent_rms_db), 5))
         else:
             spread = 99.0  # permissive until we have enough history
 
