@@ -236,11 +236,11 @@ class StrokeMapper:
         ))
         smoothed_mag = float(np.hypot(self._smoothed_da, self._smoothed_db))
         if smoothed_mag < 0.001:
-            smooth_factor = 0.20  # gentle ramp from rest
+            smooth_factor = 0.35  # gentle ramp from rest
         elif delta_diff < 0.02:
-            smooth_factor = 0.30  # orbital direction tracking
+            smooth_factor = 0.55  # orbital direction tracking — high for round arcs
         else:
-            smooth_factor = 0.02  # slow for large target jumps (~4 beats)
+            smooth_factor = 0.04  # slow for large target jumps (~3 beats)
         da = float(self._smoothed_da + smooth_factor * (raw_da - self._smoothed_da))
         db = float(self._smoothed_db + smooth_factor * (raw_db - self._smoothed_db))
 
@@ -397,8 +397,8 @@ class StrokeMapper:
                 # quiet music stays at configured max (0.90), full music → 1.0
                 base_max = float(geom["max_radius"])
                 fullness = float(np.clip(decision.energy_fullness, 0.0, 1.0))
-                # Smooth expansion: only starts opening above 0.4 fullness
-                expand_t = float(np.clip((fullness - 0.4) / 0.6, 0.0, 1.0))
+                # Smooth expansion: only starts opening above 0.55 fullness
+                expand_t = float(np.clip((fullness - 0.55) / 0.45, 0.0, 1.0))
                 expanded_max = float(base_max + (1.0 - base_max) * (expand_t * expand_t))
                 # Session arc influence: long-term energy nudges max_radius
                 if getattr(self.config.stroke, 'session_arc_enabled', True):
@@ -788,6 +788,10 @@ class StrokeMapper:
                 if prior_mean > 0.08 and abs(prior_mean - recent_mean) / max(prior_mean, 0.08) > drop_needed:
                     self._orbit_direction *= -1
                     self._last_direction_change_time = now
+                    # Reset velocity EMA so the rate limiter doesn't
+                    # fight the reversal (prevents J/cursive hooks).
+                    self._smoothed_da = 0.0
+                    self._smoothed_db = 0.0
                     # §1: Choose one anchor per active segment (until silence reset).
                     if not self._anchor_phrase_locked:
                         self._anchor_sign = 1 if float(np.random.random()) > 0.5 else -1

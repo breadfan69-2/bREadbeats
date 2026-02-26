@@ -58,22 +58,22 @@ class BeatDetectionConfig:
     
     # --- CHANNEL-BUS ISOLATION FIELDS (NEW) ---
     trigger_bus_refractory_ms: float = 140.0
-    trigger_bus_arm_threshold: float = 0.35
-    trigger_bus_release_threshold: float = 0.25
+    trigger_bus_arm_threshold: float = 0.25
+    trigger_bus_release_threshold: float = 0.18
     trigger_bus_sustain_frames: int = 2
     trigger_bus_weight_sub_bass: float = 0.45
     trigger_bus_weight_low_mid: float = 0.25
     trigger_bus_weight_mid: float = 0.15
     trigger_bus_weight_high: float = 0.15
-    trigger_bus_mask_floor: float = 0.35
+    trigger_bus_mask_floor: float = 0.25
     bass_dominance_weighting_enabled: bool = True
     transient_classification_enabled: bool = True
     # ── Data-calibrated from CH-Tranquilizer (2026-02-25) ──
-    transient_full_motion_min_kick_conf: float = 0.60     # still < 0.5, active >= 0.6
-    transient_full_motion_min_bass_dom: float = 1.95      # low_high_ratio: slow=1.91, fast=2.15
-    transient_full_motion_decisive_bass_dom: float = 2.55  # clearly bass-heavy (P75=5.05)
-    transient_full_motion_min_flux: float = 0.15           # P95-normed: still=0.14, moving=0.25
-    transient_full_motion_min_energy_fullness: float = 0.18 # composite: low at slow speed
+    transient_full_motion_min_kick_conf: float = 0.40     # lowered: more permissive kick detection
+    transient_full_motion_min_bass_dom: float = 1.40      # lowered: less bass dominance required
+    transient_full_motion_decisive_bass_dom: float = 2.00  # lowered: easier decisive bass threshold
+    transient_full_motion_min_flux: float = 0.08           # lowered: less flux required for full motion
+    transient_full_motion_min_energy_fullness: float = 0.10 # lowered: less energy fullness needed
     # ------------------------------------------
 
     tempo_tracking_enabled: bool = True  
@@ -180,12 +180,12 @@ class StrokeConfig:
     })
 
     overall_amp_fill_gate_enabled: bool = True
-    overall_amp_fill_target: float = 0.5
-    overall_amp_fill_tolerance: float = 0.5
-    downbeat_overall_amp_fill_required: float = 0.03
-    beat_overall_amp_fill_required: float = 0.04
-    syncopation_overall_amp_fill_required: float = 0.07
-    overall_amp_fill_required_scale: float = 0.5
+    overall_amp_fill_target: float = 0.42
+    overall_amp_fill_tolerance: float = 0.50
+    downbeat_overall_amp_fill_required: float = 0.04
+    beat_overall_amp_fill_required: float = 0.06
+    syncopation_overall_amp_fill_required: float = 0.08
+    overall_amp_fill_required_scale: float = 0.55
     overall_amp_fill_auto_enabled: bool = True
     overall_amp_fill_auto_target_pass_rate: float = 0.58
     overall_amp_fill_auto_ema_alpha: float = 0.12
@@ -198,9 +198,9 @@ class StrokeConfig:
     # dBFS-based fill gate: Use absolute dBFS instead of relative peak normalization.
     # Provides stable thresholds that don't drift with instantaneous peak changes.
     use_dbfs_fill_gate: bool = True  # True: dBFS mode (stable), False: relative peak mode (legacy)
-    downbeat_dbfs_threshold: float = -25.0  # Downbeat: easier threshold (dB below reference)
-    beat_dbfs_threshold: float = -30.0      # Beat: moderate threshold (dB below reference)
-    syncopation_dbfs_threshold: float = -35.0  # Syncopation: harder threshold (dB below reference)
+    downbeat_dbfs_threshold: float = -35.0  # Downbeat: easier threshold (dB below reference)
+    beat_dbfs_threshold: float = -40.0      # Beat: moderate threshold (dB below reference)
+    syncopation_dbfs_threshold: float = -45.0  # Syncopation: harder threshold (dB below reference)
     dbfs_reference_window_ms: float = 15000.0  # Time window (ms) for tracking max signal reference
     dbfs_reference_decay_rate: float = 0.9995  # Per-frame decay multiplier for reference maximum
 
@@ -216,8 +216,8 @@ class StrokeConfig:
     # Fill duration gate (per phase): require sustained fullness over consecutive frames.
     # Values are frame counts (~16-23ms per frame at effective 43-60fps processing rate).
     # Set to 0 or 1 to disable duration check (instant single-frame decision) for that phase.
-    downbeat_overall_amp_fill_sustain_frames: int = 1
-    beat_overall_amp_fill_sustain_frames: int = 2
+    downbeat_overall_amp_fill_sustain_frames: int = 2
+    beat_overall_amp_fill_sustain_frames: int = 3
     syncopation_overall_amp_fill_sustain_frames: int = 3
 
     # High-band include mid: controls whether 'high' band visualization starts at 500 Hz or 2 kHz.
@@ -236,9 +236,9 @@ class StrokeConfig:
 
     # Center wandering: orbit center drifts horizontally over time
     center_wander_enabled: bool = True
-    center_wander_max_x: float = 0.20         # max horizontal center offset
-    center_wander_cycle_s: float = 25.0       # full wander cycle period (seconds)
-    center_wander_energy_scale: float = 0.6   # energy influence on wander amplitude
+    center_wander_max_x: float = 0.08         # max horizontal center offset
+    center_wander_cycle_s: float = 40.0       # full wander cycle period (seconds)
+    center_wander_energy_scale: float = 0.3   # energy influence on wander amplitude
 
     # Direction changes: CW/CCW reversal at phrase boundaries
     direction_change_enabled: bool = True

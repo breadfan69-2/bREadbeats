@@ -82,7 +82,7 @@ class BeatIntelligence:
         # Fill-entry hysteresis: require consecutive non-beat frames before
         # actually switching to fill mode (prevents momentary gate blips)
         self._creep_consecutive_frames: int = 0
-        self._creep_hysteresis_threshold: int = 18  # ~0.3s at 60fps – quicker drop to fill
+        self._creep_hysteresis_threshold: int = 10  # ~0.17s at 60fps – faster drop to fill
 
         # Journey preservation safety: count consecutive beat-family events
         # that failed a gate but were preserved by the "let it finish" path.
