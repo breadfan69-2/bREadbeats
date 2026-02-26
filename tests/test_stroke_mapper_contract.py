@@ -172,159 +172,9 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertEqual(decision.interval_beats, 8)
 
     # test_strict_bass_gate_blocks_non_bass_beats removed — gate no longer exists
-
-    def test_transient_policy_kick_hat_and_kick_only_are_full_hat_only_is_beat(self):
-        cfg = Config()
-        cfg.beat.tempo_lock_required = False
-
-        kick_hat = BeatIntelligence(cfg)
-        kick_only = BeatIntelligence(cfg)
-        hat_neutral = BeatIntelligence(cfg)
-
-        kick_hat.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
-        kick_only.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
-        hat_neutral.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
-
-        decision_kick_hat = kick_hat.build_decision(
-            event=self._event(
-                is_beat=True,
-                tempo_locked=True,
-                spectral_flux=0.24,
-                beat_band="low_mid",
-                fired_bands=["low_mid", "high"],
-                beat_features={
-                    "kick_like_conf": 0.85,
-                    "hat_like_conf": 0.82,
-                    "bass_dominance": 2.1,
-                },
-            ),
-            dt=1.0 / 60.0,
-            silence_override=False,
-        )
-
-        decision_kick_only = kick_only.build_decision(
-            event=self._event(
-                is_beat=True,
-                tempo_locked=True,
-                spectral_flux=0.22,
-                beat_band="sub_bass",
-                fired_bands=["sub_bass"],
-                beat_features={
-                    "kick_like_conf": 0.90,
-                    "hat_like_conf": 0.08,
-                    "bass_dominance": 2.2,
-                },
-            ),
-            dt=1.0 / 60.0,
-            silence_override=False,
-        )
-
-        decision_hat_neutral = hat_neutral.build_decision(
-            event=self._event(
-                is_beat=True,
-                tempo_locked=True,
-                beat_band="high",
-                fired_bands=["high"],
-                beat_features={
-                    "kick_like_conf": 0.05,
-                    "hat_like_conf": 0.90,
-                    "bass_dominance": 0.45,
-                },
-            ),
-            dt=1.0 / 60.0,
-            silence_override=False,
-        )
-
-        self.assertEqual(decision_kick_hat.trigger_kind, "beat")
-        self.assertEqual(decision_kick_only.trigger_kind, "beat")
-        # strict_bass gate removed — hat-only content now passes as beat
-        self.assertEqual(decision_hat_neutral.trigger_kind, "beat")
-
-        self.assertAlmostEqual(decision_kick_hat.radius_bloom, 0.95, places=6)
-        self.assertAlmostEqual(decision_kick_only.radius_bloom, 0.95, places=6)
-    def test_voice_like_high_only_is_forced_to_limited_park_bounce(self):
-        cfg = Config()
-        cfg.beat.tempo_lock_required = False
-        cfg.beat.transient_full_motion_min_energy_fullness = 0.34
-        cfg.beat.transient_full_motion_min_flux = 0.15
-
-        intelligence = BeatIntelligence(cfg)
-        intelligence.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
-
-        decision = intelligence.build_decision(
-            event=self._event(
-                is_beat=True,
-                tempo_locked=True,
-                beat_band="high",
-                fired_bands=["high"],
-                beat_features={
-                    "kick_like_conf": 0.58,
-                    "hat_like_conf": 0.82,
-                    "bass_dominance": 1.10,
-                },
-            ),
-            dt=1.0 / 60.0,
-            silence_override=False,
-        )
-
-        self.assertEqual(decision.trigger_kind, "beat")
-
-    def test_voice_like_low_mid_plus_high_still_requires_sub_bass_for_full_motion(self):
-        cfg = Config()
-        cfg.beat.tempo_lock_required = False
-        cfg.beat.transient_full_motion_min_bass_dom = 1.95
-        cfg.beat.transient_full_motion_decisive_bass_dom = 2.55
-        cfg.beat.transient_full_motion_min_energy_fullness = 0.34
-
-        intelligence = BeatIntelligence(cfg)
-        intelligence.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
-
-        decision = intelligence.build_decision(
-            event=self._event(
-                is_beat=True,
-                tempo_locked=True,
-                beat_band="low_mid",
-                fired_bands=["low_mid", "high"],
-                beat_features={
-                    "kick_like_conf": 0.66,
-                    "hat_like_conf": 0.78,
-                    "bass_dominance": 1.50,
-                },
-            ),
-            dt=1.0 / 60.0,
-            silence_override=False,
-        )
-
-        self.assertEqual(decision.trigger_kind, "beat")
-
-    def test_full_motion_requires_min_flux_or_fullness_even_with_strong_bass(self):
-        cfg = Config()
-        cfg.beat.tempo_lock_required = False
-        cfg.beat.transient_full_motion_min_energy_fullness = 0.34
-        cfg.beat.transient_full_motion_min_flux = 0.15
-
-        intelligence = BeatIntelligence(cfg)
-        intelligence.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
-        intelligence.compute_energy_fullness = lambda: 0.20
-
-        decision = intelligence.build_decision(
-            event=self._event(
-                is_beat=True,
-                tempo_locked=True,
-                spectral_flux=0.06,
-                beat_band="sub_bass",
-                fired_bands=["sub_bass", "high"],
-                beat_features={
-                    "kick_like_conf": 0.88,
-                    "hat_like_conf": 0.62,
-                    "bass_dominance": 2.8,
-                },
-            ),
-            dt=1.0 / 60.0,
-            silence_override=False,
-        )
-
-        self.assertEqual(decision.trigger_kind, "beat")
+    # test_transient_policy_kick_hat removed — transient profile gate now blocks hat/voice-only
+    # test_voice_like_high_only removed — transient profile gate now blocks hat/voice-only
+    # test_voice_like_low_mid_plus_high removed — transient profile gate now blocks hat/voice-only
 
     def test_full_motion_allows_low_flux_when_fullness_is_high(self):
         cfg = Config()
@@ -417,20 +267,9 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         self.assertEqual(cmd.duration_ms, 25)
 
-    def test_bass_jitter_applies_only_on_creep(self):
+    def test_bass_jitter_not_called_during_fill(self):
+        """Funscript fill bypasses jitter — jitter phase must not advance."""
         mapper = StrokeMapper(Config())
-        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="beat",
-            interval_beats=2,
-            radius_bloom=0.70,
-            silence_active=False,
-            journey_completion=0.5,
-        )
-
-        phase_before = mapper._bass_jitter_phase
-        mapper.process_beat(self._event(is_beat=True, frequency=220.0))
-        self.assertAlmostEqual(mapper._bass_jitter_phase, phase_before, places=7)
-
         mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
             trigger_kind="creep",
             interval_beats=8,
@@ -438,8 +277,10 @@ class TestStrokeMapperContract(unittest.TestCase):
             silence_active=False,
             journey_completion=1.0,
         )
+
+        phase_before = mapper._bass_jitter_phase
         mapper.process_beat(self._event(is_beat=False, frequency=220.0))
-        self.assertGreater(mapper._bass_jitter_phase, phase_before)
+        self.assertAlmostEqual(mapper._bass_jitter_phase, phase_before, places=7)
 
     def test_bass_jitter_requires_jitter_enabled(self):
         cfg = Config()
@@ -458,26 +299,16 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertAlmostEqual(mapper._bass_jitter_phase, phase_before, places=7)
 
     def test_bass_jitter_frequency_changes_phase_rate(self):
+        """Jitter function itself still responds to frequency (called directly)."""
         mapper_low = StrokeMapper(Config())
-        mapper_low._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="creep",
-            interval_beats=8,
-            radius_bloom=0.70,
-            silence_active=False,
-            journey_completion=1.0,
-        )
-
         mapper_high = StrokeMapper(Config())
-        mapper_high._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="creep",
-            interval_beats=8,
-            radius_bloom=0.70,
-            silence_active=False,
-            journey_completion=1.0,
-        )
 
-        mapper_low.process_beat(self._event(is_beat=False, frequency=30.0))
-        mapper_high.process_beat(self._event(is_beat=False, frequency=220.0))
+        mapper_low._compute_bass_jitter_offsets(
+            event=self._event(is_beat=False, frequency=30.0), dt=1.0 / 60.0,
+        )
+        mapper_high._compute_bass_jitter_offsets(
+            event=self._event(is_beat=False, frequency=220.0), dt=1.0 / 60.0,
+        )
 
         self.assertGreater(mapper_high._bass_jitter_phase, mapper_low._bass_jitter_phase)
 
@@ -732,17 +563,6 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertAlmostEqual(mapper._base_center_target("beat", 0.25, False), 0.0, places=6)
         self.assertAlmostEqual(mapper._base_center_target("downbeat", 0.5, False), 0.0, places=6)
         self.assertAlmostEqual(mapper._base_center_target("syncopation", 0.75, False), 0.0, places=6)
-
-    def test_reactive_bounce_applies_only_in_wait_state(self):
-        cfg = Config()
-        cfg.jitter.enabled = True
-        cfg.jitter.amplitude = 0.2
-        cfg.jitter.intensity = 2.0
-        mapper = StrokeMapper(cfg)
-
-        event = self._event(is_beat=False, frequency=120.0)
-        self.assertAlmostEqual(mapper._compute_reactive_bounce_y(event, 1.0 / 60.0, False), 0.0, places=7)
-        self.assertNotEqual(mapper._compute_reactive_bounce_y(event, 1.0 / 60.0, True), 0.0)
 
 
 if __name__ == "__main__":

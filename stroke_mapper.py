@@ -46,7 +46,6 @@ class StrokeMapper:
         self._baseline_center_y = 0.20
         self._min_radius = 0.05
         self._park_idle_radius = 0.05  # tiny orbit when fully parked
-        self._treble_lift_enabled = False
         self._base_center_y = self._baseline_center_y
         self._reactive_bounce_y = 0.0
         self._journey_start_total_center_y = self._baseline_center_y
@@ -58,7 +57,6 @@ class StrokeMapper:
         self._journey_fixed_radius = self._park_radius
         self._journey_start_radius = self._park_radius
         self._journey_learning_mult = 1.0  # frozen at journey start; never re-read mid-arc
-        self._journey_energy_fullness = 0.0  # latched at journey start for max_radius expansion
         self._journey_latched_bloom = 0.70     # radius_bloom frozen at journey start
         self._journey_center_y = self._baseline_center_y
         self._journey_park_radius = self._park_radius
@@ -67,8 +65,6 @@ class StrokeMapper:
         self._journey_start_angle = self._park_angle
         self._journey_start_alpha = self.state.alpha
         self._journey_start_beta = self.state.beta
-        self._journey_start_time_mono = 0.0
-        self._journey_timing_beats = 2
         self._journey_total_rotation = float(2.0 * np.pi)
         self._last_journey_completion = 1.0
         self._actual_radius = self._park_radius
@@ -78,12 +74,8 @@ class StrokeMapper:
         self._orbit_phase_initialized = False  # True once orbit_phase has been actively tracked
         self._journey_cold_start = True
         self._journey_linked = False
-        self._journey_relink_active = False
-        self._journey_relink_start_radius = 0.90
-        self._startup_momentum_min = 0.15
         self._startup_ramp_beats = 6.0
         self._startup_beats_seen = 0.0
-        self._journey_startup_momentum = 1.0
         self._post_silence_radius_ramp = 1.0   # 0→1 over first beats after silence
         self._post_silence_radius_floor = 0.12 # start radius fraction after silence
         self._hold_start_pose_until_reactive = False
@@ -119,9 +111,6 @@ class StrokeMapper:
         self._anchor_sign: int = 1               # +1 = +Y anchor, -1 = -Y anchor
         self._anchor_swing_deg: float = 10.0     # ±10° swing around y-axis
         self._anchor_phrase_locked: bool = False  # True once chosen for current phrase
-
-        # ── Entry journey gating (§8) ──
-        self._post_wait_reentry_active: bool = False
 
         # ── Expression layer state ──
         self._orbit_direction: int = 1           # 1=default, -1=reversed
@@ -237,10 +226,10 @@ class StrokeMapper:
         smoothed_mag = float(np.hypot(self._smoothed_da, self._smoothed_db))
         if smoothed_mag < 0.001:
             smooth_factor = 0.35  # gentle ramp from rest
-        elif delta_diff < 0.02:
-            smooth_factor = 0.55  # orbital direction tracking — high for round arcs
+        elif delta_diff < 0.06:
+            smooth_factor = 0.55  # orbital / fill direction tracking — high for round arcs
         else:
-            smooth_factor = 0.04  # slow for large target jumps (~3 beats)
+            smooth_factor = 0.08  # slow for large target jumps (~2 beats)
         da = float(self._smoothed_da + smooth_factor * (raw_da - self._smoothed_da))
         db = float(self._smoothed_db + smooth_factor * (raw_db - self._smoothed_db))
 
@@ -351,9 +340,7 @@ class StrokeMapper:
             # ── Silent-still-park: hold position, fade volume, reset momentum ──
             self._hold_start_pose_until_reactive = False
             self._startup_beats_seen = 0.0
-            self._journey_startup_momentum = self._startup_momentum_min
             self._post_silence_radius_ramp = 0.0
-            self._post_wait_reentry_active = False
             self._anchor_phrase_locked = False
             self._angular_velocity = 0.0
 
@@ -365,15 +352,19 @@ class StrokeMapper:
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
 
-            if self._hold_start_pose_until_reactive and decision.trigger_kind == "creep":
+            # ── Funscript fill: plays when trigger_kind == "creep" ──
+            # The baked loop IS the motion — no orbit, no rate limiter,
+            # no modifiers.  Raw sample values go straight to output.
+            if decision.trigger_kind == "creep":
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
-                alpha, beta, volume = self._apply_park_motion_frame(
-                    event=event,
-                    dt=dt,
-                    fade=ramp,
-                )
+                alpha, beta, volume = self._apply_park_motion_frame(dt=dt, fade=ramp)
                 self._last_journey_completion = 1.0
-                return self._rate_limited_output(alpha, beta, volume, dt)
+                self._hold_start_pose_until_reactive = False
+                # Direct output — bypass rate limiter so the fill pattern
+                # is not suppressed by the orbital velocity EMA.
+                self.state.alpha = alpha
+                self.state.beta = beta
+                return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
 
             started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
             if started_new_journey:
@@ -382,7 +373,6 @@ class StrokeMapper:
                 prior_completion = float(self._last_journey_completion)
                 self._journey_linked = bool(prior_completion < 0.999)
                 self._journey_cold_start = not self._journey_linked
-                self._journey_relink_active = False
 
                 self._journey_start_total_center_y = float(self._base_center_y + self._reactive_bounce_y)
 
@@ -414,8 +404,6 @@ class StrokeMapper:
                         + ((self._journey_max_radius - self._journey_park_radius) * self._intensity_ramp_mult)
                     )
 
-                self._journey_energy_fullness = fullness
-
                 self._journey_start_alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
                 self._journey_start_beta = float(np.clip(self.state.beta, -1.0, 1.0))
                 if self._orbit_phase_initialized:
@@ -440,19 +428,12 @@ class StrokeMapper:
                     start_angle=self._journey_start_angle,
                     interval_beats=decision.interval_beats,
                 )
-                self._journey_start_time_mono = float(now)
-                self._journey_timing_beats = self._normalize_journey_beats(decision.interval_beats)
-
                 if self._startup_beats_seen < self._startup_ramp_beats:
                     startup_ratio = float(np.clip(
                         self._startup_beats_seen / max(self._startup_ramp_beats, 1e-6),
                         0.0,
                         1.0,
                     ))
-                    self._journey_startup_momentum = float(
-                        self._startup_momentum_min
-                        + ((1.0 - self._startup_momentum_min) * startup_ratio)
-                    )
                     # Post-silence radius ramp: quintic ease from floor to full
                     ramp_t = self._quintic_ease(startup_ratio)
                     self._post_silence_radius_ramp = float(
@@ -461,31 +442,7 @@ class StrokeMapper:
                     )
                     self._startup_beats_seen += 1.0
                 else:
-                    self._journey_startup_momentum = 1.0
                     self._post_silence_radius_ramp = 1.0
-
-            progress = self._compute_beat_timed_progress(
-                now=now,
-                event=event,
-                fallback_progress=progress,
-            )
-
-            if progress >= 1.0 and not started_new_journey and decision.trigger_kind == "creep":
-                # Preserve visible continuity when a completed journey hands
-                # off into park motion from an axis-aligned terminal pose.
-                # Without this tiny nudge, deterministic frame timing can
-                # repeatedly land on alpha≈0 and look like a hard snap.
-                if abs(float(np.cos(self._orbit_phase))) < 0.02:
-                    self._orbit_phase = float((self._orbit_phase + 0.10) % (2.0 * np.pi))
-
-                ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
-                alpha, beta, volume = self._apply_park_motion_frame(
-                    event=event,
-                    dt=dt,
-                    fade=ramp,
-                )
-                self._last_journey_completion = 1.0
-                return self._rate_limited_output(alpha, beta, volume, dt)
 
             # Use latched geometry while a journey is in-flight.
             # Only refresh from live trigger kind when fully parked.
@@ -563,7 +520,7 @@ class StrokeMapper:
             angle = float(
                 self._journey_start_angle + (self._journey_total_rotation * progress)
             )
-            if progress >= 1.0 and decision.trigger_kind != "creep":
+            if progress >= 1.0:
                 bpm_for_terminal = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
                 if bpm_for_terminal <= 0.0:
                     bpm_for_terminal = float(getattr(event, "bpm", 0.0) or 0.0)
@@ -637,24 +594,6 @@ class StrokeMapper:
                         + ((target_radius - self._journey_start_radius) * link_blend)
                     )
 
-                if self._journey_relink_active:
-                    first_pass_progress = float(np.clip(
-                        (self._journey_total_rotation * progress) / (2.0 * np.pi),
-                        0.0,
-                        1.0,
-                    ))
-                    # Relink: expand from slingshot loop to full radius over ~40% of orbit
-                    relink_window = 0.40
-                    relink_t = float(np.clip(first_pass_progress / relink_window, 0.0, 1.0))
-                    # Quintic ease for buttery-smooth slingshot release
-                    relink_blend = self._quintic_ease(relink_t)
-                    radius = float(
-                        self._journey_relink_start_radius
-                        + ((target_radius - self._journey_relink_start_radius) * relink_blend)
-                    )
-                    if relink_t >= 1.0:
-                        self._journey_relink_active = False
-
             if decision.trigger_kind == "start":
                 min_radius_bound = self._min_radius
             elif (self._post_silence_radius_ramp < 1.0
@@ -698,19 +637,14 @@ class StrokeMapper:
                 else:
                     self._base_center_y = float(base_target_center)
 
-            wait_state = bool(decision.trigger_kind == "creep" and progress >= 1.0)
-            self._reactive_bounce_y = self._compute_reactive_bounce_y(
-                event=event,
-                dt=dt,
-                wait_state=wait_state,
-            )
+            self._reactive_bounce_y = 0.0
             total_center_y = float(self._base_center_y + self._reactive_bounce_y)
             orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
 
             alpha = float(orbit_radius * np.cos(angle))
             beta = float(total_center_y + (orbit_radius * np.sin(angle)))
 
-            if progress >= 1.0 and decision.trigger_kind != "creep" and abs(alpha) < 0.01:
+            if progress >= 1.0 and abs(alpha) < 0.01:
                 angle = float(angle + (0.08 * float(self._orbit_direction)))
                 self._orbit_phase = float(angle % (2.0 * np.pi))
                 alpha = float(orbit_radius * np.cos(angle))
@@ -859,38 +793,6 @@ class StrokeMapper:
             return 0.0
         return self._baseline_center_y
 
-    def _compute_reactive_bounce_y(self, event: BeatEvent, dt: float, wait_state: bool) -> float:
-        if not wait_state:
-            return 0.0
-
-        jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
-        _ = jitter_alpha
-        treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
-        return float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
-
-    @staticmethod
-    def _normalize_journey_beats(interval_beats: int) -> int:
-        beats = int(interval_beats)
-        if beats <= 1:
-            return 1
-        if beats <= 2:
-            return 2
-        return 4
-
-    def _compute_beat_timed_progress(self, now: float, event: BeatEvent, fallback_progress: float) -> float:
-        bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-        if bpm <= 0.0:
-            bpm = float(getattr(event, "bpm", 0.0) or 0.0)
-        bpm = float(np.clip(bpm if bpm > 0.0 else 120.0, 40.0, 240.0))
-
-        beats = self._normalize_journey_beats(self._journey_timing_beats)
-        duration_s = float(beats) * (60.0 / bpm)
-        if self._journey_start_time_mono <= 0.0 or duration_s <= 1e-6:
-            return float(np.clip(fallback_progress, 0.0, 1.0))
-
-        elapsed = float(max(0.0, now - self._journey_start_time_mono))
-        return float(np.clip(elapsed / duration_s, 0.0, 1.0))
-
     def _resync_orbit_to_output(self) -> None:
         """Re-sync parametric orbit (phase, radius) to actual output position.
 
@@ -917,29 +819,19 @@ class StrokeMapper:
             self._actual_radius = float(inferred_r)
             self._last_phase_for_velocity = self._orbit_phase
 
-    def _apply_park_motion_frame(self, event: BeatEvent, dt: float, fade: float) -> tuple[float, float, float]:
-        """Idle-fill motion using extracted funscript loop (ping-pong).
+    def _apply_park_motion_frame(self, dt: float, fade: float) -> tuple[float, float, float]:
+        """Funscript idle-fill: raw baked loop, no modifiers.
 
-        Plays the baked 45-sample pattern continuously with bass jitter
-        overlay.  No swirl or orbital transition — the rate limiter
-        handles any position smoothing needed.
+        Plays the 45-sample ping-pong pattern at native amplitude.
+        No jitter, no center offset, no gain scaling — the pattern
+        data IS the output.  Coordinates are mapped to [-1, 1].
         """
-        # Sample the ping-pong funscript loop
         loop_alpha, loop_beta = self._sample_idle_loop(dt=dt)
 
-        # Bass jitter overlays
-        jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
-        treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
-        self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
-
-        total_center_y = float(self._baseline_center_y + self._reactive_bounce_y)
-
-        # Scale from normalized [0,1] to stroke-mapper coordinates:
-        # alpha: centered at 0.0, range ±idle_gain
-        # beta: centered at baseline_center_y, range ±idle_gain
-        idle_gain = 0.15
-        alpha = float((loop_alpha - 0.5) * 2.0 * idle_gain) + float(jitter_alpha * 0.3)
-        beta = float(total_center_y + (loop_beta - 0.5) * 2.0 * idle_gain)
+        # Map normalized [0,1] loop data to [-1, 1] output range
+        # Sweep (big range) → -Y axis (beta), wobble → X axis (alpha)
+        alpha = float(loop_beta * 2.0 - 1.0)
+        beta = float(-(loop_alpha * 2.0 - 1.0))
 
         volume = float(np.clip(self.get_volume() * float(np.clip(fade, 0.0, 1.0)), 0.0, 1.0))
         return alpha, beta, volume

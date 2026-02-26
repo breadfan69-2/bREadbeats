@@ -1109,13 +1109,14 @@ class BeatIntelligence:
         """Return (profile_kind, radius_mult, _reserved, _reserved).
 
         profile_kind:
-        - "kick_hat": full motion
-        - "kick_only": full motion
-        - "neutral": no override
+        - "kick_hat": full motion (kick + hi-hat detected)
+        - "kick_only": full motion (kick detected)
+        - "neutral": no kick/bass evidence (features present but no bass)
+        - "no_features": beat_features unavailable — cannot judge
         """
         features = getattr(event, "beat_features", None)
         if not isinstance(features, dict):
-            return "neutral", 1.0, False, 0.0
+            return "no_features", 1.0, False, 0.0
 
         kick_conf = float(np.clip(features.get("kick_like_conf", 0.0) or 0.0, 0.0, 1.0))
         hat_conf = float(np.clip(features.get("hat_like_conf", 0.0) or 0.0, 0.0, 1.0))
@@ -1689,6 +1690,13 @@ class BeatIntelligence:
             if not stroke_ready:
                 gate_passed = False
                 gate_fail_reason = "stroke_ready"
+            # Transient profile gate: require kick/bass evidence.
+            # motion_profile is "neutral" when no sub-bass or kick
+            # transient is detected — vocals / synths alone must not
+            # start orbit journeys; they should play funscript fill.
+            elif motion_profile == "neutral":
+                gate_passed = False
+                gate_fail_reason = "no_bass"
             # Phase 3 gates: spectrum fill
             elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
                 gate_passed = False
