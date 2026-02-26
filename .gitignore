@@ -111,3 +111,4 @@ todo.2.15.26.txt
 
 # Local-only replay traces (dev A/B harness inputs)
 _local_replay_traces/
+DEAD_CODE_HANDOFF_2026-02-26.md

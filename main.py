@@ -1666,7 +1666,6 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_fill_controls_widgets = {}
         self._motion_readiness_dialog = None
         self._motion_settings_dialog = None
-        self._motion_readiness_controls_widgets = {}
         self._developer_controls_dialog = None
         self._developer_controls_tab_widget = None
         self._developer_unlock_dialog = None
@@ -1677,7 +1676,6 @@ class BREadbeatsWindow(QMainWindow):
         self.jitter_effect_action = None
         self.connection_toggle_action = None
         self.connection_test_action = None
-        self.revert_btn = None
         
         # Setup UI
         self._setup_ui()
@@ -1794,7 +1792,6 @@ class BREadbeatsWindow(QMainWindow):
         self._auto_fill_controls_widgets = {}
         self._motion_readiness_dialog = None
         self._motion_settings_tab_widget = None
-        self._motion_readiness_controls_widgets = {}
         self._developer_controls_dialog = None
         self._developer_controls_tab_widget = None
         self._developer_unlock_dialog = None
@@ -2442,9 +2439,6 @@ class BREadbeatsWindow(QMainWindow):
             if hasattr(self, 'network_engine') and self.network_engine:
                 self._on_connect()
 
-    def _on_options_tempo_tracking(self):
-        self._open_developer_controls_window(tab_index=0)
-
     def _open_developer_controls_window(self, tab_index: int = 0, scroll_to_flux: bool = False) -> None:
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTabWidget
 
@@ -2491,7 +2485,6 @@ class BREadbeatsWindow(QMainWindow):
             self._advanced_flux_threshold_slider = None
             self._advanced_flux_scaling_slider = None
             self._auto_fill_controls_widgets = {}
-            self._motion_readiness_controls_widgets = {}
             unlock_dialog_ref = getattr(self, '_developer_unlock_dialog', None)
             if unlock_dialog_ref is not None:
                 try:
@@ -2620,44 +2613,6 @@ class BREadbeatsWindow(QMainWindow):
         unlock_dialog.raise_()
         unlock_dialog.activateWindow()
 
-    def _on_options_tempo_tracking_legacy(self):
-        """Show Tempo Tracking controls popout (tempo tab + advanced tempo controls)."""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout
-
-        dialog = getattr(self, '_tempo_tracking_dialog', None)
-        if dialog is not None:
-            try:
-                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-                dialog.show()
-                dialog.raise_()
-                dialog.activateWindow()
-                return
-            except RuntimeError:
-                self._tempo_tracking_dialog = None
-                dialog = None
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Tempo Tracking")
-        dialog.setMinimumWidth(520)
-        dialog.setMinimumHeight(560)
-        dialog.setModal(False)
-        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        content = getattr(self, '_tempo_tracking_popout_content', None)
-        if content is None:
-            content = self._create_tempo_tracking_tab(include_advanced_controls=True, advanced_locked=True)
-            self._tempo_tracking_popout_content = content
-            self._apply_config_to_ui()
-        layout.addWidget(content)
-
-        self._tempo_tracking_dialog = dialog
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
     def _on_options_beat_detection(self):
         """Show Beat Detection controls popout."""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout
@@ -2772,69 +2727,6 @@ class BREadbeatsWindow(QMainWindow):
         dialog.raise_()
         _focus_pulse_dialog(dialog)
         QTimer.singleShot(0, lambda d=dialog: _focus_pulse_dialog(d))
-
-    def _on_options_geometry_rest_state(self):
-        """Show Geometry Rest State controls."""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel
-
-        dialog = getattr(self, '_geometry_rest_dialog', None)
-        if dialog is not None:
-            try:
-                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-                dialog.show()
-                dialog.raise_()
-                dialog.activateWindow()
-                return
-            except RuntimeError:
-                self._geometry_rest_dialog = None
-                dialog = None
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Geometry Rest State")
-        dialog.setMinimumWidth(460)
-        dialog.setMinimumHeight(220)
-        dialog.setModal(False)
-        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-
-        def _on_geometry_rest_dialog_destroyed() -> None:
-            self._geometry_rest_dialog = None
-
-        dialog.destroyed.connect(_on_geometry_rest_dialog_destroyed)
-
-        layout = QVBoxLayout(dialog)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-
-        info = QLabel(
-            "Tune rest parking geometry behavior.\n"
-            "Higher y-offset = deeper rest point."
-        )
-        info.setStyleSheet("color: #bbb; font-size: 11px;")
-        layout.addWidget(info)
-
-        y_offset_slider = SliderWithLabel(
-            "Rest Y Offset",
-            0.00,
-            1.00,
-            float(getattr(self.config.stroke, 'geometry_y_offset', 0.50) or 0.50),
-            2,
-        )
-
-        def _apply_geometry_rest_from_sliders() -> None:
-            self.config.stroke.geometry_y_offset = float(y_offset_slider.value())
-            self._apply_geometry_rest_to_mapper()
-
-        y_offset_slider.valueChanged.connect(lambda _v: _apply_geometry_rest_from_sliders())
-
-        layout.addWidget(y_offset_slider)
-
-        dialog.finished.connect(lambda _r: save_config(self.config))
-
-        self._geometry_rest_dialog = dialog
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
 
     def _apply_geometry_rest_to_mapper(self) -> None:
         if not self.stroke_mapper:
@@ -3425,16 +3317,6 @@ class BREadbeatsWindow(QMainWindow):
 
         layout.addStretch()
 
-        self._motion_readiness_controls_widgets = {
-            'relaxed_confidence': relaxed_conf_slider,
-            'stroke_ready_grace_ms': grace_ms_slider,
-            'stroke_finish_beats': finish_spin,
-            'relax_phase1_gates': relax_phase1_cb,
-            'tuning_strength': strength_slider,
-            'tuning_holdback': holdback_slider,
-            'tuning_quiet_bias': no_motion_bias_slider,
-            'tuning_apply': tuning_apply_btn,
-        }
         return content
     
     def _on_device_limits(self, first_run: bool = False):
@@ -4557,8 +4439,6 @@ Like the app?<br>
                 getattr(self, 'stability_threshold_slider', None),
                 getattr(self, 'tempo_timeout_slider', None),
                 getattr(self, 'phase_snap_slider', None),
-                getattr(self, 'mode_combo', None),
-                getattr(self, 'tempo_lock_required_cb', None),
                 getattr(self, 'intensity_ramp_spin', None),
                 getattr(self, 'intensity_ramp_target_combo', None),
                 getattr(self, 'fill_gate_scale_spin', None),
@@ -4607,11 +4487,7 @@ Like the app?<br>
                     self.tempo_timeout_slider.setValue(self.config.beat.tempo_timeout_ms)
                 if hasattr(self, 'phase_snap_slider'):
                     self.phase_snap_slider.setValue(self.config.beat.phase_snap_weight)
-                if hasattr(self, 'mode_combo'):
-                    self.mode_combo.setCurrentIndex(0)
                 self.config.stroke.min_interval_ms = 150
-                if hasattr(self, 'tempo_lock_required_cb'):
-                    self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
                 metronome_lock_required_action = getattr(self, 'metronome_lock_required_action', None)
                 if metronome_lock_required_action is not None:
                     metronome_lock_required_action.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
@@ -4717,8 +4593,7 @@ Like the app?<br>
                 self._on_freq_band_change()  # Update beat detection band (red)
             
             # Apply mode-dependent limits after sliders are set
-            if hasattr(self, 'mode_combo'):
-                self._on_mode_change(0)  # Mode temporarily pinned to circle
+            self._on_mode_change(0)  # Mode temporarily pinned to circle
             self._on_depth_band_change()  # Update stroke depth band (green)
             if hasattr(self, 'pulse_freq_range_slider'):
                 self._on_p0_band_change()  # Update P0 TCode band (blue)
@@ -4999,17 +4874,6 @@ Like the app?<br>
         
         return widget
     
-    def _on_launch_projectm(self):
-        """Launch projectM standalone application"""
-        if not launch_projectm():
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self, "projectM Not Found",
-                "projectM is not installed.\n\n"
-                "Install via Steam or download from:\n"
-                "https://github.com/projectM-visualizer/projectm"
-            )
-    
     def _on_visualizer_type_change(self, index: int):
         """Switch visualizer types: 0=Waveform, 1=Freq dB, 2=FFT Bins."""
         self.waveform_canvas.setVisible(index == 0)
@@ -5028,12 +4892,6 @@ Like the app?<br>
         for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
             if hasattr(canvas, 'set_peak_indicators_visible'):
                 canvas.set_peak_indicators_visible(checked)
-
-    def _on_show_range_indicators_toggle(self, checked: bool):
-        """Toggle visibility of range indicator bands on all visualizers"""
-        for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
-            if hasattr(canvas, 'set_range_indicators_visible'):
-                canvas.set_range_indicators_visible(checked)
 
     def _apply_release_learning_defaults(self) -> None:
         import sys
@@ -5216,67 +5074,6 @@ Like the app?<br>
                 rule_fit_path=str(self.config.beat.teaching_rule_fit_path),
             )
 
-    def _on_learning_tune_controls(self) -> None:
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QHBoxLayout, QPushButton
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Tuning")
-        dialog.setMinimumWidth(560)
-        layout = QVBoxLayout(dialog)
-
-        strength_slider = SliderWithLabel(
-            "Advance", 0.0, 1.0,
-            float(getattr(self.config.beat, 'teaching_learning_strength', 0.55) or 0.55), 2
-        )
-        layout.addWidget(strength_slider)
-
-        holdback_slider = SliderWithLabel(
-            "Restraint", 0.0, 1.0,
-            float(getattr(self.config.beat, 'teaching_min_confidence', 0.12) or 0.12), 2
-        )
-        layout.addWidget(holdback_slider)
-
-        no_motion_bias_slider = SliderWithLabel(
-            "Quiet Bias", 0.25, 3.0,
-            float(getattr(self.config.beat, 'teaching_no_motion_bias', 1.0) or 1.0), 2
-        )
-        layout.addWidget(no_motion_bias_slider)
-
-        direction_hint = QLabel("⬅️ less         more ➡️")
-        direction_hint.setStyleSheet("color: #d0d0d0; font-size: 18px; font-weight: 500;")
-        direction_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(direction_hint)
-
-        settle_hint = QLabel("Move one, wait for adjust")
-        settle_hint.setStyleSheet("color: #c7c7c7; font-size: 14px;")
-        settle_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(settle_hint)
-
-        button_row = QHBoxLayout()
-        apply_btn = QPushButton("Apply")
-        close_btn = QPushButton("Close")
-        apply_btn.setStyleSheet("font-weight: 500;")
-        close_btn.setStyleSheet("font-weight: 500;")
-        button_row.addStretch()
-        button_row.addWidget(apply_btn)
-        button_row.addWidget(close_btn)
-        layout.addLayout(button_row)
-
-        def _apply_learning_settings() -> None:
-            self.config.beat.teaching_learning_strength = float(strength_slider.value())
-            self.config.beat.teaching_min_confidence = float(holdback_slider.value())
-            self.config.beat.teaching_no_motion_bias = float(no_motion_bias_slider.value())
-            self._apply_learning_config_to_mapper()
-            save_config(self.config)
-
-        apply_btn.clicked.connect(_apply_learning_settings)
-        close_btn.clicked.connect(dialog.close)
-        dialog.exec()
-
-    def _on_show_peak_indicators_menu_toggle(self, checked: bool):
-        """Handle Show Peak Indicators toggle from Options menu"""
-        self._on_show_peak_indicators_toggle(checked)
-
     def _on_effects_jitter_toggle(self, checked: bool):
         self.config.jitter.enabled = bool(checked)
 
@@ -5302,22 +5099,6 @@ Like the app?<br>
             if hasattr(canvas, 'depth_label'):
                 canvas.depth_label.setVisible(checked)
 
-    def _on_toggle_p0_band(self, checked: bool):
-        """Toggle visibility of pulse frequency band (blue) on all visualizers"""
-        for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
-            if hasattr(canvas, 'p0_band'):
-                canvas.p0_band.setVisible(checked)
-            if hasattr(canvas, 'pulse_label'):
-                canvas.pulse_label.setVisible(checked)
-
-    def _on_toggle_f0_band(self, checked: bool):
-        """Toggle visibility of carrier frequency band (cyan) on all visualizers"""
-        for canvas in [self.waveform_canvas, self.freqdb_canvas, self.fft_bin_canvas]:
-            if hasattr(canvas, 'f0_band'):
-                canvas.f0_band.setVisible(checked)
-            if hasattr(canvas, 'carrier_label'):
-                canvas.carrier_label.setVisible(checked)
-
     def _on_viz_menu_change(self, index: int):
         """Handle spectrum type change from Options menu"""
         # Update checkmarks
@@ -5337,12 +5118,6 @@ Like the app?<br>
         self.position_canvas = PositionCanvas(self, size=2, get_rotation=lambda: 0)
         layout.addWidget(self.position_canvas)
 
-        # Position labels (hidden but still tracked internally)
-        self.alpha_label = QLabel("α: 0.00")
-        self.alpha_label.setVisible(False)
-        self.beta_label = QLabel("β: 0.00")
-        self.beta_label.setVisible(False)
-
         # Keyboard teaching indicator (dev-only, hidden until activated with Ctrl+Shift+K)
         self._keyboard_teacher_label = QLabel("🎹 OFF")
         self._keyboard_teacher_label.setStyleSheet("color: #666; font-size: 11px;")
@@ -5358,22 +5133,10 @@ Like the app?<br>
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        # Temporary pin: stroke mode selector hidden during main development.
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["1: Circle"])
-        self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
-        self.mode_combo.setCurrentIndex(0)
-        self.mode_combo.hide()
-
         tempo_widget = QWidget()
         tempo_layout = QVBoxLayout(tempo_widget)
         tempo_layout.setContentsMargins(0, 0, 0, 0)
         tempo_layout.setSpacing(4)
-        self.tempo_lock_required_cb = QCheckBox()
-        self.tempo_lock_required_cb.setChecked(bool(getattr(self.config.beat, 'tempo_lock_required', False)))
-        self.tempo_lock_required_cb.toggled.connect(self._on_tempo_lock_required_toggle)
-        self.tempo_lock_required_cb.setVisible(False)
-
         intensity_label = QLabel("Motion Ramp")
         intensity_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         intensity_label.setStyleSheet("color: #aaa; margin-top: 8px;")
@@ -5571,12 +5334,6 @@ Like the app?<br>
             action.blockSignals(True)
             action.setChecked(is_required)
             action.blockSignals(False)
-
-        checkbox = getattr(self, 'tempo_lock_required_cb', None)
-        if checkbox is not None and checkbox.isChecked() != is_required:
-            checkbox.blockSignals(True)
-            checkbox.setChecked(is_required)
-            checkbox.blockSignals(False)
 
     def _refresh_main_controls_value_label_colors(self) -> None:
         always_white = '#fff'
@@ -7661,11 +7418,8 @@ Like the app?<br>
         self.config.beat.detection_type = BeatDetectionType(index + 1)
     
     def _on_mode_change(self, index: int):
-        """Mode is temporarily pinned to Circle and selector is hidden."""
+        """Mode is temporarily pinned to Circle."""
         self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
-        if hasattr(self, 'mode_combo') and self.mode_combo.currentIndex() != 0:
-            with self._signals_blocked(self.mode_combo):
-                self.mode_combo.setCurrentIndex(0)
         self._enforce_fixed_effect_axis_values()
 
     def _start_engines(self):
@@ -8411,8 +8165,6 @@ Like the app?<br>
         if self.stroke_mapper:
             alpha, beta = self.stroke_mapper.get_current_position()
             self.position_canvas.update_position(alpha, beta)
-            self.alpha_label.setText(f"α: {alpha:.2f}")
-            self.beta_label.setText(f"β: {beta:.2f}")
 
         # Refresh keyboard teaching overlay at display rate
         teacher = getattr(self, '_keyboard_teacher', None)
