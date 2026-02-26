@@ -65,10 +65,11 @@ class BeatIntelligence:
         self.energies = BandEnergies()
 
         self.rms_envelope = RMS_DB_FLOOR
+        self._envelope_initialized = False  # snap to first real frame; avoids -120→real ramp
         self.rms_attack = 0.15
         self.rms_release = 0.05
 
-        self.silence_deadzone_active = False
+        self.silence_deadzone_active = True   # guilty-until-proven: assume silence until audio proves otherwise
         self.silence_open_count = 0
         self.silence_close_count = 0
         self._silence_default_enter_db = -66.0
@@ -105,6 +106,14 @@ class BeatIntelligence:
 
         # Rolling RMS history for dynamic amp-gate (adapts to current volume)
         self._recent_rms_db: deque = deque(maxlen=600)  # ~10 s at 60 fps
+
+        # Separate raw-RMS deque for the silence flatness gate.
+        # _recent_rms_db stores the *smoothed envelope*, which intentionally
+        # flattens beat-to-beat dynamics — great for amp-gate thresholds but
+        # terrible for silence detection (it makes music look flat → false
+        # silence).  This deque stores the *raw per-frame* dBFS so the
+        # P95-P5 spread accurately reflects real audio dynamics.
+        self._silence_raw_rms_db: deque = deque(maxlen=600)
 
         # Auto-calibrated noise floor (dBFS).  P5 of _recent_rms_db, updated
         # each frame in update_silence_deadzone_gate.  Used to lift silence
@@ -992,6 +1001,14 @@ class BeatIntelligence:
 
     def update_envelope(self, event: BeatEvent) -> None:
         target = self._event_rms_db(event)
+        # On the very first frame with real audio data, snap the envelope
+        # to the actual level instead of slowly ramping from -120 dBFS.
+        # This prevents the ramp from -120→real creating fake dynamic range
+        # in _recent_rms_db, which the flatness gate would mis-read as
+        # active audio.
+        if not self._envelope_initialized and target > RMS_DB_FLOOR:
+            self.rms_envelope = target
+            self._envelope_initialized = True
         alpha = self.rms_attack if target >= self.rms_envelope else self.rms_release
         self.rms_envelope += (target - self.rms_envelope) * alpha
 
@@ -1005,12 +1022,17 @@ class BeatIntelligence:
         close_frames_required = 6
         level_db = self._coerce_amplitude_db(overall_amplitude)
 
+        # Feed raw (unsmoothed) dBFS into the silence deque so the
+        # flatness check sees real beat-to-beat dynamics, not the
+        # flattened envelope.
+        self._silence_raw_rms_db.append(level_db)
+
         # --- Flatness-based silence detection ---
         # If the waveform is flat (low dynamic range), it's silence/noise
         # regardless of absolute dB level.  Inherently volume-independent —
         # works at any Windows volume.
         #
-        # "Flat" = P95-P5 spread of recent RMS < 3 dB (all frames similar).
+        # "Flat" = P95-P5 spread of recent RAW RMS < 3 dB (all frames similar).
         # "Active" = spread >= 6 dB (real dynamic content).
         # Hysteresis band between 3-6 dB prevents chatter.
         #
@@ -1020,18 +1042,18 @@ class BeatIntelligence:
         flat_close_spread = 6.0  # exit silence when spread > this
         flatness_window = 60     # frames (~1 s at 60 fps)
 
-        n_available = len(self._recent_rms_db)
+        n_available = len(self._silence_raw_rms_db)
         if n_available >= 15:
             # Short window for fast reaction
-            recent_slice = list(self._recent_rms_db)[-min(flatness_window, n_available):]
+            recent_slice = list(self._silence_raw_rms_db)[-min(flatness_window, n_available):]
             p5 = float(np.percentile(recent_slice, 5))
             p95 = float(np.percentile(recent_slice, 95))
             spread = p95 - p5
             # Noise floor from full history (stable)
             if n_available >= 30:
-                self._noise_floor_db = float(np.percentile(list(self._recent_rms_db), 5))
+                self._noise_floor_db = float(np.percentile(list(self._silence_raw_rms_db), 5))
         else:
-            spread = 99.0  # permissive until we have enough history
+            spread = 0.0  # not enough data → assume flat/silent (guilty)
 
         if spread < flat_open_spread:
             self.silence_open_count += 1

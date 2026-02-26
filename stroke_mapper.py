@@ -23,7 +23,7 @@ from network_engine import TCodeCommand
 @dataclass
 class StrokeState:
     alpha: float = 0.0
-    beta: float = 0.70
+    beta: float = 0.20       # start at park position (was 0.70 → caused visible arc on silent startup)
     last_time: float = 0.0
 
 

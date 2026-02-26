@@ -274,7 +274,9 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         self.assertIsNotNone(cmd)
         assert cmd is not None
-        self.assertGreater(cmd.beta, 0.20)
+        # beta starts at park (0.20) and silence glides toward park, so
+        # it should be at or very near 0.20 on the first silent frame.
+        self.assertAlmostEqual(cmd.beta, 0.20, places=2)
 
     def test_silence_hard_parks_when_fill_active(self):
         cfg = Config()
