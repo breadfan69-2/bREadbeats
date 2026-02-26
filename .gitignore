@@ -75,6 +75,7 @@ build.log
 *finaldebug.txt
 scripts/*.beta.txt
 *_FINDINGS_*.md
+*_AUDIT_*.md
 *_IMPLEMENTATION_PLAN_*.md
 *_IMPLEMENTATION_BLUEPRINT_*.md
 *_IMPLEMENTATION_HANDOFF_*.md
