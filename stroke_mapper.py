@@ -100,16 +100,21 @@ class StrokeMapper:
         self._fill_enter_time: float = 0.0      # monotonic time fill mode started
         self._fill_min_beats: int = 4            # minimum beats before exit allowed
 
-        # ── Fill-exit transition: quintic wind-down from fill → orbit ──
+        # ── Fill-exit transition: nested decay from fill → orbit ──
         self._fill_exit_active: bool = False
         self._fill_exit_elapsed: float = 0.0
         self._fill_exit_duration_s: float = 0.5  # recomputed from BPM at transition start
-        # Precompute fill center in output space (oscillation collapse target)
+        # Precompute fill X bias for centering
         _fc_wobble = float(np.mean(self._idle_loop_beta))   # wobble data → X axis
-        _fc_sweep = float(np.mean(self._idle_loop_alpha))   # sweep data → -Y axis
         self._fill_x_bias: float = float(_fc_wobble * 2.0 - 1.0)  # subtract to center fill on X=0
-        self._fill_center_out_alpha: float = 0.0  # fill collapses toward X=0
-        self._fill_center_out_beta: float = float(-(_fc_sweep * 2.0 - 1.0))
+        # Nested decay state: micro-orbit spinning around a gliding virtual center
+        self._fill_exit_vc_alpha: float = 0.0    # virtual center alpha (latched at exit)
+        self._fill_exit_vc_beta: float = 0.0     # virtual center beta (latched at exit)
+        self._fill_exit_target_alpha: float = 0.0  # orbit destination alpha
+        self._fill_exit_target_beta: float = 0.0   # orbit destination beta
+        self._fill_exit_micro_radius: float = 0.05  # initial micro-orbit radius
+        self._fill_exit_micro_freq: float = 30.0    # initial micro-orbit frequency (Hz)
+        self._fill_exit_micro_phase: float = 0.0    # micro-orbit phase accumulator
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
         self._last_decision = None      # latest BeatDecision (for keyboard teacher snapshot)
@@ -359,9 +364,7 @@ class StrokeMapper:
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
 
-            # ── Fill-exit wind-down: decelerating fill → orbit ──
-            # When leaving fill, the 30Hz spin decelerates and oscillation
-            # collapses to fill center over 1 beat (quintic eased).
+            # ── Fill-exit nested decay: micro-orbit around gliding virtual center ──
             if self._fill_exit_active:
                 if decision.trigger_kind == "creep":
                     # Beat disappeared — cancel exit and resume fill
@@ -372,13 +375,15 @@ class StrokeMapper:
                         self._fill_exit_elapsed / max(self._fill_exit_duration_s, 0.01),
                         0.0, 1.0,
                     ))
-                    t = self._quintic_ease(raw_t)
+                    ease_t = self._quintic_ease(raw_t)
                     if raw_t >= 1.0:
-                        # Fill exit complete — initialize orbit from fill center
+                        # Nested decay complete — initialize orbit from target
                         self._fill_exit_active = False
                         center_y = float(self._base_center_y + self._reactive_bounce_y)
                         inf_angle, inf_radius = self._infer_orbit_from_position(
-                            alpha=self.state.alpha, beta=self.state.beta, center_y=center_y,
+                            alpha=self._fill_exit_target_alpha,
+                            beta=self._fill_exit_target_beta,
+                            center_y=center_y,
                         )
                         self._orbit_phase = float(inf_angle % (2.0 * np.pi))
                         self._actual_radius = float(max(inf_radius, self._min_radius))
@@ -389,10 +394,21 @@ class StrokeMapper:
                         self._smoothed_db = 0.0
                         # Fall through to orbit processing below
                     else:
+                        # Glide virtual center toward orbit target
+                        vc_a = float(self._fill_exit_vc_alpha
+                                     + (self._fill_exit_target_alpha - self._fill_exit_vc_alpha) * ease_t)
+                        vc_b = float(self._fill_exit_vc_beta
+                                     + (self._fill_exit_target_beta - self._fill_exit_vc_beta) * ease_t)
+                        # Decay micro-orbit radius and frequency
+                        micro_r = float(self._fill_exit_micro_radius * (1.0 - ease_t))
+                        micro_f = float(self._fill_exit_micro_freq * (1.0 - ease_t))
+                        # Advance micro-orbit phase
+                        self._fill_exit_micro_phase += micro_f * dt * 2.0 * float(np.pi)
+                        # Compute micro-orbit offset
+                        alpha = float(vc_a + micro_r * np.cos(self._fill_exit_micro_phase))
+                        beta = float(vc_b + micro_r * np.sin(self._fill_exit_micro_phase))
                         ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
-                        alpha, beta, volume = self._apply_park_motion_frame(
-                            dt=dt, fade=ramp, exit_blend=t,
-                        )
+                        volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
                         self._last_journey_completion = 1.0
                         self._hold_start_pose_until_reactive = False
                         self.state.alpha = alpha
@@ -435,11 +451,11 @@ class StrokeMapper:
                 self.state.beta = beta
                 return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
 
-            # ── Detect fill → orbit transition: start wind-down ──
+            # ── Detect fill → orbit transition: start nested decay ──
             if prev_trigger_kind == "creep" and not self._fill_exit_active:
                 self._fill_exit_active = True
                 self._fill_exit_elapsed = 0.0
-                # Duration = 1 beat period (clamped to reasonable range)
+                # Duration = 4 beats (clamped to reasonable BPM range)
                 _bpm = 120.0
                 if self.audio_engine is not None:
                     _met = float(getattr(self.audio_engine, "_metronome_bpm", 0.0) or 0.0)
@@ -447,9 +463,34 @@ class StrokeMapper:
                         _bpm = _met
                 _bpm = float(np.clip(_bpm, 40.0, 240.0))
                 self._fill_exit_duration_s = (60.0 / _bpm) * 4.0  # 4 beats
-                # First exit frame at t=0 (full fill, no decay yet)
+                # Latch virtual center to dot's current position
+                self._fill_exit_vc_alpha = float(self.state.alpha)
+                self._fill_exit_vc_beta = float(self.state.beta)
+                self._fill_exit_micro_phase = 0.0
+                self._fill_exit_micro_radius = 0.05
+                self._fill_exit_micro_freq = 30.0
+                # Compute orbit target: where the first beat journey wants to be
+                _center_y = float(self._base_center_y + self._reactive_bounce_y)
+                _geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
+                    "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
+                })
+                _target_radius = float(_geom["park_radius"])
+                # Use orbit phase if initialized, otherwise infer from current position
+                if self._orbit_phase_initialized:
+                    _target_angle = self._orbit_phase
+                else:
+                    _target_angle, _ = self._infer_orbit_from_position(
+                        alpha=self.state.alpha, beta=self.state.beta, center_y=_center_y,
+                    )
+                self._fill_exit_target_alpha = float(_target_radius * np.cos(_target_angle))
+                self._fill_exit_target_beta = float(_center_y + _target_radius * np.sin(_target_angle))
+                # First exit frame: full micro-orbit, no decay yet
+                alpha = float(self._fill_exit_vc_alpha
+                              + self._fill_exit_micro_radius * np.cos(self._fill_exit_micro_phase))
+                beta = float(self._fill_exit_vc_beta
+                             + self._fill_exit_micro_radius * np.sin(self._fill_exit_micro_phase))
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
-                alpha, beta, volume = self._apply_park_motion_frame(dt=dt, fade=ramp, exit_blend=0.0)
+                volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
                 self._last_journey_completion = 1.0
                 self._hold_start_pose_until_reactive = False
                 self.state.alpha = alpha
@@ -801,34 +842,18 @@ class StrokeMapper:
             self._actual_radius = float(inferred_r)
             self._last_phase_for_velocity = self._orbit_phase
 
-    def _apply_park_motion_frame(self, dt: float, fade: float, exit_blend: float = 0.0) -> tuple[float, float, float]:
+    def _apply_park_motion_frame(self, dt: float, fade: float) -> tuple[float, float, float]:
         """Funscript idle-fill: raw baked loop, no modifiers.
 
         Plays the 45-sample ping-pong pattern at native amplitude.
-        During fill exit (exit_blend > 0): playback rate decelerates
-        and oscillation amplitude collapses toward fill center via
-        quintic easing, creating a smooth wind-down before orbit.
         """
-        # During exit: decelerate playback rate proportionally
-        rate_mult = 1.0 - exit_blend
-        saved_rate = self._idle_loop_rate_hz
-        self._idle_loop_rate_hz = saved_rate * rate_mult
-
         loop_alpha, loop_beta = self._sample_idle_loop(dt=dt)
-
-        self._idle_loop_rate_hz = saved_rate  # restore native rate
 
         # Map normalized [0,1] loop data to [-1, 1] output range
         # Sweep (big range) → -Y axis (beta), wobble → X axis (alpha)
         # Subtract X bias so fill pattern is centered on X=0, then scale to 50%
         alpha = float((loop_beta * 2.0 - 1.0 - self._fill_x_bias) * 0.5)
         beta = float(-(loop_alpha * 2.0 - 1.0))
-
-        # During exit: collapse oscillation toward fill center
-        if exit_blend > 0.0:
-            inv = 1.0 - exit_blend
-            alpha = float(self._fill_center_out_alpha + (alpha - self._fill_center_out_alpha) * inv)
-            beta = float(self._fill_center_out_beta + (beta - self._fill_center_out_beta) * inv)
 
         volume = float(np.clip(self.get_volume() * float(np.clip(fade, 0.0, 1.0)), 0.0, 1.0))
         return alpha, beta, volume
