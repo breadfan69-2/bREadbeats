@@ -10,7 +10,6 @@ import socket
 from contextlib import contextmanager
 import time
 import json
-from datetime import datetime
 import subprocess
 import os
 
@@ -29,7 +28,6 @@ _import_t0 = time.perf_counter()
 print("\n[Startup] main.py loading heavy modules...", flush=True)
 
 import numpy as np
-import queue
 import threading
 import random
 from collections import deque
@@ -52,24 +50,18 @@ pg.setConfigOptions(antialias=False, useOpenGL=False)  # Disable for compatibili
 
 from config import (
     BEAT_RANGE_LIMITS,
-    BEAT_RESET_DEFAULTS,
     BeatDetectionType,
     Config,
-    CURRENT_CONFIG_VERSION,
-    DeviceLimitsConfig,
     StrokeMode,
-    apply_dict_to_dataclass,
-    migrate_config,
 )
 from logging_utils import get_log_level, log_event, set_log_level
 from audio_engine import AudioEngine, BeatEvent
-from network_engine import NetworkEngine, TCodeCommand
+from network_engine import TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
 from command_wiring import attach_cached_tcode_values, apply_volume_ramp
 from close_persist_wiring import persist_runtime_ui_to_config
 from config_facade import (
     get_config_dir,
-    get_config_file,
     load_config,
     save_config,
 )
@@ -92,10 +84,6 @@ print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000
 
 def _track_slider_value(name: str, value: float) -> None:
     return
-
-
-_apply_dict_to_dataclass = apply_dict_to_dataclass
-_migrate_config = migrate_config
 
 
 _CHILD_PROCESSES: set[subprocess.Popen] = set()
@@ -227,9 +215,6 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
         self.addItem(self._bar_item)
         self.setXRange(-0.5, count - 0.5)
 
-    def set_peak_and_flux(self, peak_value: float, flux_value: float):
-        """Compatibility no-op for shared visualizer interfaces."""
-        pass
 
     def set_peak_indicators_visible(self, visible: bool):
         """Compatibility no-op for shared visualizer interfaces."""
@@ -438,51 +423,6 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
 
         if not self._ghost_overlays:
             self._ghost_timer.stop()
-
-
-def launch_projectm():
-    """Attempt to launch projectM standalone application"""
-    import shutil
-    
-    # Common projectM executable paths
-    possible_paths = [
-        # Steam installation
-        r"C:\Program Files (x86)\Steam\steamapps\common\projectM Music Visualizer\projectM.exe",
-        r"C:\Program Files\Steam\steamapps\common\projectM Music Visualizer\projectM.exe",
-        # Standalone installation
-        r"C:\Program Files\projectM\projectM.exe",
-        r"C:\Program Files (x86)\projectM\projectM.exe",
-        # Check PATH
-        "projectM",
-        "projectm",
-    ]
-    
-    for path in possible_paths:
-        if path in ["projectM", "projectm"]:
-            # Try to find in PATH
-            if shutil.which(path):
-                try:
-                    proc = _spawn_background_process([path])
-                    if proc is None:
-                        raise RuntimeError("launch failed")
-                    print(f"[Visualizer] Launched projectM from PATH")
-                    return True
-                except:
-                    continue
-        else:
-            if os.path.exists(path):
-                try:
-                    proc = _spawn_background_process([path])
-                    if proc is None:
-                        raise RuntimeError("launch failed")
-                    print(f"[Visualizer] Launched projectM from {path}")
-                    return True
-                except Exception as e:
-                    print(f"[Visualizer] Failed to launch {path}: {e}")
-                    continue
-    
-    print("[Visualizer] projectM not found. Install from Steam or https://github.com/projectM-visualizer/projectm")
-    return False
 
 
 class PositionCanvas(pg.PlotWidget):
@@ -921,11 +861,7 @@ class TrafficLightWidget(QWidget):
         self._yellow_on = yellow
         self._red_on = red
         self.update()
-        
-    def all_off(self):
-        """Turn all lights off"""
-        self.set_state(False, False, False)
-        
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1030,9 +966,6 @@ class CollapsibleGroupBox(QGroupBox):
         self._apply_visibility(not collapsed)
         self._update_title()
 
-    def isCollapsed(self) -> bool:
-        return self._collapsed
-
 
 class NoWheelScrollArea(QScrollArea):
     """
@@ -1080,58 +1013,6 @@ class WaveformLiveCanvas(pg.PlotWidget):
         self._reference_fade_timer = QTimer(self)
         self._reference_fade_timer.setInterval(80)
         self._reference_fade_timer.timeout.connect(self._tick_reference_overlays)
-
-    def show_reference_line(self, key: str, value: float, label: str, color: str = '#FF66AA', duration_s: float = 15.0, dashed: bool = False) -> None:
-        """Show or refresh a temporary symmetric +/- amplitude guide that fades out."""
-        amp = float(np.clip(abs(value), 0.0, 1.0))
-        now = time.monotonic()
-
-        overlay = self._reference_overlays.get(key)
-        if overlay is None:
-            qcolor = QColor(color)
-            pen = pg.mkPen(qcolor, width=1, style=(Qt.PenStyle.DashLine if dashed else Qt.PenStyle.SolidLine))
-            line_pos = pg.InfiniteLine(pos=amp, angle=0, movable=False, pen=pen)
-            line_neg = pg.InfiniteLine(pos=-amp, angle=0, movable=False, pen=pen)
-            line_pos.setZValue(15)
-            line_neg.setZValue(15)
-            self.addItem(line_pos)
-            self.addItem(line_neg)
-
-            text = pg.TextItem("", color=qcolor, anchor=(1.0, 0.0))
-            text.setZValue(16)
-            self.addItem(text)
-
-            overlay = {
-                'line_pos': line_pos,
-                'line_neg': line_neg,
-                'text': text,
-                'color': qcolor,
-                'dashed': bool(dashed),
-                'started_at': now,
-                'duration_s': float(max(0.5, duration_s)),
-            }
-            self._reference_overlays[key] = overlay
-
-        overlay['started_at'] = now
-        overlay['duration_s'] = float(max(0.5, duration_s))
-
-        line_pos = overlay['line_pos']
-        line_neg = overlay['line_neg']
-        text = overlay['text']
-        line_pos.setPos(amp)
-        line_neg.setPos(-amp)
-        text.setPos(self._x_max_ms - 0.2, min(1.0, amp + 0.03))
-        text.setText(f"{label}: ±{amp:.3f}")
-
-        full_color = QColor(overlay['color'])
-        full_color.setAlpha(210)
-        pen = pg.mkPen(full_color, width=1, style=(Qt.PenStyle.DashLine if overlay.get('dashed', False) else Qt.PenStyle.SolidLine))
-        line_pos.setPen(pen)
-        line_neg.setPen(pen)
-        text.setColor(full_color)
-
-        if not self._reference_fade_timer.isActive():
-            self._reference_fade_timer.start()
 
     def show_fill_ratio_ghost(self, key: str, ratio: float, label: str, color: str = '#FFFFFF', duration_s: float = 15.0, dashed: bool = False) -> None:
         """Show or refresh a temporary symmetric static fill-ratio band around zero."""
@@ -1322,12 +1203,6 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
 
     def set_depth_band(self, low_hz: float, high_hz: float) -> None:
         self._set_region_hz(self.depth_band, low_hz, high_hz)
-
-    def set_p0_band(self, low_hz: float, high_hz: float) -> None:
-        self._set_region_hz(self.p0_band, low_hz, high_hz)
-
-    def set_f0_band(self, low_hz: float, high_hz: float) -> None:
-        self._set_region_hz(self.f0_band, low_hz, high_hz)
 
     def _band_x_range(self, band: str) -> tuple[float, float]:
         nyquist_khz = min(19.9, max(0.04, float(self._sample_rate) / 2000.0))
@@ -1645,9 +1520,6 @@ class BREadbeatsWindow(QMainWindow):
         # Apply persisted log level early so downstream modules inherit
         set_log_level(getattr(self.config, 'log_level', 'INFO'))
         self.signals = SignalBridge()
-        
-        # Command queue
-        self.cmd_queue = queue.Queue()
         
         # Initialize optional UI state
         self._dry_run_enabled = bool(getattr(self.config.device_limits, 'dry_run', False))
@@ -4234,62 +4106,6 @@ class BREadbeatsWindow(QMainWindow):
         
         dialog.show()  # Use show() instead of exec() for non-modal
     
-    def _get_external_data_start_dir(self) -> str:
-        """Pick a sensible starting directory for user-provided files, preferring D: if available."""
-        candidates = [
-            Path("D:/breadbeats_datasets"),
-            Path("D:/"),
-            Path(str(get_config_dir())),
-            Path.cwd(),
-        ]
-        for candidate in candidates:
-            try:
-                if candidate.exists() and candidate.is_dir():
-                    return str(candidate)
-            except Exception:
-                continue
-        return str(Path.cwd())
-    
-    def _apply_preset_data(self, data: dict):
-        """Apply preset data dictionary to config and UI"""
-        # Helper to safely set attributes
-        def safe_set(obj, key, value):
-            if hasattr(obj, key):
-                setattr(obj, key, value)
-        
-        # Beat detection
-        if 'beat' in data:
-            for k, v in data['beat'].items():
-                safe_set(self.config.beat, k, v)
-        
-        # Stroke settings
-        if 'stroke' in data:
-            for k, v in data['stroke'].items():
-                safe_set(self.config.stroke, k, v)
-        
-        # Jitter
-        if 'jitter' in data:
-            for k, v in data['jitter'].items():
-                safe_set(self.config.jitter, k, v)
-        
-        # Audio
-        if 'audio' in data:
-            for k, v in data['audio'].items():
-                safe_set(self.config.audio, k, v)
-        
-        # Pulse frequency
-        if 'pulse_freq' in data:
-            for k, v in data['pulse_freq'].items():
-                safe_set(self.config.pulse_freq, k, v)
-        
-        # Carrier frequency
-        if 'carrier_freq' in data:
-            for k, v in data['carrier_freq'].items():
-                safe_set(self.config.carrier_freq, k, v)
-        
-        # Apply to UI
-        self._apply_config_to_ui()
-    
     def _on_menu_fft_change(self, index: int):
         """Handle FFT size change from menu"""
         self._on_fft_size_change(index)
@@ -5404,208 +5220,6 @@ Like the app?<br>
             return
         close_db = float(np.clip(self._silence_normalized_to_close(float(normalized_value)), -90.0, -3.0))
         slider_widget.value_label.setText(f"{close_db:.1f} dBFS")
-
-    def _capture_current_settings(self) -> dict:
-        """Capture all current UI settings for revert functionality"""
-        return {
-            # Beat Detection Tab
-            'freq_low': self.freq_range_slider.low(),
-            'freq_high': self.freq_range_slider.high(),
-            'sensitivity': self.sensitivity_slider.value(),
-            'peak_floor': self.peak_floor_slider.value(),
-            'peak_decay': self.peak_decay_slider.value(),
-            'rise_sensitivity': self.rise_sens_slider.value(),
-            'flux_multiplier': self.flux_mult_slider.value(),
-            'audio_gain': self.audio_gain_slider.value(),
-            'zscore_threshold': self.zscore_threshold_slider.value(),
-            'silence_reset_ms': int(self.silence_reset_slider.value()),
-            'detection_type': self.detection_type_combo.currentIndex(),
-            
-            # Tempo Tracking
-            'tempo_tracking_enabled': self.tempo_tracking_checkbox.isChecked(),
-            'tempo_lock_required': self.tempo_lock_required_cb.isChecked(),
-            'time_sig_index': self.time_sig_combo.currentIndex(),
-            'stability_threshold': self.stability_threshold_slider.value(),
-            'tempo_timeout_ms': int(self.tempo_timeout_slider.value()),
-            'phase_snap_weight': self.phase_snap_slider.value(),
-            'acf_interval_ms': getattr(self.config.beat, 'acf_interval_ms', 250.0),
-            'metronome_bpm_alpha_slow': getattr(self.config.beat, 'metronome_bpm_alpha_slow', 0.03),
-            'metronome_bpm_alpha_fast': getattr(self.config.beat, 'metronome_bpm_alpha_fast', 0.22),
-            'metronome_pll_window': getattr(self.config.beat, 'metronome_pll_window', 0.35),
-            'metronome_pll_base_gain': getattr(self.config.beat, 'metronome_pll_base_gain', 0.09),
-            'metronome_pll_conf_gain': getattr(self.config.beat, 'metronome_pll_conf_gain', 0.08),
-            'tempo_fusion_min_acf_weight': getattr(self.config.beat, 'tempo_fusion_min_acf_weight', 0.20),
-            'tempo_fusion_max_acf_weight': getattr(self.config.beat, 'tempo_fusion_max_acf_weight', 0.95),
-            'beat_dedup_fraction': getattr(self.config.beat, 'beat_dedup_fraction', 0.22),
-            'phase_accept_window_ms': getattr(self.config.beat, 'phase_accept_window_ms', 85.0),
-            'phase_accept_low_conf_mult': getattr(self.config.beat, 'phase_accept_low_conf_mult', 2.0),
-            'octave_target_bias_confidence_max': getattr(self.config.beat, 'octave_target_bias_confidence_max', 0.35),
-            'aggressive_tempo_snap_enabled': getattr(self.config.beat, 'aggressive_tempo_snap_enabled', False),
-            'aggressive_snap_confidence': getattr(self.config.beat, 'aggressive_snap_confidence', 0.55),
-            'aggressive_snap_phase_error_ms': getattr(self.config.beat, 'aggressive_snap_phase_error_ms', 35.0),
-            'aggressive_snap_min_matches': getattr(self.config.beat, 'aggressive_snap_min_matches', 1),
-            'aggressive_snap_max_bpm_jump_ratio': getattr(self.config.beat, 'aggressive_snap_max_bpm_jump_ratio', 0.12),
-            'metric_response_speed': getattr(self.config.auto_adjust, 'metric_response_speed', 1.0),
-
-            # Stroke Settings Tab
-            'stroke_mode': 0,
-            'min_interval_ms': 150,
-            'flux_depth_boost_enabled': bool(getattr(self.config.stroke, 'flux_depth_boost_enabled', False)),
-            'combo_size': float(getattr(self.config.stroke, 'combo_size', 1.0)),
-            'combo_depth': float(getattr(self.config.stroke, 'combo_depth', 1.0)),
-            'combo_texture': float(getattr(self.config.stroke, 'combo_texture', 1.0)),
-            'combo_reaction': float(getattr(self.config.stroke, 'combo_reaction', 1.0)),
-            'overall_amp_fill_required_scale': float(getattr(self.config.stroke, 'overall_amp_fill_required_scale', 1.0) or 1.0),
-            'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
-            'flux_scaling_weight': float(getattr(self.config.stroke, 'flux_scaling_weight', 1.0) or 1.0),
-
-            # Jitter Tab
-            'jitter_enabled': bool(getattr(self.config.jitter, 'enabled', True)),
-            'jitter_amplitude': float(self.FIXED_JITTER_AMPLITUDE),
-            'jitter_intensity': float(self.FIXED_JITTER_INTENSITY),
-
-            # Axis Weights Tab
-            'alpha_weight': float(self.FIXED_AXIS_WEIGHT),
-            'beta_weight': float(self.FIXED_AXIS_WEIGHT),
-
-            # Pulse Freq Tab
-            'pulse_freq_low': self.pulse_freq_range_slider.low(),
-            'pulse_freq_high': self.pulse_freq_range_slider.high(),
-            'tcode_min': int(self.tcode_freq_range_slider.low()),
-            'tcode_max': int(self.tcode_freq_range_slider.high()),
-            'freq_weight': self.freq_weight_slider.value(),
-        }
-    
-    def _revert_preset(self):
-        """Revert to settings from before the last preset was loaded"""
-        if self._revert_settings is None:
-            return
-        
-        # Restore all settings from _revert_settings (same logic as _load_freq_preset)
-        preset_data = self._revert_settings
-        
-        # Beat Detection Tab
-        self.freq_range_slider.setLow(preset_data['freq_low'])
-        self.freq_range_slider.setHigh(preset_data['freq_high'])
-        self.sensitivity_slider.setValue(preset_data['sensitivity'])
-        self.peak_floor_slider.setValue(preset_data['peak_floor'])
-        self.peak_decay_slider.setValue(preset_data['peak_decay'])
-        self.rise_sens_slider.setValue(preset_data['rise_sensitivity'])
-        self.flux_mult_slider.setValue(preset_data['flux_multiplier'])
-        self.audio_gain_slider.setValue(preset_data['audio_gain'])
-        if 'zscore_threshold' in preset_data:
-            self.zscore_threshold_slider.setValue(preset_data['zscore_threshold'])
-            self._on_zscore_threshold_change(preset_data['zscore_threshold'])
-        self.silence_reset_slider.setValue(preset_data['silence_reset_ms'])
-        self.detection_type_combo.setCurrentIndex(preset_data['detection_type'])
-        
-        # Tempo Tracking
-        self.tempo_tracking_checkbox.setChecked(preset_data['tempo_tracking_enabled'])
-        self._on_tempo_tracking_toggle(2 if preset_data['tempo_tracking_enabled'] else 0)
-        if 'tempo_lock_required' in preset_data:
-            self.tempo_lock_required_cb.setChecked(bool(preset_data['tempo_lock_required']))
-        self.time_sig_combo.setCurrentIndex(preset_data['time_sig_index'])
-        self._on_time_sig_change(preset_data['time_sig_index'])
-        self.stability_threshold_slider.setValue(preset_data['stability_threshold'])
-        self._on_stability_threshold_change(preset_data['stability_threshold'])
-        self.tempo_timeout_slider.setValue(preset_data['tempo_timeout_ms'])
-        self._on_tempo_timeout_change(preset_data['tempo_timeout_ms'])
-        self.phase_snap_slider.setValue(preset_data['phase_snap_weight'])
-        self._on_phase_snap_change(preset_data['phase_snap_weight'])
-        if 'acf_interval_ms' in preset_data:
-            self._on_acf_interval_change(int(preset_data['acf_interval_ms']))
-        if 'metronome_bpm_alpha_slow' in preset_data:
-            self._on_metronome_bpm_alpha_slow_change(preset_data['metronome_bpm_alpha_slow'])
-        if 'metronome_bpm_alpha_fast' in preset_data:
-            self._on_metronome_bpm_alpha_fast_change(preset_data['metronome_bpm_alpha_fast'])
-        if 'metronome_pll_window' in preset_data:
-            self._on_metronome_pll_window_change(preset_data['metronome_pll_window'])
-        if 'metronome_pll_base_gain' in preset_data:
-            self._on_metronome_pll_base_gain_change(preset_data['metronome_pll_base_gain'])
-        if 'metronome_pll_conf_gain' in preset_data:
-            self._on_metronome_pll_conf_gain_change(preset_data['metronome_pll_conf_gain'])
-        if 'tempo_fusion_min_acf_weight' in preset_data:
-            self._on_tempo_fusion_min_acf_weight_change(preset_data['tempo_fusion_min_acf_weight'])
-        if 'tempo_fusion_max_acf_weight' in preset_data:
-            self._on_tempo_fusion_max_acf_weight_change(preset_data['tempo_fusion_max_acf_weight'])
-        if 'beat_dedup_fraction' in preset_data:
-            self._on_beat_dedup_fraction_change(preset_data['beat_dedup_fraction'])
-        if 'phase_accept_window_ms' in preset_data:
-            self._on_phase_accept_window_ms_change(preset_data['phase_accept_window_ms'])
-        if 'phase_accept_low_conf_mult' in preset_data:
-            self._on_phase_accept_low_conf_mult_change(preset_data['phase_accept_low_conf_mult'])
-        if 'octave_target_bias_confidence_max' in preset_data:
-            self._on_octave_target_bias_confidence_max_change(preset_data['octave_target_bias_confidence_max'])
-        if 'aggressive_tempo_snap_enabled' in preset_data:
-            self._on_aggressive_tempo_snap_toggle(bool(preset_data['aggressive_tempo_snap_enabled']))
-        if 'aggressive_snap_confidence' in preset_data:
-            self._on_aggressive_snap_confidence_change(preset_data['aggressive_snap_confidence'])
-        if 'aggressive_snap_phase_error_ms' in preset_data:
-            self._on_aggressive_snap_phase_error_ms_change(preset_data['aggressive_snap_phase_error_ms'])
-        if 'aggressive_snap_min_matches' in preset_data:
-            self._on_aggressive_snap_min_matches_change(int(preset_data['aggressive_snap_min_matches']))
-        if 'aggressive_snap_max_bpm_jump_ratio' in preset_data:
-            self._on_aggressive_snap_max_jump_change(preset_data['aggressive_snap_max_bpm_jump_ratio'])
-        if 'metric_response_speed' in preset_data:
-            self._on_metric_response_speed_change(preset_data['metric_response_speed'])
-        
-        # Stroke Settings Tab
-        self.mode_combo.setCurrentIndex(0)
-        self._on_mode_change(0)
-        self.config.stroke.min_interval_ms = 150
-        if 'overall_amp_fill_required_scale' in preset_data:
-            self.fill_gate_scale_spin.setValue(
-                self._fill_gate_scale_to_percent(float(preset_data['overall_amp_fill_required_scale']))
-            )
-        self.config.stroke.flux_threshold = float(preset_data['flux_threshold'])
-        advanced_flux_slider = getattr(self, '_advanced_flux_threshold_slider', None)
-        if advanced_flux_slider is not None:
-            try:
-                advanced_flux_slider.setValue(self.config.stroke.flux_threshold)
-            except RuntimeError:
-                self._advanced_flux_threshold_slider = None
-        self.config.stroke.flux_scaling_weight = float(preset_data['flux_scaling_weight'])
-        advanced_flux_scaling_slider = getattr(self, '_advanced_flux_scaling_slider', None)
-        if advanced_flux_scaling_slider is not None:
-            try:
-                advanced_flux_scaling_slider.setValue(self.config.stroke.flux_scaling_weight)
-            except RuntimeError:
-                self._advanced_flux_scaling_slider = None
-        
-        # Jitter Tab
-        self.config.jitter.enabled = bool(preset_data.get('jitter_enabled', getattr(self.config.jitter, 'enabled', True)))
-        self._enforce_fixed_effect_axis_values()
-        self._sync_effects_menu_actions()
-        
-        # Pulse Freq Tab
-        self.pulse_freq_range_slider.setLow(preset_data['pulse_freq_low'])
-        self.pulse_freq_range_slider.setHigh(preset_data['pulse_freq_high'])
-        # Support both new (tcode_min) and old (tcode_freq_min) preset keys
-        p0_tcode_min = preset_data.get('tcode_min', preset_data.get('tcode_freq_min', 2010))
-        p0_tcode_max = preset_data.get('tcode_max', preset_data.get('tcode_freq_max', 7035))
-        # Backward compat: old presets stored Hz values (typically < 200), convert to TCode
-        if p0_tcode_min < 200:
-            p0_tcode_min = int(p0_tcode_min * 67)
-        if p0_tcode_max < 200:
-            p0_tcode_max = int(p0_tcode_max * 67)
-        self.tcode_freq_range_slider.setLow(p0_tcode_min)
-        self.tcode_freq_range_slider.setHigh(p0_tcode_max)
-        self.freq_weight_slider.setValue(preset_data['freq_weight'])
-        
-        # Sync config
-        self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
-        
-        # Deactivate all preset buttons
-        for btn in getattr(self, 'preset_buttons', []):
-            btn.set_active(False)
-        
-        # Disable revert button (already reverted)
-        revert_btn = getattr(self, 'revert_btn', None)
-        if revert_btn is not None:
-            revert_btn.setEnabled(False)
-        self._revert_settings = None
-        
-        print("[Config] Reverted to previous settings")
 
     def _get_thin_scrollbar_style(self) -> str:
         """Return thin minimal scrollbar CSS for NoWheelScrollArea tabs"""
@@ -6741,165 +6355,6 @@ Like the app?<br>
     def _load_freq_preset(self, idx: int):
         """Preset slots are currently fixed and not user-configurable."""
         print(f"[Presets] Slot {idx+1} is reserved (empty)")
-    
-    def _save_beat_preset(self, idx: int):
-        """Preset slots are currently fixed and not user-configurable."""
-        self._save_freq_preset(idx)
-    
-    def _load_beat_preset(self, idx: int):
-        """Preset slots are currently fixed and not user-configurable."""
-        self._load_freq_preset(idx)
-
-    def _capture_learned_slot_payload(self) -> dict:
-        """Capture current learning + key calibration state for hidden learned-slot storage."""
-        return {
-            'learning': {
-                'teaching_learning_enabled': bool(getattr(self.config.beat, 'teaching_learning_enabled', True)),
-                'teaching_use_fitted_rules': bool(getattr(self.config.beat, 'teaching_use_fitted_rules', True)),
-                'teaching_apply_in_circle_mode': bool(getattr(self.config.beat, 'teaching_apply_in_circle_mode', False)),
-                'teaching_isolation_mode': bool(getattr(self.config.beat, 'teaching_isolation_mode', True)),
-                'teaching_learning_strength': float(getattr(self.config.beat, 'teaching_learning_strength', 0.55) or 0.55),
-                'teaching_min_confidence': float(getattr(self.config.beat, 'teaching_min_confidence', 0.12) or 0.12),
-                'teaching_no_motion_bias': float(getattr(self.config.beat, 'teaching_no_motion_bias', 1.0) or 1.0),
-                'teaching_rule_fit_path': str(getattr(self.config.beat, 'teaching_rule_fit_path', '') or ''),
-                'teaching_profile_path': str(getattr(self.config.beat, 'teaching_profile_path', '') or ''),
-            },
-            'calibration': {
-                'freq_low': float(self.freq_range_slider.low() or 0.0),
-                'freq_high': float(self.freq_range_slider.high() or 22050.0),
-                'audio_gain': float(self.audio_gain_slider.value()),
-                'sensitivity': float(self.sensitivity_slider.value()),
-                'zscore_threshold': float(self.zscore_threshold_slider.value()),
-                'flux_multiplier': float(self.flux_mult_slider.value()),
-                'peak_floor': float(self.peak_floor_slider.value()),
-                'peak_decay': float(self.peak_decay_slider.value()),
-                'rise_sensitivity': float(self.rise_sens_slider.value()),
-            },
-            'saved_at': datetime.now().isoformat(timespec='seconds'),
-        }
-
-    def _apply_learned_slot_payload(self, payload: dict) -> None:
-        """Apply a learned-slot payload to runtime config and sliders."""
-        if not isinstance(payload, dict):
-            return
-
-        learning = payload.get('learning', {})
-        if isinstance(learning, dict):
-            bool_keys = (
-                'teaching_learning_enabled',
-                'teaching_use_fitted_rules',
-                'teaching_apply_in_circle_mode',
-                'teaching_isolation_mode',
-            )
-            float_keys = (
-                'teaching_learning_strength',
-                'teaching_min_confidence',
-                'teaching_no_motion_bias',
-            )
-            str_keys = (
-                'teaching_rule_fit_path',
-                'teaching_profile_path',
-            )
-            for key in bool_keys:
-                if key in learning:
-                    setattr(self.config.beat, key, bool(learning.get(key)))
-            for key in float_keys:
-                if key in learning:
-                    try:
-                        raw_value = learning.get(key)
-                        if isinstance(raw_value, (int, float, str)):
-                            setattr(self.config.beat, key, float(raw_value))
-                    except Exception:
-                        pass
-            for key in str_keys:
-                if key in learning:
-                    setattr(self.config.beat, key, str(learning.get(key) or '').strip())
-
-        calibration = payload.get('calibration', {})
-        if isinstance(calibration, dict):
-            try:
-                low = float(calibration.get('freq_low', self.freq_range_slider.low() or 0.0))
-                high = float(calibration.get('freq_high', self.freq_range_slider.high() or 22050.0))
-                self.freq_range_slider.setLow(low)
-                self.freq_range_slider.setHigh(high)
-            except Exception:
-                pass
-            try:
-                if 'audio_gain' in calibration:
-                    raw_audio_gain = calibration.get('audio_gain')
-                    if isinstance(raw_audio_gain, (int, float, str)):
-                        self.audio_gain_slider.setValue(float(raw_audio_gain))
-                if 'sensitivity' in calibration:
-                    raw_sensitivity = calibration.get('sensitivity')
-                    if isinstance(raw_sensitivity, (int, float, str)):
-                        self.sensitivity_slider.setValue(float(raw_sensitivity))
-                if 'zscore_threshold' in calibration:
-                    raw_zscore_threshold = calibration.get('zscore_threshold')
-                    if isinstance(raw_zscore_threshold, (int, float, str)):
-                        self.zscore_threshold_slider.setValue(float(raw_zscore_threshold))
-                if 'flux_multiplier' in calibration:
-                    raw_flux_multiplier = calibration.get('flux_multiplier')
-                    if isinstance(raw_flux_multiplier, (int, float, str)):
-                        self.flux_mult_slider.setValue(float(raw_flux_multiplier))
-                if 'peak_floor' in calibration:
-                    raw_peak_floor = calibration.get('peak_floor')
-                    if isinstance(raw_peak_floor, (int, float, str)):
-                        self.peak_floor_slider.setValue(float(raw_peak_floor))
-                if 'peak_decay' in calibration:
-                    raw_peak_decay = calibration.get('peak_decay')
-                    if isinstance(raw_peak_decay, (int, float, str)):
-                        self.peak_decay_slider.setValue(float(raw_peak_decay))
-                if 'rise_sensitivity' in calibration:
-                    raw_rise_sensitivity = calibration.get('rise_sensitivity')
-                    if isinstance(raw_rise_sensitivity, (int, float, str)):
-                        self.rise_sens_slider.setValue(float(raw_rise_sensitivity))
-            except Exception:
-                pass
-
-        self._apply_learning_config_to_mapper()
-
-    def _set_learned_profile_slot(self, idx: int) -> None:
-        """Programmatically save current learning/calibration state into a hidden slot."""
-        key = str(int(max(0, min(4, idx))))
-        self.learned_profile_slots[key] = self._capture_learned_slot_payload()
-
-    def _apply_learned_profile_slot(self, idx: int) -> None:
-        """Programmatically apply a hidden learned slot to runtime state."""
-        key = str(int(max(0, min(4, idx))))
-        payload = self.learned_profile_slots.get(key)
-        if isinstance(payload, dict) and payload:
-            self._apply_learned_slot_payload(payload)
-    
-    def _save_presets_to_disk(self):
-        """Preset persistence disabled: keep learned slots in-memory only."""
-        return
-    
-    def _load_presets_from_disk(self):
-        """Load hidden learned-slot payloads and initialize reserved empty slot buttons."""
-        self.custom_beat_presets = {}
-        self.learned_profile_slots = {}
-        try:
-            path = get_config_dir() / 'learned_profile_slots.json'
-            if path.exists():
-                payload = json.loads(path.read_text(encoding='utf-8'))
-                slots = payload.get('slots', {}) if isinstance(payload, dict) else {}
-                if isinstance(slots, dict):
-                    for key, value in slots.items():
-                        if str(key).isdigit() and isinstance(value, dict):
-                            idx = int(str(key))
-                            if 0 <= idx < 5:
-                                self.learned_profile_slots[str(idx)] = value
-        except Exception as e:
-            print(f"[Presets] Error loading learned slots: {e}")
-
-        for btn in getattr(self, 'preset_buttons', []):
-            btn.setText("empty")
-            btn.set_has_preset(False)
-            btn.set_active(False)
-            btn.setEnabled(False)
-        revert_btn = getattr(self, 'revert_btn', None)
-        if revert_btn is not None:
-            revert_btn.setEnabled(False)
     
     def _create_tempo_response_group(self, lock_default: bool = True) -> QGroupBox:
         """Advanced tempo-response controls group used in Tempo Tracking popout."""
@@ -8141,12 +7596,6 @@ Like the app?<br>
         if connection_test_action is not None:
             connection_test_action.setEnabled(connected)
 
-    def _get_effective_output_volume_percent(self) -> float:
-        """Return the actual tcode volume percent last sent (includes silence fade, ramps)."""
-        if not self.is_sending:
-            return 0.0
-        return float(self._last_sent_volume_pct)
-    
     def _update_display(self):
         """Periodic display update + sync cached widget states for thread-safe audio access"""
         if getattr(self, '_is_shutting_down', False):
