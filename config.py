@@ -265,12 +265,6 @@ class JitterConfig:
     def amplitude(self, value: float) -> None:
         self.size = float(value)
 
-@dataclass
-class CreepConfig:
-    """Creep - very slow movement when idle"""
-    enabled: bool = False
-    speed: float = 0.25               # Multiplier for creep rotation
-
 @dataclass 
 class ConnectionConfig:
     """TCP connection to restim"""
@@ -389,7 +383,6 @@ class Config:
     beat: BeatDetectionConfig = field(default_factory=BeatDetectionConfig)
     stroke: StrokeConfig = field(default_factory=StrokeConfig)
     jitter: JitterConfig = field(default_factory=JitterConfig)
-    creep: CreepConfig = field(default_factory=CreepConfig)
     connection: ConnectionConfig = field(default_factory=ConnectionConfig)
     audio: AudioConfig = field(default_factory=AudioConfig)
     pulse_freq: PulseFreqConfig = field(default_factory=PulseFreqConfig)

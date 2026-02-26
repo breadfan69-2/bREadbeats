@@ -183,18 +183,18 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertEqual(decision.trigger_kind, "creep")
         self.assertEqual(decision.interval_beats, 8)
 
-    def test_transient_policy_kick_hat_and_kick_only_are_full_hat_only_is_limited(self):
+    def test_transient_policy_kick_hat_and_kick_only_are_full_hat_only_is_neutral(self):
         cfg = Config()
         cfg.beat.tempo_lock_required = False
         cfg.beat.strict_bass_motion_gate_enabled = True
 
         kick_hat = BeatIntelligence(cfg)
         kick_only = BeatIntelligence(cfg)
-        hat_only = BeatIntelligence(cfg)
+        hat_neutral = BeatIntelligence(cfg)
 
         kick_hat.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
         kick_only.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
-        hat_only.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
+        hat_neutral.compute_radius_bloom_from_sub_bass = lambda event=None: 0.95
 
         decision_kick_hat = kick_hat.build_decision(
             event=self._event(
@@ -230,7 +230,7 @@ class TestStrokeMapperContract(unittest.TestCase):
             silence_override=False,
         )
 
-        decision_hat_only = hat_only.build_decision(
+        decision_hat_neutral = hat_neutral.build_decision(
             event=self._event(
                 is_beat=True,
                 tempo_locked=True,
@@ -248,40 +248,14 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         self.assertEqual(decision_kick_hat.trigger_kind, "beat")
         self.assertEqual(decision_kick_only.trigger_kind, "beat")
-        self.assertEqual(decision_hat_only.trigger_kind, "beat")
+        # hat_only profile removed — hat-only content with no bass support
+        # is now gated normally (strict_bass gate blocks it to creep)
+        self.assertEqual(decision_hat_neutral.trigger_kind, "creep")
 
         self.assertAlmostEqual(decision_kick_hat.radius_bloom, 0.95, places=6)
         self.assertAlmostEqual(decision_kick_only.radius_bloom, 0.95, places=6)
-        self.assertAlmostEqual(decision_hat_only.radius_bloom, 0.70, places=6)
-        self.assertTrue(decision_hat_only.park_bounce_only)
-        self.assertGreater(decision_hat_only.park_bounce_gain, 0.0)
-
-    def test_hat_only_park_bounce_triggers_hat_bounce_pulse(self):
-        mapper = StrokeMapper(Config())
-
-        event = self._event(
-            is_beat=True,
-            beat_features={
-                "kick_like_conf": 0.05,
-                "hat_like_conf": 0.92,
-                "bass_dominance": 0.40,
-            },
-        )
-
-        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="beat",
-            interval_beats=2,
-            radius_bloom=0.70,
-            silence_active=False,
-            journey_completion=0.2,
-            park_bounce_only=True,
-            park_bounce_gain=0.9,
-        )
-
-        cmd = mapper.process_beat(event)
-        self.assertIsNotNone(cmd)
-        assert cmd is not None
-        self.assertGreater(mapper._hat_bounce_amp, 0.0)
+        self.assertFalse(decision_hat_neutral.park_bounce_only)
+        self.assertEqual(decision_hat_neutral.park_bounce_gain, 0.0)
 
     def test_voice_like_high_only_is_forced_to_limited_park_bounce(self):
         cfg = Config()
@@ -309,9 +283,8 @@ class TestStrokeMapperContract(unittest.TestCase):
         )
 
         self.assertEqual(decision.trigger_kind, "beat")
-        self.assertTrue(decision.park_bounce_only)
-        self.assertAlmostEqual(decision.radius_bloom, 0.70, places=6)
-        self.assertLessEqual(decision.park_bounce_gain, 0.60)
+        # park_bounce mode removed
+        self.assertFalse(decision.park_bounce_only)
 
     def test_voice_like_low_mid_plus_high_still_requires_sub_bass_for_full_motion(self):
         cfg = Config()
@@ -340,8 +313,8 @@ class TestStrokeMapperContract(unittest.TestCase):
         )
 
         self.assertEqual(decision.trigger_kind, "beat")
-        self.assertTrue(decision.park_bounce_only)
-        self.assertAlmostEqual(decision.radius_bloom, 0.70, places=6)
+        # park_bounce mode removed
+        self.assertFalse(decision.park_bounce_only)
 
     def test_full_motion_requires_min_flux_or_fullness_even_with_strong_bass(self):
         cfg = Config()
@@ -371,8 +344,8 @@ class TestStrokeMapperContract(unittest.TestCase):
         )
 
         self.assertEqual(decision.trigger_kind, "beat")
-        self.assertTrue(decision.park_bounce_only)
-        self.assertAlmostEqual(decision.radius_bloom, 0.70, places=6)
+        # park_bounce mode removed — radius_bloom no longer forced to 0.70
+        self.assertFalse(decision.park_bounce_only)
 
     def test_full_motion_allows_low_flux_when_fullness_is_high(self):
         cfg = Config()
@@ -548,10 +521,9 @@ class TestStrokeMapperContract(unittest.TestCase):
         amp_high = (alpha_high ** 2 + ((beta_high / 0.70) ** 2)) ** 0.5
         self.assertGreater(amp_high, amp_low)
 
-    def test_creep_disabled_parks_motion_when_jitter_off(self):
-        """Creep-disabled: dot decelerates gracefully (not instant park)."""
+    def test_fill_parks_motion_when_jitter_off(self):
+        """Fill mode: dot parks gracefully (not instant park)."""
         cfg = Config()
-        cfg.creep.enabled = False
         cfg.jitter.enabled = False
         mapper = StrokeMapper(cfg)
         mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
@@ -735,9 +707,8 @@ class TestStrokeMapperContract(unittest.TestCase):
         assert cmd is not None
         self.assertGreater(cmd.beta, 0.20)
 
-    def test_silence_hard_parks_when_creep_disabled(self):
+    def test_silence_hard_parks_when_fill_active(self):
         cfg = Config()
-        cfg.creep.enabled = False
         mapper = StrokeMapper(cfg)
 
         mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(

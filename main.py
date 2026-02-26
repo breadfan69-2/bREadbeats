@@ -1596,7 +1596,6 @@ class BREadbeatsWindow(QMainWindow):
     """Main application window"""
     FIXED_JITTER_AMPLITUDE = 0.04
     FIXED_JITTER_INTENSITY = 190.0
-    FIXED_CREEP_SPEED = 0.25
     FIXED_AXIS_WEIGHT = 1.0
     
     def __init__(self):
@@ -1632,7 +1631,6 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
-        self.config.creep.enabled = False
         self._enforce_fixed_effect_axis_values()
         
         # Initialize engines to None early (required before learning-config apply)
@@ -1840,7 +1838,6 @@ class BREadbeatsWindow(QMainWindow):
     def _enforce_fixed_effect_axis_values(self):
         self.config.jitter.amplitude = float(self.FIXED_JITTER_AMPLITUDE)
         self.config.jitter.intensity = float(self.FIXED_JITTER_INTENSITY)
-        self.config.creep.speed = float(self.FIXED_CREEP_SPEED)
         self.config.alpha_weight = float(self.FIXED_AXIS_WEIGHT)
         self.config.beta_weight = float(self.FIXED_AXIS_WEIGHT)
 
@@ -4393,12 +4390,6 @@ class BREadbeatsWindow(QMainWindow):
             for k, v in data['jitter'].items():
                 safe_set(self.config.jitter, k, v)
         
-        # Creep
-        if 'creep' in data:
-            for k, v in data['creep'].items():
-                safe_set(self.config.creep, k, v)
-        self.config.creep.enabled = False
-        
         # Audio
         if 'audio' in data:
             for k, v in data['audio'].items():
@@ -5711,12 +5702,10 @@ Like the app?<br>
             'flux_threshold': float(getattr(self.config.stroke, 'flux_threshold', 0.02)),
             'flux_scaling_weight': float(getattr(self.config.stroke, 'flux_scaling_weight', 1.0) or 1.0),
 
-            # Jitter / Creep Tab
+            # Jitter Tab
             'jitter_enabled': bool(getattr(self.config.jitter, 'enabled', True)),
             'jitter_amplitude': float(self.FIXED_JITTER_AMPLITUDE),
             'jitter_intensity': float(self.FIXED_JITTER_INTENSITY),
-            'creep_enabled': bool(getattr(self.config.creep, 'enabled', True)),
-            'creep_speed': float(self.FIXED_CREEP_SPEED),
 
             # Axis Weights Tab
             'alpha_weight': float(self.FIXED_AXIS_WEIGHT),
@@ -5826,9 +5815,8 @@ Like the app?<br>
             except RuntimeError:
                 self._advanced_flux_scaling_slider = None
         
-        # Jitter / Creep Tab
+        # Jitter Tab
         self.config.jitter.enabled = bool(preset_data.get('jitter_enabled', getattr(self.config.jitter, 'enabled', True)))
-        self.config.creep.enabled = False
         self._enforce_fixed_effect_axis_values()
         self._sync_effects_menu_actions()
         

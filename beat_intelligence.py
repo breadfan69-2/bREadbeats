@@ -79,14 +79,14 @@ class BeatIntelligence:
         self.active_interval_beats = 8
         self.last_trigger_kind = "creep"
 
-        # Creep-entry hysteresis: require consecutive creep frames before
-        # actually switching to creep mode (prevents momentary gate blips)
+        # Fill-entry hysteresis: require consecutive non-beat frames before
+        # actually switching to fill mode (prevents momentary gate blips)
         self._creep_consecutive_frames: int = 0
-        self._creep_hysteresis_threshold: int = 18  # ~0.3s at 60fps – quicker drop to creep
+        self._creep_hysteresis_threshold: int = 18  # ~0.3s at 60fps – quicker drop to fill
 
         # Journey preservation safety: count consecutive beat-family events
         # that failed a gate but were preserved by the "let it finish" path.
-        # After N consecutive failures, let the journey expire to creep so
+        # After N consecutive failures, let the journey expire to fill so
         # a permanently stuck gate can't spin the orbit forever.
         self._gate_fail_preserve_count: int = 0
         self._gate_fail_preserve_limit: int = 2  # max consecutive beat-fail preservations
@@ -1132,10 +1132,6 @@ class BeatIntelligence:
         if not bool(getattr(self.config.beat, "strict_bass_motion_gate_enabled", False)):
             return True
 
-        profile_kind, _, _, _ = self._transient_motion_profile(event, self.compute_energy_fullness())
-        if profile_kind == "hat_only":
-            return True
-
         beat_band = str(getattr(event, "beat_band", "") or "")
         if beat_band in ("sub_bass", "low_mid"):
             return True
@@ -1149,12 +1145,11 @@ class BeatIntelligence:
         return False
 
     def _transient_motion_profile(self, event: BeatEvent, energy_fullness: float) -> tuple[str, float, bool, float]:
-        """Return (profile_kind, radius_mult, hat_only_limited, park_bounce_gain).
+        """Return (profile_kind, radius_mult, _reserved, _reserved).
 
         profile_kind:
         - "kick_hat": full motion
         - "kick_only": full motion
-        - "hat_only": park+bounce motion (no radius expansion)
         - "neutral": no override
         """
         features = getattr(event, "beat_features", None)
@@ -1210,19 +1205,10 @@ class BeatIntelligence:
         )
         has_kick = bool(has_kick and full_spectrum_active)
 
-        # Explicit voice/hat guard: high-hat evidence without bass support is
-        # always limited park+bounce.
-        if has_hat and (not has_kick) and ((not sub_bass_hit) or bass_dom < min_bass_dom):
-            gain = float(np.clip(0.20 + (0.35 * hat_conf), 0.15, 0.60))
-            return "hat_only", 1.0, True, gain
-
         if has_kick and has_hat:
             return "kick_hat", 1.0, False, 0.0
         if has_kick:
             return "kick_only", 1.0, False, 0.0
-        if has_hat:
-            gain = float(np.clip(0.20 + (0.35 * hat_conf), 0.15, 0.60))
-            return "hat_only", 1.0, True, gain
         return "neutral", 1.0, False, 0.0
 
     @staticmethod
@@ -1441,7 +1427,7 @@ class BeatIntelligence:
                 should_start = True
                 is_interrupt = True
             elif self.last_trigger_kind in ("creep", "syncopation") and trigger_kind in ("beat", "downbeat", "syncopation"):
-                # Creep & syncopation freely interruptible by any beat event
+                # Fill & syncopation freely interruptible by any beat event
                 should_start = True
                 is_interrupt = True
             elif self.last_trigger_kind == "downbeat" and trigger_kind in ("beat", "syncopation"):
@@ -1457,7 +1443,7 @@ class BeatIntelligence:
                 should_start = True
                 is_interrupt = True
         elif trigger_kind == "creep" and self.last_trigger_kind == "creep" and not self.journey_active:
-            # Creep continuation when no journey active
+            # Fill continuation when no journey active
             should_start = True
 
         if should_start:
@@ -1692,7 +1678,7 @@ class BeatIntelligence:
         raw_trigger_kind = self.classify_trigger(event)
         trigger_kind = raw_trigger_kind
         gate_fail_reason = ""  # tracks which gate blocked a beat-family event
-        motion_profile, motion_radius_mult, hat_only_limited, park_bounce_gain = self._transient_motion_profile(
+        motion_profile, motion_radius_mult, _, _ = self._transient_motion_profile(
             event,
             energy_fullness_now,
         )
@@ -1707,9 +1693,9 @@ class BeatIntelligence:
         stroke_ready = self._update_stroke_readiness(event, now)
 
         # ── Priority interrupt: beat-family events run the gate chain.
-        # Creep frames during an active beat-family journey keep the current kind.
+        # Non-beat frames during an active beat-family journey keep the current kind.
         # When a beat-family event FAILS gates during an active journey, the
-        # active journey is preserved (not killed to creep) — it finishes
+        # active journey is preserved (not killed to fill) — it finishes
         # naturally on its own timing.
         #
         # §8: After silence, only entry journeys are allowed until
@@ -1753,12 +1739,6 @@ class BeatIntelligence:
             if gate_passed:
                 self._creep_consecutive_frames = 0
                 self._gate_fail_preserve_count = 0
-            elif motion_profile == "hat_only" and gate_fail_reason in ("strict_bass", "low_band", "dual_band_db"):
-                # Insufficient bass should never open full beat motion for
-                # hat/voice-like content. Keep beat-family timing, but force
-                # limited park+bounce behavior via hat-only profile.
-                trigger_kind = raw_trigger_kind
-                self._creep_consecutive_frames = 0
             elif (self.journey_active
                   and self.last_trigger_kind in ("syncopation", "beat", "downbeat")
                   and self._gate_fail_preserve_count < self._gate_fail_preserve_limit):
@@ -1771,18 +1751,18 @@ class BeatIntelligence:
                 trigger_kind = "creep"
                 self._gate_fail_preserve_count = 0
 
-        # Creep hysteresis: only enter creep after sustained non-beat frames
+        # Fill hysteresis: only enter fill after sustained non-beat frames
         if trigger_kind == "creep" and raw_trigger_kind == "creep":
             self._creep_consecutive_frames += 1
             if self._creep_consecutive_frames < self._creep_hysteresis_threshold and self.journey_active:
-                # Not enough consecutive creep frames yet — hold current journey
+                # Not enough consecutive non-beat frames yet — hold current journey
                 trigger_kind = self.last_trigger_kind
         else:
             if trigger_kind != "creep":
                 self._creep_consecutive_frames = 0
 
         # ── Phrase Commitment: musical phrase locking ──
-        # When switching from slow gear (creep) to fast gear (beat), 
+        # When switching from fill to beat, 
         # commit for a period to prevent sporadic jumps. But allow
         # natural musical transitions (downbeat ↔ beat ↔ syncopation).
         is_beat_event = bool(
@@ -1791,7 +1771,7 @@ class BeatIntelligence:
             or getattr(event, "is_syncopated", False)
         )
 
-        # Detect new phrase entry: creep→beat transition only
+        # Detect new phrase entry: fill→beat transition only
         if (not self._phrase_committed
                 and trigger_kind == "beat"
                 and not silence_active
@@ -1817,7 +1797,7 @@ class BeatIntelligence:
                 self._phrase_committed = False
                 self._phrase_beats_remaining = 0
             elif trigger_kind == "creep" and not silence_active and not gate_fail_reason:
-                # Override: don't allow creep during committed phrase.
+                # Override: don't allow fill during committed phrase.
                 # Gate failures always win — do NOT re-promote a gated-out beat
                 # back to "beat", or the orbit loops at full radius against the
                 # perimeter instead of pulling in to wait-swirl / jitter.
@@ -1858,7 +1838,8 @@ class BeatIntelligence:
         else:
             interval_beats = self.interval_beats_for_trigger(trigger_kind)
 
-        park_bounce_only = bool(hat_only_limited and trigger_kind in ("beat", "syncopation") and not silence_active)
+        # park_bounce mode removed — always False
+        park_bounce_only = False
 
         # Apply learning cadence hint only at journey boundaries.
         # _committed_divisor_hint is latched from _learned_cadence_hint
@@ -1868,12 +1849,6 @@ class BeatIntelligence:
             interval_beats = max(interval_beats, self._committed_divisor_hint)
 
         radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
-        if park_bounce_only:
-            radius_bloom = 0.70
-        elif trigger_kind in ("beat", "syncopation", "downbeat") and motion_profile == "hat_only":
-            base = 0.70
-            span = max(0.0, radius_bloom - base)
-            radius_bloom = float(np.clip(base + (span * motion_radius_mult), base, 1.0))
 
         # Learning speed_mult is applied as a snapshot inside StrokeMapper
         # at journey start, not per-frame here, to avoid mid-arc stepping.
@@ -1909,8 +1884,8 @@ class BeatIntelligence:
             gate_fail=gate_fail_reason,
             energy_fullness=energy_fullness_now,
             session_intensity=session_intensity,
-            park_bounce_only=park_bounce_only,
-            park_bounce_gain=float(np.clip(park_bounce_gain, 0.0, 1.0)),
+            park_bounce_only=False,
+            park_bounce_gain=0.0,
             learning=learning,
         )
 

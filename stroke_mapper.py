@@ -89,38 +89,28 @@ class StrokeMapper:
         self._hold_start_pose_until_reactive = False
         self._idle_loops_per_beat = 0.125
 
-        # Swirl-to-park state: tracks the spiral transition into idle
-        self._swirl_progress = 0.0       # 0→1 S-curve interpolant
-        self._swirl_duration_s = 1.8     # total time to spirally arrive at park
-        self._swirl_start_center_y = self._baseline_center_y
-        self._swirl_start_radius = self._park_radius
-        self._swirl_entering = False     # True on first silence frame after motion
+        # ── Funscript idle-fill loop data (extracted from NoodleDude Megamix at 11:00.545) ──
+        # 45 samples, normalized 0→1, ~33ms intervals.  Ping-pong looped.
+        self._idle_loop_alpha: tuple[float, ...] = (
+            0.00, 0.15, 0.30, 0.20, 0.09, 0.25, 0.40, 0.30, 0.20, 0.35,
+            0.50, 0.40, 0.29, 0.44, 0.60, 0.50, 0.40, 0.55, 0.70, 0.60,
+            0.50, 0.65, 0.80, 0.70, 0.60, 0.75, 0.90, 0.80, 0.70, 0.85,
+            1.00, 0.85, 0.70, 0.80, 0.90, 0.75, 0.59, 0.70, 0.80, 0.65,
+            0.50, 0.60, 0.70, 0.55, 0.40,
+        )
+        self._idle_loop_beta: tuple[float, ...] = (
+            0.50, 0.55, 0.60, 0.52, 0.45, 0.50, 0.58, 0.62, 0.55, 0.48,
+            0.53, 0.60, 0.65, 0.58, 0.50, 0.55, 0.62, 0.68, 0.60, 0.52,
+            0.48, 0.55, 0.63, 0.70, 0.62, 0.55, 0.50, 0.58, 0.65, 0.72,
+            0.65, 0.58, 0.50, 0.55, 0.62, 0.68, 0.60, 0.52, 0.48, 0.55,
+            0.50, 0.45, 0.50, 0.55, 0.50,
+        )
+        self._idle_loop_phase: float = 0.0       # continuous sample counter
+        self._idle_loop_rate_hz: float = 30.0    # samples per second
 
-        # Creep-disabled park transition: quintic ease to park when creep is off
-        self._creep_park_active = False       # True during quintic glide to park
-        self._creep_park_progress = 0.0       # 0→1 quintic interpolant
-        self._creep_park_duration_beats = 1.5 # transition length in beats
-        self._creep_park_start_radius = self._park_radius
-        self._creep_park_start_center_y = self._baseline_center_y
-
-        # Mode transition state: smooth spiral between park_bounce_only ↔ full arc
-        self._mode_transition_active = False     # True during mode change spiral
-        self._mode_transition_progress = 0.0     # 0→1 S-curve interpolant
-        self._mode_transition_duration_s = 1.2   # ~2 beats at 120 BPM
-        self._mode_transition_start_radius = self._park_radius
-        self._mode_transition_start_center_y = self._baseline_center_y
-        self._mode_transition_target_radius = self._park_radius
-        self._mode_transition_target_center_y = self._baseline_center_y
-        self._last_mode_was_park_bounce = False  # Track previous frame mode
-
-        # Smooth landing / settle state (exponential lerp, no oscillation)
-        self._settle_active = False
-
-        # Bass-reactive jitter state (applied on creep only)
+        # Bass-reactive jitter state (applied during fill)
         self._bass_jitter_phase = 0.0
         self._bass_jitter_freq_ema = 0.5
-        self._hat_bounce_phase = 0.0
-        self._hat_bounce_amp = 0.0
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
         self._last_decision = None      # latest BeatDecision (for keyboard teacher snapshot)
@@ -130,46 +120,8 @@ class StrokeMapper:
         self._anchor_swing_deg: float = 10.0     # ±10° swing around y-axis
         self._anchor_phrase_locked: bool = False  # True once chosen for current phrase
 
-        # ── Spiral-out (slingshot exit from park) ──
-        self._spiral_out_active: bool = False       # True while spiralling out of park
-        self._spiral_out_progress: float = 0.0      # 0→1 over spiral duration
-        self._spiral_out_beats: float = 3.0          # how many beats the spiral-out takes
-        self._spiral_out_start_radius: float = self._park_idle_radius
-        self._spiral_out_target_radius: float = self._park_radius
-        self._spiral_out_start_center_y: float = self._baseline_center_y
-        self._spiral_out_target_center_y: float = self._baseline_center_y
-
-        # ── Silence-exit position crossfade ──
-        # Blends from last park position to computed trajectory over N beats
-        # so the device swirls out gradually instead of teleporting.
-        self._silence_exit_xfade_active: bool = False
-        self._silence_exit_xfade_progress: float = 0.0
-        self._silence_exit_xfade_beats: float = 2.0   # duration in beats
-        self._silence_exit_latch_alpha: float = 0.0
-        self._silence_exit_latch_beta: float = 0.0
-        self._was_silence_active: bool = True           # tracks previous frame
-
-        # ── Funscript idle-fill loop (extracted from NoodleDude Megamix @ 11:00.545) ──
-        # Ping-pong looped: plays forward then reverse, seamlessly.
-        # Alpha: vibrating ramp 0→100→40 with ~30Hz zigzag tremolo.
-        # Beta: rapid oscillation centered at 50 with ±15 deviation.
-        # Each sample is ~33ms apart (30 Hz).  Normalized 0-100 → 0.0-1.0.
-        self._idle_loop_alpha: tuple[float, ...] = (
-            0.00, 0.15, 0.30, 0.20, 0.09, 0.25, 0.40, 0.30, 0.20, 0.35,
-            0.50, 0.40, 0.29, 0.44, 0.60, 0.50, 0.40, 0.55, 0.70, 0.60,
-            0.50, 0.65, 0.80, 0.70, 0.60, 0.75, 0.90, 0.80, 0.70, 0.85,
-            1.00, 0.85, 0.70, 0.80, 0.90, 0.75, 0.59, 0.70, 0.80, 0.65,
-            0.50, 0.60, 0.70, 0.55, 0.40,
-        )
-        self._idle_loop_beta: tuple[float, ...] = (
-            0.50, 0.65, 0.50, 0.60, 0.50, 0.35, 0.50, 0.60, 0.50, 0.65,
-            0.50, 0.40, 0.50, 0.65, 0.50, 0.60, 0.50, 0.35, 0.50, 0.60,
-            0.50, 0.35, 0.50, 0.40, 0.50, 0.65, 0.50, 0.40, 0.50, 0.64,
-            0.50, 0.35, 0.50, 0.60, 0.50, 0.35, 0.50, 0.60, 0.50, 0.65,
-            0.50, 0.40, 0.50, 0.65, 0.50,
-        )
-        self._idle_loop_phase: float = 0.0       # continuous phase counter
-        self._idle_loop_rate_hz: float = 30.0     # native playback rate
+        # ── Entry journey gating (§8) ──
+        self._post_wait_reentry_active: bool = False
 
         # ── Expression layer state ──
         self._orbit_direction: int = 1           # 1=default, -1=reversed
@@ -350,115 +302,6 @@ class StrokeMapper:
         if self._rate_limiter_clipped:
             self._resync_orbit_to_output()
 
-        # ── Mode transition detection: smooth spiral between park_bounce_only ↔ full arc ──
-        current_mode_is_park_bounce = bool(getattr(decision, "park_bounce_only", False)) and not decision.silence_active
-
-        # During silence, suppress mode transition detection entirely.
-        # current_mode_is_park_bounce is forced False during silence (due to
-        # `not decision.silence_active`), so a brief silence→active→silence
-        # flap would trigger a FALSE mode change (park_bounce→full_arc) that
-        # inflates the orbit radius to 0.70 during silence – causing the
-        # sharp center→edge excursion at v=0.00.  Resetting the tracking
-        # state during silence prevents this.
-        if decision.silence_active:
-            self._mode_transition_active = False
-            self._last_mode_was_park_bounce = False
-        else:
-            mode_changed = current_mode_is_park_bounce != self._last_mode_was_park_bounce
-
-            if mode_changed and not self._mode_transition_active:
-                # Start new transition — resync orbit so start geometry
-                # matches rate-limited output (prevents straight-line chase)
-                self._resync_orbit_to_output()
-                self._mode_transition_active = True
-                self._mode_transition_progress = 0.0
-                self._mode_transition_start_radius = float(self._actual_radius)
-                self._mode_transition_start_center_y = float(self._base_center_y + self._reactive_bounce_y)
-                
-                # Reset swirl state to prevent interference with mode transition
-                self._swirl_entering = False
-                self._swirl_progress = 0.0
-                
-                # Determine target geometry based on new mode
-                if current_mode_is_park_bounce:
-                    # Transitioning TO park_bounce_only: spiral into small idle orbit
-                    self._mode_transition_target_radius = float(self._park_idle_radius)
-                    self._mode_transition_target_center_y = float(self._baseline_center_y)
-                else:
-                    # Transitioning TO full arc: spiral out to journey geometry
-                    # Use current decision's trigger geometry, or default to park_radius
-                    geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
-                        "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
-                    })
-                    self._mode_transition_target_radius = float(geom["park_radius"])
-                    self._mode_transition_target_center_y = float(geom["center_y"])
-
-            self._last_mode_was_park_bounce = current_mode_is_park_bounce
-
-        # ── Advance mode transition if active (never during silence) ──
-        if self._mode_transition_active and not decision.silence_active:
-            self._mode_transition_progress = float(np.clip(
-                self._mode_transition_progress + (dt / max(self._mode_transition_duration_s, 1e-3)),
-                0.0,
-                1.0,
-            ))
-            trans_t = self._quintic_ease(self._mode_transition_progress)
-            
-            # Interpolate radius and center_y with quintic ease
-            self._actual_radius = float(
-                self._mode_transition_start_radius
-                + ((self._mode_transition_target_radius - self._mode_transition_start_radius) * trans_t)
-            )
-            trans_center_y = float(
-                self._mode_transition_start_center_y
-                + ((self._mode_transition_target_center_y - self._mode_transition_start_center_y) * trans_t)
-            )
-            self._base_center_y = trans_center_y
-            
-            # Transition complete when progress reaches 1.0
-            if self._mode_transition_progress >= 1.0:
-                self._mode_transition_active = False
-
-        if current_mode_is_park_bounce:
-            ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
-            
-            # During mode transition, use interpolated geometry directly
-            # to avoid conflict with _apply_park_motion_frame's internal swirl
-            if self._mode_transition_active:
-                # Compute position using transition-interpolated radius & center
-                bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-                if bpm <= 0.0:
-                    bpm = float(getattr(event, "bpm", 0.0) or 0.0)
-                bpm = float(np.clip(bpm if bpm > 0.0 else 120.0, 40.0, 240.0))
-                
-                idle_angular_speed = float((2.0 * np.pi) * (bpm / 60.0) * self._idle_loops_per_beat)
-                self._orbit_phase = float((self._orbit_phase + (idle_angular_speed * dt)) % (2.0 * np.pi))
-                self._angular_velocity = float(idle_angular_speed)
-                self._last_phase_for_velocity = self._orbit_phase
-                
-                jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
-                treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
-                hat_bump = self._compute_hat_bounce_offset(event=event, dt=dt)
-                self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump + hat_bump, -0.30, 0.30))
-                
-                total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-                orbit_radius = float(min(self._actual_radius, self._radius_cap_for_center(total_center_y)))
-                
-                angle = float(self._orbit_phase)
-                alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
-                beta = float(total_center_y + (orbit_radius * np.sin(angle)))
-                volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
-            else:
-                # No mode transition: use normal park_motion_frame with swirl
-                alpha, beta, volume = self._apply_park_motion_frame(
-                    event=event,
-                    dt=dt,
-                    fade=ramp,
-                )
-            
-            self._last_journey_completion = 1.0
-            return self._rate_limited_output(alpha, beta, volume, dt)
-
         if hitch_soft_reset:
             self._angular_velocity = 0.0
             self._last_phase_for_velocity = self._orbit_phase
@@ -505,178 +348,22 @@ class StrokeMapper:
             self._intensity_ramp_mult = 1.0
 
         if decision.silence_active:
+            # ── Silent-still-park: hold position, fade volume, reset momentum ──
             self._hold_start_pose_until_reactive = False
-            # Reset cold-start momentum ramp so dot takes off slowly after silence
             self._startup_beats_seen = 0.0
             self._journey_startup_momentum = self._startup_momentum_min
             self._post_silence_radius_ramp = 0.0
-            # Reset spiral-out so next exit from park triggers it
-            self._spiral_out_active = False
-            self._spiral_out_progress = 0.0
-            # Reset silence-exit crossfade so it re-triggers on next exit
-            self._silence_exit_xfade_active = False
-            self._silence_exit_xfade_progress = 0.0
+            self._post_wait_reentry_active = False
             self._anchor_phrase_locked = False
-
-            creep_motion_disabled = not bool(getattr(self.config.creep, "enabled", True))
-            if creep_motion_disabled and decision.trigger_kind == "creep":
-                self._swirl_entering = False
-                self._swirl_progress = 0.0
-
-                # ── Quintic ease to park (instead of instant snap) ──
-                # First frame: latch current geometry as transition start
-                if not self._creep_park_active:
-                    self._creep_park_active = True
-                    self._creep_park_progress = 0.0
-                    self._resync_orbit_to_output()
-                    self._creep_park_start_radius = float(self._actual_radius)
-                    self._creep_park_start_center_y = float(self._base_center_y)
-
-                # Derive beat period from BPM for time→beats conversion
-                bpm_cp = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-                if bpm_cp <= 0.0:
-                    bpm_cp = float(getattr(event, "bpm", 0.0) or 0.0)
-                bpm_cp = float(np.clip(bpm_cp if bpm_cp > 0.0 else 120.0, 40.0, 240.0))
-                beat_period_s = 60.0 / bpm_cp
-                duration_s = self._creep_park_duration_beats * beat_period_s
-
-                # Advance transition progress
-                self._creep_park_progress = float(np.clip(
-                    self._creep_park_progress + (dt / max(duration_s, 1e-3)),
-                    0.0,
-                    1.0,
-                ))
-                cp_t = self._quintic_ease(self._creep_park_progress)
-
-                # Interpolate radius and center_y toward park targets
-                self._actual_radius = float(
-                    self._creep_park_start_radius
-                    + ((self._park_idle_radius - self._creep_park_start_radius) * cp_t)
-                )
-                self._base_center_y = float(
-                    self._creep_park_start_center_y
-                    + ((self._baseline_center_y - self._creep_park_start_center_y) * cp_t)
-                )
-
-                # Decelerate angular velocity smoothly toward zero
-                idle_speed_cp = float((2.0 * np.pi) * (bpm_cp / 60.0) * self._idle_loops_per_beat)
-                current_speed_cp = max(abs(self._angular_velocity), idle_speed_cp)
-                blended_speed_cp = float(
-                    current_speed_cp + ((idle_speed_cp - current_speed_cp) * cp_t)
-                )
-                direction_sign = 1.0 if self._angular_velocity >= 0 else -1.0
-                self._angular_velocity = float(blended_speed_cp * direction_sign)
-                self._orbit_phase = float(
-                    (self._orbit_phase + (self._angular_velocity * dt)) % (2.0 * np.pi)
-                )
-                self._last_phase_for_velocity = self._orbit_phase
-
-                self._reactive_bounce_y = 0.0
-                total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-                orbit_radius = float(min(self._actual_radius, self._radius_cap_for_center(total_center_y)))
-                alpha = float(orbit_radius * np.cos(self._orbit_phase))
-                beta = float(total_center_y + (orbit_radius * np.sin(self._orbit_phase)))
-
-                fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
-                volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
-                self._last_journey_completion = 1.0
-                return self._rate_limited_output(alpha, beta, volume, dt)
-
-            # ── Swirl-to-park: spiral into 0.6y with S-curve interpolation ──
-            # First silence frame: latch current center/radius as start.
-            if not self._swirl_entering:
-                self._swirl_entering = True
-                self._swirl_progress = 0.0
-                self._resync_orbit_to_output()
-                self._swirl_start_center_y = float(self._base_center_y)
-                self._swirl_start_radius = float(max(self._actual_radius, self._park_idle_radius))
-
-            bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-            if bpm <= 0.0:
-                bpm = float(getattr(event, "bpm", 0.0) or 0.0)
-            bpm = float(np.clip(bpm if bpm > 0.0 else 120.0, 40.0, 240.0))
-
-            # Advance swirl progress toward 1.0
-            self._swirl_progress = float(np.clip(
-                self._swirl_progress + (dt / max(self._swirl_duration_s, 1e-3)),
-                0.0,
-                1.0,
-            ))
-            # Quintic ease (6t⁵-15t⁴+10t³) ensures zero velocity & acceleration at arrival
-            swirl_t = self._quintic_ease(self._swirl_progress)
-
-            # Interpolate center_y: current → 0.6 (park)
-            swirl_center_y = float(
-                self._swirl_start_center_y
-                + ((self._baseline_center_y - self._swirl_start_center_y) * swirl_t)
-            )
-            # Interpolate radius: current → park idle radius
-            swirl_radius = float(
-                self._swirl_start_radius
-                + ((self._park_idle_radius - self._swirl_start_radius) * swirl_t)
-            )
-            radius = float(np.clip(swirl_radius, self._park_idle_radius, 1.0))
-            self._actual_radius = radius
+            self._angular_velocity = 0.0
 
             fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
-
-            # Theta keeps spinning — inherit momentum, decelerate smoothly
-            # Start from current angular velocity, blend to idle speed via S-curve
-            idle_angular_speed = float((2.0 * np.pi) * (bpm / 60.0) * self._idle_loops_per_beat)
-            current_speed = max(abs(self._angular_velocity), idle_angular_speed)
-            blended_speed = float(
-                current_speed + ((idle_angular_speed - current_speed) * swirl_t)
-            )
-            self._orbit_phase = float((self._orbit_phase + (blended_speed * dt)) % (2.0 * np.pi))
-            self._angular_velocity = float(blended_speed)
-            self._last_phase_for_velocity = self._orbit_phase
-
-            self._base_center_y = swirl_center_y
-
-            # Bass-reactive jitter stays active at park so the tiny orbit vibrates
-            jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(
-                event=event, dt=dt,
-            )
-            treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
-            self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
-
-            total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-            orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
-
-            angle = float(self._orbit_phase)
-            alpha = float(orbit_radius * np.cos(angle)) + float(jitter_alpha * 0.3)
-            beta = float(total_center_y + (orbit_radius * np.sin(angle)))
+            alpha = float(self.state.alpha)
+            beta = float(self.state.beta)
             volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
             self._last_journey_completion = 1.0
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
-            creep_motion_disabled = not bool(getattr(self.config.creep, "enabled", True))
-            # Reset swirl / creep-park state when music resumes
-            self._swirl_entering = False
-            self._swirl_progress = 0.0
-            self._creep_park_active = False
-            self._creep_park_progress = 0.0
-
-            # ── Silence-exit position crossfade: latch park position on transition ──
-            if self._was_silence_active and not self._silence_exit_xfade_active:
-                self._silence_exit_xfade_active = True
-                self._silence_exit_xfade_progress = 0.0
-                self._silence_exit_latch_alpha = float(self.state.alpha)
-                self._silence_exit_latch_beta = float(self.state.beta)
-
-            # ── Spiral-out: launch on first beat/downbeat/syncopation after silence ──
-            if not self._spiral_out_active and self._startup_beats_seen <= 1.0:
-                if decision.trigger_kind in ("beat", "downbeat", "syncopation"):
-                    self._resync_orbit_to_output()
-                    geom_so = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
-                        "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
-                    })
-                    self._spiral_out_active = True
-                    self._spiral_out_progress = 0.0
-                    self._spiral_out_start_radius = float(max(self._actual_radius, self._park_idle_radius))
-                    self._spiral_out_target_radius = float(geom_so["park_radius"])
-                    self._spiral_out_start_center_y = float(self._base_center_y)
-                    self._spiral_out_target_center_y = float(geom_so["center_y"])
 
             if self._hold_start_pose_until_reactive and decision.trigger_kind == "creep":
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
@@ -688,7 +375,109 @@ class StrokeMapper:
                 self._last_journey_completion = 1.0
                 return self._rate_limited_output(alpha, beta, volume, dt)
 
-            if creep_motion_disabled and decision.trigger_kind == "creep":
+            started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
+            if started_new_journey:
+                if decision.trigger_kind in ("beat", "downbeat", "syncopation", "start"):
+                    self._hold_start_pose_until_reactive = False
+                prior_completion = float(self._last_journey_completion)
+                self._journey_linked = bool(prior_completion < 0.999)
+                self._journey_cold_start = not self._journey_linked
+                self._journey_relink_active = False
+
+                self._journey_start_total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+
+                # Latch geometry at journey start so mid-journey trigger
+                # reclassification cannot reshape a running arc.
+                geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
+                    "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
+                })
+                self._journey_center_y = float(geom["center_y"])
+                self._journey_park_radius = float(geom["park_radius"])
+                # Expand max_radius toward 1.0 based on energy fullness:
+                # quiet music stays at configured max (0.90), full music → 1.0
+                base_max = float(geom["max_radius"])
+                fullness = float(np.clip(decision.energy_fullness, 0.0, 1.0))
+                # Smooth expansion: only starts opening above 0.4 fullness
+                expand_t = float(np.clip((fullness - 0.4) / 0.6, 0.0, 1.0))
+                expanded_max = float(base_max + (1.0 - base_max) * (expand_t * expand_t))
+                # Session arc influence: long-term energy nudges max_radius
+                if getattr(self.config.stroke, 'session_arc_enabled', True):
+                    arc_inf = float(getattr(self.config.stroke, 'session_arc_radius_influence', 0.10) or 0.10)
+                    session_nudge = (self._session_energy_ema - 0.5) * 2.0 * arc_inf
+                    expanded_max = float(np.clip(expanded_max + session_nudge, base_max, 1.0))
+                self._journey_max_radius = float(np.clip(expanded_max, base_max, 1.0))
+
+                # Intensity timer: scale available dynamic range toward park radius
+                if self._intensity_ramp_affect_size and self._intensity_ramp_mult < 1.0:
+                    self._journey_max_radius = float(
+                        self._journey_park_radius
+                        + ((self._journey_max_radius - self._journey_park_radius) * self._intensity_ramp_mult)
+                    )
+
+                self._journey_energy_fullness = fullness
+
+                self._journey_start_alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
+                self._journey_start_beta = float(np.clip(self.state.beta, -1.0, 1.0))
+                if self._orbit_phase_initialized:
+                    # Re-sync orbit from actual output to prevent
+                    # straight-line chase when rate limiter has lagged
+                    self._resync_orbit_to_output()
+                    self._journey_start_angle = float(self._orbit_phase)
+                    self._journey_start_radius = float(np.clip(self._actual_radius, self._min_radius, 1.0))
+                else:
+                    # First journey: infer from externally-set position
+                    inherited_angle, inherited_radius = self._infer_orbit_from_position(
+                        alpha=self._journey_start_alpha,
+                        beta=self._journey_start_beta,
+                        center_y=self._journey_start_total_center_y,
+                    )
+                    self._journey_start_angle = inherited_angle
+                    self._journey_start_radius = float(np.clip(inherited_radius, self._min_radius, 1.0))
+                    self._orbit_phase = float(inherited_angle % (2.0 * np.pi))
+                    self._orbit_phase_initialized = True
+
+                self._journey_total_rotation = self._compute_landing_rotation(
+                    start_angle=self._journey_start_angle,
+                    interval_beats=decision.interval_beats,
+                )
+                self._journey_start_time_mono = float(now)
+                self._journey_timing_beats = self._normalize_journey_beats(decision.interval_beats)
+
+                if self._startup_beats_seen < self._startup_ramp_beats:
+                    startup_ratio = float(np.clip(
+                        self._startup_beats_seen / max(self._startup_ramp_beats, 1e-6),
+                        0.0,
+                        1.0,
+                    ))
+                    self._journey_startup_momentum = float(
+                        self._startup_momentum_min
+                        + ((1.0 - self._startup_momentum_min) * startup_ratio)
+                    )
+                    # Post-silence radius ramp: quintic ease from floor to full
+                    ramp_t = self._quintic_ease(startup_ratio)
+                    self._post_silence_radius_ramp = float(
+                        self._post_silence_radius_floor
+                        + ((1.0 - self._post_silence_radius_floor) * ramp_t)
+                    )
+                    self._startup_beats_seen += 1.0
+                else:
+                    self._journey_startup_momentum = 1.0
+                    self._post_silence_radius_ramp = 1.0
+
+            progress = self._compute_beat_timed_progress(
+                now=now,
+                event=event,
+                fallback_progress=progress,
+            )
+
+            if progress >= 1.0 and not started_new_journey and decision.trigger_kind == "creep":
+                # Preserve visible continuity when a completed journey hands
+                # off into park motion from an axis-aligned terminal pose.
+                # Without this tiny nudge, deterministic frame timing can
+                # repeatedly land on alpha≈0 and look like a hard snap.
+                if abs(float(np.cos(self._orbit_phase))) < 0.02:
+                    self._orbit_phase = float((self._orbit_phase + 0.10) % (2.0 * np.pi))
+
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 alpha, beta, volume = self._apply_park_motion_frame(
                     event=event,
@@ -696,431 +485,247 @@ class StrokeMapper:
                     fade=ramp,
                 )
                 self._last_journey_completion = 1.0
+                return self._rate_limited_output(alpha, beta, volume, dt)
+
+            # Use latched geometry while a journey is in-flight.
+            # Only refresh from live trigger kind when fully parked.
+            if (progress < 1.0) or (self._last_journey_completion < 1.0):
+                type_center_y = float(self._journey_center_y)
+                type_park_radius = float(self._journey_park_radius)
+                type_max_radius = float(self._journey_max_radius)
             else:
-                started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
+                geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
+                    "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
+                })
+                type_center_y = float(geom["center_y"])
+                type_park_radius = float(geom["park_radius"])
+                type_max_radius = float(geom["max_radius"])
+
+            # Latch learning speed_mult at journey start so mid-arc
+                # predictions never cause radius/speed discontinuities.
                 if started_new_journey:
-                    if decision.trigger_kind in ("beat", "downbeat", "syncopation", "start"):
-                        self._hold_start_pose_until_reactive = False
-                    prior_completion = float(self._last_journey_completion)
-                    self._journey_linked = bool(prior_completion < 0.999)
-                    self._journey_cold_start = not self._journey_linked
-                    self._journey_relink_active = False
-
-                    self._settle_active = False  # cancel any active settle
-
-                    self._journey_start_total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-
-                    # Latch geometry at journey start so mid-journey trigger
-                    # reclassification cannot reshape a running arc.
-                    geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
-                        "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
-                    })
-                    self._journey_center_y = float(geom["center_y"])
-                    self._journey_park_radius = float(geom["park_radius"])
-                    # Expand max_radius toward 1.0 based on energy fullness:
-                    # quiet music stays at configured max (0.90), full music → 1.0
-                    base_max = float(geom["max_radius"])
-                    fullness = float(np.clip(decision.energy_fullness, 0.0, 1.0))
-                    # Smooth expansion: only starts opening above 0.4 fullness
-                    expand_t = float(np.clip((fullness - 0.4) / 0.6, 0.0, 1.0))
-                    expanded_max = float(base_max + (1.0 - base_max) * (expand_t * expand_t))
-                    # Session arc influence: long-term energy nudges max_radius
-                    if getattr(self.config.stroke, 'session_arc_enabled', True):
-                        arc_inf = float(getattr(self.config.stroke, 'session_arc_radius_influence', 0.10) or 0.10)
-                        session_nudge = (self._session_energy_ema - 0.5) * 2.0 * arc_inf
-                        expanded_max = float(np.clip(expanded_max + session_nudge, base_max, 1.0))
-                    self._journey_max_radius = float(np.clip(expanded_max, base_max, 1.0))
-
-                    # Intensity timer: scale available dynamic range toward park radius
-                    if self._intensity_ramp_affect_size and self._intensity_ramp_mult < 1.0:
-                        self._journey_max_radius = float(
-                            self._journey_park_radius
-                            + ((self._journey_max_radius - self._journey_park_radius) * self._intensity_ramp_mult)
-                        )
-
-                    self._journey_energy_fullness = fullness
-
-                    self._journey_start_alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
-                    self._journey_start_beta = float(np.clip(self.state.beta, -1.0, 1.0))
-                    if self._orbit_phase_initialized:
-                        # Re-sync orbit from actual output to prevent
-                        # straight-line chase when rate limiter has lagged
-                        self._resync_orbit_to_output()
-                        self._journey_start_angle = float(self._orbit_phase)
-                        self._journey_start_radius = float(np.clip(self._actual_radius, self._min_radius, 1.0))
+                    learning = decision.learning
+                    if learning.active:
+                        # speed_mult (0..1) scales motion amplitude:
+                        # 0 = stay parked, 1 = full bloom radius
+                        self._journey_learning_mult = float(np.clip(learning.speed_mult, 0.0, 1.0))
                     else:
-                        # First journey: infer from externally-set position
-                        inherited_angle, inherited_radius = self._infer_orbit_from_position(
-                            alpha=self._journey_start_alpha,
-                            beta=self._journey_start_beta,
-                            center_y=self._journey_start_total_center_y,
-                        )
-                        self._journey_start_angle = inherited_angle
-                        self._journey_start_radius = float(np.clip(inherited_radius, self._min_radius, 1.0))
-                        self._orbit_phase = float(inherited_angle % (2.0 * np.pi))
-                        self._orbit_phase_initialized = True
+                        self._journey_learning_mult = 1.0
 
-                    self._journey_total_rotation = self._compute_landing_rotation(
-                        start_angle=self._journey_start_angle,
-                        interval_beats=decision.interval_beats,
-                    )
-                    self._journey_start_time_mono = float(now)
-                    self._journey_timing_beats = self._normalize_journey_beats(decision.interval_beats)
+            learning_mult = self._journey_learning_mult
 
-                    if self._startup_beats_seen < self._startup_ramp_beats:
-                        startup_ratio = float(np.clip(
-                            self._startup_beats_seen / max(self._startup_ramp_beats, 1e-6),
-                            0.0,
-                            1.0,
-                        ))
-                        self._journey_startup_momentum = float(
-                            self._startup_momentum_min
-                            + ((1.0 - self._startup_momentum_min) * startup_ratio)
-                        )
-                        # Post-silence radius ramp: quintic ease from floor to full
-                        ramp_t = self._quintic_ease(startup_ratio)
-                        self._post_silence_radius_ramp = float(
-                            self._post_silence_radius_floor
-                            + ((1.0 - self._post_silence_radius_floor) * ramp_t)
-                        )
-                        self._startup_beats_seen += 1.0
-                    else:
-                        self._journey_startup_momentum = 1.0
-                        self._post_silence_radius_ramp = 1.0
+            # Map global radius_bloom (0.70→1.0) to type-specific range (park→max)
+            normalized_bloom = float(np.clip((decision.radius_bloom - 0.70) / 0.30, 0.0, 1.0))
+            type_bloom = float(type_park_radius + normalized_bloom * (type_max_radius - type_park_radius))
+            bloom_target_radius = float(type_park_radius + ((type_bloom - type_park_radius) * learning_mult))
+            bloom_target_radius = float(np.clip(bloom_target_radius, type_park_radius, type_max_radius))
 
-                progress = self._compute_beat_timed_progress(
-                    now=now,
-                    event=event,
-                    fallback_progress=progress,
+            # Post-silence slow takeoff: scale bloom target down during ramp period
+            # so the orbit starts close to park and gently expands over several beats
+            radius_ramp = float(np.clip(self._post_silence_radius_ramp, 0.0, 1.0))
+            if radius_ramp < 1.0:
+                ramp_park = float(self._park_idle_radius)
+                bloom_target_radius = float(
+                    ramp_park + ((bloom_target_radius - ramp_park) * radius_ramp)
                 )
 
-                if progress >= 1.0 and not started_new_journey and decision.trigger_kind == "creep":
-                    self._settle_active = False
+            if started_new_journey:
+                self._journey_fixed_radius = bloom_target_radius
+                self._journey_latched_bloom = float(decision.radius_bloom)
 
-                    # Preserve visible continuity when a completed journey hands
-                    # off into park motion from an axis-aligned terminal pose.
-                    # Without this tiny nudge, deterministic frame timing can
-                    # repeatedly land on alpha≈0 and look like a hard snap.
-                    if abs(float(np.cos(self._orbit_phase))) < 0.02:
-                        self._orbit_phase = float((self._orbit_phase + 0.10) % (2.0 * np.pi))
-
-                    ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
-                    alpha, beta, volume = self._apply_park_motion_frame(
-                        event=event,
-                        dt=dt,
-                        fade=ramp,
-                    )
-                    self._last_journey_completion = 1.0
-                    return self._rate_limited_output(alpha, beta, volume, dt)
-
-                # Use latched geometry while a journey/settle is in-flight.
-                # Only refresh from live trigger kind when fully parked.
-                if (progress < 1.0) or (self._last_journey_completion < 1.0) or self._settle_active:
-                    type_center_y = float(self._journey_center_y)
-                    type_park_radius = float(self._journey_park_radius)
-                    type_max_radius = float(self._journey_max_radius)
+                # ── Latch target radius at journey start ──
+                # Prevents mid-arc knee when _is_upcoming_beat_expected
+                # flips frame-to-frame after the unhook window saturates.
+                continuation_expected_at_start = bool(
+                    self._journey_linked
+                    or self._is_upcoming_beat_expected(now=now, decision=decision)
+                )
+                if continuation_expected_at_start:
+                    # Cap at type_max_radius — never expand beyond configured max.
+                    # Previous code clipped to [max_radius, 1.0] which allowed
+                    # the orbit to overshoot the boundary circle.
+                    self._journey_target_radius = float(min(
+                        self._journey_latched_bloom, type_max_radius
+                    ))
                 else:
-                    geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
-                        "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
-                    })
-                    type_center_y = float(geom["center_y"])
-                    type_park_radius = float(geom["park_radius"])
-                    type_max_radius = float(geom["max_radius"])
+                    self._journey_target_radius = type_max_radius
 
-# Latch learning speed_mult at journey start so mid-arc
-                    # predictions never cause radius/speed discontinuities.
-                    if started_new_journey:
-                        learning = decision.learning
-                        if learning.active:
-                            # speed_mult (0..1) scales motion amplitude:
-                            # 0 = stay parked, 1 = full bloom radius
-                            self._journey_learning_mult = float(np.clip(learning.speed_mult, 0.0, 1.0))
-                        else:
-                            self._journey_learning_mult = 1.0
-
-                learning_mult = self._journey_learning_mult
-
-                # Map global radius_bloom (0.70→1.0) to type-specific range (park→max)
-                normalized_bloom = float(np.clip((decision.radius_bloom - 0.70) / 0.30, 0.0, 1.0))
-                type_bloom = float(type_park_radius + normalized_bloom * (type_max_radius - type_park_radius))
-                bloom_target_radius = float(type_park_radius + ((type_bloom - type_park_radius) * learning_mult))
-                bloom_target_radius = float(np.clip(bloom_target_radius, type_park_radius, type_max_radius))
-
-                # Post-silence slow takeoff: scale bloom target down during ramp period
-                # so the orbit starts close to park and gently expands over several beats
-                radius_ramp = float(np.clip(self._post_silence_radius_ramp, 0.0, 1.0))
-                if radius_ramp < 1.0:
-                    ramp_park = float(self._park_idle_radius)
-                    bloom_target_radius = float(
-                        ramp_park + ((bloom_target_radius - ramp_park) * radius_ramp)
+                # During post-silence ramp, cap target radius to the
+                # ramp-scaled bloom so the orbit can't leap to full size
+                # before the slow-ramp period has expired.
+                if self._post_silence_radius_ramp < 1.0:
+                    self._journey_target_radius = float(
+                        min(self._journey_target_radius, bloom_target_radius)
                     )
 
-                if started_new_journey:
-                    self._journey_fixed_radius = bloom_target_radius
-                    self._journey_latched_bloom = float(decision.radius_bloom)
+                self._actual_radius = self._journey_start_radius
 
-                    # ── Latch target radius at journey start ──
-                    # Prevents mid-arc knee when _is_upcoming_beat_expected
-                    # flips frame-to-frame after the unhook window saturates.
-                    continuation_expected_at_start = bool(
-                        self._journey_linked
-                        or self._is_upcoming_beat_expected(now=now, decision=decision)
-                    )
-                    if continuation_expected_at_start:
-                        # Cap at type_max_radius — never expand beyond configured max.
-                        # Previous code clipped to [max_radius, 1.0] which allowed
-                        # the orbit to overshoot the boundary circle.
-                        self._journey_target_radius = float(min(
-                            self._journey_latched_bloom, type_max_radius
-                        ))
-                    else:
-                        self._journey_target_radius = type_max_radius
+            angle = float(
+                self._journey_start_angle + (self._journey_total_rotation * progress)
+            )
+            if progress >= 1.0 and decision.trigger_kind != "creep":
+                bpm_for_terminal = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+                if bpm_for_terminal <= 0.0:
+                    bpm_for_terminal = float(getattr(event, "bpm", 0.0) or 0.0)
+                bpm_for_terminal = float(np.clip(bpm_for_terminal if bpm_for_terminal > 0.0 else 120.0, 40.0, 240.0))
+                fallback_terminal_speed = float((2.0 * np.pi) * (bpm_for_terminal / 60.0) * self._idle_loops_per_beat)
+                terminal_speed = float(max(abs(self._angular_velocity), fallback_terminal_speed, 0.8))
+                angle = float(self._orbit_phase + (terminal_speed * dt * float(self._orbit_direction)))
 
-                    # During post-silence ramp, cap target radius to the
-                    # ramp-scaled bloom so the orbit can't leap to full size
-                    # before the slow-ramp period has expired.
-                    if self._post_silence_radius_ramp < 1.0:
-                        self._journey_target_radius = float(
-                            min(self._journey_target_radius, bloom_target_radius)
-                        )
+            self._orbit_phase = float(angle % (2.0 * np.pi))
 
-                    # Only overwrite _actual_radius if no mode transition is active
-                    # (mode transition interpolation takes priority)
-                    if not self._mode_transition_active:
-                        self._actual_radius = self._journey_start_radius
+            phase_delta = self._wrapped_phase_delta(self._orbit_phase, self._last_phase_for_velocity)
+            self._angular_velocity = float(phase_delta / max(dt, 1e-4))
+            self._last_phase_for_velocity = self._orbit_phase
 
-                angle = float(
-                    self._journey_start_angle + (self._journey_total_rotation * progress)
+            # Radius path is mathematically locked to journey angle/progress.
+            # - Cold start: smoothstep from park -> max during first pass
+            # - Linked beat: bypass park and lock to max immediately
+            # - Continuation expected: allow controlled bloom up to 1.0
+            if decision.trigger_kind == "start":
+                p = float(np.clip(progress, 0.0, 1.0))
+                radius = float(
+                    self._journey_start_radius
+                    + ((self._journey_fixed_radius - self._journey_start_radius) * self._quintic_ease(p))
                 )
-                if progress >= 1.0 and decision.trigger_kind != "creep":
-                    bpm_for_terminal = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-                    if bpm_for_terminal <= 0.0:
-                        bpm_for_terminal = float(getattr(event, "bpm", 0.0) or 0.0)
-                    bpm_for_terminal = float(np.clip(bpm_for_terminal if bpm_for_terminal > 0.0 else 120.0, 40.0, 240.0))
-                    fallback_terminal_speed = float((2.0 * np.pi) * (bpm_for_terminal / 60.0) * self._idle_loops_per_beat)
-                    terminal_speed = float(max(abs(self._angular_velocity), fallback_terminal_speed, 0.8))
-                    angle = float(self._orbit_phase + (terminal_speed * dt * float(self._orbit_direction)))
+            else:
+                # Use journey-start-latched target radius.
+                # Evaluated once at journey start and frozen so mid-arc
+                # prediction flips never cause a radius discontinuity.
+                target_radius = self._journey_target_radius
 
-                self._orbit_phase = float(angle % (2.0 * np.pi))
-
-                phase_delta = self._wrapped_phase_delta(self._orbit_phase, self._last_phase_for_velocity)
-                self._angular_velocity = float(phase_delta / max(dt, 1e-4))
-                self._last_phase_for_velocity = self._orbit_phase
-
-                # Radius path is mathematically locked to journey angle/progress.
-                # - Cold start: smoothstep from park -> max during first pass
-                # - Linked beat: bypass park and lock to max immediately
-                # - Continuation expected: allow controlled bloom up to 1.0
-                # UNLESS mode transition is active: transition interpolation overrides journey radius logic
-                # ── Advance spiral-out if active ──
-                if self._spiral_out_active:
-                    bpm_so = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-                    if bpm_so <= 0.0:
-                        bpm_so = float(getattr(event, "bpm", 0.0) or 0.0)
-                    bpm_so = float(np.clip(bpm_so if bpm_so > 0.0 else 120.0, 40.0, 240.0))
-                    beat_duration_s = 60.0 / bpm_so
-                    spiral_duration_s = float(self._spiral_out_beats * beat_duration_s)
-                    self._spiral_out_progress = float(np.clip(
-                        self._spiral_out_progress + (dt / max(spiral_duration_s, 1e-3)),
+                if self._journey_cold_start:
+                    first_pass_progress = float(np.clip(
+                        (self._journey_total_rotation * progress) / (2.0 * np.pi),
                         0.0,
                         1.0,
                     ))
-                    if self._spiral_out_progress >= 1.0:
-                        self._spiral_out_active = False
-
-                if not self._mode_transition_active:
-                    if self._spiral_out_active:
-                        # Spiral-out: orbit continuously while expanding radius
-                        # over 1.5 beats with quintic ease for a slingshot feel
-                        so_t = self._quintic_ease(self._spiral_out_progress)
-                        radius = float(
-                            self._spiral_out_start_radius
-                            + ((self._spiral_out_target_radius - self._spiral_out_start_radius) * so_t)
-                        )
-                        # Also blend center_y during spiral-out
-                        self._base_center_y = float(
-                            self._spiral_out_start_center_y
-                            + ((self._spiral_out_target_center_y - self._spiral_out_start_center_y) * so_t)
-                        )
-                    elif decision.trigger_kind == "start":
-                        p = float(np.clip(progress, 0.0, 1.0))
-                        radius = float(
-                            self._journey_start_radius
-                            + ((self._journey_fixed_radius - self._journey_start_radius) * self._quintic_ease(p))
-                        )
+                    # During post-silence ramp, widen the unhook window
+                    # so radius expands over the full orbit instead of the
+                    # first 40%.  This prevents a sudden radius pop when
+                    # the first real beat fires after silence.
+                    if self._post_silence_radius_ramp < 1.0:
+                        unhook_window = 0.90
                     else:
-                        # Use journey-start-latched target radius.
-                        # Evaluated once at journey start and frozen so mid-arc
-                        # prediction flips never cause a radius discontinuity.
-                        target_radius = self._journey_target_radius
-
-                        if self._journey_cold_start:
-                            first_pass_progress = float(np.clip(
-                                (self._journey_total_rotation * progress) / (2.0 * np.pi),
-                                0.0,
-                                1.0,
-                            ))
-                            # During post-silence ramp, widen the unhook window
-                            # so radius expands over the full orbit instead of the
-                            # first 40%.  This prevents a sudden radius pop when
-                            # the first real beat fires after silence.
-                            if self._post_silence_radius_ramp < 1.0:
-                                unhook_window = 0.90
-                            else:
-                                unhook_window = 0.40
-                            unhook_t = float(np.clip(first_pass_progress / unhook_window, 0.0, 1.0))
-                            # Quintic ease from *current* radius to target — eliminates
-                            # knee when new trigger geometry differs from the running orbit.
-                            radius_blend = self._quintic_ease(unhook_t)
-                            radius = float(
-                                self._journey_start_radius
-                                + ((target_radius - self._journey_start_radius) * radius_blend)
-                            )
-                        else:
-                            # Linked journey: expand from latched start radius to
-                            # target over first portion of orbit for seamless hand-off.
-                            first_pass_progress = float(np.clip(
-                                (self._journey_total_rotation * progress) / (2.0 * np.pi),
-                                0.0,
-                                1.0,
-                            ))
-                            # During post-silence ramp, use a wider window so
-                            # linked journeys also expand gradually.
-                            if self._post_silence_radius_ramp < 1.0:
-                                link_window = 0.90
-                            else:
-                                link_window = 0.40
-                            link_t = float(np.clip(first_pass_progress / link_window, 0.0, 1.0))
-                            link_blend = self._quintic_ease(link_t)
-                            radius = float(
-                                self._journey_start_radius
-                                + ((target_radius - self._journey_start_radius) * link_blend)
-                            )
-
-                        if self._journey_relink_active:
-                            first_pass_progress = float(np.clip(
-                                (self._journey_total_rotation * progress) / (2.0 * np.pi),
-                                0.0,
-                                1.0,
-                            ))
-                            # Relink: expand from slingshot loop to full radius over ~40% of orbit
-                            relink_window = 0.40
-                            relink_t = float(np.clip(first_pass_progress / relink_window, 0.0, 1.0))
-                            # Quintic ease for buttery-smooth slingshot release
-                            relink_blend = self._quintic_ease(relink_t)
-                            radius = float(
-                                self._journey_relink_start_radius
-                                + ((target_radius - self._journey_relink_start_radius) * relink_blend)
-                            )
-                            if relink_t >= 1.0:
-                                self._journey_relink_active = False
-
-                    if decision.trigger_kind == "start":
-                        min_radius_bound = self._min_radius
-                    elif (self._spiral_out_active
-                          or self._post_silence_radius_ramp < 1.0
-                          or self._journey_cold_start):
-                        # Transitioning out of park / silence / mid-decay:
-                        # allow the orbit to start at its current small radius
-                        # and expand gradually via spiral-out / cold-start ramp.
-                        # Clamping to 0.70 here would teleport the device.
-                        min_radius_bound = self._min_radius
+                        unhook_window = 0.40
+                    unhook_t = float(np.clip(first_pass_progress / unhook_window, 0.0, 1.0))
+                    # Quintic ease from *current* radius to target — eliminates
+                    # knee when new trigger geometry differs from the running orbit.
+                    radius_blend = self._quintic_ease(unhook_t)
+                    radius = float(
+                        self._journey_start_radius
+                        + ((target_radius - self._journey_start_radius) * radius_blend)
+                    )
+                else:
+                    # Linked journey: expand from latched start radius to
+                    # target over first portion of orbit for seamless hand-off.
+                    first_pass_progress = float(np.clip(
+                        (self._journey_total_rotation * progress) / (2.0 * np.pi),
+                        0.0,
+                        1.0,
+                    ))
+                    # During post-silence ramp, use a wider window so
+                    # linked journeys also expand gradually.
+                    if self._post_silence_radius_ramp < 1.0:
+                        link_window = 0.90
                     else:
-                        min_radius_bound = 0.70
-                    self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
-                
-                # Whether from transition or journey, finalize radius for position calc
-                radius = self._actual_radius
+                        link_window = 0.40
+                    link_t = float(np.clip(first_pass_progress / link_window, 0.0, 1.0))
+                    link_blend = self._quintic_ease(link_t)
+                    radius = float(
+                        self._journey_start_radius
+                        + ((target_radius - self._journey_start_radius) * link_blend)
+                    )
 
-                base_target_center = self._base_center_target(
-                    trigger_kind=decision.trigger_kind,
-                    progress=progress,
-                    silence_active=False,
+                if self._journey_relink_active:
+                    first_pass_progress = float(np.clip(
+                        (self._journey_total_rotation * progress) / (2.0 * np.pi),
+                        0.0,
+                        1.0,
+                    ))
+                    # Relink: expand from slingshot loop to full radius over ~40% of orbit
+                    relink_window = 0.40
+                    relink_t = float(np.clip(first_pass_progress / relink_window, 0.0, 1.0))
+                    # Quintic ease for buttery-smooth slingshot release
+                    relink_blend = self._quintic_ease(relink_t)
+                    radius = float(
+                        self._journey_relink_start_radius
+                        + ((target_radius - self._journey_relink_start_radius) * relink_blend)
+                    )
+                    if relink_t >= 1.0:
+                        self._journey_relink_active = False
+
+            if decision.trigger_kind == "start":
+                min_radius_bound = self._min_radius
+            elif (self._post_silence_radius_ramp < 1.0
+                  or self._journey_cold_start):
+                # Transitioning out of park / silence / mid-decay:
+                # allow the orbit to start at its current small radius
+                # and expand gradually via cold-start ramp.
+                # Clamping to 0.70 here would teleport the device.
+                min_radius_bound = self._min_radius
+            else:
+                min_radius_bound = 0.70
+            self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
+            
+            # Whether from transition or journey, finalize radius for position calc
+            radius = self._actual_radius
+
+            base_target_center = self._base_center_target(
+                trigger_kind=decision.trigger_kind,
+                progress=progress,
+                silence_active=False,
+            )
+            # Center interpolation toward target.
+            if progress < 1.0:
+                center_blend = self._quintic_ease(progress)
+                self._base_center_y = float(
+                    ((1.0 - center_blend) * self._journey_start_total_center_y)
+                    + (center_blend * base_target_center)
                 )
-                # Center interpolation: unless mode transition or spiral-out is overriding.
-                # Spiral-out has its own quintic center_y blend; let it take priority
-                # so park→active center_y stays on the spiral-out curve.
-                if not self._mode_transition_active and not self._spiral_out_active:
-                    if progress < 1.0:
-                        center_blend = self._quintic_ease(progress)
-                        self._base_center_y = float(
-                            ((1.0 - center_blend) * self._journey_start_total_center_y)
-                            + (center_blend * base_target_center)
-                        )
-                    else:
-                        # Gently approach target center rather than hard-snapping,
-                        # which prevents a jerk when journey completes and center
-                        # differs from the running orbit's center_y.
-                        center_gap = abs(self._base_center_y - base_target_center)
-                        if center_gap > 0.01:
-                            settle_rate = 3.0  # per-second exponential approach
-                            settle_t = float(1.0 - np.exp(-settle_rate * dt))
-                            self._base_center_y = float(
-                                self._base_center_y
-                                + ((base_target_center - self._base_center_y) * settle_t)
-                            )
-                        else:
-                            self._base_center_y = float(base_target_center)
+            else:
+                # Gently approach target center rather than hard-snapping,
+                # which prevents a jerk when journey completes and center
+                # differs from the running orbit's center_y.
+                center_gap = abs(self._base_center_y - base_target_center)
+                if center_gap > 0.01:
+                    settle_rate = 3.0  # per-second exponential approach
+                    settle_t = float(1.0 - np.exp(-settle_rate * dt))
+                    self._base_center_y = float(
+                        self._base_center_y
+                        + ((base_target_center - self._base_center_y) * settle_t)
+                    )
+                else:
+                    self._base_center_y = float(base_target_center)
 
-                wait_state = bool(decision.trigger_kind == "creep" and progress >= 1.0)
-                self._reactive_bounce_y = self._compute_reactive_bounce_y(
-                    event=event,
-                    dt=dt,
-                    wait_state=wait_state,
-                )
-                total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-                orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
+            wait_state = bool(decision.trigger_kind == "creep" and progress >= 1.0)
+            self._reactive_bounce_y = self._compute_reactive_bounce_y(
+                event=event,
+                dt=dt,
+                wait_state=wait_state,
+            )
+            total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+            orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
 
+            alpha = float(orbit_radius * np.cos(angle))
+            beta = float(total_center_y + (orbit_radius * np.sin(angle)))
+
+            if progress >= 1.0 and decision.trigger_kind != "creep" and abs(alpha) < 0.01:
+                angle = float(angle + (0.08 * float(self._orbit_direction)))
+                self._orbit_phase = float(angle % (2.0 * np.pi))
                 alpha = float(orbit_radius * np.cos(angle))
                 beta = float(total_center_y + (orbit_radius * np.sin(angle)))
 
-                if progress >= 1.0 and decision.trigger_kind != "creep" and abs(alpha) < 0.01:
-                    angle = float(angle + (0.08 * float(self._orbit_direction)))
-                    self._orbit_phase = float(angle % (2.0 * np.pi))
-                    alpha = float(orbit_radius * np.cos(angle))
-                    beta = float(total_center_y + (orbit_radius * np.sin(angle)))
+            # Apply post-silence ramp to volume
+            ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+            volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
 
-                # Apply post-silence ramp to volume
-                ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
-                volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
-
-                self._last_journey_completion = progress
-                if decision.trigger_kind == "start" and progress >= 1.0:
-                    self._hold_start_pose_until_reactive = True
+            self._last_journey_completion = progress
+            if decision.trigger_kind == "start" and progress >= 1.0:
+                self._hold_start_pose_until_reactive = True
 
         # ── Expression layer: apply center Y wander offset only ──
         beta = float(beta + self._center_y_offset)
-
-        # ── Silence-exit position crossfade ──
-        # Gradually blend from the latched park position to the computed
-        # trajectory position over N beats so the device swirls out smoothly
-        # instead of teleporting on silence→active transition.
-        if self._silence_exit_xfade_active:
-            bpm_xf = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-            if bpm_xf <= 0.0:
-                bpm_xf = float(getattr(event, "bpm", 0.0) or 0.0)
-            bpm_xf = float(np.clip(bpm_xf if bpm_xf > 0.0 else 120.0, 40.0, 240.0))
-            beat_dur_xf = 60.0 / bpm_xf
-            xfade_dur_s = float(self._silence_exit_xfade_beats * beat_dur_xf)
-            self._silence_exit_xfade_progress = float(np.clip(
-                self._silence_exit_xfade_progress + (dt / max(xfade_dur_s, 1e-3)),
-                0.0,
-                1.0,
-            ))
-            xf_t = self._quintic_ease(self._silence_exit_xfade_progress)
-            alpha = float(
-                self._silence_exit_latch_alpha
-                + ((alpha - self._silence_exit_latch_alpha) * xf_t)
-            )
-            beta = float(
-                self._silence_exit_latch_beta
-                + ((beta - self._silence_exit_latch_beta) * xf_t)
-            )
-            if self._silence_exit_xfade_progress >= 1.0:
-                self._silence_exit_xfade_active = False
-
-        # Track silence state for next-frame transition detection
-        self._was_silence_active = bool(decision.silence_active)
 
         # ── Universal per-frame rate-limited output ──
         # All paths converge here via _rate_limited_output which applies
@@ -1257,30 +862,7 @@ class StrokeMapper:
         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
         _ = jitter_alpha
         treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
-        hat_bump = self._compute_hat_bounce_offset(event=event, dt=dt)
-        return float(np.clip(jitter_beta + treble_bump + hat_bump, -0.30, 0.30))
-
-    def _compute_hat_bounce_offset(self, event: BeatEvent, dt: float) -> float:
-        features = getattr(event, "beat_features", None)
-        if not isinstance(features, dict):
-            self._hat_bounce_amp *= float(np.exp(-6.0 * max(1e-4, dt)))
-            return 0.0
-
-        hat_conf = float(np.clip(features.get("hat_like_conf", 0.0) or 0.0, 0.0, 1.0))
-        kick_conf = float(np.clip(features.get("kick_like_conf", 0.0) or 0.0, 0.0, 1.0))
-        bass_dom = float(np.clip(features.get("bass_dominance", 1.0) or 1.0, 0.0, 8.0))
-
-        hat_only = bool(hat_conf >= 0.42 and kick_conf < 0.35 and bass_dom < 1.15)
-        is_hat_trigger = bool(hat_only and (getattr(event, "is_beat", False) or getattr(event, "is_syncopated", False)))
-        if is_hat_trigger:
-            attack = float(np.clip(0.05 + (0.12 * hat_conf), 0.04, 0.20))
-            self._hat_bounce_amp = max(self._hat_bounce_amp, attack)
-
-        self._hat_bounce_amp *= float(np.exp(-6.0 * max(1e-4, dt)))
-
-        bounce_hz = float(7.0 + (5.0 * hat_conf))
-        self._hat_bounce_phase += float((2.0 * np.pi * bounce_hz) * max(1e-4, dt))
-        return float(np.clip(self._hat_bounce_amp * np.sin(self._hat_bounce_phase), -0.22, 0.22))
+        return float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 
     @staticmethod
     def _normalize_journey_beats(interval_beats: int) -> int:
@@ -1334,76 +916,26 @@ class StrokeMapper:
     def _apply_park_motion_frame(self, event: BeatEvent, dt: float, fade: float) -> tuple[float, float, float]:
         """Idle-fill motion using extracted funscript loop (ping-pong).
 
-        Replaces the old tiny-orbit park.  While transitioning in (swirl),
-        crossfades from orbital motion to the looped funscript pattern.
-        Once fully arrived, plays the pattern continuously.
+        Plays the baked 45-sample pattern continuously with bass jitter
+        overlay.  No swirl or orbital transition — the rate limiter
+        handles any position smoothing needed.
         """
-        if not self._swirl_entering:
-            self._swirl_entering = True
-            self._swirl_progress = 0.0
-            self._resync_orbit_to_output()
-            self._swirl_start_center_y = float(self._base_center_y)
-            self._swirl_start_radius = float(max(self._actual_radius, self._park_idle_radius))
+        # Sample the ping-pong funscript loop
+        loop_alpha, loop_beta = self._sample_idle_loop(dt=dt)
 
-        bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-        if bpm <= 0.0:
-            bpm = float(getattr(event, "bpm", 0.0) or 0.0)
-        bpm = float(np.clip(bpm if bpm > 0.0 else 120.0, 40.0, 240.0))
-
-        # ── Swirl-in transition (radius + center_y blend toward park) ──
-        self._swirl_progress = float(np.clip(
-            self._swirl_progress + (dt / max(self._swirl_duration_s, 1e-3)),
-            0.0,
-            1.0,
-        ))
-        swirl_t = self._quintic_ease(self._swirl_progress)
-
-        swirl_center_y = float(
-            self._swirl_start_center_y
-            + ((self._baseline_center_y - self._swirl_start_center_y) * swirl_t)
-        )
-        swirl_radius = float(
-            self._swirl_start_radius
-            + ((self._park_idle_radius - self._swirl_start_radius) * swirl_t)
-        )
-        radius = float(np.clip(swirl_radius, self._park_idle_radius, 1.0))
-        self._actual_radius = radius
-        self._base_center_y = swirl_center_y
-
-        # ── Orbital component (fades out as swirl_t → 1.0) ──
-        idle_angular_speed = float((2.0 * np.pi) * (bpm / 60.0) * self._idle_loops_per_beat)
-        current_speed = max(abs(self._angular_velocity), idle_angular_speed)
-        blended_speed = float(
-            current_speed + ((idle_angular_speed - current_speed) * swirl_t)
-        )
-        self._orbit_phase = float((self._orbit_phase + (blended_speed * dt)) % (2.0 * np.pi))
-        self._angular_velocity = float(blended_speed)
-        self._last_phase_for_velocity = self._orbit_phase
-
+        # Bass jitter overlays
         jitter_alpha, jitter_beta = self._compute_bass_jitter_offsets(event=event, dt=dt)
         treble_bump = float(self._intelligence.compute_treble_lift(0.0)) if self._treble_lift_enabled else 0.0
-        hat_bump = self._compute_hat_bounce_offset(event=event, dt=dt)
-        self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump + hat_bump, -0.30, 0.30))
+        self._reactive_bounce_y = float(np.clip(jitter_beta + treble_bump, -0.30, 0.30))
 
-        total_center_y = float(self._base_center_y + self._reactive_bounce_y)
-        orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
+        total_center_y = float(self._baseline_center_y + self._reactive_bounce_y)
 
-        # Old orbit position (for crossfade during swirl-in)
-        orbit_alpha = float(orbit_radius * np.cos(self._orbit_phase)) + float(jitter_alpha * 0.3)
-        orbit_beta = float(total_center_y + (orbit_radius * np.sin(self._orbit_phase)))
-
-        # ── Funscript idle-fill loop (ping-pong) ──
-        loop_alpha, loop_beta = self._sample_idle_loop(dt=dt)
         # Scale from normalized [0,1] to stroke-mapper coordinates:
         # alpha: centered at 0.0, range ±idle_gain
         # beta: centered at baseline_center_y, range ±idle_gain
         idle_gain = 0.15
-        mapped_alpha = float((loop_alpha - 0.5) * 2.0 * idle_gain) + float(jitter_alpha * 0.3)
-        mapped_beta = float(total_center_y + (loop_beta - 0.5) * 2.0 * idle_gain)
-
-        # ── Crossfade: orbit → idle loop as swirl completes ──
-        alpha = float(orbit_alpha + (mapped_alpha - orbit_alpha) * swirl_t)
-        beta = float(orbit_beta + (mapped_beta - orbit_beta) * swirl_t)
+        alpha = float((loop_alpha - 0.5) * 2.0 * idle_gain) + float(jitter_alpha * 0.3)
+        beta = float(total_center_y + (loop_beta - 0.5) * 2.0 * idle_gain)
 
         volume = float(np.clip(self.get_volume() * float(np.clip(fade, 0.0, 1.0)), 0.0, 1.0))
         return alpha, beta, volume

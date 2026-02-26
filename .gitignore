@@ -99,6 +99,7 @@ learned_profile_slots.json
 # Local debug captures / transient logs
 *.out.log
 *.err.log
+_tmp_*.py
 silence_live*.log
 silence_live*.out.log
 silence_live*.err.log
