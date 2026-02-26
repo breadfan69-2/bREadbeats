@@ -72,7 +72,6 @@ class StrokeMapper:
         self._last_phase_for_velocity = self._orbit_phase
         self._journey_target_radius = self._park_radius  # latched at journey start; never re-evaluated mid-arc
         self._orbit_phase_initialized = False  # True once orbit_phase has been actively tracked
-        self._journey_cold_start = True
         self._journey_linked = False
         self._hold_start_pose_until_reactive = False
         self._idle_loops_per_beat = 0.125
@@ -463,7 +462,6 @@ class StrokeMapper:
                     self._hold_start_pose_until_reactive = False
                 prior_completion = float(self._last_journey_completion)
                 self._journey_linked = bool(prior_completion < 0.999)
-                self._journey_cold_start = not self._journey_linked
 
                 self._journey_start_total_center_y = float(self._base_center_y + self._reactive_bounce_y)
 
@@ -609,47 +607,21 @@ class StrokeMapper:
                 # prediction flips never cause a radius discontinuity.
                 target_radius = self._journey_target_radius
 
-                if self._journey_cold_start:
-                    first_pass_progress = float(np.clip(
-                        (self._journey_total_rotation * progress) / (2.0 * np.pi),
-                        0.0,
-                        1.0,
-                    ))
-                    unhook_window = 0.40
-                    unhook_t = float(np.clip(first_pass_progress / unhook_window, 0.0, 1.0))
-                    # Quintic ease from *current* radius to target — eliminates
-                    # knee when new trigger geometry differs from the running orbit.
-                    radius_blend = self._quintic_ease(unhook_t)
-                    radius = float(
-                        self._journey_start_radius
-                        + ((target_radius - self._journey_start_radius) * radius_blend)
-                    )
-                else:
-                    # Linked journey: expand from latched start radius to
-                    # target over first portion of orbit for seamless hand-off.
-                    first_pass_progress = float(np.clip(
-                        (self._journey_total_rotation * progress) / (2.0 * np.pi),
-                        0.0,
-                        1.0,
-                    ))
-                    link_window = 0.40
-                    link_t = float(np.clip(first_pass_progress / link_window, 0.0, 1.0))
-                    link_blend = self._quintic_ease(link_t)
-                    radius = float(
-                        self._journey_start_radius
-                        + ((target_radius - self._journey_start_radius) * link_blend)
-                    )
+                # Quintic ease from start radius to target over first 40% of orbit
+                first_pass_progress = float(np.clip(
+                    (self._journey_total_rotation * progress) / (2.0 * np.pi),
+                    0.0,
+                    1.0,
+                ))
+                blend_window = 0.40
+                blend_t = float(np.clip(first_pass_progress / blend_window, 0.0, 1.0))
+                radius_blend = self._quintic_ease(blend_t)
+                radius = float(
+                    self._journey_start_radius
+                    + ((target_radius - self._journey_start_radius) * radius_blend)
+                )
 
-            if decision.trigger_kind == "start":
-                min_radius_bound = self._min_radius
-            elif self._journey_cold_start:
-                # Transitioning out of park / mid-decay:
-                # allow the orbit to start at its current small radius
-                # and expand gradually via cold-start ramp.
-                # Clamping to 0.70 here would teleport the device.
-                min_radius_bound = self._min_radius
-            else:
-                min_radius_bound = 0.70
+            min_radius_bound = self._min_radius
             self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
             
             # Whether from transition or journey, finalize radius for position calc
