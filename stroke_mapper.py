@@ -377,7 +377,11 @@ class StrokeMapper:
                     ))
                     ease_t = self._quintic_ease(raw_t)
                     if raw_t >= 1.0:
-                        # Nested decay complete — initialize orbit from target
+                        # Nested decay complete — initialize orbit and return
+                        # directly.  Do NOT fall through to orbit code because
+                        # _journey_* state is stale from before fill started;
+                        # using it overwrites our carefully-set phase/radius
+                        # with wrong values and produces small circles.
                         self._fill_exit_active = False
                         center_y = float(self._base_center_y + self._reactive_bounce_y)
                         inf_angle, inf_radius = self._infer_orbit_from_position(
@@ -390,9 +394,47 @@ class StrokeMapper:
                         self._last_phase_for_velocity = self._orbit_phase
                         self._angular_velocity = 0.0
                         self._orbit_phase_initialized = True
-                        self._smoothed_da = 0.0
-                        self._smoothed_db = 0.0
-                        # Fall through to orbit processing below
+
+                        # Re-initialize all journey state so the NEXT frame's
+                        # orbit code has correct values instead of stale ones.
+                        self._journey_start_angle = float(self._orbit_phase)
+                        self._journey_start_radius = float(self._actual_radius)
+                        self._journey_start_alpha = float(self._fill_exit_target_alpha)
+                        self._journey_start_beta = float(self._fill_exit_target_beta)
+                        self._journey_start_total_center_y = float(center_y)
+                        self._journey_linked = False
+                        self._journey_target_radius = float(self._actual_radius)
+                        self._journey_fixed_radius = float(self._actual_radius)
+                        self._journey_total_rotation = float(2.0 * np.pi)
+                        self._last_journey_completion = progress
+
+                        # Prime rate-limiter EMA with expected orbital velocity
+                        # so the output doesn't throttle on the first frames.
+                        _bpm_rl = 120.0
+                        if self.audio_engine is not None:
+                            _met_rl = float(getattr(self.audio_engine, "_metronome_bpm", 0.0) or 0.0)
+                            if _met_rl > 0:
+                                _bpm_rl = _met_rl
+                        _bpm_rl = float(np.clip(_bpm_rl, 40.0, 240.0))
+                        _omega = float(2.0 * np.pi * (_bpm_rl / 60.0) * self._idle_loops_per_beat)
+                        _dt_rl = max(dt, 1e-4)
+                        _dir = float(self._orbit_direction)
+                        self._smoothed_da = float(
+                            -self._actual_radius * np.sin(self._orbit_phase) * _omega * _dt_rl * _dir
+                        )
+                        self._smoothed_db = float(
+                            self._actual_radius * np.cos(self._orbit_phase) * _omega * _dt_rl * _dir
+                        )
+
+                        # Return target position directly — bypasses stale orbit code
+                        alpha = float(self._fill_exit_target_alpha)
+                        beta = float(self._fill_exit_target_beta)
+                        ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+                        volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
+                        self._hold_start_pose_until_reactive = False
+                        self.state.alpha = alpha
+                        self.state.beta = beta
+                        return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
                     else:
                         # Glide virtual center toward orbit target
                         vc_a = float(self._fill_exit_vc_alpha
@@ -541,7 +583,9 @@ class StrokeMapper:
                     # straight-line chase when rate limiter has lagged
                     self._resync_orbit_to_output()
                     self._journey_start_angle = float(self._orbit_phase)
-                    self._journey_start_radius = float(np.clip(self._actual_radius, self._min_radius, 1.0))
+                    self._journey_start_radius = float(np.clip(
+                        self._actual_radius, self._journey_park_radius, 1.0
+                    ))
                 else:
                     # First journey: infer from externally-set position
                     inherited_angle, inherited_radius = self._infer_orbit_from_position(
@@ -550,7 +594,9 @@ class StrokeMapper:
                         center_y=self._journey_start_total_center_y,
                     )
                     self._journey_start_angle = inherited_angle
-                    self._journey_start_radius = float(np.clip(inherited_radius, self._min_radius, 1.0))
+                    self._journey_start_radius = float(np.clip(
+                        inherited_radius, self._journey_park_radius, 1.0
+                    ))
                     self._orbit_phase = float(inherited_angle % (2.0 * np.pi))
                     self._orbit_phase_initialized = True
 
