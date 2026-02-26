@@ -44,8 +44,7 @@ class StrokeMapper:
         self.state = StrokeState()
         self._park_y = 0.20
         self._baseline_center_y = 0.20
-        self._min_radius = 0.05
-        self._park_idle_radius = 0.05  # tiny orbit when fully parked
+        self._min_radius = 0.05  # only used for fill-exit micro-orbit floor
         self._base_center_y = self._baseline_center_y
         self._reactive_bounce_y = 0.0
         self._journey_start_total_center_y = self._baseline_center_y
@@ -115,6 +114,8 @@ class StrokeMapper:
         self._fill_exit_micro_radius: float = 0.05  # initial micro-orbit radius
         self._fill_exit_micro_freq: float = 30.0    # initial micro-orbit frequency (Hz)
         self._fill_exit_micro_phase: float = 0.0    # micro-orbit phase accumulator
+        self._fill_exit_creep_streak: int = 0        # consecutive creep frames during exit
+        self._fill_exit_creep_cancel_threshold: int = 3  # need 3 consecutive creep frames to cancel
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
         self._last_decision = None      # latest BeatDecision (for keyboard teacher snapshot)
@@ -367,9 +368,15 @@ class StrokeMapper:
             # ── Fill-exit nested decay: micro-orbit around gliding virtual center ──
             if self._fill_exit_active:
                 if decision.trigger_kind == "creep":
-                    # Beat disappeared — cancel exit and resume fill
-                    self._fill_exit_active = False
+                    self._fill_exit_creep_streak += 1
+                    if self._fill_exit_creep_streak >= self._fill_exit_creep_cancel_threshold:
+                        # Sustained creep — cancel exit and resume fill
+                        self._fill_exit_active = False
+                        self._fill_exit_creep_streak = 0
                 else:
+                    self._fill_exit_creep_streak = 0
+
+                if self._fill_exit_active:
                     self._fill_exit_elapsed += dt
                     raw_t = float(np.clip(
                         self._fill_exit_elapsed / max(self._fill_exit_duration_s, 0.01),
@@ -390,7 +397,7 @@ class StrokeMapper:
                             center_y=center_y,
                         )
                         self._orbit_phase = float(inf_angle % (2.0 * np.pi))
-                        self._actual_radius = float(max(inf_radius, self._min_radius))
+                        self._actual_radius = float(max(inf_radius, self._park_radius))
                         self._last_phase_for_velocity = self._orbit_phase
                         self._angular_velocity = 0.0
                         self._orbit_phase_initialized = True
@@ -497,6 +504,7 @@ class StrokeMapper:
             if prev_trigger_kind == "creep" and not self._fill_exit_active:
                 self._fill_exit_active = True
                 self._fill_exit_elapsed = 0.0
+                self._fill_exit_creep_streak = 0
                 # Duration = 4 beats (clamped to reasonable BPM range)
                 _bpm = 120.0
                 if self.audio_engine is not None:
@@ -682,7 +690,7 @@ class StrokeMapper:
             # - Cold start: smoothstep from park -> max during first pass
             # - Linked beat: bypass park and lock to max immediately
             # - Continuation expected: allow controlled bloom up to 1.0
-            if decision.trigger_kind == "start":
+            if False and decision.trigger_kind == "start":  # DISABLED FOR TESTING
                 p = float(np.clip(progress, 0.0, 1.0))
                 radius = float(
                     self._journey_start_radius
@@ -708,7 +716,7 @@ class StrokeMapper:
                     + ((target_radius - self._journey_start_radius) * radius_blend)
                 )
 
-            min_radius_bound = self._min_radius
+            min_radius_bound = 0.80  # beat-journey minimum radius
             self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
             
             # Whether from transition or journey, finalize radius for position calc

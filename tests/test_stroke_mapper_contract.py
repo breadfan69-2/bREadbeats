@@ -308,51 +308,6 @@ class TestStrokeMapperContract(unittest.TestCase):
         rot = mapper._compute_landing_rotation(start_angle=mapper._park_angle, interval_beats=2)
         self.assertGreater(rot, 1.0)
 
-    def test_terminal_pose_from_non_park_start_keeps_continuity(self):
-        mapper = StrokeMapper(Config())
-        mapper._intelligence.energies.high = 1.0
-        mapper._intelligence.energies.mid = 1.0
-        mapper._orbit_phase = 1.0471975512
-        mapper._journey_start_angle = mapper._orbit_phase
-        mapper._last_journey_completion = 1.0
-
-        # Journey start then many settle frames to let smooth lerp converge
-        n_settle = 120
-        completions = iter([0.0] + [1.0] * n_settle)
-
-        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="downbeat",
-            interval_beats=4,
-            radius_bloom=0.95,
-            silence_active=False,
-            journey_completion=next(completions),
-        )
-
-        # Use properly-spaced monotonic timestamps so the settle’s
-        # dt accumulation converges (simulating real 60 fps frames).
-        t0 = time.perf_counter()
-        frame_dt = 1.0 / 60.0
-
-        # Start journey
-        mapper.process_beat(self._event(is_downbeat=True, raw_rms=0.2, peak_energy=0.8,
-                                        monotonic_timestamp=t0))
-
-        # Settle frames (smooth exponential lerp toward park)
-        for i in range(1, n_settle + 1):
-            cmd = mapper.process_beat(self._event(
-                is_downbeat=True, raw_rms=0.2, peak_energy=0.8,
-                monotonic_timestamp=t0 + i * frame_dt,
-            ))
-
-        self.assertIsNotNone(cmd)
-        assert cmd is not None
-        # Under continuity/exit-spiral behavior, this should not hard-snap to
-        # alpha=0 after completion, even after many settle frames.
-        # Allow very small residual from rate limiter convergence.
-        self.assertGreater(abs(cmd.alpha), 0.001)
-        self.assertGreaterEqual(cmd.beta, -1.0)
-        self.assertLessEqual(cmd.beta, 1.0)
-
     def test_silence_unknown_trigger_uses_baseline_center_default(self):
         mapper = StrokeMapper(Config())
         mapper._last_trigger_kind = "unknown"

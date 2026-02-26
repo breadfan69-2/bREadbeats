@@ -1587,33 +1587,10 @@ class BeatIntelligence:
             self._auto_fill_offsets = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
             self._auto_fill_ema = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
 
+        # DISABLED FOR TESTING: "start" recovery path bypassed —
+        # fall through to normal gate chain instead.
         if self.is_recovering and not silence_active:
-            trigger_kind = "start"
-            interval_beats = 8
-            radius_bloom = float(self._recovery_radius_bloom)
-            journey_completion = self.update_journey_progress(
-                trigger_kind,
-                interval_beats,
-                event,
-                dt,
-                force_start=recovery_start,
-            )
-            if journey_completion <= 1e-9:
-                self.active_interval_beats = interval_beats
-                self.last_trigger_kind = trigger_kind
-            return BeatDecision(
-                trigger_kind=trigger_kind,
-                interval_beats=interval_beats,
-                radius_bloom=radius_bloom,
-                silence_active=False,
-                journey_completion=journey_completion,
-                silence_fade=float(silence_fade),
-                post_silence_ramp=float(post_silence_ramp),
-                lazy_glide_active=False,
-                energy_fullness=energy_fullness_now,
-                session_intensity=session_intensity,
-                learning=LearningOutputs(),
-            )
+            self.is_recovering = False
 
         # Phase 5: learning adapter
         learning = self._update_learning_adapter(event)
