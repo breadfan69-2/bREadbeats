@@ -216,8 +216,12 @@ class StrokeMapper:
         cap is isotropic.  Per-axis clamping would allow √2× faster
         diagonal movement, distorting circular orbits into squares.
         """
-        max_delta_per_s = 3.5
-        max_delta_per_frame = 0.06  # absolute safety ceiling per frame
+        # Beat-journey orbits require high velocity: at 180 BPM, r=1.0,
+        # the orbital speed is 2π×3 ≈ 18.85 units/s.  Previous value
+        # (3.5) forced the output to a tiny circle because the rate
+        # limiter couldn't keep up with beat-speed angular velocity.
+        max_delta_per_s = 20.0
+        max_delta_per_frame = 0.50  # safety ceiling; 180 BPM r=1.0 @ 40fps ≈ 0.47
         max_delta = float(min(max_delta_per_s * max(dt, 1e-4), max_delta_per_frame))
 
         prev_a = float(self.state.alpha)
@@ -676,7 +680,12 @@ class StrokeMapper:
                     bpm_for_terminal = float(getattr(event, "bpm", 0.0) or 0.0)
                 bpm_for_terminal = float(np.clip(bpm_for_terminal if bpm_for_terminal > 0.0 else 120.0, 40.0, 240.0))
                 fallback_terminal_speed = float((2.0 * np.pi) * (bpm_for_terminal / 60.0) * self._idle_loops_per_beat)
-                terminal_speed = float(max(abs(self._angular_velocity), fallback_terminal_speed, 0.8))
+                # Use the BPM-derived idle orbit speed — NOT the journey's
+                # angular velocity.  Journey velocity can be 10-25 rad/s
+                # (one turn per beat), which overwhelms the rate limiter
+                # and forces the output to trace a tiny circle (~0.40 r)
+                # instead of the intended 0.80+ radius orbit.
+                terminal_speed = float(max(fallback_terminal_speed, 0.8))
                 angle = float(self._orbit_phase + (terminal_speed * dt * float(self._orbit_direction)))
 
             self._orbit_phase = float(angle % (2.0 * np.pi))
