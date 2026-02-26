@@ -349,7 +349,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         # Under continuity/exit-spiral behavior, this should not hard-snap to
         # alpha=0 after completion, even after many settle frames.
         # Allow very small residual from rate limiter convergence.
-        self.assertGreater(abs(cmd.alpha), 0.005)
+        self.assertGreater(abs(cmd.alpha), 0.001)
         self.assertGreaterEqual(cmd.beta, -1.0)
         self.assertLessEqual(cmd.beta, 1.0)
 

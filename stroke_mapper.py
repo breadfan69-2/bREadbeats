@@ -74,10 +74,6 @@ class StrokeMapper:
         self._orbit_phase_initialized = False  # True once orbit_phase has been actively tracked
         self._journey_cold_start = True
         self._journey_linked = False
-        self._startup_ramp_beats = 6.0
-        self._startup_beats_seen = 0.0
-        self._post_silence_radius_ramp = 1.0   # 0→1 over first beats after silence
-        self._post_silence_radius_floor = 0.12 # start radius fraction after silence
         self._hold_start_pose_until_reactive = False
         self._idle_loops_per_beat = 0.125
 
@@ -112,7 +108,8 @@ class StrokeMapper:
         # Precompute fill center in output space (oscillation collapse target)
         _fc_wobble = float(np.mean(self._idle_loop_beta))   # wobble data → X axis
         _fc_sweep = float(np.mean(self._idle_loop_alpha))   # sweep data → -Y axis
-        self._fill_center_out_alpha: float = float(_fc_wobble * 2.0 - 1.0)
+        self._fill_x_bias: float = float(_fc_wobble * 2.0 - 1.0)  # subtract to center fill on X=0
+        self._fill_center_out_alpha: float = 0.0  # fill collapses toward X=0
         self._fill_center_out_beta: float = float(-(_fc_sweep * 2.0 - 1.0))
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
@@ -351,8 +348,6 @@ class StrokeMapper:
         if decision.silence_active:
             # ── Silent-still-park: hold position, fade volume, reset momentum ──
             self._hold_start_pose_until_reactive = False
-            self._startup_beats_seen = 0.0
-            self._post_silence_radius_ramp = 0.0
             self._anchor_phrase_locked = False
             self._angular_velocity = 0.0
             self._fill_exit_active = False  # cancel fill exit on silence
@@ -452,7 +447,7 @@ class StrokeMapper:
                     if _met > 0:
                         _bpm = _met
                 _bpm = float(np.clip(_bpm, 40.0, 240.0))
-                self._fill_exit_duration_s = 60.0 / _bpm
+                self._fill_exit_duration_s = (60.0 / _bpm) * 4.0  # 4 beats
                 # First exit frame at t=0 (full fill, no decay yet)
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 alpha, beta, volume = self._apply_park_motion_frame(dt=dt, fade=ramp, exit_blend=0.0)
@@ -524,22 +519,6 @@ class StrokeMapper:
                     start_angle=self._journey_start_angle,
                     interval_beats=decision.interval_beats,
                 )
-                if self._startup_beats_seen < self._startup_ramp_beats:
-                    startup_ratio = float(np.clip(
-                        self._startup_beats_seen / max(self._startup_ramp_beats, 1e-6),
-                        0.0,
-                        1.0,
-                    ))
-                    # Post-silence radius ramp: quintic ease from floor to full
-                    ramp_t = self._quintic_ease(startup_ratio)
-                    self._post_silence_radius_ramp = float(
-                        self._post_silence_radius_floor
-                        + ((1.0 - self._post_silence_radius_floor) * ramp_t)
-                    )
-                    self._startup_beats_seen += 1.0
-                else:
-                    self._post_silence_radius_ramp = 1.0
-
             # Use latched geometry while a journey is in-flight.
             # Only refresh from live trigger kind when fully parked.
             if (progress < 1.0) or (self._last_journey_completion < 1.0):
@@ -573,15 +552,6 @@ class StrokeMapper:
             bloom_target_radius = float(type_park_radius + ((type_bloom - type_park_radius) * learning_mult))
             bloom_target_radius = float(np.clip(bloom_target_radius, type_park_radius, type_max_radius))
 
-            # Post-silence slow takeoff: scale bloom target down during ramp period
-            # so the orbit starts close to park and gently expands over several beats
-            radius_ramp = float(np.clip(self._post_silence_radius_ramp, 0.0, 1.0))
-            if radius_ramp < 1.0:
-                ramp_park = float(self._park_idle_radius)
-                bloom_target_radius = float(
-                    ramp_park + ((bloom_target_radius - ramp_park) * radius_ramp)
-                )
-
             if started_new_journey:
                 self._journey_fixed_radius = bloom_target_radius
                 self._journey_latched_bloom = float(decision.radius_bloom)
@@ -602,14 +572,6 @@ class StrokeMapper:
                     ))
                 else:
                     self._journey_target_radius = type_max_radius
-
-                # During post-silence ramp, cap target radius to the
-                # ramp-scaled bloom so the orbit can't leap to full size
-                # before the slow-ramp period has expired.
-                if self._post_silence_radius_ramp < 1.0:
-                    self._journey_target_radius = float(
-                        min(self._journey_target_radius, bloom_target_radius)
-                    )
 
                 self._actual_radius = self._journey_start_radius
 
@@ -653,14 +615,7 @@ class StrokeMapper:
                         0.0,
                         1.0,
                     ))
-                    # During post-silence ramp, widen the unhook window
-                    # so radius expands over the full orbit instead of the
-                    # first 40%.  This prevents a sudden radius pop when
-                    # the first real beat fires after silence.
-                    if self._post_silence_radius_ramp < 1.0:
-                        unhook_window = 0.90
-                    else:
-                        unhook_window = 0.40
+                    unhook_window = 0.40
                     unhook_t = float(np.clip(first_pass_progress / unhook_window, 0.0, 1.0))
                     # Quintic ease from *current* radius to target — eliminates
                     # knee when new trigger geometry differs from the running orbit.
@@ -677,12 +632,7 @@ class StrokeMapper:
                         0.0,
                         1.0,
                     ))
-                    # During post-silence ramp, use a wider window so
-                    # linked journeys also expand gradually.
-                    if self._post_silence_radius_ramp < 1.0:
-                        link_window = 0.90
-                    else:
-                        link_window = 0.40
+                    link_window = 0.40
                     link_t = float(np.clip(first_pass_progress / link_window, 0.0, 1.0))
                     link_blend = self._quintic_ease(link_t)
                     radius = float(
@@ -692,9 +642,8 @@ class StrokeMapper:
 
             if decision.trigger_kind == "start":
                 min_radius_bound = self._min_radius
-            elif (self._post_silence_radius_ramp < 1.0
-                  or self._journey_cold_start):
-                # Transitioning out of park / silence / mid-decay:
+            elif self._journey_cold_start:
+                # Transitioning out of park / mid-decay:
                 # allow the orbit to start at its current small radius
                 # and expand gradually via cold-start ramp.
                 # Clamping to 0.70 here would teleport the device.
@@ -899,7 +848,8 @@ class StrokeMapper:
 
         # Map normalized [0,1] loop data to [-1, 1] output range
         # Sweep (big range) → -Y axis (beta), wobble → X axis (alpha)
-        alpha = float(loop_beta * 2.0 - 1.0)
+        # Subtract X bias so fill pattern is centered on X=0, then scale to 50%
+        alpha = float((loop_beta * 2.0 - 1.0 - self._fill_x_bias) * 0.5)
         beta = float(-(loop_alpha * 2.0 - 1.0))
 
         # During exit: collapse oscillation toward fill center
