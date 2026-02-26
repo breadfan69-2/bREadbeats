@@ -100,6 +100,20 @@ class StrokeMapper:
         self._idle_loop_phase: float = 0.0       # continuous sample counter
         self._idle_loop_rate_hz: float = 30.0    # samples per second
 
+        # ── Fill minimum dwell: stay in fill for at least 1 measure ──
+        self._fill_enter_time: float = 0.0      # monotonic time fill mode started
+        self._fill_min_beats: int = 4            # minimum beats before exit allowed
+
+        # ── Fill-exit transition: quintic wind-down from fill → orbit ──
+        self._fill_exit_active: bool = False
+        self._fill_exit_elapsed: float = 0.0
+        self._fill_exit_duration_s: float = 0.5  # recomputed from BPM at transition start
+        # Precompute fill center in output space (oscillation collapse target)
+        _fc_wobble = float(np.mean(self._idle_loop_beta))   # wobble data → X axis
+        _fc_sweep = float(np.mean(self._idle_loop_alpha))   # sweep data → -Y axis
+        self._fill_center_out_alpha: float = float(_fc_wobble * 2.0 - 1.0)
+        self._fill_center_out_beta: float = float(-(_fc_sweep * 2.0 - 1.0))
+
         # Bass-reactive jitter state (applied during fill)
         self._bass_jitter_phase = 0.0
         self._bass_jitter_freq_ema = 0.5
@@ -281,6 +295,7 @@ class StrokeMapper:
         self._intelligence.set_audio_engine(self.audio_engine)
         decision = self._intelligence.build_decision(event=event, dt=dt)
 
+        prev_trigger_kind = self._last_trigger_kind
         self._last_trigger_kind = decision.trigger_kind
         self._last_gate_fail = str(getattr(decision, "gate_fail", "") or "")
         self._last_decision = decision
@@ -343,6 +358,7 @@ class StrokeMapper:
             self._post_silence_radius_ramp = 0.0
             self._anchor_phrase_locked = False
             self._angular_velocity = 0.0
+            self._fill_exit_active = False  # cancel fill exit on silence
 
             fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
             alpha = float(self.state.alpha)
@@ -352,16 +368,99 @@ class StrokeMapper:
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
 
+            # ── Fill-exit wind-down: decelerating fill → orbit ──
+            # When leaving fill, the 30Hz spin decelerates and oscillation
+            # collapses to fill center over 1 beat (quintic eased).
+            if self._fill_exit_active:
+                if decision.trigger_kind == "creep":
+                    # Beat disappeared — cancel exit and resume fill
+                    self._fill_exit_active = False
+                else:
+                    self._fill_exit_elapsed += dt
+                    raw_t = float(np.clip(
+                        self._fill_exit_elapsed / max(self._fill_exit_duration_s, 0.01),
+                        0.0, 1.0,
+                    ))
+                    t = self._quintic_ease(raw_t)
+                    if raw_t >= 1.0:
+                        # Fill exit complete — initialize orbit from fill center
+                        self._fill_exit_active = False
+                        center_y = float(self._base_center_y + self._reactive_bounce_y)
+                        inf_angle, inf_radius = self._infer_orbit_from_position(
+                            alpha=self.state.alpha, beta=self.state.beta, center_y=center_y,
+                        )
+                        self._orbit_phase = float(inf_angle % (2.0 * np.pi))
+                        self._actual_radius = float(max(inf_radius, self._min_radius))
+                        self._last_phase_for_velocity = self._orbit_phase
+                        self._angular_velocity = 0.0
+                        self._orbit_phase_initialized = True
+                        self._smoothed_da = 0.0
+                        self._smoothed_db = 0.0
+                        # Fall through to orbit processing below
+                    else:
+                        ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+                        alpha, beta, volume = self._apply_park_motion_frame(
+                            dt=dt, fade=ramp, exit_blend=t,
+                        )
+                        self._last_journey_completion = 1.0
+                        self._hold_start_pose_until_reactive = False
+                        self.state.alpha = alpha
+                        self.state.beta = beta
+                        return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+
             # ── Funscript fill: plays when trigger_kind == "creep" ──
             # The baked loop IS the motion — no orbit, no rate limiter,
             # no modifiers.  Raw sample values go straight to output.
-            if decision.trigger_kind == "creep":
+            # ── Fill minimum dwell: enforce 1 measure before exit ──
+            # If we just left fill but haven't stayed long enough,
+            # override trigger back to creep and keep playing fill.
+            _in_fill_dwell = False
+            if prev_trigger_kind == "creep" and decision.trigger_kind != "creep" and not self._fill_exit_active:
+                _bpm_dwell = 120.0
+                if self.audio_engine is not None:
+                    _met_dwell = float(getattr(self.audio_engine, "_metronome_bpm", 0.0) or 0.0)
+                    if _met_dwell > 0:
+                        _bpm_dwell = _met_dwell
+                _bpm_dwell = float(np.clip(_bpm_dwell, 40.0, 240.0))
+                _measure_s = (60.0 / _bpm_dwell) * self._fill_min_beats
+                if (now - self._fill_enter_time) < _measure_s:
+                    _in_fill_dwell = True
+
+            if decision.trigger_kind == "creep" or _in_fill_dwell:
+                if prev_trigger_kind != "creep" and not _in_fill_dwell:
+                    self._fill_enter_time = now  # record when fill started
+                if _in_fill_dwell:
+                    # Override last_trigger so next frame still sees
+                    # prev_trigger_kind == "creep" for dwell check
+                    self._last_trigger_kind = "creep"
+                self._fill_exit_active = False  # cancel any pending exit
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 alpha, beta, volume = self._apply_park_motion_frame(dt=dt, fade=ramp)
                 self._last_journey_completion = 1.0
                 self._hold_start_pose_until_reactive = False
                 # Direct output — bypass rate limiter so the fill pattern
                 # is not suppressed by the orbital velocity EMA.
+                self.state.alpha = alpha
+                self.state.beta = beta
+                return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+
+            # ── Detect fill → orbit transition: start wind-down ──
+            if prev_trigger_kind == "creep" and not self._fill_exit_active:
+                self._fill_exit_active = True
+                self._fill_exit_elapsed = 0.0
+                # Duration = 1 beat period (clamped to reasonable range)
+                _bpm = 120.0
+                if self.audio_engine is not None:
+                    _met = float(getattr(self.audio_engine, "_metronome_bpm", 0.0) or 0.0)
+                    if _met > 0:
+                        _bpm = _met
+                _bpm = float(np.clip(_bpm, 40.0, 240.0))
+                self._fill_exit_duration_s = 60.0 / _bpm
+                # First exit frame at t=0 (full fill, no decay yet)
+                ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+                alpha, beta, volume = self._apply_park_motion_frame(dt=dt, fade=ramp, exit_blend=0.0)
+                self._last_journey_completion = 1.0
+                self._hold_start_pose_until_reactive = False
                 self.state.alpha = alpha
                 self.state.beta = beta
                 return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
@@ -819,19 +918,33 @@ class StrokeMapper:
             self._actual_radius = float(inferred_r)
             self._last_phase_for_velocity = self._orbit_phase
 
-    def _apply_park_motion_frame(self, dt: float, fade: float) -> tuple[float, float, float]:
+    def _apply_park_motion_frame(self, dt: float, fade: float, exit_blend: float = 0.0) -> tuple[float, float, float]:
         """Funscript idle-fill: raw baked loop, no modifiers.
 
         Plays the 45-sample ping-pong pattern at native amplitude.
-        No jitter, no center offset, no gain scaling — the pattern
-        data IS the output.  Coordinates are mapped to [-1, 1].
+        During fill exit (exit_blend > 0): playback rate decelerates
+        and oscillation amplitude collapses toward fill center via
+        quintic easing, creating a smooth wind-down before orbit.
         """
+        # During exit: decelerate playback rate proportionally
+        rate_mult = 1.0 - exit_blend
+        saved_rate = self._idle_loop_rate_hz
+        self._idle_loop_rate_hz = saved_rate * rate_mult
+
         loop_alpha, loop_beta = self._sample_idle_loop(dt=dt)
+
+        self._idle_loop_rate_hz = saved_rate  # restore native rate
 
         # Map normalized [0,1] loop data to [-1, 1] output range
         # Sweep (big range) → -Y axis (beta), wobble → X axis (alpha)
         alpha = float(loop_beta * 2.0 - 1.0)
         beta = float(-(loop_alpha * 2.0 - 1.0))
+
+        # During exit: collapse oscillation toward fill center
+        if exit_blend > 0.0:
+            inv = 1.0 - exit_blend
+            alpha = float(self._fill_center_out_alpha + (alpha - self._fill_center_out_alpha) * inv)
+            beta = float(self._fill_center_out_beta + (beta - self._fill_center_out_beta) * inv)
 
         volume = float(np.clip(self.get_volume() * float(np.clip(fade, 0.0, 1.0)), 0.0, 1.0))
         return alpha, beta, volume

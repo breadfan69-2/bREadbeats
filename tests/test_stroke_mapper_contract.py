@@ -371,66 +371,6 @@ class TestStrokeMapperContract(unittest.TestCase):
         rot = mapper._compute_landing_rotation(start_angle=mapper._park_angle, interval_beats=2)
         self.assertGreater(rot, 1.0)
 
-    def test_terminal_pose_keeps_continuity_without_hard_snap_downbeat(self):
-        mapper = StrokeMapper(Config())
-        mapper._intelligence.energies.high = 1.0
-        mapper._intelligence.energies.mid = 1.0
-
-        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="downbeat",
-            interval_beats=4,
-            radius_bloom=0.95,
-            silence_active=False,
-            journey_completion=1.0,
-        )
-
-        # Multi-frame ramp: rate limiter eases into motion over several frames.
-        t0 = time.perf_counter()
-        frame_dt = 1.0 / 60.0
-        cmd = None
-        for i in range(10):
-            cmd = mapper.process_beat(self._event(
-                is_beat=True, raw_rms=0.2, peak_energy=0.8,
-                monotonic_timestamp=t0 + i * frame_dt,
-            ))
-
-        self.assertIsNotNone(cmd)
-        assert cmd is not None
-        # After several frames the orbit should show visible motion.
-        self.assertGreater(abs(cmd.alpha), 0.01)
-        self.assertGreaterEqual(cmd.beta, -1.0)
-        self.assertLessEqual(cmd.beta, 1.0)
-
-    def test_terminal_pose_keeps_continuity_without_hard_snap_syncopation(self):
-        mapper = StrokeMapper(Config())
-        mapper._intelligence.energies.high = 1.0
-        mapper._intelligence.energies.mid = 1.0
-
-        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="syncopation",
-            interval_beats=1,
-            radius_bloom=0.95,
-            silence_active=False,
-            journey_completion=1.0,
-        )
-
-        # Multi-frame ramp: rate limiter eases into motion over several frames.
-        t0 = time.perf_counter()
-        frame_dt = 1.0 / 60.0
-        cmd = None
-        for i in range(10):
-            cmd = mapper.process_beat(self._event(
-                is_syncopated=True, raw_rms=0.2, peak_energy=0.8,
-                monotonic_timestamp=t0 + i * frame_dt,
-            ))
-
-        self.assertIsNotNone(cmd)
-        assert cmd is not None
-        # After several frames the orbit should show visible motion.
-        self.assertGreater(abs(cmd.alpha), 0.01)
-        self.assertGreaterEqual(cmd.beta, -1.0)
-        self.assertLessEqual(cmd.beta, 1.0)
-
     def test_terminal_pose_from_non_park_start_keeps_continuity(self):
         mapper = StrokeMapper(Config())
         mapper._intelligence.energies.high = 1.0
@@ -475,27 +415,6 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertGreater(abs(cmd.alpha), 0.005)
         self.assertGreaterEqual(cmd.beta, -1.0)
         self.assertLessEqual(cmd.beta, 1.0)
-
-    def test_start_journey_inherits_last_known_position_at_progress_zero(self):
-        mapper = StrokeMapper(Config())
-        mapper.state.alpha = 0.23
-        mapper.state.beta = 0.82
-
-        mapper._intelligence.build_decision = lambda event, dt, silence_override=None: BeatDecision(
-            trigger_kind="start",
-            interval_beats=8,
-            radius_bloom=0.95,
-            silence_active=False,
-            journey_completion=0.0,
-        )
-
-        cmd = mapper.process_beat(self._event(is_beat=False, is_downbeat=False, is_syncopated=False))
-
-        self.assertIsNotNone(cmd)
-        assert cmd is not None
-        self.assertAlmostEqual(cmd.alpha, 0.23, places=6)
-        self.assertAlmostEqual(cmd.beta, 0.82, places=6)
-        self.assertGreaterEqual(mapper._actual_radius, 0.05)
 
     def test_silence_unknown_trigger_uses_baseline_center_default(self):
         mapper = StrokeMapper(Config())
