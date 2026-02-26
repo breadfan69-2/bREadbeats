@@ -36,8 +36,8 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QSlider, QComboBox, QPushButton, QCheckBox,
-    QSpinBox, QDoubleSpinBox, QLineEdit, QFrame,
-    QGridLayout, QMenuBar, QMenu, QMessageBox,
+    QSpinBox, QDoubleSpinBox, QLineEdit,
+    QGridLayout, QMenu, QMessageBox,
     QSplashScreen, QScrollArea, QInputDialog, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF, QEvent
@@ -51,17 +51,15 @@ pg.setConfigOptions(antialias=False, useOpenGL=False)  # Disable for compatibili
 from config import (
     BEAT_RANGE_LIMITS,
     BeatDetectionType,
-    Config,
     StrokeMode,
 )
 from logging_utils import get_log_level, log_event, set_log_level
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
-from command_wiring import attach_cached_tcode_values, apply_volume_ramp
+from command_wiring import apply_volume_ramp
 from close_persist_wiring import persist_runtime_ui_to_config
 from config_facade import (
-    get_config_dir,
     load_config,
     save_config,
 )
@@ -82,10 +80,6 @@ from version import __version__
 print(f"[Startup] main.py imports ready (+{(time.perf_counter()-_import_t0)*1000:.0f} ms)", flush=True)
 
 
-def _track_slider_value(name: str, value: float) -> None:
-    return
-
-
 _CHILD_PROCESSES: set[subprocess.Popen] = set()
 _CHILD_PROCESSES_LOCK = threading.Lock()
 
@@ -101,19 +95,6 @@ def _cleanup_child_processes() -> None:
                 proc.terminate()
         except Exception:
             pass
-
-
-def _spawn_background_process(args: list[str]) -> subprocess.Popen | None:
-    popen_kwargs: dict = {"shell": False}
-    if os.name == 'nt':
-        popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    try:
-        proc = subprocess.Popen(args, **popen_kwargs)
-        with _CHILD_PROCESSES_LOCK:
-            _CHILD_PROCESSES.add(proc)
-        return proc
-    except Exception:
-        return None
 
 
 class _SingleInstanceLock:
@@ -220,10 +201,6 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
         """Compatibility no-op for shared visualizer interfaces."""
         pass
 
-    def set_range_indicators_visible(self, visible: bool):
-        """Compatibility no-op for shared visualizer interfaces."""
-        pass
-
     def update_from_spectrum(self, spectrum: np.ndarray, sample_rate: int):
         """Render exact incoming FFT bins without bin interpolation/merging."""
         if spectrum is None:
@@ -244,10 +221,6 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
 
         if self._bar_item is not None:
             self._bar_item.setOpts(height=heights, y0=self._bar_floor)
-
-    def update_spectrum(self, spectrum: np.ndarray, peak_energy: Optional[float] = None, spectral_flux: Optional[float] = None):
-        """Compatibility wrapper for callers that use update_spectrum."""
-        self.update_from_spectrum(spectrum, 44100)
 
     def show_fill_ratio_ghost(self, key: str, ratio: float, label: str, color: str = '#66E0FF', duration_s: float = 5.0, dashed: bool = True) -> None:
         """Show temporary dB-threshold line from fill ratio using live FFT peak reference."""
@@ -749,9 +722,6 @@ class RangeSliderWithLabel(QWidget):
     
     def _on_change(self, low: float, high: float):
         self.value_label.setText(f"{low:.{self.decimals}f}-{high:.{self.decimals}f}")
-        base_name = self.label.text()
-        _track_slider_value(f"{base_name} [low]", low)
-        _track_slider_value(f"{base_name} [high]", high)
         self.rangeChanged.emit(low, high)
     
     def low(self) -> float:
@@ -821,7 +791,6 @@ class SliderWithLabel(QWidget):
         real_value = value / self.multiplier
         self._last_value = real_value
         self.value_label.setText(f"{real_value:.{self.decimals}f}")
-        _track_slider_value(self.label.text(), real_value)
         self.valueChanged.emit(real_value)
         
     def value(self) -> float:
@@ -837,56 +806,6 @@ class SliderWithLabel(QWidget):
             self.slider.setValue(int(value * self.multiplier))
         except RuntimeError:
             return
-
-
-class TrafficLightWidget(QWidget):
-    """
-    Horizontal traffic light indicator for metric auto-range state:
-    - Red = any metric actively ADJUSTING (hunting for good values)
-    - Yellow = metrics SETTLED (some stable, some adjusting)
-    - Green = all active metrics LOCKED (stable for N consecutive checks)
-    All lights off when no metrics are enabled.
-    """
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(54, 18)  # 3 circles of 14px diameter + spacing
-        self._green_on = False
-        self._yellow_on = False
-        self._red_on = False
-        
-    def set_state(self, green: bool, yellow: bool, red: bool):
-        """Set which lights are on"""
-        self._green_on = green
-        self._yellow_on = yellow
-        self._red_on = red
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        # Draw 3 circles: Green, Yellow, Red (left to right)
-        colors = [
-            (self._green_on, QColor(0, 200, 0), QColor(0, 60, 0)),      # Green
-            (self._yellow_on, QColor(255, 200, 0), QColor(80, 60, 0)),  # Yellow
-            (self._red_on, QColor(255, 50, 50), QColor(80, 20, 20)),    # Red
-        ]
-        
-        for i, (is_on, on_color, off_color) in enumerate(colors):
-            x = 2 + i * 18  # 18px spacing between circles
-            y = 2
-            diameter = 14
-            
-            # Draw circle
-            painter.setPen(QPen(QColor(60, 60, 60), 1))
-            if is_on:
-                painter.setBrush(QBrush(on_color))
-            else:
-                painter.setBrush(QBrush(off_color))
-            painter.drawEllipse(x, y, diameter, diameter)
-        
-        painter.end()
 
 
 class CollapsibleGroupBox(QGroupBox):
@@ -1141,9 +1060,6 @@ class WaveformLiveCanvas(pg.PlotWidget):
         self.setXRange(0.0, x_max)
 
     def set_peak_indicators_visible(self, visible: bool):
-        return
-
-    def set_range_indicators_visible(self, visible: bool):
         return
 
 
@@ -1462,10 +1378,6 @@ class FrequencyDbLiveCanvas(pg.PlotWidget):
     def set_peak_indicators_visible(self, visible: bool):
         return
 
-    def set_range_indicators_visible(self, visible: bool):
-        for region in (self.beat_band, self.depth_band, self.p0_band, self.f0_band):
-            region.setVisible(visible)
-
 
 class BREadbeatsWindow(QMainWindow):
     """Main application window"""
@@ -1523,7 +1435,6 @@ class BREadbeatsWindow(QMainWindow):
         
         # Initialize optional UI state
         self._dry_run_enabled = bool(getattr(self.config.device_limits, 'dry_run', False))
-        self._advanced_controls_dialog = None
         self._advanced_flux_threshold_slider = None
         self._advanced_flux_scaling_slider = None
         self._advanced_controls_scroll = None
@@ -1532,11 +1443,8 @@ class BREadbeatsWindow(QMainWindow):
         self._beat_detection_popout_content = None
         self._pulse_settings_dialog = None
         self._pulse_settings_popout_content = None
-        self._tempo_tracking_dialog = None
         self._tempo_tracking_popout_content = None
-        self._auto_fill_controls_dialog = None
         self._auto_fill_controls_widgets = {}
-        self._motion_readiness_dialog = None
         self._motion_settings_dialog = None
         self._developer_controls_dialog = None
         self._developer_controls_tab_widget = None
@@ -1544,7 +1452,6 @@ class BREadbeatsWindow(QMainWindow):
         self._developer_controls_unlocked = False
         self._trigger_settings_tab_content = None
         self._auto_fill_tab_content = None
-        self._motion_readiness_tab_content = None
         self.jitter_effect_action = None
         self.connection_toggle_action = None
         self.connection_test_action = None
@@ -1583,8 +1490,6 @@ class BREadbeatsWindow(QMainWindow):
         self._viz_flux_ref: float = 0.02
         
         # Cached P0/F0 values for thread-safe access (written by audio thread, read by GUI + send_direct)
-        self._cached_p0_val: Optional[int] = None  # Last computed P0 TCode value
-        self._cached_f0_val: Optional[int] = None  # Last computed F0 TCode value
         self._cached_p0_enabled: bool = False
         self._cached_f0_enabled: bool = False
         self._cached_pulse_mode: int = 0  # 0=Hz, 1=Speed
@@ -1604,7 +1509,6 @@ class BREadbeatsWindow(QMainWindow):
         
         # P1 (Pulse Width) cached state
         self._cached_p1_enabled: bool = False
-        self._cached_p1_val: Optional[int] = None
         self._cached_p1_mode: int = 0  # 0=Volume(RMS), 1=Hz, 2=Speed
         self._cached_p1_invert: bool = False
         self._cached_p1_display: str = "Pulse Width: off"
@@ -1614,7 +1518,6 @@ class BREadbeatsWindow(QMainWindow):
         
         # P3 (Rise Time) cached state
         self._cached_p3_enabled: bool = False
-        self._cached_p3_val: Optional[int] = None
         self._cached_p3_mode: int = 0  # 0=Brightness(centroid), 1=Hz, 2=Speed
         self._cached_p3_invert: bool = False
         self._cached_p3_display: str = "Rise Time: off"
@@ -1629,14 +1532,11 @@ class BREadbeatsWindow(QMainWindow):
         self._p1_window: deque = deque()       # (timestamp, norm_weighted) tuples for Pulse Width
         self._p3_window: deque = deque()       # (timestamp, norm_weighted) tuples for Rise Time
         self._freq_window_ms: float = 80.0  # Window size in milliseconds
-        self._p0_last_send_time: float = 0.0  # For throttling P0 sends
-        self._f0_last_send_time: float = 0.0  # For throttling F0 sends
         self._f0_last_sent_tcode: Optional[int] = None  # Last F0 tcode value sent (for smoothing)
         self._f0_duration_base_ms: float = 220.0  # Base F0 duration (ms)
         # C0 Band mode rate limiter: fast travel for low-latency response
         self._c0_band_target: Optional[int] = None   # Current target tcode for band mode
         self._c0_band_current: Optional[int] = None   # Current sent tcode value (traveling)
-        self._c0_band_last_target_time: float = 0.0   # When last target was set
         self._c0_band_travel_rate: float = 1200.0      # Max tcode change per second
         self._c0_band_max_target_delta: int = 1800     # Max target jump accepted per retarget
         self._f0_duration_variance_ms: float = 40.0   # ±variance for random duration
@@ -1656,13 +1556,9 @@ class BREadbeatsWindow(QMainWindow):
         self._last_sent_volume_pct: float = 0.0
         
         # Advanced controls dialog singleton reference
-        self._advanced_controls_dialog = None
         self._advanced_flux_threshold_slider = None
         self._advanced_flux_scaling_slider = None
-        self._tempo_tracking_dialog = None
-        self._auto_fill_controls_dialog = None
         self._auto_fill_controls_widgets = {}
-        self._motion_readiness_dialog = None
         self._motion_settings_tab_widget = None
         self._developer_controls_dialog = None
         self._developer_controls_tab_widget = None
@@ -1670,10 +1566,6 @@ class BREadbeatsWindow(QMainWindow):
         self._developer_controls_unlocked = False
         self._trigger_settings_tab_content = None
         self._auto_fill_tab_content = None
-        self._motion_readiness_tab_content = None
-        
-        # Auto-align target BPM tracking (wall-clock time-based)
-        self._last_sensed_bpm: float = 0.0
         
         # State
         self.is_running = False
@@ -2603,9 +2495,8 @@ class BREadbeatsWindow(QMainWindow):
     def _apply_geometry_rest_to_mapper(self) -> None:
         if not self.stroke_mapper:
             return
-        y_offset = float(getattr(self.config.stroke, 'geometry_y_offset', 0.50) or 0.50)
         if hasattr(self.stroke_mapper, 'configure_geometry_rest_state'):
-            self.stroke_mapper.configure_geometry_rest_state(y_offset=y_offset)
+            self.stroke_mapper.configure_geometry_rest_state()
 
     def _on_options_auto_fill_adaptation(self, as_tab: bool = False):
         """Show or build adaptive amp-fill gate tuning controls."""
@@ -2878,40 +2769,11 @@ class BREadbeatsWindow(QMainWindow):
         expression_layout = QVBoxLayout(expression_group)
 
         expr_info = QLabel(
-            "Artistic expression: orbit speed variation, center wandering,\n"
+            "Artistic expression: center wandering,\n"
             "direction changes, tension pauses, and session arc."
         )
         expr_info.setStyleSheet("color: #aaa; font-size: 11px;")
         expression_layout.addWidget(expr_info)
-
-        orbit_speed_cb = QCheckBox("Orbit speed variation (energy-driven turns per journey)")
-        orbit_speed_cb.setChecked(bool(getattr(self.config.stroke, 'orbit_speed_variation_enabled', False)))
-        orbit_speed_cb.stateChanged.connect(
-            lambda state: setattr(self.config.stroke, 'orbit_speed_variation_enabled', state == 2)
-        )
-        expression_layout.addWidget(orbit_speed_cb)
-
-        orbit_min_turns_slider = SliderWithLabel(
-            "Min turns (low energy)",
-            0.25, 1.50,
-            float(getattr(self.config.stroke, 'orbit_speed_min_turns', 0.75) or 0.75),
-            2,
-        )
-        orbit_min_turns_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'orbit_speed_min_turns', float(v))
-        )
-        expression_layout.addWidget(orbit_min_turns_slider)
-
-        orbit_max_turns_slider = SliderWithLabel(
-            "Max turns (high energy)",
-            0.50, 2.00,
-            float(getattr(self.config.stroke, 'orbit_speed_max_turns', 1.5) or 1.5),
-            2,
-        )
-        orbit_max_turns_slider.valueChanged.connect(
-            lambda v: setattr(self.config.stroke, 'orbit_speed_max_turns', float(v))
-        )
-        expression_layout.addWidget(orbit_max_turns_slider)
 
         wander_cb = QCheckBox("Center wandering (orbit drifts horizontally)")
         wander_cb.setChecked(bool(getattr(self.config.stroke, 'center_wander_enabled', True)))
@@ -3591,14 +3453,6 @@ class BREadbeatsWindow(QMainWindow):
                     canvas._ensure_bars(bin_count)
                 canvas.show_bin_range_ghost(key, int(low_bin), int(high_bin), label, color=color, duration_s=5.0, dashed=dashed)
 
-
-        bass_gate_cb = QCheckBox("Require Bass Energy for Motion")
-        bass_gate_cb.setChecked(getattr(self.config.beat, 'strict_bass_motion_gate_enabled', False))
-        bass_gate_cb.setToolTip("When enabled: motion only fires if sub-bass or low-mid frequency band has strong energy")
-        bass_gate_cb.stateChanged.connect(
-            lambda state: setattr(self.config.beat, 'strict_bass_motion_gate_enabled', state == 2)
-        )
-        gate_layout.addWidget(bass_gate_cb)
 
         motion_cutoff_row = QHBoxLayout()
         motion_cutoff_label = QLabel("Motion Bass Cutoff Frequency:")
@@ -4882,8 +4736,6 @@ Like the app?<br>
             mapper_live.configure_learning(
                 enabled=bool(self.config.beat.teaching_learning_enabled),
                 use_fitted_rules=bool(self.config.beat.teaching_use_fitted_rules),
-                apply_in_circle_mode=bool(self.config.beat.teaching_apply_in_circle_mode),
-                isolation_mode=bool(self.config.beat.teaching_isolation_mode),
                 learning_strength=float(self.config.beat.teaching_learning_strength),
                 min_confidence=float(self.config.beat.teaching_min_confidence),
                 no_motion_bias=float(self.config.beat.teaching_no_motion_bias),
@@ -6348,14 +6200,6 @@ Like the app?<br>
         if self.audio_engine:
             self.audio_engine._aggressive_snap_max_bpm_jump_ratio = value
     
-    def _save_freq_preset(self, idx: int):
-        """Preset slots are currently fixed and not user-configurable."""
-        print(f"[Presets] Slot {idx+1} is reserved (empty)")
-    
-    def _load_freq_preset(self, idx: int):
-        """Preset slots are currently fixed and not user-configurable."""
-        print(f"[Presets] Slot {idx+1} is reserved (empty)")
-    
     def _create_tempo_response_group(self, lock_default: bool = True) -> QGroupBox:
         """Advanced tempo-response controls group used in Tempo Tracking popout."""
         tempo_resp_group = QGroupBox("Advanced Tempo Controls")
@@ -6843,7 +6687,7 @@ Like the app?<br>
         self.is_sending = checked
         if checked:
             # Re-instantiate StrokeMapper with current config (for live mode switching)
-            self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
+            self.stroke_mapper = StrokeMapper(self.config, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
             self._apply_geometry_rest_to_mapper()
             self._apply_learning_config_to_mapper()
             # Warmup gate: allow audio analysis to settle and beat pickup before motion
@@ -6895,7 +6739,7 @@ Like the app?<br>
         # (checkboxes may already be checked from previous start)
         self._sync_metric_checkboxes_to_engine()
 
-        self.stroke_mapper = StrokeMapper(self.config, self._send_command_direct, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
+        self.stroke_mapper = StrokeMapper(self.config, get_volume=lambda: self.volume_slider.value() / 100.0, audio_engine=self.audio_engine)
         self._apply_geometry_rest_to_mapper()
         self._apply_learning_config_to_mapper()
 
@@ -6926,34 +6770,6 @@ Like the app?<br>
                 synced.append(metric)
         if synced:
             print(f"[Metric] Synced {len(synced)} metrics to engine: {', '.join(synced)}")
-    
-    def _send_command_direct(self, cmd: TCodeCommand):
-        """Send a command directly (used by StrokeMapper for arc strokes). Thread-safe."""
-        if self.network_engine and self.is_sending:
-            attach_cached_tcode_values(
-                cmd,
-                p0c0_enabled=self.config.device_limits.p0_c0_sending_enabled,
-                cached_p0_enabled=self._cached_p0_enabled,
-                cached_p0_val=self._cached_p0_val,
-                cached_f0_enabled=self._cached_f0_enabled,
-                cached_f0_val=self._cached_f0_val,
-                cached_p1_enabled=self._cached_p1_enabled,
-                cached_p1_val=self._cached_p1_val,
-                cached_p3_enabled=self._cached_p3_enabled,
-                cached_p3_val=self._cached_p3_val,
-                freq_window_ms=int(self._freq_window_ms),
-            )
-            apply_volume_ramp(
-                cmd,
-                volume_ramp_active=self._volume_ramp_active,
-                volume_ramp_start_time=self._volume_ramp_start_time,
-                volume_ramp_duration=self._volume_ramp_duration,
-                volume_ramp_from=self._volume_ramp_from,
-                volume_ramp_to=self._volume_ramp_to,
-            )
-            # Cache actual tcode volume for display (includes silence fade + post-silence ramp)
-            self._last_sent_volume_pct = float(cmd.volume) * 100.0
-            self.network_engine.send_command(cmd)
     
     def _stop_engines(self):
         """Stop all engines and background threads"""
@@ -7126,7 +6942,6 @@ Like the app?<br>
             # Send P0 using current low-latency window duration
             cmd.pulse_freq = p0_val
             cmd.pulse_freq_duration = int(self._freq_window_ms)
-            self._cached_p0_val = p0_val
             # Display converted real output (with safe fallback defaults when limits are unset).
             dl = self.config.device_limits
             p0_lo, p0_hi = _effective_output_limits(dl.p0_freq_min, dl.p0_freq_max, 1.0, 100.0)
@@ -7134,7 +6949,6 @@ Like the app?<br>
             self._cached_pulse_display = f"Pulse Freq: {hz:.0f}Hz"
         else:
             cmd.pulse_freq = None
-            self._cached_p0_val = None
             self._cached_pulse_display = "Pulse Freq: off"
             self._p0_freq_window.clear()  # Clear window when disabled
         
@@ -7209,7 +7023,6 @@ Like the app?<br>
                         delta_from_current = max(-self._c0_band_max_target_delta, min(self._c0_band_max_target_delta, delta_from_current))
                         self._c0_band_target = self._c0_band_current + delta_from_current
                         self._c0_band_target = max(0, min(9999, self._c0_band_target))
-                        self._c0_band_last_target_time = now
 
                 # Travel toward target at _c0_band_travel_rate tcode/sec (=250/s → 500 per 2s)
                 if self._c0_band_target is not None and self._c0_band_current != self._c0_band_target:
@@ -7242,14 +7055,12 @@ Like the app?<br>
                 cmd.tcode_tags = {}
             cmd.tcode_tags['C0'] = f0_val  # restim uses C0 for carrier frequency, not F0
             cmd.tcode_tags['C0_duration'] = f0_duration
-            self._cached_f0_val = f0_val
             # Display converted real output (with safe fallback defaults when limits are unset).
             dl = self.config.device_limits
             c0_lo, c0_hi = _effective_output_limits(dl.c0_freq_min, dl.c0_freq_max, 500.0, 1500.0)
             hz = c0_lo + (f0_val / 9999.0) * (c0_hi - c0_lo)
             self._cached_carrier_display = f"Carrier Freq: {hz:.0f}Hz"
         else:
-            self._cached_f0_val = None
             self._cached_carrier_display = "Carrier Freq: off"
             self._f0_freq_window.clear()  # Clear window when disabled
             self._f0_last_sent_tcode = None  # Reset smoothing state when disabled
@@ -7302,14 +7113,12 @@ Like the app?<br>
                 cmd.tcode_tags = {}
             cmd.tcode_tags['P1'] = p1_val
             cmd.tcode_tags['P1_duration'] = int(self._freq_window_ms)
-            self._cached_p1_val = p1_val
             # Display converted real output (with safe fallback defaults when limits are unset).
             dl = self.config.device_limits
             p1_lo, p1_hi = _effective_output_limits(dl.p1_cycles_min, dl.p1_cycles_max, 0.0, 20.0)
             p1_cyc = p1_lo + (p1_val / 9999.0) * (p1_hi - p1_lo)
             self._cached_p1_display = f"Pulse Width: {p1_cyc:.1f}cyc"
         else:
-            self._cached_p1_val = None
             self._cached_p1_display = "Pulse Width: off"
             self._p1_window.clear()
         
@@ -7369,14 +7178,12 @@ Like the app?<br>
                 cmd.tcode_tags = {}
             cmd.tcode_tags['P3'] = p3_val
             cmd.tcode_tags['P3_duration'] = int(self._freq_window_ms)
-            self._cached_p3_val = p3_val
             # Display converted real output (with safe fallback defaults when limits are unset).
             dl = self.config.device_limits
             p3_lo, p3_hi = _effective_output_limits(dl.p3_cycles_min, dl.p3_cycles_max, 0.0, 20.0)
             p3_cyc = p3_lo + (p3_val / 9999.0) * (p3_hi - p3_lo)
             self._cached_p3_display = f"Rise Time: {p3_cyc:.1f}cyc"
         else:
-            self._cached_p3_val = None
             self._cached_p3_display = "Rise Time: off"
             self._p3_window.clear()
         
@@ -7648,23 +7455,19 @@ Like the app?<br>
         # Handle P0/C0 checkboxes being unchecked (enabled→disabled transition)
         # Simply stop sending the axis — do NOT send 0 value, which still affects device
         if self._prev_p0_enabled and not new_p0_enabled:
-            self._cached_p0_val = None
             self._cached_pulse_display = "Pulse Freq: off"
             self._p0_freq_window.clear()
             print("[Main] P0 disabled — stopped sending")
         if self._prev_f0_enabled and not new_f0_enabled:
-            self._cached_f0_val = None
             self._cached_carrier_display = "Carrier Freq: off"
             self._f0_freq_window.clear()
             self._f0_last_sent_tcode = None
             print("[Main] C0 disabled — stopped sending")
         if self._prev_p1_enabled and not new_p1_enabled:
-            self._cached_p1_val = None
             self._cached_p1_display = "Pulse Width: off"
             self._p1_window.clear()
             print("[Main] P1 disabled — stopped sending")
         if self._prev_p3_enabled and not new_p3_enabled:
-            self._cached_p3_val = None
             self._cached_p3_display = "Rise Time: off"
             self._p3_window.clear()
             print("[Main] P3 disabled — stopped sending")

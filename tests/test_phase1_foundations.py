@@ -137,21 +137,7 @@ class TestBeatHierarchyGuards(Phase1Mixin, unittest.TestCase):
         event.tempo_reset = True
         bi.build_decision(event, dt=1 / 60, silence_override=False)
 
-        self.assertGreater(bi._tempo_reset_motion_hold_until, now)
-
-    def test_has_recent_beats_true_after_beat(self):
-        bi = BeatIntelligence(Config())
-        now = time.perf_counter()
-        event = self._event(is_downbeat=True, monotonic_timestamp=now)
-        bi.build_decision(event, dt=1 / 60)
-        self.assertTrue(bi._has_recent_beats(now + 0.1))
-
-    def test_has_recent_beats_false_after_long_gap(self):
-        bi = BeatIntelligence(Config())
-        now = time.perf_counter()
-        event = self._event(is_downbeat=True, monotonic_timestamp=now)
-        bi.build_decision(event, dt=1 / 60)
-        self.assertFalse(bi._has_recent_beats(now + 5.0))
+        self.assertGreaterEqual(bi._last_any_beat_time, now)
 
 
 # ── §4 No-beat timeout ─────────────────────────────────────────────────────

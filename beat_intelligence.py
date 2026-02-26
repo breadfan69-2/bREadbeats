@@ -96,10 +96,6 @@ class BeatIntelligence:
         self._journey_start_intensity = 0.0  # intensity of current journey's trigger
         self._lazy_glide_active: bool = False
 
-        self.treble_lift_ema = 0.0
-        self.treble_lift_attack = 0.28
-        self.treble_lift_release = 0.16
-
         # ── Phase 1: Rolling history deques (#1) ──
         self._recent_flux_values: deque = deque(maxlen=600)  # ~10 s for lookback features
         self._recent_low_band_values: deque = deque(maxlen=60)
@@ -126,8 +122,6 @@ class BeatIntelligence:
 
         # ── Phase 1: Beat timing (#3) ──
         self._last_any_beat_time: float = 0.0
-        self._tempo_reset_motion_hold_s: float = 1.8
-        self._tempo_reset_motion_hold_until: float = 0.0
 
         # ── Phase 1: No-beat timeout (#4) ──
         self._no_beat_timeout_s: float = 2.0
@@ -734,19 +728,9 @@ class BeatIntelligence:
 
     # ── Phase 1 §3: Beat timing ─────────────────────────────────────
 
-    def _has_recent_beats(self, now: float, window_s: float = 0.9) -> bool:
-        """True if any beat/downbeat happened within window, or tempo-reset hold is active."""
-        beat_recent = (
-            self._last_any_beat_time > 0.0
-            and (now - self._last_any_beat_time) <= window_s
-        )
-        reset_hold_active = now < self._tempo_reset_motion_hold_until
-        return bool(beat_recent or reset_hold_active)
-
     def _arm_tempo_reset_motion_hold(self, now: float) -> None:
-        """After tempo_reset, grant a grace window before requiring beats."""
+        """After tempo_reset, record a beat time so no-beat timeout doesn't fire."""
         self._last_any_beat_time = now
-        self._tempo_reset_motion_hold_until = now + self._tempo_reset_motion_hold_s
 
     def _record_beat_times(self, event: BeatEvent, trigger_kind: str, now: float) -> None:
         """Track timestamp of the most recent beat/downbeat/syncopation."""
@@ -1508,29 +1492,6 @@ class BeatIntelligence:
             return float(0.5 * (60.0 / max(1e-6, met_bpm)))
 
         return float(10.0 * beat_period_s)
-
-    def compute_treble_lift(self, journey_completion: float) -> float:
-        max_lift = 0.40
-        treble_fill = float(np.clip((self.energies.high * 0.75) + (self.energies.mid * 0.25), 0.0, 1.0))
-        lift_factor = treble_fill ** 2.0
-        target_offset = max_lift * lift_factor
-
-        alpha = self.treble_lift_attack if target_offset >= self.treble_lift_ema else self.treble_lift_release
-        self.treble_lift_ema += (target_offset - self.treble_lift_ema) * alpha
-        smoothed_offset = float(np.clip(self.treble_lift_ema, 0.0, max_lift))
-
-        guard_start = 0.80
-        p = float(np.clip(journey_completion, 0.0, 1.0))
-        if p <= guard_start:
-            guard = 1.0
-        else:
-            t = float(np.clip((p - guard_start) / max(1e-6, 1.0 - guard_start), 0.0, 1.0))
-            smooth_t = t * t * (3.0 - 2.0 * t)
-            guard = 1.0 - smooth_t
-
-        # Returns vertical center offset with downward bias (-max_lift..0), not absolute Y.
-        # At journey completion, magnitude is forced to 0 by the landing guard.
-        return float(-smoothed_offset * guard)
 
     def build_decision(self, event: BeatEvent, dt: float, silence_override: bool | None = None) -> BeatDecision:
         self.update_band_energies()

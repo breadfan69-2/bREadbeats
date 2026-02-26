@@ -33,7 +33,6 @@ class StrokeMapper:
     def __init__(
         self,
         config: Config,
-        send_callback: Optional[Callable[[TCodeCommand], None]] = None,
         get_volume: Optional[Callable[[], float]] = None,
         audio_engine=None,
     ):
@@ -44,35 +43,25 @@ class StrokeMapper:
         self.state = StrokeState()
         self._park_y = 0.20
         self._baseline_center_y = 0.20
-        self._min_radius = 0.05  # only used for fill-exit micro-orbit floor
         self._base_center_y = self._baseline_center_y
-        self._reactive_bounce_y = 0.0
         self._journey_start_total_center_y = self._baseline_center_y
 
         self._orbit_phase = 0.0
         self._last_trigger_kind = "creep"
         self._park_radius = 0.70
-        self._max_radius = 1.0
-        self._journey_fixed_radius = self._park_radius
         self._journey_start_radius = self._park_radius
-        self._journey_learning_mult = 1.0  # frozen at journey start; never re-read mid-arc
         self._journey_latched_bloom = 0.70     # radius_bloom frozen at journey start
-        self._journey_center_y = self._baseline_center_y
         self._journey_park_radius = self._park_radius
-        self._journey_max_radius = self._max_radius
-        self._park_angle = float(np.pi / 2.0)
-        self._journey_start_angle = self._park_angle
+        self._journey_max_radius = 1.0
+        self._journey_start_angle = float(np.pi / 2.0)
         self._journey_start_alpha = self.state.alpha
         self._journey_start_beta = self.state.beta
         self._journey_total_rotation = float(2.0 * np.pi)
         self._last_journey_completion = 1.0
         self._actual_radius = self._park_radius
-        self._angular_velocity = 0.0
-        self._last_phase_for_velocity = self._orbit_phase
         self._journey_target_radius = self._park_radius  # latched at journey start; never re-evaluated mid-arc
         self._orbit_phase_initialized = False  # True once orbit_phase has been actively tracked
         self._journey_linked = False
-        self._hold_start_pose_until_reactive = False
         self._idle_loops_per_beat = 0.125
 
         # ── Funscript idle-fill loop data (extracted from NoodleDude Megamix at 11:00.545) ──
@@ -139,7 +128,6 @@ class StrokeMapper:
         self._intensity_ramp_mult: float = 1.0
         self._intensity_ramp_floor: float = 0.25
         self._intensity_ramp_affect_size: bool = True
-        self._intensity_ramp_affect_speed: bool = True
 
         # ── Rate-limiter velocity state (for smoothing across ALL paths) ──
         self._smoothed_da: float = 0.0
@@ -157,7 +145,7 @@ class StrokeMapper:
         # Push initial learning config to intelligence
         self._sync_learning_to_intelligence()
 
-    def configure_geometry_rest_state(self, y_offset: float) -> None:
+    def configure_geometry_rest_state(self) -> None:
         self._park_y = 0.20
         self._intelligence.set_park_y(self._park_y)
 
@@ -166,8 +154,6 @@ class StrokeMapper:
         *,
         enabled: bool,
         use_fitted_rules: bool,
-        apply_in_circle_mode: bool,
-        isolation_mode: bool,
         learning_strength: float,
         min_confidence: float,
         no_motion_bias: float,
@@ -310,8 +296,6 @@ class StrokeMapper:
             self._resync_orbit_to_output()
 
         if hitch_soft_reset:
-            self._angular_velocity = 0.0
-            self._last_phase_for_velocity = self._orbit_phase
             # Reset velocity EMA on hitch so stale momentum doesn't linger
             self._smoothed_da = 0.0
             self._smoothed_db = 0.0
@@ -334,7 +318,6 @@ class StrokeMapper:
         if ramp_target not in ('size', 'speed', 'both'):
             ramp_target = 'both'
         self._intensity_ramp_affect_size = ramp_target in ('size', 'both')
-        self._intensity_ramp_affect_speed = ramp_target in ('speed', 'both')
 
         ramp_hours = float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0)
         if ramp_hours > 0.0:
@@ -356,9 +339,7 @@ class StrokeMapper:
 
         if decision.silence_active:
             # ── Silent-still-park: hold position, fade volume, reset momentum ──
-            self._hold_start_pose_until_reactive = False
             self._anchor_phrase_locked = False
-            self._angular_velocity = 0.0
             self._fill_exit_active = False  # cancel fill exit on silence
 
             fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
@@ -394,7 +375,7 @@ class StrokeMapper:
                         # using it overwrites our carefully-set phase/radius
                         # with wrong values and produces small circles.
                         self._fill_exit_active = False
-                        center_y = float(self._base_center_y + self._reactive_bounce_y)
+                        center_y = float(self._base_center_y)
                         inf_angle, inf_radius = self._infer_orbit_from_position(
                             alpha=self._fill_exit_target_alpha,
                             beta=self._fill_exit_target_beta,
@@ -402,8 +383,6 @@ class StrokeMapper:
                         )
                         self._orbit_phase = float(inf_angle % (2.0 * np.pi))
                         self._actual_radius = float(max(inf_radius, self._park_radius))
-                        self._last_phase_for_velocity = self._orbit_phase
-                        self._angular_velocity = 0.0
                         self._orbit_phase_initialized = True
 
                         # Re-initialize all journey state so the NEXT frame's
@@ -415,7 +394,6 @@ class StrokeMapper:
                         self._journey_start_total_center_y = float(center_y)
                         self._journey_linked = False
                         self._journey_target_radius = float(self._actual_radius)
-                        self._journey_fixed_radius = float(self._actual_radius)
                         self._journey_total_rotation = float(2.0 * np.pi)
                         self._last_journey_completion = progress
 
@@ -442,7 +420,6 @@ class StrokeMapper:
                         beta = float(self._fill_exit_target_beta)
                         ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                         volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
-                        self._hold_start_pose_until_reactive = False
                         self.state.alpha = alpha
                         self.state.beta = beta
                         return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
@@ -463,7 +440,6 @@ class StrokeMapper:
                         ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                         volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
                         self._last_journey_completion = 1.0
-                        self._hold_start_pose_until_reactive = False
                         self.state.alpha = alpha
                         self.state.beta = beta
                         return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
@@ -497,7 +473,6 @@ class StrokeMapper:
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 alpha, beta, volume = self._apply_park_motion_frame(dt=dt, fade=ramp)
                 self._last_journey_completion = 1.0
-                self._hold_start_pose_until_reactive = False
                 # Direct output — bypass rate limiter so the fill pattern
                 # is not suppressed by the orbital velocity EMA.
                 self.state.alpha = alpha
@@ -526,7 +501,7 @@ class StrokeMapper:
                 # Compute orbit target: where the first beat journey wants to be.
                 # Use the beat-journey minimum radius (0.80) so the exit
                 # lands on a full-size orbit, not a tiny park-radius circle.
-                _center_y = float(self._base_center_y + self._reactive_bounce_y)
+                _center_y = float(self._base_center_y)
                 _target_radius = max(float(decision.radius_bloom), 0.80)
                 # Use orbit phase if initialized, otherwise infer from current position
                 if self._orbit_phase_initialized:
@@ -545,26 +520,22 @@ class StrokeMapper:
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
                 self._last_journey_completion = 1.0
-                self._hold_start_pose_until_reactive = False
                 self.state.alpha = alpha
                 self.state.beta = beta
                 return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
 
             started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
             if started_new_journey:
-                if decision.trigger_kind in ("beat", "downbeat", "syncopation", "start"):
-                    self._hold_start_pose_until_reactive = False
                 prior_completion = float(self._last_journey_completion)
                 self._journey_linked = bool(prior_completion < 0.999)
 
-                self._journey_start_total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+                self._journey_start_total_center_y = float(self._base_center_y)
 
                 # Latch geometry at journey start so mid-journey trigger
                 # reclassification cannot reshape a running arc.
                 geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
                     "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
                 })
-                self._journey_center_y = float(geom["center_y"])
                 self._journey_park_radius = float(geom["park_radius"])
                 # Expand max_radius toward 1.0 based on energy fullness:
                 # quiet music stays at configured max (0.90), full music → 1.0
@@ -618,38 +589,16 @@ class StrokeMapper:
             # Use latched geometry while a journey is in-flight.
             # Only refresh from live trigger kind when fully parked.
             if (progress < 1.0) or (self._last_journey_completion < 1.0):
-                type_center_y = float(self._journey_center_y)
                 type_park_radius = float(self._journey_park_radius)
                 type_max_radius = float(self._journey_max_radius)
             else:
                 geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
                     "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
                 })
-                type_center_y = float(geom["center_y"])
                 type_park_radius = float(geom["park_radius"])
                 type_max_radius = float(geom["max_radius"])
 
-            # Latch learning speed_mult at journey start so mid-arc
-                # predictions never cause radius/speed discontinuities.
-                if started_new_journey:
-                    learning = decision.learning
-                    if learning.active:
-                        # speed_mult (0..1) scales motion amplitude:
-                        # 0 = stay parked, 1 = full bloom radius
-                        self._journey_learning_mult = float(np.clip(learning.speed_mult, 0.0, 1.0))
-                    else:
-                        self._journey_learning_mult = 1.0
-
-            learning_mult = self._journey_learning_mult
-
-            # Map global radius_bloom (0.70→1.0) to type-specific range (park→max)
-            normalized_bloom = float(np.clip((decision.radius_bloom - 0.70) / 0.30, 0.0, 1.0))
-            type_bloom = float(type_park_radius + normalized_bloom * (type_max_radius - type_park_radius))
-            bloom_target_radius = float(type_park_radius + ((type_bloom - type_park_radius) * learning_mult))
-            bloom_target_radius = float(np.clip(bloom_target_radius, type_park_radius, type_max_radius))
-
             if started_new_journey:
-                self._journey_fixed_radius = bloom_target_radius
                 self._journey_latched_bloom = float(decision.radius_bloom)
 
                 # ── Latch target radius at journey start ──
@@ -690,39 +639,28 @@ class StrokeMapper:
 
             self._orbit_phase = float(angle % (2.0 * np.pi))
 
-            phase_delta = self._wrapped_phase_delta(self._orbit_phase, self._last_phase_for_velocity)
-            self._angular_velocity = float(phase_delta / max(dt, 1e-4))
-            self._last_phase_for_velocity = self._orbit_phase
-
             # Radius path is mathematically locked to journey angle/progress.
             # - Cold start: smoothstep from park -> max during first pass
             # - Linked beat: bypass park and lock to max immediately
             # - Continuation expected: allow controlled bloom up to 1.0
-            if False and decision.trigger_kind == "start":  # DISABLED FOR TESTING
-                p = float(np.clip(progress, 0.0, 1.0))
-                radius = float(
-                    self._journey_start_radius
-                    + ((self._journey_fixed_radius - self._journey_start_radius) * self._quintic_ease(p))
-                )
-            else:
-                # Use journey-start-latched target radius.
-                # Evaluated once at journey start and frozen so mid-arc
-                # prediction flips never cause a radius discontinuity.
-                target_radius = self._journey_target_radius
+            # Use journey-start-latched target radius.
+            # Evaluated once at journey start and frozen so mid-arc
+            # prediction flips never cause a radius discontinuity.
+            target_radius = self._journey_target_radius
 
-                # Quintic ease from start radius to target over first 40% of orbit
-                first_pass_progress = float(np.clip(
-                    (self._journey_total_rotation * progress) / (2.0 * np.pi),
-                    0.0,
-                    1.0,
-                ))
-                blend_window = 0.40
-                blend_t = float(np.clip(first_pass_progress / blend_window, 0.0, 1.0))
-                radius_blend = self._quintic_ease(blend_t)
-                radius = float(
-                    self._journey_start_radius
-                    + ((target_radius - self._journey_start_radius) * radius_blend)
-                )
+            # Quintic ease from start radius to target over first 40% of orbit
+            first_pass_progress = float(np.clip(
+                (self._journey_total_rotation * progress) / (2.0 * np.pi),
+                0.0,
+                1.0,
+            ))
+            blend_window = 0.40
+            blend_t = float(np.clip(first_pass_progress / blend_window, 0.0, 1.0))
+            radius_blend = self._quintic_ease(blend_t)
+            radius = float(
+                self._journey_start_radius
+                + ((target_radius - self._journey_start_radius) * radius_blend)
+            )
 
             min_radius_bound = 0.80  # beat-journey minimum radius
             self._actual_radius = float(np.clip(radius, min_radius_bound, 1.0))
@@ -757,8 +695,7 @@ class StrokeMapper:
                 else:
                     self._base_center_y = float(base_target_center)
 
-            self._reactive_bounce_y = 0.0
-            total_center_y = float(self._base_center_y + self._reactive_bounce_y)
+            total_center_y = float(self._base_center_y)
             orbit_radius = float(min(radius, self._radius_cap_for_center(total_center_y)))
 
             alpha = float(orbit_radius * np.cos(angle))
@@ -775,8 +712,6 @@ class StrokeMapper:
             volume = float(np.clip(self.get_volume() * ramp, 0.0, 1.0))
 
             self._last_journey_completion = progress
-            if decision.trigger_kind == "start" and progress >= 1.0:
-                self._hold_start_pose_until_reactive = True
 
         # ── Expression layer: apply center Y wander offset only ──
         beta = float(beta + self._center_y_offset)
@@ -894,7 +829,7 @@ class StrokeMapper:
         if not self._orbit_phase_initialized:
             return
         # Strip expression wander (added post-orbit) and use orbit center
-        center_y = float(self._base_center_y + self._reactive_bounce_y)
+        center_y = float(self._base_center_y)
         effective_beta = float(self.state.beta - self._center_y_offset)
         inferred_r = float(np.hypot(float(self.state.alpha), effective_beta - center_y))
         if inferred_r > self._actual_radius + 0.05:
@@ -905,7 +840,6 @@ class StrokeMapper:
             inferred_phase = float(np.arctan2(dy, float(self.state.alpha)))
             self._orbit_phase = float(inferred_phase % (2.0 * np.pi))
             self._actual_radius = float(inferred_r)
-            self._last_phase_for_velocity = self._orbit_phase
 
     def _apply_park_motion_frame(self, dt: float, fade: float) -> tuple[float, float, float]:
         """Funscript idle-fill: raw baked loop, no modifiers.
@@ -965,11 +899,6 @@ class StrokeMapper:
         """
         p = float(np.clip(progress, 0.0, 1.0))
         return float(p * p * p * (p * (p * 6.0 - 15.0) + 10.0))
-
-    @staticmethod
-    def _wrapped_phase_delta(current: float, previous: float) -> float:
-        """Return wrapped phase delta in [-pi, pi] for stable velocity estimation."""
-        return float((current - previous + np.pi) % (2.0 * np.pi) - np.pi)
 
     @staticmethod
     def _infer_orbit_from_position(alpha: float, beta: float, center_y: float) -> tuple[float, float]:

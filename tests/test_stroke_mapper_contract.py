@@ -1,3 +1,4 @@
+import math
 import time
 import unittest
 from typing import Any
@@ -189,19 +190,6 @@ class TestStrokeMapperContract(unittest.TestCase):
         mapper = StrokeMapper(Config())
         self.assertAlmostEqual(mapper._park_y, 0.20, places=6)
 
-    def test_treble_elevator_landing_guard_returns_center_to_park(self):
-        intelligence = BeatIntelligence(Config())
-        intelligence.energies.high = 1.0
-        intelligence.energies.mid = 1.0
-
-        early_offset = intelligence.compute_treble_lift(journey_completion=0.0)
-        late_offset = intelligence.compute_treble_lift(journey_completion=0.95)
-        landed_offset = intelligence.compute_treble_lift(journey_completion=1.0)
-
-        self.assertLess(early_offset, 0.0)
-        self.assertGreater(late_offset, early_offset)
-        self.assertAlmostEqual(landed_offset, 0.0, places=6)
-
     def test_radius_bloom_uses_continuous_smoothing(self):
         mapper = StrokeMapper(Config())
         target = 0.95
@@ -265,7 +253,7 @@ class TestStrokeMapperContract(unittest.TestCase):
 
     def test_compute_landing_rotation_from_park_for_beat_is_non_zero(self):
         mapper = StrokeMapper(Config())
-        rot = mapper._compute_landing_rotation(start_angle=mapper._park_angle, interval_beats=2)
+        rot = mapper._compute_landing_rotation(start_angle=float(math.pi / 2.0), interval_beats=2)
         self.assertGreater(rot, 1.0)
 
     def test_silence_unknown_trigger_uses_baseline_center_default(self):

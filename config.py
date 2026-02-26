@@ -1,29 +1,8 @@
 # bREadbeats Configuration
 # All default values and constants
 
-
-BEAT_RESET_DEFAULTS = {
-    'audio_amp': 0.15,
-    'peak_floor': 0.02,
-    'peak_decay': 0.3,
-    'rise_sens': 0.10,
-    'sensitivity': 0.1,
-    'flux_mult': 1.0,
-}
-
-BEAT_RANGE_LIMITS = {
-    'audio_amp': (0.15, 10.0),
-    'peak_floor': (0.015, 2.0),
-    'peak_decay': (0.230, 0.999),
-    'rise_sens': (0.02, 1.0),
-    'sensitivity': (0.10, 1.0),
-    'flux_mult': (0.2, 10.0)
-}
-# bREadbeats Configuration
-# All default values and constants
-
 from dataclasses import dataclass, field, is_dataclass
-from typing import Dict, Literal
+from typing import Dict
 from enum import IntEnum
 
 
@@ -112,7 +91,6 @@ class BeatDetectionConfig:
     syncopation_arc_size: float = 0.82                
     syncopation_speed: float = 1.0                 
     scheduled_lead_ms: int = 80                    
-    strict_bass_motion_gate_enabled: bool = False  # DEPRECATED: gate removed, field kept for config compat
     center_jitter_flux_guard_enabled: bool = True 
     center_jitter_flux_delta_threshold: float = 0.20  
     center_jitter_flux_avg_threshold: float = 0.25    
@@ -149,26 +127,7 @@ class StrokeConfig:
     # Silence detection thresholds (fade-out when truly silent)
     silence_threshold: float = -66.0      # dBFS threshold to enter silence deadzone gate (first-run tuned)
     silence_close_threshold: float = -58.0  # dBFS threshold to exit silence deadzone gate
-    silence_flux_multiplier: float = 0.15  # quiet_flux_thresh = flux_threshold * this (0.01-1.0)
-    silence_energy_multiplier: float = 0.7  # quiet_energy_thresh = peak_floor * this (0.1-2.0)
-    silence_multiplier_locked: bool = True  # Lock sliders on startup
-
-    # Flux-rise depth factor over 250ms.
-    # Note: flux_depth_boost_enabled is legacy/internal (UI toggle removed).
-    # It remains for backward compatibility with older saved configs.
-    flux_depth_factor: float = 0.12     # 0-5, 0=disabled
-    flux_depth_boost_enabled: bool = False
-
-    # Main Controls master combinations (1.0 = neutral)
-    combo_size: float = 1.0800000000000003      # stroke size/fullness/flux-scaling/intensity-curve influence
-    combo_power: float = 1.0000000000000004     # downbeat lock boost/jitter blend/scheduled lead
-    combo_depth: float = 1.0000000000000002     # minimum depth/freq depth/flux-depth behavior
-    combo_speed: float = 1.0200000000000002     # cadence density + min-interval behavior
     combo_texture: float = 0.94   # syncopation/texture behavior
-    combo_reaction: float = 1.0300000000000002  # gate/strictness/readiness aggressiveness
-
-    geometry_y_offset: float = 0.50  # Below-center rest Y offset used when intensity is near 0
-    geometry_sink_start_intensity: float = 0.25  # Intensity where sink-to-rest lerp begins
 
     # Beat-type-specific orbital geometry: each type blooms from a different center
     # All journey types share the same radius range; only center differs.
@@ -200,7 +159,6 @@ class StrokeConfig:
     downbeat_dbfs_threshold: float = -35.0  # Downbeat: easier threshold (dB below reference)
     beat_dbfs_threshold: float = -40.0      # Beat: moderate threshold (dB below reference)
     syncopation_dbfs_threshold: float = -45.0  # Syncopation: harder threshold (dB below reference)
-    dbfs_reference_window_ms: float = 15000.0  # Time window (ms) for tracking max signal reference
     dbfs_reference_decay_rate: float = 0.9995  # Per-frame decay multiplier for reference maximum
 
     # FFT-bin windows used by overall fill gate for each phase.
@@ -228,11 +186,6 @@ class StrokeConfig:
     silence_fade_drop_points: int = 10        # Max points (out of 100) fade can lower volume by in runtime fade pass
 
     # ── Expression Layer ──
-    # Orbit speed variation: modulates turns-per-journey based on energy
-    orbit_speed_variation_enabled: bool = False
-    orbit_speed_min_turns: float = 0.75       # turns at lowest energy
-    orbit_speed_max_turns: float = 1.5        # turns at highest energy
-
     # Center wandering: orbit center drifts horizontally over time
     center_wander_enabled: bool = True
     center_wander_max_x: float = 0.08         # max horizontal center offset
@@ -412,29 +365,6 @@ def apply_dict_to_dataclass(target, data) -> None:
 
         current = getattr(target, key)
 
-        # Ensure all per-bus fields are loaded from config.json
-        bus_fields = [
-            "trigger_bus_refractory_ms",
-            "trigger_bus_arm_threshold",
-            "trigger_bus_release_threshold",
-            "trigger_bus_sustain_frames",
-            "trigger_bus_weight_sub_bass",
-            "trigger_bus_weight_low_mid",
-            "trigger_bus_weight_mid",
-            "trigger_bus_weight_high",
-            "trigger_bus_mask_floor",
-            "bass_dominance_weighting_enabled",
-            "transient_classification_enabled",
-            "transient_full_motion_min_kick_conf",
-            "transient_full_motion_min_bass_dom",
-            "transient_full_motion_decisive_bass_dom",
-            "transient_full_motion_min_flux",
-            "transient_full_motion_min_energy_fullness",
-        ]
-        if key in bus_fields:
-            setattr(target, key, value)
-            continue
-
         if is_dataclass(current) and isinstance(value, dict):
             apply_dict_to_dataclass(current, value)
             continue
@@ -483,19 +413,6 @@ def migrate_config(config: Config, loaded_version) -> None:
 
     config.version = CURRENT_CONFIG_VERSION
 
-
-# Default config instance
-DEFAULT_CONFIG = Config()
-
-# Centralized parameter defaults/ranges (reference only; wiring remains in main.py widgets)
-BEAT_RESET_DEFAULTS = {
-    'audio_amp': 0.15,
-    'peak_floor': 0.02,
-    'peak_decay': 0.3,
-    'rise_sens': 0.10,
-    'sensitivity': 0.1,
-    'flux_mult': 1.0,
-}
 
 BEAT_RANGE_LIMITS = {
     'audio_amp': (0.15, 10.0),
