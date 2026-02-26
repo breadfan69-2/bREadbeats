@@ -112,7 +112,7 @@ class BeatDetectionConfig:
     syncopation_arc_size: float = 0.82                
     syncopation_speed: float = 1.0                 
     scheduled_lead_ms: int = 80                    
-    strict_bass_motion_gate_enabled: bool = False  
+    strict_bass_motion_gate_enabled: bool = False  # DEPRECATED: gate removed, field kept for config compat
     center_jitter_flux_guard_enabled: bool = True 
     center_jitter_flux_delta_threshold: float = 0.20  
     center_jitter_flux_avg_threshold: float = 0.25    
@@ -195,9 +195,8 @@ class StrokeConfig:
     overall_amp_fill_auto_min_required: float = 0.05
     overall_amp_fill_auto_max_required: float = 0.98
 
-    # dBFS-based fill gate: Use absolute dBFS instead of relative peak normalization.
-    # Provides stable thresholds that don't drift with instantaneous peak changes.
-    use_dbfs_fill_gate: bool = True  # True: dBFS mode (stable), False: relative peak mode (legacy)
+    # dBFS-based fill gate thresholds (absolute, relative to tracked reference max).
+    # Legacy relative-peak mode has been removed.
     downbeat_dbfs_threshold: float = -35.0  # Downbeat: easier threshold (dB below reference)
     beat_dbfs_threshold: float = -40.0      # Beat: moderate threshold (dB below reference)
     syncopation_dbfs_threshold: float = -45.0  # Syncopation: harder threshold (dB below reference)

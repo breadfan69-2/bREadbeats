@@ -86,7 +86,6 @@ def _snapshot_from_decision(decision: Any) -> dict[str, Any]:
         "silence_active", "journey_completion", "silence_fade",
         "post_silence_ramp", "lazy_glide_active", "gate_fail",
         "energy_fullness", "session_intensity",
-        "park_bounce_only", "park_bounce_gain",
     ):
         snap[f"dec_{attr}"] = _safe(getattr(decision, attr, None))
     return snap

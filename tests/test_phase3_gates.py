@@ -83,16 +83,16 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
         self.assertGreater(ratio, 0.8)
 
     def test_sparse_spectrum_low_fill(self):
-        """Many active bins below fill threshold → low fill ratio."""
+        """Sparse spectrum with only one strong bin → low fill ratio in dBFS mode."""
         bi = self._bi()
         engine = MagicMock()
-        # Peak at bin 0, many bins with small values (above active floor but below fill threshold)
-        spectrum = np.full(1024, 0.03)  # all bins just above active floor (0.02)
-        spectrum[0] = 1.0               # peak
+        # Peak at bin 0 is 1.0, rest are 0.001 (far below any dBFS threshold)
+        spectrum = np.full(1024, 0.001)
+        spectrum[0] = 1.0
         engine.get_spectrum.return_value = spectrum
         bi.audio_engine = engine
         ratio = bi._get_spectrum_fill_ratio("beat")
-        self.assertLess(ratio, 0.1)  # most active bins are 0.03/1.0 = 0.03 < 0.5 target
+        self.assertLess(ratio, 0.1)  # only 1 bin above dBFS threshold out of the window
 
     def test_zero_spectrum_returns_zero(self):
         bi = self._bi()
@@ -109,10 +109,10 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
         self.assertTrue(bi._passes_overall_amp_fill_gate(self._event(), "beat"))
 
     def test_overall_fill_gate_blocks_when_low_fill(self):
-        bi = self._bi(beat_overall_amp_fill_sustain_frames=1)  # Test instant decision
+        bi = self._bi(beat_overall_amp_fill_sustain_frames=1)
         engine = MagicMock()
-        # Many bins above active floor but below fill threshold
-        spectrum = np.full(1024, 0.03)
+        # Sparse spectrum: only 1 bin strong, rest far below dBFS threshold
+        spectrum = np.full(1024, 0.001)
         spectrum[0] = 1.0
         engine.get_spectrum.return_value = spectrum
         engine._band_energies = {}
@@ -154,18 +154,17 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
             syncopation_fill_bin_low=0, syncopation_fill_bin_high=50,
         )
         engine = MagicMock()
-        # Bins 0-100: value 1.0, bins 101-200: small value (above floor, below fill threshold)
-        spectrum = np.full(1024, 0.005)  # below active floor
+        # Bins 0-100: value 1.0, bins 101-200: very small (below any dBFS threshold)
+        spectrum = np.full(1024, 0.001)  # far below threshold
         spectrum[:101] = 1.0
-        spectrum[101:201] = 0.03  # above active floor (0.02) but below fill threshold (0.5)
         engine.get_spectrum.return_value = spectrum
         bi.audio_engine = engine
 
-        # Downbeat window 0-100: all active bins are 1.0
+        # Downbeat window 0-100: all bins are 1.0 → fill ratio ≈ 1.0
         ratio_db = bi._get_spectrum_fill_ratio("downbeat")
-        # Beat window 0-200: 101 bins at 1.0, 100 bins at 0.03 → lower fill ratio
+        # Beat window 0-200: 101 bins at 1.0, 100 bins at 0.001 → lower fill ratio
         ratio_bt = bi._get_spectrum_fill_ratio("beat")
-        # Sync window 0-50: all active bins are 1.0
+        # Sync window 0-50: all bins are 1.0 → fill ratio ≈ 1.0
         ratio_sync = bi._get_spectrum_fill_ratio("syncopation")
 
         self.assertGreater(ratio_db, ratio_bt)
@@ -202,8 +201,9 @@ class TestSpectrumFillGate(Phase3Mixin, unittest.TestCase):
         self.assertEqual(bi._fill_pass_consecutive["beat"], 4)
         
         # Change to sparse spectrum → instant fail, counter reset
-        engine.get_spectrum.return_value = np.full(1024, 0.03)  # Sparse
-        engine.get_spectrum.return_value[0] = 1.0  # Peak only
+        sparse = np.full(1024, 0.001)  # Far below dBFS threshold
+        sparse[0] = 1.0  # Peak only
+        engine.get_spectrum.return_value = sparse
         result = bi._passes_overall_amp_fill_gate(evt, "beat")
         self.assertFalse(result)
         self.assertEqual(bi._fill_pass_consecutive["beat"], 0)

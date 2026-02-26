@@ -7298,9 +7298,6 @@ Like the app?<br>
             phase_accept_slider.setValue(85.0)
             low_conf_mult_slider.setValue(2.0)
             octave_target_bias_slider.setValue(0.35)
-            target_bps_lock_gate_cb.setChecked(True)
-            target_bps_lock_conf_slider.setValue(0.40)
-            target_bps_lock_match_spin.setValue(1)
             aggressive_snap_cb.setChecked(False)
             snap_conf_slider.setValue(0.55)
             snap_phase_slider.setValue(35.0)
@@ -7324,10 +7321,6 @@ Like the app?<br>
             phase_accept_slider,
             low_conf_mult_slider,
             octave_target_bias_slider,
-            target_bps_lock_gate_cb,
-            target_bps_lock_conf_slider,
-            target_bps_lock_match_label,
-            target_bps_lock_match_spin,
             aggressive_snap_cb,
             snap_conf_slider,
             snap_phase_slider,

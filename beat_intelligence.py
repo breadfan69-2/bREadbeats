@@ -49,8 +49,6 @@ class BeatDecision:
     gate_fail: str = ""                # which gate rejected a beat-family event (empty = passed or N/A)
     energy_fullness: float = 0.0       # 0..1 how "full" the music is (drives max_radius expansion)
     session_intensity: float = 0.5     # long-term session energy envelope (0..1)
-    park_bounce_only: bool = False     # hat-only mode: keep parked and apply reactive bounce
-    park_bounce_gain: float = 0.0      # 0..1 gain for park+bounce response
 
     learning: LearningOutputs = field(default_factory=LearningOutputs)
 
@@ -80,14 +78,14 @@ class BeatIntelligence:
         self.last_trigger_kind = "creep"
 
         # Fill-entry hysteresis: require consecutive non-beat frames before
-        # actually switching to fill mode (prevents momentary gate blips)
+        # switching to fill (funscript pattern) — prevents momentary gate blips
         self._creep_consecutive_frames: int = 0
-        self._creep_hysteresis_threshold: int = 10  # ~0.17s at 60fps – faster drop to fill
+        self._creep_hysteresis_threshold: int = 10  # ~0.17s at 60fps
 
         # Journey preservation safety: count consecutive beat-family events
         # that failed a gate but were preserved by the "let it finish" path.
         # After N consecutive failures, let the journey expire to fill so
-        # a permanently stuck gate can't spin the orbit forever.
+        # a permanently stuck gate doesn't loop the orbit forever.
         self._gate_fail_preserve_count: int = 0
         self._gate_fail_preserve_limit: int = 2  # max consecutive beat-fail preservations
 
@@ -801,12 +799,9 @@ class BeatIntelligence:
         self._dbfs_reference_last_update = now
 
     def _get_spectrum_fill_ratio(self, trigger_kind: str) -> float:
-        """
-        Compute spectrum fill ratio from live FFT for given phase (#8).
-        
-        Two modes:
-        - dBFS mode (use_dbfs_fill_gate=True): Absolute dBFS thresholds relative to recent max signal
-        - Legacy mode (use_dbfs_fill_gate=False): Relative percentage of instantaneous peak
+        """Compute spectrum fill ratio from live FFT for given phase (#8).
+
+        Uses absolute dBFS thresholds relative to recent max signal.
         """
         if self.audio_engine is None:
             return 1.0  # no engine, don't block
@@ -845,45 +840,26 @@ class BeatIntelligence:
         if band.size == 0:
             return 0.0
 
-        # Check which mode to use
-        use_dbfs = bool(getattr(cfg, 'use_dbfs_fill_gate', True))
-        
-        if use_dbfs:
-            # ═══ dBFS MODE: Absolute signal strength relative to recent maximum ═══
-            now = time.perf_counter()
-            self._update_dbfs_reference(magnitudes, now)
-            
-            # Get dBFS threshold for this trigger type
-            dbfs_map = {
-                "downbeat": float(getattr(cfg, 'downbeat_dbfs_threshold', -25.0)),
-                "beat": float(getattr(cfg, 'beat_dbfs_threshold', -30.0)),
-                "syncopation": float(getattr(cfg, 'syncopation_dbfs_threshold', -35.0)),
-            }
-            dbfs_threshold = dbfs_map.get(trigger_kind, -30.0)  # default to beat threshold
-            
-            # Convert dBFS threshold to linear scale relative to reference max
-            # dB = 20 * log10(magnitude / reference)
-            # magnitude_threshold = reference * 10^(dB / 20)
-            reference_max = max(self._dbfs_reference_max, 1e-10)
-            linear_threshold = reference_max * (10.0 ** (dbfs_threshold / 20.0))
-            
-            # Count bins above absolute threshold
-            filled = float(np.sum(band >= linear_threshold))
-            return float(filled / max(1, band.size))
-            
-        else:
-            # ═══ LEGACY MODE: Relative percentage of instantaneous peak ═══
-            norm = band / peak
-            active_floor = 0.02
-            active_mask = norm >= active_floor
-            active = norm[active_mask]
+        now = time.perf_counter()
+        self._update_dbfs_reference(magnitudes, now)
 
-            if active.size == 0:
-                return 0.0
+        # dBFS threshold per trigger type
+        dbfs_map = {
+            "downbeat": float(getattr(cfg, 'downbeat_dbfs_threshold', -25.0)),
+            "beat": float(getattr(cfg, 'beat_dbfs_threshold', -30.0)),
+            "syncopation": float(getattr(cfg, 'syncopation_dbfs_threshold', -35.0)),
+        }
+        dbfs_threshold = dbfs_map.get(trigger_kind, -30.0)
 
-            threshold = float(getattr(cfg, 'overall_amp_fill_target', 0.5))
-            filled = float(np.sum(active >= threshold))
-            return float(filled / max(1, active.size))
+        # Convert dBFS threshold to linear scale relative to reference max
+        # dB = 20 * log10(magnitude / reference)
+        # magnitude_threshold = reference * 10^(dB / 20)
+        reference_max = max(self._dbfs_reference_max, 1e-10)
+        linear_threshold = reference_max * (10.0 ** (dbfs_threshold / 20.0))
+
+        # Count bins above absolute threshold
+        filled = float(np.sum(band >= linear_threshold))
+        return float(filled / max(1, band.size))
 
     def _passes_overall_amp_fill_gate(self, event: BeatEvent, trigger_kind: str) -> bool:
         """Overall amplitude fill gate (#8): require spectral fill for phase."""
@@ -1126,23 +1102,8 @@ class BeatIntelligence:
         relaxed = float(getattr(self.config.beat, "teaching_metronome_relaxed_confidence", 0.14) or 0.14)
         return acf_conf >= relaxed
 
-    def _strict_bass_motion_allowed(self, event: BeatEvent, trigger_kind: str) -> bool:
-        if trigger_kind not in ("beat", "syncopation"):
-            return True
-        if not bool(getattr(self.config.beat, "strict_bass_motion_gate_enabled", False)):
-            return True
-
-        beat_band = str(getattr(event, "beat_band", "") or "")
-        if beat_band in ("sub_bass", "low_mid"):
-            return True
-
-        fired = getattr(event, "fired_bands", None)
-        if isinstance(fired, (list, tuple, set)):
-            fired_set = {str(item) for item in fired}
-            if "sub_bass" in fired_set or "low_mid" in fired_set:
-                return True
-
-        return False
+    # _strict_bass_motion_allowed removed — gate was disabled by default
+    # and is no longer part of the gate chain.
 
     def _transient_motion_profile(self, event: BeatEvent, energy_fullness: float) -> tuple[str, float, bool, float]:
         """Return (profile_kind, radius_mult, _reserved, _reserved).
@@ -1427,7 +1388,10 @@ class BeatIntelligence:
                 should_start = True
                 is_interrupt = True
             elif self.last_trigger_kind in ("creep", "syncopation") and trigger_kind in ("beat", "downbeat", "syncopation"):
-                # Fill & syncopation freely interruptible by any beat event
+                # Syncopation freely interruptible by any beat event.
+                # (Creep no longer starts journeys, but guard remains
+                #  in case last_trigger_kind is still "creep" from a
+                #  recent fill→beat transition.)
                 should_start = True
                 is_interrupt = True
             elif self.last_trigger_kind == "downbeat" and trigger_kind in ("beat", "syncopation"):
@@ -1442,9 +1406,8 @@ class BeatIntelligence:
                 # During lazy glide, snap back to high-energy immediately
                 should_start = True
                 is_interrupt = True
-        elif trigger_kind == "creep" and self.last_trigger_kind == "creep" and not self.journey_active:
-            # Fill continuation when no journey active
-            should_start = True
+        # NOTE: creep (fill) never enters update_journey_progress.
+        # It is handled upstream by setting journey_completion = 1.0 directly.
 
         if should_start:
             self._journey_start_intensity = float(getattr(event, 'intensity', 0.0) or 0.0)
@@ -1698,9 +1661,9 @@ class BeatIntelligence:
         # active journey is preserved (not killed to fill) — it finishes
         # naturally on its own timing.
         #
-        # §8: After silence, only entry journeys are allowed until
-        # _post_silence_entry_complete is True.  After a wait, a 4-beat
-        # reentry must complete before faster journeys are unlocked.
+        # §8: After silence, the entry gate forces fill (creep) for
+        # _entry_gate_timeout_s seconds so the funscript pattern plays
+        # before beat-reactive orbits begin.
         entry_gate_armed = (not self._post_silence_entry_complete and not self.is_recovering and not silence_active)
         if entry_gate_armed:
             if self._entry_gate_started_mono <= 0.0:
@@ -1713,12 +1676,10 @@ class BeatIntelligence:
             self._entry_gate_started_mono = 0.0
 
         if entry_gate_armed:
-            # Entry not done yet — suppress beat-family triggers
+            # Entry not done yet — play fill pattern, suppress beat orbits
+            trigger_kind = "creep"
             if raw_trigger_kind in ("syncopation", "beat", "downbeat"):
-                trigger_kind = "creep"
                 gate_fail_reason = "entry_gate"
-            elif raw_trigger_kind == "creep":
-                trigger_kind = "creep"
         elif raw_trigger_kind == "creep" and self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
             trigger_kind = self.last_trigger_kind
             self._creep_consecutive_frames = 0
@@ -1728,9 +1689,6 @@ class BeatIntelligence:
             if not stroke_ready:
                 gate_passed = False
                 gate_fail_reason = "stroke_ready"
-            elif not self._strict_bass_motion_allowed(event, raw_trigger_kind):
-                gate_passed = False
-                gate_fail_reason = "strict_bass"
             # Phase 3 gates: spectrum fill
             elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
                 gate_passed = False
@@ -1838,9 +1796,6 @@ class BeatIntelligence:
         else:
             interval_beats = self.interval_beats_for_trigger(trigger_kind)
 
-        # park_bounce mode removed — always False
-        park_bounce_only = False
-
         # Apply learning cadence hint only at journey boundaries.
         # _committed_divisor_hint is latched from _learned_cadence_hint
         # inside update_journey_progress when a new journey actually starts,
@@ -1855,6 +1810,12 @@ class BeatIntelligence:
 
         if no_beat_timed_out:
             journey_completion = 1.0  # fully parked
+        elif trigger_kind == "creep":
+            # Creep = fill motion (funscript ping-pong pattern).
+            # No journey runs — report fully parked so StrokeMapper
+            # enters _apply_park_motion_frame immediately.
+            journey_completion = 1.0
+            self.journey_active = False
         else:
             journey_completion = self.update_journey_progress(
                 trigger_kind,
@@ -1865,10 +1826,10 @@ class BeatIntelligence:
             )
 
         # Only update the active trigger kind / interval when a journey
-        # actually (re)started.  This keeps the running arc's priority
-        # identity locked so a same-or-lower-priority event can't poison
-        # it on a non-restarting frame.
-        if journey_completion <= 1e-9 or no_beat_timed_out:
+        # actually (re)started, or during fill (creep).  This keeps the
+        # running arc's priority identity locked so a same-or-lower-priority
+        # event can't poison it on a non-restarting frame.
+        if journey_completion <= 1e-9 or no_beat_timed_out or trigger_kind == "creep":
             self.active_interval_beats = interval_beats
             self.last_trigger_kind = trigger_kind
 
@@ -1884,8 +1845,6 @@ class BeatIntelligence:
             gate_fail=gate_fail_reason,
             energy_fullness=energy_fullness_now,
             session_intensity=session_intensity,
-            park_bounce_only=False,
-            park_bounce_gain=0.0,
             learning=learning,
         )
 

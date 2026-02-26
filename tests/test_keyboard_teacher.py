@@ -54,8 +54,6 @@ class FakeBeatDecision:
     gate_fail: str = ""
     energy_fullness: float = 0.6
     session_intensity: float = 0.5
-    park_bounce_only: bool = False
-    park_bounce_gain: float = 0.0
 
 
 def _make_gate_state(**overrides) -> dict:
