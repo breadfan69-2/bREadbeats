@@ -130,7 +130,7 @@ class StrokeMapper:
         self._last_direction_change_time: float = 0.0
         self._center_y_offset: float = 0.0
         self._center_wander_phase: float = 0.0
-        self._energy_history: deque = deque(maxlen=120)  # ~2s at 60fps
+        self._energy_history: deque = deque(maxlen=300)  # ~5s at 60fps
         self._session_energy_ema: float = 0.5
 
         # ── Intensity timer ramp (session-level escalation) ──
@@ -519,12 +519,11 @@ class StrokeMapper:
                 self._fill_exit_micro_phase = 0.0
                 self._fill_exit_micro_radius = 0.05
                 self._fill_exit_micro_freq = 30.0
-                # Compute orbit target: where the first beat journey wants to be
+                # Compute orbit target: where the first beat journey wants to be.
+                # Use the beat-journey minimum radius (0.80) so the exit
+                # lands on a full-size orbit, not a tiny park-radius circle.
                 _center_y = float(self._base_center_y + self._reactive_bounce_y)
-                _geom = self.config.stroke.orbit_geometry.get(decision.trigger_kind, {
-                    "center_y": self._baseline_center_y, "park_radius": 0.70, "max_radius": 1.0
-                })
-                _target_radius = float(_geom["park_radius"])
+                _target_radius = max(float(decision.radius_bloom), 0.80)
                 # Use orbit phase if initialized, otherwise infer from current position
                 if self._orbit_phase_initialized:
                     _target_angle = self._orbit_phase
@@ -826,18 +825,21 @@ class StrokeMapper:
             interval_s = float(getattr(self.config.stroke, 'direction_change_interval_s', 15.0) or 15.0)
             drop_needed = float(getattr(self.config.stroke, 'direction_change_energy_drop', 0.35) or 0.35)
 
-            if now - self._last_direction_change_time > interval_s and len(self._energy_history) >= 30:
+            if (now - self._last_direction_change_time > interval_s
+                    and len(self._energy_history) >= 75
+                    and self._actual_radius > 0.9):
                 recent = list(self._energy_history)
-                recent_mean = float(np.mean(recent[-15:]))
-                prior_mean = float(np.mean(recent[-30:-15]))
+                recent_mean = float(np.mean(recent[-15:]))   # last ~0.25s
+                prior_mean = float(np.mean(recent[-75:-15]))  # prior ~1.0s
                 # Trigger on significant energy transition (either direction)
                 if prior_mean > 0.08 and abs(prior_mean - recent_mean) / max(prior_mean, 0.08) > drop_needed:
                     self._orbit_direction *= -1
                     self._last_direction_change_time = now
-                    # Reset velocity EMA so the rate limiter doesn't
-                    # fight the reversal (prevents J/cursive hooks).
-                    self._smoothed_da = 0.0
-                    self._smoothed_db = 0.0
+                    # Negate velocity EMAs so the rate limiter tracks the
+                    # reversed direction immediately (zeroing causes J-hooks
+                    # because delta_diff is large → slow 0.08 ramp).
+                    self._smoothed_da = -self._smoothed_da
+                    self._smoothed_db = -self._smoothed_db
                     # §1: Choose one anchor per active segment (until silence reset).
                     if not self._anchor_phrase_locked:
                         self._anchor_sign = 1 if float(np.random.random()) > 0.5 else -1
