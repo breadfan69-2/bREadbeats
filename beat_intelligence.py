@@ -637,10 +637,6 @@ class BeatIntelligence:
         Returns (fade_scalar 0..1, request_tempo_reset bool).
         """
         request_reset = False
-        open_threshold_raw = getattr(self.config.stroke, "silence_threshold", -66.0)
-        cfg_open_db = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.001)
-        # Use the same auto-calibrated floor as the gate
-        open_threshold_db = max(cfg_open_db, self._noise_floor_db + 6.0)
         amp = self._coerce_amplitude_db(overall_amplitude)
 
         if silence_active:
@@ -648,9 +644,8 @@ class BeatIntelligence:
             # Gradual fade
             self._silence_fade = max(0.0, self._silence_fade - self._silence_fade_rate)
 
-            # Only arm post-silence ramp reset from true silence-open amplitude.
-            if amp < open_threshold_db:
-                self._was_silent = True
+            # Flatness gate already confirmed silence — arm post-silence ramp.
+            self._was_silent = True
 
             # Tempo reset after prolonged silence (once per silence episode)
             if (self._consecutive_silent_count >= self._silence_reset_threshold_frames
@@ -1007,39 +1002,35 @@ class BeatIntelligence:
         return float(np.clip(self.rms_envelope, RMS_DB_FLOOR, 12.0))
 
     def update_silence_deadzone_gate(self, overall_amplitude: float, now: float | None = None) -> bool:
-        # --- Config thresholds (dBFS, may be stale/too-low) ---
-        open_threshold_raw = getattr(self.config.stroke, "silence_threshold", -66.0)
-        close_threshold_raw = getattr(self.config.stroke, "silence_close_threshold", -58.0)
         close_frames_required = 6
-        cfg_open = silence_threshold_to_dbfs(open_threshold_raw, default_linear=0.001)
-        cfg_close = silence_threshold_to_dbfs(close_threshold_raw, default_linear=0.003)
-
         level_db = self._coerce_amplitude_db(overall_amplitude)
 
-        # --- Auto-calibrated noise floor (dBFS) ---
-        # P5 of rolling 10-second RMS history = the quietest 5 % of recent
-        # frames.  Same pattern already proven in compute_radius_bloom_from_sub_bass.
+        # --- Flatness-based silence detection ---
+        # If the waveform is flat (low dynamic range), it's silence/noise
+        # regardless of absolute dB level.  Inherently volume-independent —
+        # works at any Windows volume.
+        #
+        # "Flat" = P95-P5 spread of recent RMS < 3 dB (all frames similar).
+        # "Active" = spread >= 6 dB (real dynamic content).
+        # Hysteresis band between 3-6 dB prevents chatter.
+        flat_open_spread = 3.0   # enter silence when spread < this
+        flat_close_spread = 6.0  # exit silence when spread > this
+
         if len(self._recent_rms_db) >= 30:
-            self._noise_floor_db = float(np.percentile(list(self._recent_rms_db), 5))
-        # else keep previous / RMS_DB_FLOOR
+            rms_list = list(self._recent_rms_db)
+            p5 = float(np.percentile(rms_list, 5))
+            p95 = float(np.percentile(rms_list, 95))
+            spread = p95 - p5
+            self._noise_floor_db = p5  # keep for other consumers
+        else:
+            spread = 99.0  # permissive until we have enough history
 
-        # Effective thresholds: whichever is higher — the user's slider or
-        # the auto-calibrated floor plus a fixed margin.  This means the
-        # gate auto-adapts to WASAPI noise at any Windows volume, while
-        # still honouring a user who deliberately raises the slider.
-        auto_open = self._noise_floor_db + 6.0   # 6 dB above noise floor
-        auto_close = self._noise_floor_db + 12.0  # 12 dB above noise floor
-        open_threshold = max(cfg_open, auto_open)
-        close_threshold = max(cfg_close, auto_close)
-        if close_threshold <= open_threshold:
-            close_threshold = float(min(12.0, open_threshold + 1.5))
-
-        if level_db < open_threshold:
+        if spread < flat_open_spread:
             self.silence_open_count += 1
             self.silence_close_count = 0
             if self.silence_open_count >= 1:
                 self.silence_deadzone_active = True
-        elif level_db > close_threshold:
+        elif spread > flat_close_spread:
             self.silence_close_count += 1
             self.silence_open_count = 0
             if self.silence_close_count >= close_frames_required:

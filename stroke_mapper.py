@@ -338,13 +338,18 @@ class StrokeMapper:
             self._intensity_ramp_mult = 1.0
 
         if decision.silence_active:
-            # ── Silent-still-park: hold position, fade volume, reset momentum ──
+            # ── Silence park: glide smoothly to park position, fade volume ──
             self._anchor_phrase_locked = False
             self._fill_exit_active = False  # cancel fill exit on silence
 
             fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
-            alpha = float(self.state.alpha)
-            beta = float(self.state.beta)
+            # Glide toward park position (0, park_y) with quintic ease
+            park_alpha = 0.0
+            park_beta = self._park_y  # 0.20 → maps to ~0.6 in display
+            glide_speed = 2.0  # full glide in ~0.5 s
+            glide_t = float(np.clip(glide_speed * dt, 0.0, 1.0))
+            alpha = float(self.state.alpha + (park_alpha - self.state.alpha) * glide_t)
+            beta = float(self.state.beta + (park_beta - self.state.beta) * glide_t)
             volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
             self._last_journey_completion = 1.0
         else:

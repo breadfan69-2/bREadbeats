@@ -276,15 +276,14 @@ class TestPostSilenceRamp(Phase2Mixin, unittest.TestCase):
         decision = bi.build_decision(self._event(), dt=1 / 60)
         self.assertAlmostEqual(decision.post_silence_ramp, 1.0, places=4)
 
-    def test_close_threshold_crossing_does_not_arm_ramp(self):
+    def test_silence_active_arms_ramp(self):
+        """Flatness model: silence_active=True always arms _was_silent."""
         cfg = Config()
-        cfg.stroke.silence_threshold = 0.002
-        cfg.stroke.silence_close_threshold = 0.008
         bi = BeatIntelligence(cfg)
 
         now = time.perf_counter()
         bi._update_silence_fade(silence_active=True, now=now, overall_amplitude=0.004)
-        self.assertFalse(bi._was_silent)
+        self.assertTrue(bi._was_silent)
 
     def test_open_threshold_arms_ramp(self):
         cfg = Config()
