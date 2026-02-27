@@ -1,10 +1,77 @@
 """
-Pure geometry helper for motion generation.
+Pure geometry helpers for motion generation.
 
 This module intentionally has no dependencies on PyQt or audio-engine code.
+All module-level functions are stateless pure math; the GeometryUtils class
+wraps phase-accumulating orbit state used by the legacy display path.
 """
 
 import math
+
+
+# ── Pure-math primitives (stateless) ─────────────────────────────────
+
+
+def quintic_ease(t: float) -> float:
+    """Quintic smoothstep (Perlin's improved): 6t⁵ − 15t⁴ + 10t³.
+
+    Zero first *and* second derivative at both endpoints — smoother
+    than cubic, with no perceptible knee at start or end.
+    """
+    t = max(0.0, min(1.0, float(t)))
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+
+def exponential_approach(
+    current: float, target: float, rate: float, dt: float,
+) -> float:
+    """Exponential glide: *current* → *target* at *rate* per second.
+
+    ``rate ≈ 3.0`` closes ~95 % of the gap in 1 s.
+    """
+    return current + (target - current) * (1.0 - math.exp(-rate * dt))
+
+
+def orbit_point(
+    angle: float,
+    radius: float,
+    center_x: float = 0.0,
+    center_y: float = 0.0,
+) -> tuple[float, float]:
+    """Cartesian (x, y) on a circle of *radius* centred at *(center_x, center_y)*."""
+    return (
+        center_x + radius * math.cos(angle),
+        center_y + radius * math.sin(angle),
+    )
+
+
+def infer_orbit(
+    alpha: float, beta: float, center_y: float = 0.0,
+) -> tuple[float, float]:
+    """Recover (angle, radius) from Cartesian position and orbit centre."""
+    dy = beta - center_y
+    return (math.atan2(dy, alpha), math.hypot(alpha, dy))
+
+
+def radius_cap_for_center(center_y: float, y_offset: float = 0.0) -> float:
+    """Largest radius that keeps the full orbit inside the [-1, 1] box."""
+    eff = center_y + y_offset
+    return max(0.0, min(1.0 - eff, 1.0 + eff))
+
+
+def nearest_anchor_crossing(
+    target_angle: float, anchor_angle: float, swing_rad: float,
+) -> float:
+    """Angle nearest *target_angle* within ±*swing_rad* of *anchor_angle* (mod 2π)."""
+    two_pi = 2.0 * math.pi
+    n = round((target_angle - anchor_angle) / two_pi)
+    candidates = [anchor_angle + (n + k) * two_pi for k in (-1, 0, 1)]
+    best = min(candidates, key=lambda c: abs(c - target_angle))
+    delta = max(-swing_rad, min(swing_rad, target_angle - best))
+    return best + delta
+
+
+# ── Phase-accumulating orbit (legacy display path) ───────────────────
 
 
 class GeometryUtils:
