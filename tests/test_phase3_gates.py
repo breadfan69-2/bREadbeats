@@ -289,6 +289,154 @@ class TestAutoFillAdaptation(Phase3Mixin, unittest.TestCase):
         self.assertLess(bi._auto_fill_offsets["downbeat"], 0.0)
 
 
+# ── Phrase commitment coverage ─────────────────────────────────────────────
+
+
+class TestPhraseCommitment(Phase3Mixin, unittest.TestCase):
+    def test_fill_to_beat_starts_eight_beat_lock(self):
+        bi = self._bi()
+        bi._phrase_renew_ratio = 2.0  # disable renewal so lock can naturally end for assertion
+        bi.last_trigger_kind = "creep"
+        bi._recent_flux_values.clear()
+        bi._recent_flux_values.extend([1.0, 1.0, 1.0, 1.0])
+
+        trigger_kind = bi._update_phrase_commitment(
+            trigger_kind="beat",
+            silence_active=False,
+            gate_fail_reason="",
+            is_beat_event=True,
+        )
+        self.assertEqual(trigger_kind, "beat")
+        self.assertTrue(bi._phrase_committed)
+        self.assertEqual(bi._phrase_beats_remaining, 7)
+
+        for beat_index in range(6):
+            trigger_kind = bi._update_phrase_commitment(
+                trigger_kind="creep",
+                silence_active=False,
+                gate_fail_reason="",
+                is_beat_event=True,
+            )
+            self.assertEqual(trigger_kind, "beat")
+            self.assertTrue(bi._phrase_committed)
+            self.assertEqual(bi._phrase_beats_remaining, 6 - beat_index)
+
+        trigger_kind = bi._update_phrase_commitment(
+            trigger_kind="creep",
+            silence_active=False,
+            gate_fail_reason="",
+            is_beat_event=True,
+        )
+        self.assertEqual(trigger_kind, "beat")
+        self.assertFalse(bi._phrase_committed)
+        self.assertEqual(bi._phrase_beats_remaining, 0)
+
+    def test_flux_crash_cancels_commitment_early(self):
+        bi = self._bi()
+        bi.last_trigger_kind = "creep"
+        bi._recent_flux_values.clear()
+        bi._recent_flux_values.extend([1.0, 1.0, 1.0, 1.0])
+
+        bi._update_phrase_commitment(
+            trigger_kind="beat",
+            silence_active=False,
+            gate_fail_reason="",
+            is_beat_event=False,
+        )
+        self.assertTrue(bi._phrase_committed)
+
+        bi._recent_flux_values.clear()
+        bi._recent_flux_values.extend([0.10, 0.10, 0.10, 0.10])
+        bi._update_phrase_commitment(
+            trigger_kind="beat",
+            silence_active=False,
+            gate_fail_reason="",
+            is_beat_event=True,
+        )
+        self.assertFalse(bi._phrase_committed)
+        self.assertEqual(bi._phrase_beats_remaining, 0)
+
+    def test_measure_end_renews_on_sustained_flux(self):
+        bi = self._bi()
+        bi.last_trigger_kind = "creep"
+        bi._recent_flux_values.clear()
+        bi._recent_flux_values.extend([1.0, 1.0, 1.0, 1.0])
+
+        bi._update_phrase_commitment(
+            trigger_kind="beat",
+            silence_active=False,
+            gate_fail_reason="",
+            is_beat_event=False,
+        )
+        self.assertTrue(bi._phrase_committed)
+
+        bi._phrase_beats_remaining = 1
+        bi._recent_flux_values.clear()
+        bi._recent_flux_values.extend([0.80, 0.80, 0.80, 0.80])
+
+        bi._update_phrase_commitment(
+            trigger_kind="beat",
+            silence_active=False,
+            gate_fail_reason="",
+            is_beat_event=True,
+        )
+        self.assertTrue(bi._phrase_committed)
+        self.assertEqual(bi._phrase_beats_remaining, bi._phrase_measure_beats)
+        self.assertAlmostEqual(bi._phrase_flux_baseline, 0.8, places=3)
+
+
+# ── Gate-state snapshot contract ───────────────────────────────────────────
+
+
+class TestSnapshotGateState(Phase3Mixin, unittest.TestCase):
+    def test_snapshot_gate_state_has_expected_keys_and_types(self):
+        bi = self._bi()
+        bi.build_decision(self._event(is_downbeat=True), dt=1 / 60, silence_override=False)
+        gs = bi.snapshot_gate_state()
+
+        expected_types = {
+            "gs_sub_bass": float,
+            "gs_low_mid": float,
+            "gs_mid": float,
+            "gs_high": float,
+            "gs_flux_mean": float,
+            "gs_flux_std": float,
+            "gs_flux_delta": float,
+            "gs_low_band_mean": float,
+            "gs_mid_band_mean": float,
+            "gs_high_band_mean": float,
+            "gs_mid_bass_mean": float,
+            "gs_rms_envelope_db": float,
+            "gs_energy_fullness": float,
+            "gs_silence_active": int,
+            "gs_silence_fade": float,
+            "gs_consecutive_silent": int,
+            "gs_stroke_ready": int,
+            "gs_stroke_ready_reason": str,
+            "gs_phrase_committed": int,
+            "gs_phrase_beats_remaining": int,
+            "gs_journey_active": int,
+            "gs_journey_elapsed_s": float,
+            "gs_journey_duration_s": float,
+            "gs_last_trigger_kind": str,
+            "gs_active_interval_beats": int,
+            "gs_stabilized_bpm": float,
+            "gs_tempo_unlock_hold": int,
+            "gs_time_since_last_beat_s": float,
+            "gs_fill_ema_downbeat": float,
+            "gs_fill_ema_beat": float,
+            "gs_fill_ema_syncopation": float,
+            "gs_fill_offset_downbeat": float,
+            "gs_fill_offset_beat": float,
+            "gs_fill_offset_syncopation": float,
+        }
+
+        self.assertEqual(set(gs.keys()), set(expected_types.keys()))
+        for key, expected_type in expected_types.items():
+            self.assertIn(key, gs)
+            self.assertIsInstance(gs[key], expected_type)
+
+
 # ── Integration: gate cascade ordering ──────────────────────────────────────
 
 

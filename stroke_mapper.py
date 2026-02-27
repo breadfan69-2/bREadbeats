@@ -339,7 +339,6 @@ class StrokeMapper:
         hitch_soft_reset = bool(raw_dt > 0.25)
         self.state.last_time = now
 
-        self._intelligence.set_audio_engine(self.audio_engine)
         decision = self._intelligence.build_decision(event=event, dt=dt, silence_override=silence_override)
 
         prev_trigger_kind = self._last_trigger_kind

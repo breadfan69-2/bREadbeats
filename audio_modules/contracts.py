@@ -56,6 +56,8 @@ class BeatEvent:
     is_syncopated: bool = False
     monotonic_timestamp: float = 0.0
     beat_features: Optional[dict] = None
+    spectral_centroid_hz: float = 0.0
+    spectral_flatness: float = 0.0
     raw_rms: float = 0.0
     raw_rms_db: float = RMS_DB_FLOOR
 

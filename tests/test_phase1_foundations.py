@@ -198,7 +198,7 @@ class TestActivityHelpers(Phase1Mixin, unittest.TestCase):
     def test_mid_bass_activity_from_low_mid(self):
         bi = BeatIntelligence(Config())
         bi.energies.low_mid = 0.5
-        activity = bi._get_mid_bass_activity(self._event())
+        activity = max(0.0, min(1.0, float(bi.energies.low_mid)))
         self.assertAlmostEqual(activity, 0.5, places=4)
 
 

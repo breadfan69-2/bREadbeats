@@ -54,6 +54,15 @@ class BeatDecision:
     learning: LearningOutputs = field(default_factory=LearningOutputs)
 
 
+@dataclass
+class AudioSnapshot:
+    spectrum: np.ndarray | None
+    band_energies: dict[str, float]
+    predicted_next_beat_mono: float
+    metronome_bpm: float
+    metronome_phase: float | None
+
+
 class BeatIntelligence:
     """Signal-domain decision engine for orbit control."""
 
@@ -100,9 +109,6 @@ class BeatIntelligence:
         self.journey_duration_s = 0.0
         self.journey_elapsed_s = 0.0
         self.journey_active = False
-        self.is_recovering: bool = False
-        self._was_silence_active: bool = False
-        self._recovery_radius_bloom: float = 0.70
         self._journey_duration_target_s = 0.0
         self._journey_start_intensity = 0.0  # intensity of current journey's trigger
         self._lazy_glide_active: bool = False
@@ -217,9 +223,6 @@ class BeatIntelligence:
         self._tempo_unlock_hold_flux_spike_ratio: float = 2.0   # cancel if flux > 2x baseline
         self._tempo_unlock_hold_flux_drop_ratio: float = 0.25   # cancel if flux < 25% of baseline
 
-        # ── Session arc: very slow energy tracking ──
-        self._session_intensity_ema: float = 0.5
-
     def set_scheduled_lead_ms(self, value_ms: int) -> None:
         """Live-update the pipeline lead from the GUI spinbox."""
         self._adaptive_lead.set_base_lead_ms(float(value_ms))
@@ -233,24 +236,28 @@ class BeatIntelligence:
         clipped = float(np.clip(value_db, floor_db, 0.0))
         return float(np.clip((clipped - floor_db) / max(1e-9, -floor_db), 0.0, 1.0))
 
-    def _event_rms_db(self, event: BeatEvent) -> float:
-        raw_rms_db = float(getattr(event, "raw_rms_db", RMS_DB_FLOOR) or RMS_DB_FLOOR)
-        if np.isfinite(raw_rms_db) and raw_rms_db > RMS_DB_FLOOR:
-            return float(np.clip(raw_rms_db, RMS_DB_FLOOR, 12.0))
-        raw_rms = float(getattr(event, "raw_rms", 0.0) or 0.0)
-        if raw_rms > 0.0:
-            return self._linear_to_dbfs(raw_rms)
-        return RMS_DB_FLOOR
+    def _to_db(self, value: float | None) -> float:
+        """Convert optional amplitude input to bounded dBFS.
 
-    def _coerce_amplitude_db(self, amplitude: float | None) -> float:
-        if amplitude is None:
+        Handles ``None``, zero, linear amplitudes (0..1), raw dBFS,
+        and non-finite values.
+        """
+        if value is None:
             return RMS_DB_FLOOR
-        value = float(amplitude)
-        if not np.isfinite(value):
+        number = float(value)
+        if not np.isfinite(number):
             return RMS_DB_FLOOR
-        if 0.0 < value <= 1.0:
-            return self._linear_to_dbfs(value)
-        return float(np.clip(value, RMS_DB_FLOOR, 12.0))
+        if number == 0.0:
+            return RMS_DB_FLOOR
+        if 0.0 < number <= 1.0:
+            return self._linear_to_dbfs(number)
+        return float(np.clip(number, RMS_DB_FLOOR, 12.0))
+
+    def _event_rms_db(self, event: BeatEvent) -> float:
+        raw_rms_db = self._to_db(event.raw_rms_db)
+        if raw_rms_db > RMS_DB_FLOOR:
+            return raw_rms_db
+        return self._to_db(event.raw_rms)
 
 
     def set_audio_engine(self, audio_engine) -> None:
@@ -345,7 +352,7 @@ class BeatIntelligence:
         volume-dependent columns are inherently volume-independent.
         """
         rms_db = self._event_rms_db(event)
-        raw_flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
+        raw_flux = float(event.spectral_flux or 0.0)
 
         # P95-normalize flux against rolling history (matches training pipeline)
         flux_history = list(self._recent_flux_values)
@@ -365,8 +372,8 @@ class BeatIntelligence:
         eps = 1e-10
         low_high_ratio = float((sub + low + eps) / (high + eps))
 
-        centroid = float(getattr(event, "spectral_centroid_hz", 0.0) or 0.0)
-        flatness = float(getattr(event, "spectral_flatness", 0.0) or 0.0)
+        centroid = float(event.spectral_centroid_hz or 0.0)
+        flatness = float(event.spectral_flatness or 0.0)
 
         # Fallback estimates when spectral features not available from audio engine
         if centroid <= 0.0:
@@ -477,16 +484,12 @@ class BeatIntelligence:
             self._learning_outputs = outputs
             return outputs
 
-        is_beat = bool(
-            getattr(event, "is_beat", False)
-            or getattr(event, "is_downbeat", False)
-            or getattr(event, "is_syncopated", False)
-        )
+        is_beat = bool(event.is_beat or event.is_downbeat or event.is_syncopated)
         if not is_beat:
             return self._learning_outputs  # return last valid outputs
 
         # Check confidence: need acf_confidence above threshold
-        acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+        acf_conf = float(event.acf_confidence or 0.0)
         if acf_conf < self._learning_min_confidence:
             return self._learning_outputs
 
@@ -565,9 +568,9 @@ class BeatIntelligence:
                 self._stroke_ready_reason = "grace"
                 # Still ready, but tick down finish beats on beat events
                 is_beat_event = bool(
-                    getattr(event, "is_beat", False)
-                    or getattr(event, "is_downbeat", False)
-                    or getattr(event, "is_syncopated", False)
+                    event.is_beat
+                    or event.is_downbeat
+                    or event.is_syncopated
                 )
                 if is_beat_event and self._readiness_finish_beats_remaining > 0:
                     self._readiness_finish_beats_remaining -= 1
@@ -575,9 +578,9 @@ class BeatIntelligence:
                 # Past grace but allow N more beat strokes
                 self._stroke_ready_reason = "finishing"
                 is_beat_event = bool(
-                    getattr(event, "is_beat", False)
-                    or getattr(event, "is_downbeat", False)
-                    or getattr(event, "is_syncopated", False)
+                    event.is_beat
+                    or event.is_downbeat
+                    or event.is_syncopated
                 )
                 if is_beat_event:
                     self._readiness_finish_beats_remaining -= 1
@@ -596,11 +599,11 @@ class BeatIntelligence:
         Holds the last locked cadence until cancelled by flux spike/drop or silence.
         Releases immediately on flux event or silence for responsive relaxation.
         """
-        tempo_locked = bool(getattr(event, "tempo_locked", False))
-        acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+        tempo_locked = bool(event.tempo_locked)
+        acf_conf = float(event.acf_confidence or 0.0)
         if not math.isfinite(acf_conf):
             acf_conf = 0.0
-        metro_bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+        metro_bpm = float(event.metronome_bpm or 0.0)
 
         # Cancel on silence
         if self.silence_deadzone_active:
@@ -655,7 +658,6 @@ class BeatIntelligence:
         Returns (fade_scalar 0..1, request_tempo_reset bool).
         """
         request_reset = False
-        amp = self._coerce_amplitude_db(overall_amplitude)
 
         if silence_active:
             self._consecutive_silent_count += 1
@@ -714,10 +716,10 @@ class BeatIntelligence:
     # ── Phase 1 §2: FluxTracker ──────────────────────────────────────
 
     def _update_flux_history(self, event: BeatEvent) -> None:
-        now = float(getattr(event, "monotonic_timestamp", 0.0) or 0.0)
+        now = float(event.monotonic_timestamp or 0.0)
         if now <= 0.0:
             now = time.perf_counter()
-        flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
+        flux = float(event.spectral_flux or 0.0)
         self._flux_history.append((now, flux))
         window_s = self._flux_rise_window_ms / 1000.0
         while self._flux_history and (now - self._flux_history[0][0]) > window_s:
@@ -733,19 +735,11 @@ class BeatIntelligence:
         low = float(np.clip(self.energies.low_mid, 0.0, 1.0))
         return float(max(sub, (sub * 0.6 + low * 0.4)))
 
-    def _get_mid_band_activity(self, event: BeatEvent) -> float:
-        """Estimate vocal/guitar mid-band activity for this frame."""
-        return float(np.clip(self.energies.mid, 0.0, 1.0))
-
     def _get_high_band_activity(self, event: BeatEvent) -> float:
         """Estimate upper-range (mid + high) activity for this frame."""
         mid = float(np.clip(self.energies.mid, 0.0, 1.0))
         high = float(np.clip(self.energies.high, 0.0, 1.0))
         return float(max(high, (mid * 0.3 + high * 0.7)))
-
-    def _get_mid_bass_activity(self, event: BeatEvent) -> float:
-        """Estimate 200-400 Hz mid-bass activity from low_mid band."""
-        return float(np.clip(self.energies.low_mid, 0.0, 1.0))
 
     # ── Phase 1 §3: Beat timing ─────────────────────────────────────
 
@@ -755,19 +749,52 @@ class BeatIntelligence:
 
     def _record_beat_times(self, event: BeatEvent, trigger_kind: str, now: float) -> None:
         """Track timestamp of the most recent beat/downbeat/syncopation."""
-        if bool(getattr(event, "tempo_reset", False)):
+        if bool(event.tempo_reset):
             self._arm_tempo_reset_motion_hold(now)
 
-        is_beat = bool(getattr(event, "is_beat", False))
-        is_downbeat = bool(getattr(event, "is_downbeat", False))
-        is_syncopated = bool(getattr(event, "is_syncopated", False))
+        is_beat = bool(event.is_beat)
+        is_downbeat = bool(event.is_downbeat)
+        is_syncopated = bool(event.is_syncopated)
 
         if is_beat or is_downbeat or is_syncopated:
             self._last_any_beat_time = now
 
-    # ── Phase 3 §5: Low-band fullness gate (removed) ───────────────────
+    def _capture_audio_snapshot(self, event: BeatEvent | None = None) -> AudioSnapshot:
+        spectrum: np.ndarray | None = None
+        band_energies: dict[str, float] = {}
+        predicted_next_beat_mono = 0.0
+        metronome_bpm = float(event.metronome_bpm or 0.0) if event is not None else 0.0
+        metronome_phase: float | None = None
 
-    # ── Phase 3 §6: Dual-band dB gate (removed) ──────────────────────
+        if self.audio_engine is not None:
+            if hasattr(self.audio_engine, "get_spectrum"):
+                raw_spectrum = self.audio_engine.get_spectrum()
+                if raw_spectrum is not None:
+                    spectrum = np.asarray(raw_spectrum, dtype=float)
+
+            if hasattr(self.audio_engine, "get_band_energies"):
+                maybe = self.audio_engine.get_band_energies()
+                if isinstance(maybe, dict):
+                    band_energies = {str(k): float(v) for k, v in maybe.items()}
+            elif hasattr(self.audio_engine, "_band_energies"):
+                maybe = getattr(self.audio_engine, "_band_energies", None)
+                if isinstance(maybe, dict):
+                    band_energies = {str(k): float(v) for k, v in maybe.items()}
+
+            predicted_next_beat_mono = float(getattr(self.audio_engine, "predicted_next_beat_mono", 0.0) or 0.0)
+            if metronome_bpm <= 0.0:
+                metronome_bpm = float(getattr(self.audio_engine, "_metronome_bpm", 0.0) or 0.0)
+            met_phase = getattr(self.audio_engine, "_metronome_phase", None)
+            if met_phase is not None:
+                metronome_phase = float(met_phase)
+
+        return AudioSnapshot(
+            spectrum=spectrum,
+            band_energies=band_energies,
+            predicted_next_beat_mono=predicted_next_beat_mono,
+            metronome_bpm=metronome_bpm,
+            metronome_phase=metronome_phase,
+        )
 
     # ── Phase 3 §8: Spectrum fill gate ───────────────────────────────────
 
@@ -790,22 +817,19 @@ class BeatIntelligence:
         
         self._dbfs_reference_last_update = now
 
-    def _get_spectrum_fill_ratio(self, trigger_kind: str) -> float:
+    def _get_spectrum_fill_ratio(self, trigger_kind: str, audio_snapshot: AudioSnapshot | None = None) -> float:
         """Compute spectrum fill ratio from live FFT for given phase (#8).
 
         Uses absolute dBFS thresholds relative to recent max signal.
         """
-        if self.audio_engine is None:
-            return 1.0  # no engine, don't block
+        if audio_snapshot is None:
+            audio_snapshot = self._capture_audio_snapshot(event=None)
 
-        spectrum = None
-        if hasattr(self.audio_engine, 'get_spectrum'):
-            spectrum = self.audio_engine.get_spectrum()
-
+        spectrum = audio_snapshot.spectrum
         if spectrum is None:
             return 1.0
 
-        magnitudes = np.abs(np.asarray(spectrum, dtype=float))
+        magnitudes = np.abs(spectrum)
         if magnitudes.size == 0:
             return 1.0
 
@@ -853,7 +877,12 @@ class BeatIntelligence:
         filled = float(np.sum(band >= linear_threshold))
         return float(filled / max(1, band.size))
 
-    def _passes_overall_amp_fill_gate(self, event: BeatEvent, trigger_kind: str) -> bool:
+    def _passes_overall_amp_fill_gate(
+        self,
+        event: BeatEvent,
+        trigger_kind: str,
+        audio_snapshot: AudioSnapshot | None = None,
+    ) -> bool:
         """Overall amplitude fill gate (#8): require spectral fill for phase."""
         cfg = self.config.stroke
         if not bool(getattr(cfg, 'overall_amp_fill_gate_enabled', True)):
@@ -861,12 +890,15 @@ class BeatIntelligence:
             self._fill_pass_consecutive[trigger_kind] = 0
             return True
 
-        # No audio engine: don't block
-        if self.audio_engine is None:
+        if audio_snapshot is None:
+            audio_snapshot = self._capture_audio_snapshot(event=event)
+
+        # No spectrum: don't block
+        if audio_snapshot.spectrum is None:
             self._fill_pass_consecutive[trigger_kind] = 0
             return True
 
-        intensity = float(getattr(event, 'intensity', 0.0) or 0.0)
+        intensity = float(event.intensity or 0.0)
         target = float(getattr(cfg, 'overall_amp_fill_target', 0.5))
         tolerance = float(getattr(cfg, 'overall_amp_fill_tolerance', 0.5))
 
@@ -874,7 +906,7 @@ class BeatIntelligence:
             self._fill_pass_consecutive[trigger_kind] = 0
             return False
 
-        fill_ratio = self._get_spectrum_fill_ratio(trigger_kind)
+        fill_ratio = self._get_spectrum_fill_ratio(trigger_kind, audio_snapshot=audio_snapshot)
         required = self._get_overall_amp_fill_required(trigger_kind)
 
         # Check instant fill pass/fail
@@ -995,23 +1027,14 @@ class BeatIntelligence:
 
     def _populate_rolling_deques(self, event: BeatEvent) -> None:
         """Append current-frame activity values to rolling history deques."""
-        self._recent_flux_values.append(float(getattr(event, "spectral_flux", 0.0) or 0.0))
+        self._recent_flux_values.append(float(event.spectral_flux or 0.0))
         self._recent_low_band_values.append(self._get_low_band_activity(event))
-        self._recent_mid_band_values.append(self._get_mid_band_activity(event))
+        self._recent_mid_band_values.append(float(np.clip(self.energies.mid, 0.0, 1.0)))
         self._recent_high_band_values.append(self._get_high_band_activity(event))
-        self._recent_mid_bass_values.append(self._get_mid_bass_activity(event))
+        self._recent_mid_bass_values.append(float(np.clip(self.energies.low_mid, 0.0, 1.0)))
 
-    def update_band_energies(self) -> None:
-        raw_energies = {}
-        if self.audio_engine is not None:
-            if hasattr(self.audio_engine, 'get_band_energies'):
-                maybe = self.audio_engine.get_band_energies()
-                if isinstance(maybe, dict):
-                    raw_energies = maybe
-            elif hasattr(self.audio_engine, "_band_energies"):
-                maybe = getattr(self.audio_engine, "_band_energies", None)
-                if isinstance(maybe, dict):
-                    raw_energies = maybe
+    def update_band_energies(self, band_energies: dict[str, float] | None = None) -> None:
+        raw_energies = band_energies or {}
 
         for band_name in ("sub_bass", "low_mid", "mid", "high"):
             raw = float(raw_energies.get(band_name, 0.0))
@@ -1053,7 +1076,7 @@ class BeatIntelligence:
         raw_rms_db = self._event_rms_db(event)
         if np.isfinite(raw_rms_db):
             return raw_rms_db
-        return float(np.clip(self.rms_envelope, RMS_DB_FLOOR, 12.0))
+        return self._to_db(self.rms_envelope)
 
     def update_silence_deadzone_gate(self, overall_amplitude: float, now: float | None = None) -> bool:
         """Simple fixed-threshold silence gate.
@@ -1066,7 +1089,7 @@ class BeatIntelligence:
         Exit silence:   level_db > _silence_exit_db for N consecutive frames.
         Hysteresis gap between the two thresholds prevents chatter.
         """
-        level_db = self._coerce_amplitude_db(overall_amplitude)
+        level_db = self._to_db(overall_amplitude)
 
         if level_db < self._silence_enter_db:
             self._silence_enter_frames += 1
@@ -1087,11 +1110,11 @@ class BeatIntelligence:
         return self.silence_deadzone_active
 
     def classify_trigger(self, event: BeatEvent) -> str:
-        if bool(getattr(event, "is_syncopated", False)) and bool(getattr(self.config.beat, "syncopation_enabled", True)):
+        if bool(event.is_syncopated) and bool(getattr(self.config.beat, "syncopation_enabled", True)):
             return "syncopation"
-        if bool(getattr(event, "is_downbeat", False)):
+        if bool(event.is_downbeat):
             return "downbeat"
-        if bool(getattr(event, "is_beat", False)):
+        if bool(event.is_beat):
             return "beat"
         return "creep"
 
@@ -1101,31 +1124,31 @@ class BeatIntelligence:
         if bool(getattr(self.config.beat, "teaching_ignore_traffic_lights", False)):
             relaxed = float(getattr(self.config.beat, "teaching_metronome_relaxed_confidence", 0.14) or 0.14)
             relaxed = float(np.clip(relaxed, 0.0, 1.0))
-            acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
-            metro_bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+            acf_conf = float(event.acf_confidence or 0.0)
+            metro_bpm = float(event.metronome_bpm or 0.0)
             if not np.isfinite(acf_conf):
                 acf_conf = 0.0
             if not np.isfinite(metro_bpm):
                 metro_bpm = 0.0
             if metro_bpm <= 0.0:
                 return False
-            if bool(getattr(event, "tempo_locked", False)):
+            if bool(event.tempo_locked):
                 return True
             return acf_conf >= relaxed
 
         if not bool(getattr(self.config.beat, "tempo_lock_required", True)):
             return True
-        if bool(getattr(event, "tempo_locked", False)):
+        if bool(event.tempo_locked):
             return True
 
         # Metronome-presence fallback: when the metronome is ticking at a
         # musically valid BPM the tempo is known even if acf_confidence
         # dips below the normal threshold.  Use a very low floor (0.05)
         # so only truly random phases are rejected.
-        metro_bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+        metro_bpm = float(event.metronome_bpm or 0.0)
         if not np.isfinite(metro_bpm):
             metro_bpm = 0.0
-        acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+        acf_conf = float(event.acf_confidence or 0.0)
         if not np.isfinite(acf_conf):
             acf_conf = 0.0
         if 50.0 < metro_bpm < 200.0 and acf_conf >= 0.05:
@@ -1133,9 +1156,6 @@ class BeatIntelligence:
 
         relaxed = float(getattr(self.config.beat, "teaching_metronome_relaxed_confidence", 0.14) or 0.14)
         return acf_conf >= relaxed
-
-    # _strict_bass_motion_allowed removed — gate was disabled by default
-    # and is no longer part of the gate chain.
 
     def _transient_motion_profile(self, event: BeatEvent, energy_fullness: float) -> tuple[str, float, bool, float]:
         """Return (profile_kind, radius_mult, _reserved, _reserved).
@@ -1146,7 +1166,7 @@ class BeatIntelligence:
         - "neutral": no kick/bass evidence (features present but no bass)
         - "no_features": beat_features unavailable — cannot judge
         """
-        features = getattr(event, "beat_features", None)
+        features = event.beat_features
         if not isinstance(features, dict):
             return "no_features", 1.0, False, 0.0
 
@@ -1154,8 +1174,8 @@ class BeatIntelligence:
         hat_conf = float(np.clip(features.get("hat_like_conf", 0.0) or 0.0, 0.0, 1.0))
         bass_dom = float(np.clip(features.get("bass_dominance", 1.0) or 1.0, 0.0, 8.0))
 
-        beat_band = str(getattr(event, "beat_band", "") or "")
-        fired = getattr(event, "fired_bands", None)
+        beat_band = str(event.beat_band or "")
+        fired = event.fired_bands
         fired_set = {str(item) for item in fired} if isinstance(fired, (list, tuple, set)) else set()
         bass_band_hit = bool(
             beat_band in ("sub_bass", "low_mid")
@@ -1184,7 +1204,7 @@ class BeatIntelligence:
         strong_kick_conf = bool(kick_conf >= min_kick_conf)
         strong_bass_dom = bool(bass_dom >= min_bass_dom)
         decisive_bass_dom = bool(bass_dom >= decisive_bass_dom_threshold)
-        raw_flux = float(np.clip(getattr(event, "spectral_flux", 0.0) or 0.0, 0.0, 8.0))
+        raw_flux = float(np.clip(event.spectral_flux or 0.0, 0.0, 8.0))
         # Normalize flux against rolling P95 so the threshold works at any volume
         flux_history = list(self._recent_flux_values)
         if len(flux_history) >= 10:
@@ -1219,15 +1239,15 @@ class BeatIntelligence:
 
     def effective_bpm(self, event: BeatEvent) -> float:
         """Return stabilized BPM (#13): last-locked memory + jump-ratio limiter."""
-        bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
+        bpm = float(event.metronome_bpm or 0.0)
         if bpm <= 0.0:
-            bpm = float(getattr(event, "bpm", 0.0) or 0.0)
+            bpm = float(event.bpm or 0.0)
         if bpm <= 0.0:
             bpm = 120.0
         bpm = float(np.clip(bpm, 40.0, 200.0))
 
-        tempo_locked = bool(getattr(event, "tempo_locked", False))
-        acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
+        tempo_locked = bool(event.tempo_locked)
+        acf_conf = float(event.acf_confidence or 0.0)
         # Fix #7: Only latch last-locked BPM when confidence is meaningful
         # so a garbage low-confidence value can't poison future clamping.
         if tempo_locked and acf_conf >= 0.15 and 50.0 <= bpm <= 200.0:
@@ -1284,7 +1304,7 @@ class BeatIntelligence:
         flux = 0.0
         flux_weight = 1.0
         if event is not None:
-            raw_flux = float(getattr(event, 'spectral_flux', 0.0) or 0.0)
+            raw_flux = float(event.spectral_flux or 0.0)
             flux_weight = float(getattr(self.config.stroke, 'flux_scaling_weight', 1.0) or 1.0)
             flux_history = list(self._recent_flux_values)
             if len(flux_history) >= 10:
@@ -1368,34 +1388,24 @@ class BeatIntelligence:
         interval_beats: int,
         event: BeatEvent,
         dt: float,
-        force_start: bool = False,
+        audio_snapshot: AudioSnapshot | None = None,
     ) -> float:
+        if audio_snapshot is None:
+            audio_snapshot = self._capture_audio_snapshot(event=event)
+
         bpm = self.effective_bpm(event)
         beat_period_s = 60.0 / max(1e-6, bpm)
-        if self.is_recovering:
-            trigger_kind = "start"
-            interval_beats = 8
         target_duration = max(1e-3, beat_period_s * float(interval_beats))
 
-        if self.is_recovering and self.journey_active and not force_start:
-            step = float(np.clip(dt, 1e-4, 0.25))
-            self.journey_elapsed_s = min(self.journey_duration_s, self.journey_elapsed_s + step)
-            completion = float(np.clip(self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0))
-            if completion >= 1.0:
-                self.journey_active = False
-                self._lazy_glide_active = False
-                self.is_recovering = False
-            return completion
-
         is_new_beat = bool(
-            (trigger_kind == "syncopation" and bool(getattr(event, "is_syncopated", False)))
-            or (trigger_kind == "downbeat" and bool(getattr(event, "is_downbeat", False)))
-            or (trigger_kind == "beat" and bool(getattr(event, "is_beat", False)))
+            (trigger_kind == "syncopation" and bool(event.is_syncopated))
+            or (trigger_kind == "downbeat" and bool(event.is_downbeat))
+            or (trigger_kind == "beat" and bool(event.is_beat))
         )
 
         # Feed phase error to adaptive lead on real beat events
         if is_new_beat:
-            _pe = float(getattr(event, 'phase_error_ms', 0.0) or 0.0)
+            _pe = float(event.phase_error_ms or 0.0)
             if abs(_pe) > 0.5:  # ignore near-zero noise
                 self._adaptive_lead.observe(_pe)
 
@@ -1407,19 +1417,7 @@ class BeatIntelligence:
         should_start = False
         is_interrupt = False   # True when restarting over an active journey
 
-        if self.is_recovering:
-            if force_start and not self.journey_active:
-                should_start = True
-            elif not self.journey_active:
-                should_start = True
-            else:
-                should_start = False
-            is_interrupt = False
-        elif force_start:
-            should_start = True
-            is_interrupt = bool(self.journey_active)
-
-        elif not self.journey_active:
+        if not self.journey_active:
             # Always start if no journey is running
             should_start = True
         elif is_new_beat:
@@ -1451,17 +1449,22 @@ class BeatIntelligence:
         # It is handled upstream by setting journey_completion = 1.0 directly.
 
         if should_start:
-            self._journey_start_intensity = float(getattr(event, 'intensity', 0.0) or 0.0)
+            self._journey_start_intensity = float(event.intensity or 0.0)
 
             # When interrupting an active arc, time the new journey so
             # it arrives at the next beat rather than using the full
             # interval duration.  Clamped to [80%..110%] of normal so
             # arcs never feel rushed or overly slow.  (§4: was 40-100%)
             if is_interrupt:
-                now_ts = float(getattr(event, 'monotonic_timestamp', 0.0) or 0.0)
+                now_ts = float(event.monotonic_timestamp or 0.0)
                 if now_ts <= 0.0:
                     now_ts = time.perf_counter()
-                next_beat_s = self._seconds_until_next_beat(event=event, bpm=bpm, now=now_ts)
+                next_beat_s = self._seconds_until_next_beat(
+                    event=event,
+                    bpm=bpm,
+                    now=now_ts,
+                    audio_snapshot=audio_snapshot,
+                )
                 clamped = float(np.clip(next_beat_s, target_duration * 0.80, target_duration * 1.10))
                 self.journey_duration_s = clamped
             else:
@@ -1488,12 +1491,17 @@ class BeatIntelligence:
             self._committed_divisor_hint = self._learned_cadence_hint
             return 0.0
 
-        now = float(getattr(event, "monotonic_timestamp", 0.0) or 0.0)
+        now = float(event.monotonic_timestamp or 0.0)
         if now <= 0.0:
             now = time.perf_counter()
 
         completion_before = float(np.clip(self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0))
-        seconds_until_next = self._seconds_until_next_beat(event=event, bpm=bpm, now=now)
+        seconds_until_next = self._seconds_until_next_beat(
+            event=event,
+            bpm=bpm,
+            now=now,
+            audio_snapshot=audio_snapshot,
+        )
         quarter_measure_window_s = beat_period_s  # 4/4 default: a quarter-measure is one beat
 
         # Gentle coast: only in the final 10% of the journey, and only
@@ -1536,189 +1544,93 @@ class BeatIntelligence:
         if completion >= 1.0:
             self.journey_active = False
             lazy_glide = False
-            if self.is_recovering:
-                self.is_recovering = False
         self._lazy_glide_active = bool(lazy_glide)
         return completion
 
-    def _seconds_until_next_beat(self, event: BeatEvent, bpm: float, now: float) -> float:
+    def _seconds_until_next_beat(
+        self,
+        event: BeatEvent,
+        bpm: float,
+        now: float,
+        audio_snapshot: AudioSnapshot | None = None,
+    ) -> float:
+        if audio_snapshot is None:
+            audio_snapshot = self._capture_audio_snapshot(event=event)
+
         beat_period_s = 60.0 / max(1e-6, bpm)
 
-        predicted_mono = 0.0
-        if self.audio_engine is not None:
-            predicted_mono = float(getattr(self.audio_engine, "predicted_next_beat_mono", 0.0) or 0.0)
+        predicted_mono = float(audio_snapshot.predicted_next_beat_mono)
         if predicted_mono > now:
             return float(max(0.0, predicted_mono - now))
 
-        met_bpm = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
-        if self.audio_engine is not None and met_bpm <= 0.0:
-            met_bpm = float(getattr(self.audio_engine, "_metronome_bpm", 0.0) or 0.0)
-        if met_bpm > 0.0 and self.audio_engine is not None:
-            met_phase = getattr(self.audio_engine, "_metronome_phase", None)
-            if met_phase is not None:
-                phase_frac = float(met_phase) % 1.0
-                until_frac = 1.0 - phase_frac
-                if until_frac <= 1e-6:
-                    until_frac = 1.0
-                return float(until_frac * (60.0 / max(1e-6, met_bpm)))
+        met_bpm = float(event.metronome_bpm or 0.0)
+        if met_bpm <= 0.0:
+            met_bpm = float(audio_snapshot.metronome_bpm)
+        if met_bpm > 0.0 and audio_snapshot.metronome_phase is not None:
+            phase_frac = float(audio_snapshot.metronome_phase) % 1.0
+            until_frac = 1.0 - phase_frac
+            if until_frac <= 1e-6:
+                until_frac = 1.0
+            return float(until_frac * (60.0 / max(1e-6, met_bpm)))
 
         if met_bpm > 0.0:
             return float(0.5 * (60.0 / max(1e-6, met_bpm)))
 
         return float(10.0 * beat_period_s)
 
-    def build_decision(self, event: BeatEvent, dt: float, silence_override: bool | None = None) -> BeatDecision:
-        self.update_band_energies()
-        self.update_envelope(event)
-
-        # Phase 1: flux + deque tracking (every frame)
-        self._update_flux_history(event)
-        self._populate_rolling_deques(event)
-
-        energy_fullness_now = self.compute_energy_fullness()
-        self._current_energy_fullness = energy_fullness_now
-
-        # Session arc: very slow EMA of energy fullness for long-term modulation
-        if getattr(self.config.stroke, 'session_arc_enabled', True):
-            session_alpha = float(getattr(self.config.stroke, 'session_arc_ema_alpha', 0.001) or 0.001)
-            self._session_intensity_ema += session_alpha * (energy_fullness_now - self._session_intensity_ema)
-        session_intensity = float(np.clip(self._session_intensity_ema, 0.0, 1.0))
-
-        now = float(getattr(event, "monotonic_timestamp", 0.0) or 0.0)
-        if now <= 0.0:
-            now = time.perf_counter()
-
-        overall_amplitude = self.get_overall_amplitude(event)
-        silence_active = self.update_silence_deadzone_gate(overall_amplitude, now=now)
-        if silence_override is not None:
-            silence_active = bool(silence_override)
-
-        # Layer 2: propagate silence gate back to AudioEngine so the
-        # beat detector, metronome, and syncopation are fully suppressed
-        # on the NEXT audio frame.  This closes the loop: AudioEngine
-        # captures audio → BeatIntelligence decides silence → AudioEngine
-        # suppresses all rhythm output until silence lifts.
-        if self.audio_engine is not None:
-            if hasattr(self.audio_engine, 'set_silence_gate'):
-                self.audio_engine.set_silence_gate(silence_active)
-            else:
-                self.audio_engine.silence_gate_active = silence_active
-
-        recovery_start = False
-        if silence_active:
-            self._was_silence_active = True
-            self.is_recovering = False
-            # §5: Cancel unlock hold on silence
-            self._tempo_unlock_hold_active = False
-        elif self._was_silence_active:
-            self._was_silence_active = False
-            self.is_recovering = True
-            recovery_start = True
-            self._recovery_radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
-
-        # Reset fill duration tracking during silence
-        if silence_active:
-            for kind in ("downbeat", "beat", "syncopation"):
-                self._fill_pass_consecutive[kind] = 0
-
-        # Phase 2: silence fade + post-silence ramp
-        silence_fade, request_tempo_reset = self._update_silence_fade(
-            silence_active,
-            now,
-            overall_amplitude=overall_amplitude,
-        )
-        post_silence_ramp = self._update_post_silence_ramp(silence_active, now)
-
-        # On silence reset: zero fill-gate EMA offsets so gate re-learns fresh for new section
-        if request_tempo_reset:
-            self._auto_fill_offsets = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
-            self._auto_fill_ema = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
-
-        # DISABLED FOR TESTING: "start" recovery path bypassed —
-        # fall through to normal gate chain instead.
-        if self.is_recovering and not silence_active:
-            self.is_recovering = False
-
-        # Phase 5: learning adapter
-        learning = self._update_learning_adapter(event)
-
-        raw_trigger_kind = self.classify_trigger(event)
-        trigger_kind = raw_trigger_kind
-        gate_fail_reason = ""  # tracks which gate blocked a beat-family event
-        motion_profile, motion_radius_mult, _, _ = self._transient_motion_profile(
-            event,
-            energy_fullness_now,
-        )
-
-        # ── Per-frame flux drop tracker (runs every frame, not just beats) ──
-        raw_flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
-        ema_alpha = 0.15
-        self._gate_flux_ema += ema_alpha * (raw_flux - self._gate_flux_ema)
-        if self._gate_flux_ema > self._gate_flux_peak:
-            self._gate_flux_peak = self._gate_flux_ema
-        else:
-            self._gate_flux_peak *= 0.998  # slow decay (~5 s half-life)
-        flux_threshold = self._gate_flux_peak * self._gate_flux_drop_ratio
-        if self._gate_flux_peak > 1e-6 and self._gate_flux_ema < flux_threshold:
-            self._gate_flux_drop_frames += 1
-        else:
-            self._gate_flux_drop_frames = 0
-        _flux_drop_confirmed = self._gate_flux_drop_frames >= self._gate_flux_drop_required
-
-        # Record beat times for hierarchy tracking
-        self._record_beat_times(event, raw_trigger_kind, now)
-
-        bpm = self.effective_bpm(event)
-
-        # §6: Readiness check runs AFTER effective_bpm so the unlock-hold
-        # can protect stroke_ready using stabilized BPM state.
-        stroke_ready = self._update_stroke_readiness(event, now)
-
-        # ── Priority interrupt: beat-family events run the gate chain.
-        # Non-beat frames during an active beat-family journey keep the current kind.
-        # When a beat-family event FAILS gates during an active journey, the
-        # active journey is preserved (not killed to fill) — it finishes
-        # naturally on its own timing.
-        #
+    def _evaluate_beat_gates(
+        self,
+        event: BeatEvent,
+        audio_snapshot: AudioSnapshot,
+        raw_trigger_kind: str,
+        trigger_kind: str,
+        silence_active: bool,
+        stroke_ready: bool,
+        flux_drop_confirmed: bool,
+    ) -> tuple[str, str]:
+        """Return (trigger_kind, gate_fail_reason) after gate-chain evaluation."""
+        gate_fail_reason = ""
         if raw_trigger_kind == "creep" and self.journey_active and self.last_trigger_kind in ("syncopation", "beat", "downbeat"):
-            trigger_kind = self.last_trigger_kind
-        elif raw_trigger_kind in ("syncopation", "beat", "downbeat") and not silence_active:
-            gate_passed = True
-            gate_fail_reason = ""
-            if not stroke_ready:
-                gate_passed = False
-                gate_fail_reason = "stroke_ready"
-            elif _flux_drop_confirmed:
-                gate_passed = False
-                gate_fail_reason = "flux_drop"
-            elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
-                gate_passed = False
-                gate_fail_reason = "spectral_fill"
+            return self.last_trigger_kind, gate_fail_reason
 
-            if gate_passed:
-                self._gate_fail_preserve_count = 0
-            elif (self.journey_active
-                  and self.last_trigger_kind in ("syncopation", "beat", "downbeat")
-                  and self._gate_fail_preserve_count < self._gate_fail_preserve_limit):
-                # Gate failed but a beat-family journey is running — let it
-                # finish.  But only preserve for a limited number of
-                # consecutive failures to prevent infinite orbit loops.
-                trigger_kind = self.last_trigger_kind
-                self._gate_fail_preserve_count += 1
-            else:
-                trigger_kind = "creep"
-                self._gate_fail_preserve_count = 0
+        if raw_trigger_kind not in ("syncopation", "beat", "downbeat") or silence_active:
+            return trigger_kind, gate_fail_reason
 
-        # ── Phrase Commitment: musical phrase locking ──
-        # When switching from fill to beat, 
-        # commit for a period to prevent sporadic jumps. But allow
-        # natural musical transitions (downbeat ↔ beat ↔ syncopation).
-        is_beat_event = bool(
-            getattr(event, "is_beat", False)
-            or getattr(event, "is_downbeat", False)
-            or getattr(event, "is_syncopated", False)
-        )
+        gate_passed = True
+        if not stroke_ready:
+            gate_passed = False
+            gate_fail_reason = "stroke_ready"
+        elif flux_drop_confirmed:
+            gate_passed = False
+            gate_fail_reason = "flux_drop"
+        elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind, audio_snapshot=audio_snapshot):
+            gate_passed = False
+            gate_fail_reason = "spectral_fill"
 
+        if gate_passed:
+            self._gate_fail_preserve_count = 0
+            return trigger_kind, gate_fail_reason
+
+        if (self.journey_active
+                and self.last_trigger_kind in ("syncopation", "beat", "downbeat")
+                and self._gate_fail_preserve_count < self._gate_fail_preserve_limit):
+            # Gate failed but a beat-family journey is running — let it
+            # finish.  But only preserve for a limited number of
+            # consecutive failures to prevent infinite orbit loops.
+            self._gate_fail_preserve_count += 1
+            return self.last_trigger_kind, gate_fail_reason
+
+        self._gate_fail_preserve_count = 0
+        return "creep", gate_fail_reason
+
+    def _update_phrase_commitment(
+        self,
+        trigger_kind: str,
+        silence_active: bool,
+        gate_fail_reason: str,
+        is_beat_event: bool,
+    ) -> str:
+        """Apply phrase commitment state machine and return effective trigger_kind."""
         # Detect new phrase entry: fill→beat transition only
         if (not self._phrase_committed
                 and trigger_kind == "beat"
@@ -1769,6 +1681,126 @@ class BeatIntelligence:
             self._phrase_committed = False
             self._phrase_beats_remaining = 0
 
+        return trigger_kind
+
+    def build_decision(self, event: BeatEvent, dt: float, silence_override: bool | None = None) -> BeatDecision:
+        audio_snapshot = self._capture_audio_snapshot(event)
+
+        self.update_band_energies(audio_snapshot.band_energies)
+        self.update_envelope(event)
+
+        # Phase 1: flux + deque tracking (every frame)
+        self._update_flux_history(event)
+        self._populate_rolling_deques(event)
+
+        energy_fullness_now = self.compute_energy_fullness()
+        self._current_energy_fullness = energy_fullness_now
+
+        now = float(event.monotonic_timestamp or 0.0)
+        if now <= 0.0:
+            now = time.perf_counter()
+
+        overall_amplitude = self.get_overall_amplitude(event)
+        silence_active = self.update_silence_deadzone_gate(overall_amplitude, now=now)
+        if silence_override is not None:
+            silence_active = bool(silence_override)
+
+        # Layer 2: propagate silence gate back to AudioEngine so the
+        # beat detector, metronome, and syncopation are fully suppressed
+        # on the NEXT audio frame.  This closes the loop: AudioEngine
+        # captures audio → BeatIntelligence decides silence → AudioEngine
+        # suppresses all rhythm output until silence lifts.
+        if self.audio_engine is not None:
+            if hasattr(self.audio_engine, 'set_silence_gate'):
+                self.audio_engine.set_silence_gate(silence_active)
+            else:
+                self.audio_engine.silence_gate_active = silence_active
+
+        if silence_active:
+            # §5: Cancel unlock hold on silence
+            self._tempo_unlock_hold_active = False
+
+        # Reset fill duration tracking during silence
+        if silence_active:
+            for kind in ("downbeat", "beat", "syncopation"):
+                self._fill_pass_consecutive[kind] = 0
+
+        # Phase 2: silence fade + post-silence ramp
+        silence_fade, request_tempo_reset = self._update_silence_fade(
+            silence_active,
+            now,
+            overall_amplitude=overall_amplitude,
+        )
+        post_silence_ramp = self._update_post_silence_ramp(silence_active, now)
+
+        # On silence reset: zero fill-gate EMA offsets so gate re-learns fresh for new section
+        if request_tempo_reset:
+            self._auto_fill_offsets = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
+            self._auto_fill_ema = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
+
+        # Phase 5: learning adapter
+        learning = self._update_learning_adapter(event)
+
+        raw_trigger_kind = self.classify_trigger(event)
+        trigger_kind = raw_trigger_kind
+        gate_fail_reason = ""  # tracks which gate blocked a beat-family event
+        motion_profile, motion_radius_mult, _, _ = self._transient_motion_profile(
+            event,
+            energy_fullness_now,
+        )
+
+        # ── Per-frame flux drop tracker (runs every frame, not just beats) ──
+        raw_flux = float(event.spectral_flux or 0.0)
+        ema_alpha = 0.15
+        self._gate_flux_ema += ema_alpha * (raw_flux - self._gate_flux_ema)
+        if self._gate_flux_ema > self._gate_flux_peak:
+            self._gate_flux_peak = self._gate_flux_ema
+        else:
+            self._gate_flux_peak *= 0.998  # slow decay (~5 s half-life)
+        flux_threshold = self._gate_flux_peak * self._gate_flux_drop_ratio
+        if self._gate_flux_peak > 1e-6 and self._gate_flux_ema < flux_threshold:
+            self._gate_flux_drop_frames += 1
+        else:
+            self._gate_flux_drop_frames = 0
+        _flux_drop_confirmed = self._gate_flux_drop_frames >= self._gate_flux_drop_required
+
+        # Record beat times for hierarchy tracking
+        self._record_beat_times(event, raw_trigger_kind, now)
+
+        bpm = self.effective_bpm(event)
+
+        # §6: Readiness check runs AFTER effective_bpm so the unlock-hold
+        # can protect stroke_ready using stabilized BPM state.
+        stroke_ready = self._update_stroke_readiness(event, now)
+
+        # ── Priority interrupt: beat-family events run the gate chain.
+        # Non-beat frames during an active beat-family journey keep the current kind.
+        # When a beat-family event FAILS gates during an active journey, the
+        # active journey is preserved (not killed to fill) — it finishes
+        # naturally on its own timing.
+        trigger_kind, gate_fail_reason = self._evaluate_beat_gates(
+            event=event,
+            audio_snapshot=audio_snapshot,
+            raw_trigger_kind=raw_trigger_kind,
+            trigger_kind=trigger_kind,
+            silence_active=silence_active,
+            stroke_ready=stroke_ready,
+            flux_drop_confirmed=_flux_drop_confirmed,
+        )
+
+        # ── Phrase Commitment: musical phrase locking ──
+        # When switching from fill to beat, 
+        # commit for a period to prevent sporadic jumps. But allow
+        # natural musical transitions (downbeat ↔ beat ↔ syncopation).
+        is_beat_event = bool(event.is_beat or event.is_downbeat or event.is_syncopated)
+
+        trigger_kind = self._update_phrase_commitment(
+            trigger_kind=trigger_kind,
+            silence_active=silence_active,
+            gate_fail_reason=gate_fail_reason,
+            is_beat_event=is_beat_event,
+        )
+
         # No-beat timeout: force decay to park
         no_beat_timed_out = False
         if self._check_no_beat_timeout(now) and self.journey_active:
@@ -1776,15 +1808,11 @@ class BeatIntelligence:
             self.journey_active = False
             self.last_trigger_kind = "creep"
             self.active_interval_beats = 8
-            self.is_recovering = False
             self._phrase_committed = False
             self._phrase_beats_remaining = 0
             no_beat_timed_out = True
 
-        if self.is_recovering:
-            interval_beats = 8
-        else:
-            interval_beats = self.interval_beats_for_trigger(trigger_kind)
+        interval_beats = self.interval_beats_for_trigger(trigger_kind)
 
         # Apply learning cadence hint only at journey boundaries.
         # _committed_divisor_hint is latched from _learned_cadence_hint
@@ -1827,7 +1855,7 @@ class BeatIntelligence:
                 interval_beats,
                 event,
                 dt,
-                force_start=recovery_start,
+                audio_snapshot=audio_snapshot,
             )
 
         # Only update the active trigger kind / interval when a journey
@@ -1849,7 +1877,7 @@ class BeatIntelligence:
             lazy_glide_active=bool(self._lazy_glide_active),
             gate_fail=gate_fail_reason,
             energy_fullness=energy_fullness_now,
-            session_intensity=session_intensity,
+            session_intensity=energy_fullness_now,
             learning=learning,
         )
 
@@ -1912,7 +1940,6 @@ class BeatIntelligence:
             "gs_journey_active": int(self.journey_active),
             "gs_journey_elapsed_s": round(self.journey_elapsed_s, 4),
             "gs_journey_duration_s": round(self.journey_duration_s, 4),
-            "gs_is_recovering": int(self.is_recovering),
 
             # ── Trigger / kind ──
             "gs_last_trigger_kind": self.last_trigger_kind,
@@ -1924,9 +1951,6 @@ class BeatIntelligence:
 
             # ── Beat timing ──
             "gs_time_since_last_beat_s": round(now - self._last_any_beat_time, 4) if self._last_any_beat_time > 0 else -1.0,
-
-            # ── Session arc ──
-            "gs_session_intensity": round(self._session_intensity_ema, 4),
 
             # ── Auto-fill gate state ──
             "gs_fill_ema_downbeat": round(self._auto_fill_ema.get("downbeat", 0.5), 4),
