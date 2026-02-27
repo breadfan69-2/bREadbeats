@@ -70,8 +70,8 @@ class BeatIntelligence:
         self.rms_release = 0.05
 
         self.silence_deadzone_active = True   # guilty-until-proven: assume silence until audio proves otherwise
-        self._silence_enter_db: float = -60.0     # below this dBFS = silence (volume-compensated signal)
-        self._silence_exit_db: float = -52.0      # above this dBFS = music (hysteresis gap prevents chatter)
+        self._silence_enter_db: float = -70.0     # below this dBFS = silence (volume-compensated signal)
+        self._silence_exit_db: float = -65.0      # above this dBFS = music (hysteresis gap prevents chatter)
         self._silence_enter_frames: int = 0       # consecutive frames below enter threshold
         self._silence_exit_frames: int = 0        # consecutive frames above exit threshold
         self._silence_enter_required: int = 8     # ~0.13s at 60fps — fast silence entry

@@ -85,7 +85,7 @@ class BeatDetectionConfig:
     target_bps_lock_gate_acf_conf: float = 0.40      
     target_bps_lock_gate_downbeats: int = 1          
     syncopation_enabled: bool = True             
-    syncopation_band: str = 'low_mid'                
+    syncopation_band: str = 'any'                
     syncopation_window: float = 0.20             
     syncopation_bpm_limit: float = 130.0         
     syncopation_arc_size: float = 0.82                
@@ -163,19 +163,19 @@ class StrokeConfig:
 
     # FFT-bin windows used by overall fill gate for each phase.
     # Values are bin indexes (0..N/2) from current FFT size.
-    downbeat_fill_bin_low: int = 2
-    downbeat_fill_bin_high: int = 3
+    downbeat_fill_bin_low: int = 0
+    downbeat_fill_bin_high: int = 4
     beat_fill_bin_low: int = 3
     beat_fill_bin_high: int = 10
-    syncopation_fill_bin_low: int = 151
-    syncopation_fill_bin_high: int = 153
+    syncopation_fill_bin_low: int = 333
+    syncopation_fill_bin_high: int = 372
 
     # Fill duration gate (per phase): require sustained fullness over consecutive frames.
     # Values are frame counts (~16-23ms per frame at effective 43-60fps processing rate).
     # Set to 0 or 1 to disable duration check (instant single-frame decision) for that phase.
-    downbeat_overall_amp_fill_sustain_frames: int = 30
-    beat_overall_amp_fill_sustain_frames: int = 30
-    syncopation_overall_amp_fill_sustain_frames: int = 30
+    downbeat_overall_amp_fill_sustain_frames: int = 5
+    beat_overall_amp_fill_sustain_frames: int = 6
+    syncopation_overall_amp_fill_sustain_frames: int = 10
 
     # High-band include mid: controls whether 'high' band visualization starts at 500 Hz or 2 kHz.
     high_band_include_mid: bool = True
