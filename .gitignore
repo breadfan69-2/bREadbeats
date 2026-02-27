@@ -107,6 +107,8 @@ silence_trace.log
 silence_jump_debug*.log
 live_console_slew_check.log
 live_jump_watch*.log
+vol_test_stdout.log
+vol_test_stderr.log
 todo.2.15.26.txt
 
 # Local-only replay traces (dev A/B harness inputs)

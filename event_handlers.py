@@ -611,6 +611,7 @@ def on_play_pause(win, checked: bool | None = None):
         win._play_warmup_active = False
         win._play_warmup_seen_beat = False
         win._volume_ramp_active = False
+        win._last_sent_volume_pct = 0.0
         send_zero_volume_immediate(win.network_engine, duration_ms=500)
         # DON'T disable sending_enabled — connection stays active until Stop
     win._transport_pending_play = None
@@ -930,8 +931,10 @@ def update_display(win):
         win.carrier_freq_label.setStyleSheet(f"color: {'#fff' if new_f0_enabled else '#0af'}; font-size: 10px;")
         win.p1_display_label.setStyleSheet(f"color: {'#fff' if new_p1_enabled else '#0af'}; font-size: 10px;")
         win.p3_display_label.setStyleSheet(f"color: {'#fff' if new_p3_enabled else '#0af'}; font-size: 10px;")
-        # Show target volume when stopped, actual sent tcode volume when running
-        if win.is_sending:
+        # Show target volume when stopped, actual sent tcode volume when running.
+        # Pause-park sends live commands at V0, so treat it as live-output display too.
+        show_live_output = bool(win.is_sending or getattr(win, '_pause_park_active', False))
+        if show_live_output:
             display_pct = win._last_sent_volume_pct
             win.volume_slider.value_label.setStyleSheet("color: #fff;")
             win.volume_slider.label.setStyleSheet("color: #fff;")
