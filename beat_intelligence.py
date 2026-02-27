@@ -1474,12 +1474,12 @@ class BeatIntelligence:
         else:
             lazy_scale = 1.0
 
-        # ── Anchor catch-up snap: if running late, accelerate the last 20% ──
-        # When the next beat is imminent but >20% of the journey remains,
+        # ── Anchor catch-up snap: if running late, accelerate the last 30% ──
+        # When the next beat is imminent but >30% of the journey remains,
         # compress the remaining travel into the time available (floor 100 ms)
         # so the dot lands on the anchor instead of arriving late.
         catch_up_scale = 1.0
-        if (completion_before >= 0.80 and completion_before < 1.0
+        if (completion_before >= 0.70 and completion_before < 1.0
                 and seconds_until_next < quarter_measure_window_s
                 and seconds_until_next > 0.0
                 and self.journey_active):

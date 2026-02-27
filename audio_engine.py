@@ -415,11 +415,11 @@ class AudioEngine:
         self._tempo_lock_exit_conf_base: float = 0.15
         self._tempo_lock_exit_hold_s: float = 0.90
         self._tempo_lock_drop_started_at: float = 0.0
-        self._metronome_bpm_alpha_slow: float = float(getattr(config.beat, 'metronome_bpm_alpha_slow', 0.03))
-        self._metronome_bpm_alpha_fast: float = float(getattr(config.beat, 'metronome_bpm_alpha_fast', 0.22))
+        self._metronome_bpm_alpha_slow: float = float(getattr(config.beat, 'metronome_bpm_alpha_slow', 0.08))
+        self._metronome_bpm_alpha_fast: float = float(getattr(config.beat, 'metronome_bpm_alpha_fast', 0.40))
         self._metronome_pll_window: float = float(getattr(config.beat, 'metronome_pll_window', 0.35))
-        self._metronome_pll_base_gain: float = float(getattr(config.beat, 'metronome_pll_base_gain', 0.09))
-        self._metronome_pll_conf_gain: float = float(getattr(config.beat, 'metronome_pll_conf_gain', 0.08))
+        self._metronome_pll_base_gain: float = float(getattr(config.beat, 'metronome_pll_base_gain', 0.25))
+        self._metronome_pll_conf_gain: float = float(getattr(config.beat, 'metronome_pll_conf_gain', 0.18))
         self._tempo_fusion_min_acf_weight: float = float(getattr(config.beat, 'tempo_fusion_min_acf_weight', 0.20))
         self._tempo_fusion_max_acf_weight: float = float(getattr(config.beat, 'tempo_fusion_max_acf_weight', 0.95))
         self._beat_dedup_fraction: float = float(getattr(config.beat, 'beat_dedup_fraction', 0.22))
@@ -2010,11 +2010,11 @@ class AudioEngine:
                     # === SELF-CHECK: Phase correction from downbeat timing ===
                     # If downbeat landed but with phase error, nudge metronome
                     # so next beats land more accurately
-                    if abs(self.phase_error_ms) > 10.0:  # Only correct meaningful errors
+                    if abs(self.phase_error_ms) > 5.0:  # Only correct meaningful errors
                         # Convert ms error to phase fraction
                         beat_period_ms = 60000.0 / self._metronome_bpm
-                        phase_correction = (self.phase_error_ms / beat_period_ms) * 0.30  # 30% correction
-                        phase_correction = max(-0.15, min(0.15, phase_correction))  # Clamp
+                        phase_correction = (self.phase_error_ms / beat_period_ms) * 0.50  # 50% correction
+                        phase_correction = max(-0.20, min(0.20, phase_correction))  # Clamp
                         self._metronome_phase += phase_correction
                         log_event("INFO", "Downbeat", "Phase correction from downbeat",
                                   error_ms=f"{self.phase_error_ms:.1f}",
@@ -2074,9 +2074,9 @@ class AudioEngine:
         if abs(error) < self._metronome_pll_window:
             conf = max(0.0, min(1.0, self._acf_confidence))
             gain = self._metronome_pll_base_gain + self._metronome_pll_conf_gain * conf
-            error_scale = 0.5 + 0.5 * min(1.0, abs(error) / 0.25)
+            error_scale = 0.65 + 0.35 * min(1.0, abs(error) / 0.20)
             correction = error * gain * min(1.0, onset_strength) * error_scale
-            correction = max(-0.20, min(0.20, correction))
+            correction = max(-0.22, min(0.22, correction))
             self._metronome_phase += correction
 
     def _reset_acf_metronome(self):
