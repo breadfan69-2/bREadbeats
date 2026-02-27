@@ -50,10 +50,10 @@ class TestStrokeMapperContract(unittest.TestCase):
     def test_trigger_interval_mapping(self):
         intelligence = BeatIntelligence(Config())
 
-        self.assertEqual(intelligence.interval_beats_for_trigger("syncopation"), 2)
+        self.assertEqual(intelligence.interval_beats_for_trigger("syncopation"), 1)
         self.assertEqual(intelligence.interval_beats_for_trigger("beat"), 2)
         self.assertEqual(intelligence.interval_beats_for_trigger("downbeat"), 4)
-        self.assertEqual(intelligence.interval_beats_for_trigger("creep"), 8)
+        self.assertEqual(intelligence.interval_beats_for_trigger("creep"), 4)
 
     def test_trigger_classifier_maps_to_creep_when_no_beat_family(self):
         intelligence = BeatIntelligence(Config())
@@ -130,7 +130,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         decision = intelligence.build_decision(event=event, dt=1.0 / 60.0, silence_override=False)
 
         self.assertEqual(decision.trigger_kind, "creep")
-        self.assertEqual(decision.interval_beats, 8)
+        self.assertEqual(decision.interval_beats, 4)
 
     # test_strict_bass_gate_blocks_non_bass_beats removed — gate no longer exists
     # test_transient_policy_kick_hat removed — transient profile gate now blocks hat/voice-only

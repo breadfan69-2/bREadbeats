@@ -83,7 +83,16 @@ class BeatIntelligence:
         # After N consecutive failures, let the journey expire to fill so
         # a permanently stuck gate doesn't loop the orbit forever.
         self._gate_fail_preserve_count: int = 0
-        self._gate_fail_preserve_limit: int = 2  # max consecutive beat-fail preservations
+        self._gate_fail_preserve_limit: int = 12  # max consecutive beat-fail preservations
+
+        # Sustained flux-drop demotion: only demote orbit→fill when flux
+        # has dropped below a fraction of its recent peak for N consecutive
+        # audio frames.  Runs every frame for quick response.
+        self._gate_flux_ema: float = 0.0       # EMA of flux (every frame)
+        self._gate_flux_peak: float = 0.0      # rolling peak for comparison
+        self._gate_flux_drop_frames: int = 0   # consecutive frames below threshold
+        self._gate_flux_drop_required: int = 18 # ~0.3 s at 60 fps
+        self._gate_flux_drop_ratio: float = 0.25  # demote when flux < 25% of peak
 
         self.journey_duration_s = 0.0
         self.journey_elapsed_s = 0.0
@@ -92,8 +101,6 @@ class BeatIntelligence:
         self._was_silence_active: bool = False
         self._recovery_radius_bloom: float = 0.70
         self._journey_duration_target_s = 0.0
-        self._journey_duration_blend_frames_remaining = 0
-        self._journey_duration_blend_alpha = 0.35
         self._journey_start_intensity = 0.0  # intensity of current journey's trigger
         self._lazy_glide_active: bool = False
 
@@ -119,6 +126,12 @@ class BeatIntelligence:
         # each frame in update_silence_deadzone_gate.  Used to lift silence
         # thresholds above the WASAPI noise floor at any Windows volume.
         self._noise_floor_db: float = RMS_DB_FLOOR
+
+        # Long-term noise-floor tracker (very slow EMA on _noise_floor_db).
+        # Rises slowly so music peaks don't pull it up; falls quickly so
+        # volume-down is tracked promptly.  Used by the SNR gate: audio
+        # must be meaningfully louder than this floor to exit silence.
+        self._long_term_floor_db: float = RMS_DB_FLOOR
 
         # Rolling band energy history for volume-adaptive normalization.
         # Raw band energies scale with OS volume; these deques let us normalize
@@ -150,7 +163,7 @@ class BeatIntelligence:
         self._readiness_finish_beats_remaining: int = 0
 
         # ── Phase 2: SilenceDecayState (#19) ──
-        self._silence_fade: float = 1.0            # 1.0 = full volume, 0.0 = muted
+        self._silence_fade: float = 0.0            # starts muted (guilty-until-proven)
         self._consecutive_silent_count: int = 0
         self._silence_reset_armed: bool = False
         self._silence_fade_rate: float = 0.035      # fade per frame (~60fps → ~0.5s full fade)
@@ -665,8 +678,9 @@ class BeatIntelligence:
         else:
             self._consecutive_silent_count = 0
             self._silence_reset_armed = False
-            # Restore fade (quick recovery)
-            self._silence_fade = min(1.0, self._silence_fade + self._silence_fade_rate * 3.0)
+            # Restore fade (2x recovery — fast enough to feel responsive,
+            # slow enough that a 1–2 frame gate flicker can't spike volume).
+            self._silence_fade = min(1.0, self._silence_fade + self._silence_fade_rate * 2.0)
 
         return float(self._silence_fade), request_reset
 
@@ -1025,7 +1039,15 @@ class BeatIntelligence:
         # Feed raw (unsmoothed) dBFS into the silence deque so the
         # flatness check sees real beat-to-beat dynamics, not the
         # flattened envelope.
-        self._silence_raw_rms_db.append(level_db)
+        #
+        # Skip floor-level values (≤ RMS_DB_FLOOR + 1).  The audio engine
+        # emits -120 dBFS for the first few frames before WASAPI returns
+        # real data.  If these floor values enter the deque, the subsequent
+        # step from -120 → real noise floor (~-78) creates artificial
+        # spread that neither detrending nor SNR can fully absorb,
+        # causing a ~1.5 s false "active" window on every startup.
+        if level_db > RMS_DB_FLOOR + 1.0:
+            self._silence_raw_rms_db.append(level_db)
 
         # --- Flatness-based silence detection ---
         # If the waveform is flat (low dynamic range), it's silence/noise
@@ -1038,20 +1060,74 @@ class BeatIntelligence:
         #
         # Uses a SHORT recent window (last ~1 s) so silence is detected
         # within ~1 second, not after 10 s of flushing old samples.
+        #
+        # Detrending: the raw dBFS values are linearly detrended before
+        # computing spread.  When the user changes the Windows volume,
+        # the noise floor ramps up/down monotonically.  Without detrending
+        # this ramp creates artificial P95-P5 spread and fools the gate.
+        # After detrending, only *fluctuations around the trend* (i.e.
+        # real beat dynamics) contribute to spread.
+        #
+        # SNR gate: even if detrended spread says "dynamic", the raw P95
+        # must be meaningfully above a long-term noise floor tracker.
+        # This prevents low-level electrical noise patterns from opening
+        # the gate.
         flat_open_spread = 3.0   # enter silence when spread < this
         flat_close_spread = 6.0  # exit silence when spread > this
         flatness_window = 60     # frames (~1 s at 60 fps)
+        snr_margin = 10.0        # dB above long-term floor to count as signal
+        absolute_silence_ceiling = -78.0  # dBFS; below this is pure noise floor
 
         n_available = len(self._silence_raw_rms_db)
+        has_snr = False
         if n_available >= 15:
             # Short window for fast reaction
             recent_slice = list(self._silence_raw_rms_db)[-min(flatness_window, n_available):]
-            p5 = float(np.percentile(recent_slice, 5))
-            p95 = float(np.percentile(recent_slice, 95))
-            spread = p95 - p5
+            arr = np.array(recent_slice, dtype=np.float64)
+
+            # --- Detrend: remove linear ramp (volume changes) ---
+            if len(arr) > 1:
+                x = np.arange(len(arr), dtype=np.float64)
+                coeffs = np.polyfit(x, arr, 1)
+                trend = np.polyval(coeffs, x)
+                detrended = arr - trend
+            else:
+                detrended = arr - arr[0]
+
+            p5_dt = float(np.percentile(detrended, 5))
+            p95_dt = float(np.percentile(detrended, 95))
+            spread = p95_dt - p5_dt
+
+            # Raw P95 for SNR check (original scale, not detrended)
+            raw_p95 = float(np.percentile(arr, 95))
+
             # Noise floor from full history (stable)
             if n_available >= 30:
                 self._noise_floor_db = float(np.percentile(list(self._silence_raw_rms_db), 5))
+
+            # --- Long-term floor tracker (asymmetric EMA) ---
+            # Rises slowly (alpha 0.005 ≈ 200-frame / 3.3 s time constant)
+            # so music peaks don't drag the floor up.  Falls quickly
+            # (alpha 0.05) so a volume reduction is tracked promptly.
+            if self._long_term_floor_db <= RMS_DB_FLOOR + 1.0:
+                # First real reading: snap to current noise floor
+                self._long_term_floor_db = self._noise_floor_db
+            else:
+                delta = self._noise_floor_db - self._long_term_floor_db
+                alpha = 0.05 if delta < 0 else 0.005
+                self._long_term_floor_db += alpha * delta
+
+            # SNR gate: current signal peak must be meaningfully loud
+            # AND above an absolute floor — pure noise floor (even with
+            # Windows volume adjustment) is always below -60 dBFS.
+            has_snr = raw_p95 > max(self._long_term_floor_db + snr_margin,
+                                     absolute_silence_ceiling)
+
+            # Absolute-level gate: refuse to exit silence unless the
+            # loudest frames in the window are above a hard floor.
+            # WASAPI loopback noise is typically ≤ −69 dBFS even at
+            # max Windows volume; −55 gives 14 dB of margin.
+            abs_level_ok = raw_p95 > -55.0
         else:
             spread = 0.0  # not enough data → assume flat/silent (guilty)
 
@@ -1060,7 +1136,8 @@ class BeatIntelligence:
             self.silence_close_count = 0
             if self.silence_open_count >= 1:
                 self.silence_deadzone_active = True
-        elif spread > flat_close_spread:
+        elif spread > flat_close_spread and has_snr and abs_level_ok:
+            # Must have BOTH real dynamics AND meaningful signal above noise
             self.silence_close_count += 1
             self.silence_open_count = 0
             if self.silence_close_count >= close_frames_required:
@@ -1193,12 +1270,14 @@ class BeatIntelligence:
     @staticmethod
     def interval_beats_for_trigger(trigger_kind: str) -> int:
         if trigger_kind == "syncopation":
-            return 2          # was 1; doubled to prevent half-beat jerking
+            return 1          # 1-beat full 360° arc
         if trigger_kind == "beat":
-            return 2
+            return 2          # 2-beat full 360° arc
         if trigger_kind == "downbeat":
-            return 4
-        return 8
+            return 4          # 4-beat full 360° arc
+        # creep/fill has no journey — should never reach here,
+        # but return a safe fallback.
+        return 4
 
     def effective_bpm(self, event: BeatEvent) -> float:
         """Return stabilized BPM (#13): last-locked memory + jump-ratio limiter."""
@@ -1462,7 +1541,6 @@ class BeatIntelligence:
                 ))
 
             self._journey_duration_target_s = self.journey_duration_s
-            self._journey_duration_blend_frames_remaining = 0
             self.journey_elapsed_s = 0.0
             self.journey_active = True
             self._lazy_glide_active = False
@@ -1470,14 +1548,6 @@ class BeatIntelligence:
             # effect at journey boundaries, never mid-arc.
             self._committed_divisor_hint = self._learned_cadence_hint
             return 0.0
-
-        if self._journey_duration_blend_frames_remaining > 0:
-            self.journey_duration_s += self._journey_duration_blend_alpha * (
-                self._journey_duration_target_s - self.journey_duration_s
-            )
-            self._journey_duration_blend_frames_remaining -= 1
-            if self._journey_duration_blend_frames_remaining <= 0:
-                self.journey_duration_s = self._journey_duration_target_s
 
         now = float(getattr(event, "monotonic_timestamp", 0.0) or 0.0)
         if now <= 0.0:
@@ -1564,6 +1634,14 @@ class BeatIntelligence:
         if silence_override is not None:
             silence_active = bool(silence_override)
 
+        # Layer 2: propagate silence gate back to AudioEngine so the
+        # beat detector, metronome, and syncopation are fully suppressed
+        # on the NEXT audio frame.  This closes the loop: AudioEngine
+        # captures audio → BeatIntelligence decides silence → AudioEngine
+        # suppresses all rhythm output until silence lifts.
+        if self.audio_engine is not None:
+            self.audio_engine.silence_gate_active = silence_active
+
         recovery_start = False
         if silence_active:
             self._was_silence_active = True
@@ -1610,6 +1688,21 @@ class BeatIntelligence:
             energy_fullness_now,
         )
 
+        # ── Per-frame flux drop tracker (runs every frame, not just beats) ──
+        raw_flux = float(getattr(event, "spectral_flux", 0.0) or 0.0)
+        ema_alpha = 0.15
+        self._gate_flux_ema += ema_alpha * (raw_flux - self._gate_flux_ema)
+        if self._gate_flux_ema > self._gate_flux_peak:
+            self._gate_flux_peak = self._gate_flux_ema
+        else:
+            self._gate_flux_peak *= 0.998  # slow decay (~5 s half-life)
+        flux_threshold = self._gate_flux_peak * self._gate_flux_drop_ratio
+        if self._gate_flux_peak > 1e-6 and self._gate_flux_ema < flux_threshold:
+            self._gate_flux_drop_frames += 1
+        else:
+            self._gate_flux_drop_frames = 0
+        _flux_drop_confirmed = self._gate_flux_drop_frames >= self._gate_flux_drop_required
+
         # Record beat times for hierarchy tracking
         self._record_beat_times(event, raw_trigger_kind, now)
 
@@ -1633,17 +1726,9 @@ class BeatIntelligence:
             if not stroke_ready:
                 gate_passed = False
                 gate_fail_reason = "stroke_ready"
-            # Transient profile gate: require kick/bass evidence.
-            # motion_profile is "neutral" when no sub-bass or kick
-            # transient is detected — vocals / synths alone must not
-            # start orbit journeys; they should play funscript fill.
-            elif motion_profile == "neutral":
+            elif _flux_drop_confirmed:
                 gate_passed = False
-                gate_fail_reason = "no_bass"
-            # Phase 3 gates: spectrum fill
-            elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
-                gate_passed = False
-                gate_fail_reason = "amp_fill"
+                gate_fail_reason = "flux_drop"
 
             if gate_passed:
                 self._gate_fail_preserve_count = 0
@@ -1740,8 +1825,23 @@ class BeatIntelligence:
         # _committed_divisor_hint is latched from _learned_cadence_hint
         # inside update_journey_progress when a new journey actually starts,
         # so cadence changes never cause mid-arc discontinuities.
+        # Guard: learning can only *lengthen* (decelerate) in the first 50%
+        # of a journey, and only *shorten* (accelerate) in the last 30%.
         if learning.active and self._committed_divisor_hint > 1:
-            interval_beats = max(interval_beats, self._committed_divisor_hint)
+            new_interval = max(interval_beats, self._committed_divisor_hint)
+            if new_interval != interval_beats and self.journey_active:
+                completion_now = float(np.clip(
+                    self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0
+                ))
+                is_decel = new_interval > interval_beats
+                is_accel = new_interval < interval_beats
+                if is_decel and completion_now <= 0.50:
+                    interval_beats = new_interval
+                elif is_accel and completion_now >= 0.70:
+                    interval_beats = new_interval
+                # else: keep original interval_beats (ignore learning hint)
+            else:
+                interval_beats = new_interval
 
         radius_bloom = self.compute_radius_bloom_from_sub_bass(event=event)
 
