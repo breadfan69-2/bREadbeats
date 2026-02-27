@@ -133,6 +133,15 @@ class BeatIntelligence:
         # must be meaningfully louder than this floor to exit silence.
         self._long_term_floor_db: float = RMS_DB_FLOOR
 
+        # Dynamic spread tracker for adaptive silence detection.
+        # Tracks the typical RMS spread (P95-P5) during active audio so
+        # the silence threshold scales with the music's dynamic range.
+        self._spread_ema: float = 0.0          # EMA of recent spread values
+        self._spread_peak: float = 0.0         # rolling peak spread (slow decay)
+        self._spread_open_ratio: float = 0.10  # silence when spread < 10% of peak
+        self._spread_close_ratio: float = 0.20 # exit silence when spread > 20% of peak
+        self._spread_abs_floor: float = 1.0    # absolute minimum: 1 dB spread is always silence
+
         # Rolling band energy history for volume-adaptive normalization.
         # Raw band energies scale with OS volume; these deques let us normalize
         # each band against its own recent P95 so music "intensity" is volume-independent.
@@ -1072,8 +1081,6 @@ class BeatIntelligence:
         # must be meaningfully above a long-term noise floor tracker.
         # This prevents low-level electrical noise patterns from opening
         # the gate.
-        flat_open_spread = 3.0   # enter silence when spread < this
-        flat_close_spread = 6.0  # exit silence when spread > this
         flatness_window = 60     # frames (~1 s at 60 fps)
         snr_margin = 10.0        # dB above long-term floor to count as signal
         absolute_silence_ceiling = -78.0  # dBFS; below this is pure noise floor
@@ -1097,6 +1104,26 @@ class BeatIntelligence:
             p5_dt = float(np.percentile(detrended, 5))
             p95_dt = float(np.percentile(detrended, 95))
             spread = p95_dt - p5_dt
+
+            # --- Dynamic spread tracker ---
+            # Track typical spread with asymmetric EMA: rises fast to
+            # capture music dynamics, decays slowly (~5 s half-life)
+            # so quiet passages don't reset the baseline too quickly.
+            sp_alpha_up = 0.15
+            sp_alpha_down = 0.002
+            sp_delta = spread - self._spread_ema
+            self._spread_ema += (sp_alpha_up if sp_delta > 0 else sp_alpha_down) * sp_delta
+            if spread > self._spread_peak:
+                self._spread_peak = spread
+            else:
+                self._spread_peak *= 0.998  # slow decay
+
+            # Dynamic thresholds: fraction of the peak spread we've seen
+            # with an absolute floor so true digital silence always triggers
+            flat_open_spread = max(self._spread_peak * self._spread_open_ratio,
+                                   self._spread_abs_floor)
+            flat_close_spread = max(self._spread_peak * self._spread_close_ratio,
+                                    self._spread_abs_floor * 2.0)
 
             # Raw P95 for SNR check (original scale, not detrended)
             raw_p95 = float(np.percentile(arr, 95))
@@ -1130,6 +1157,8 @@ class BeatIntelligence:
             abs_level_ok = raw_p95 > -55.0
         else:
             spread = 0.0  # not enough data → assume flat/silent (guilty)
+            flat_open_spread = self._spread_abs_floor
+            flat_close_spread = self._spread_abs_floor * 2.0
 
         if spread < flat_open_spread:
             self.silence_open_count += 1
