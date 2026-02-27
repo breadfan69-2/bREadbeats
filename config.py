@@ -173,9 +173,9 @@ class StrokeConfig:
     # Fill duration gate (per phase): require sustained fullness over consecutive frames.
     # Values are frame counts (~16-23ms per frame at effective 43-60fps processing rate).
     # Set to 0 or 1 to disable duration check (instant single-frame decision) for that phase.
-    downbeat_overall_amp_fill_sustain_frames: int = 2
-    beat_overall_amp_fill_sustain_frames: int = 3
-    syncopation_overall_amp_fill_sustain_frames: int = 3
+    downbeat_overall_amp_fill_sustain_frames: int = 30
+    beat_overall_amp_fill_sustain_frames: int = 30
+    syncopation_overall_amp_fill_sustain_frames: int = 30
 
     # High-band include mid: controls whether 'high' band visualization starts at 500 Hz or 2 kHz.
     high_band_include_mid: bool = True
