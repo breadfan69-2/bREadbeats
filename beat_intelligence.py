@@ -1586,9 +1586,13 @@ class BeatIntelligence:
         seconds_until_next = self._seconds_until_next_beat(event=event, bpm=bpm, now=now)
         quarter_measure_window_s = beat_period_s  # 4/4 default: a quarter-measure is one beat
 
+        # Gentle coast: only in the final 10% of the journey, and only
+        # when no upcoming beat is predicted within one beat period.
+        # Scale stays high (0.85–1.0) to preserve continuity — the next
+        # journey should never need a big lurch to catch up.
         lazy_glide = (
             trigger_kind != "creep"
-            and completion_before > 0.70
+            and completion_before > 0.90
             and seconds_until_next > quarter_measure_window_s
         )
 
@@ -1596,12 +1600,27 @@ class BeatIntelligence:
             lazy_glide = False
 
         if lazy_glide:
-            tail_t = float(np.clip((completion_before - 0.70) / 0.30, 0.0, 1.0))
-            lazy_scale = float(np.clip(np.exp(-1.8 * tail_t), 0.16, 1.0))
+            tail_t = float(np.clip((completion_before - 0.90) / 0.10, 0.0, 1.0))
+            lazy_scale = float(1.0 - 0.15 * tail_t)  # 1.0 → 0.85
         else:
             lazy_scale = 1.0
 
-        step = float(np.clip(dt, 1e-4, 0.25)) * lazy_scale
+        # ── Anchor catch-up snap: if running late, accelerate the last 20% ──
+        # When the next beat is imminent but >20% of the journey remains,
+        # compress the remaining travel into the time available (floor 100 ms)
+        # so the dot lands on the anchor instead of arriving late.
+        catch_up_scale = 1.0
+        if (completion_before >= 0.80 and completion_before < 1.0
+                and seconds_until_next < quarter_measure_window_s
+                and seconds_until_next > 0.0
+                and self.journey_active):
+            remaining_frac = 1.0 - completion_before
+            remaining_s = remaining_frac * self.journey_duration_s
+            time_budget = max(0.10, seconds_until_next)  # floor 100 ms
+            if remaining_s > time_budget:
+                catch_up_scale = float(np.clip(remaining_s / time_budget, 1.0, 3.0))
+
+        step = float(np.clip(dt, 1e-4, 0.25)) * lazy_scale * catch_up_scale
         self.journey_elapsed_s = min(self.journey_duration_s, self.journey_elapsed_s + step)
         completion = float(np.clip(self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0))
         if completion >= 1.0:
