@@ -1744,7 +1744,7 @@ class AudioEngine:
         fps = self._acf_onset_fps  # Calibrated onset sample rate
 
         # Lag range for 55-185 BPM
-        min_lag = max(1, int(fps * 60.0 / 185.0))  # Fastest tempo
+        min_lag = max(1, int(fps * 60.0 / 200.0))  # Fastest tempo
         max_lag = min(n - 1, int(fps * 60.0 / 55.0))  # Slowest tempo
         if min_lag >= max_lag:
             return
@@ -1849,7 +1849,7 @@ class AudioEngine:
             min_interval_s=0.15,
             max_interval_s=1.2,
             min_bpm=55.0,
-            max_bpm=185.0,
+            max_bpm=200.0,
         )
 
     def _advance_metronome(self, now: float, band_energy: float = 0.0):
@@ -2231,8 +2231,8 @@ class AudioEngine:
             
             # Strict tempo acceptance range (no octave correction)
             min_bpm = 60.0
-            max_bpm = 180.0
-            min_interval = 60.0 / max_bpm  # ~0.333s
+            max_bpm = 200.0
+            min_interval = 60.0 / max_bpm  # 0.300s
             max_interval = 60.0 / min_bpm  # 1.0s
             
             # Calculate what BPM this interval would give

@@ -1330,7 +1330,7 @@ class BeatIntelligence:
             bpm = float(getattr(event, "bpm", 0.0) or 0.0)
         if bpm <= 0.0:
             bpm = 120.0
-        bpm = float(np.clip(bpm, 40.0, 240.0))
+        bpm = float(np.clip(bpm, 40.0, 200.0))
 
         tempo_locked = bool(getattr(event, "tempo_locked", False))
         acf_conf = float(getattr(event, "acf_confidence", 0.0) or 0.0)
@@ -1368,7 +1368,7 @@ class BeatIntelligence:
             return raw_bpm
         alpha = 0.15  # slow smoothing when unlocked
         self._stabilized_bpm += alpha * (raw_bpm - self._stabilized_bpm)
-        return float(np.clip(self._stabilized_bpm, 40.0, 240.0))
+        return float(np.clip(self._stabilized_bpm, 40.0, 200.0))
 
     def compute_radius_bloom_from_sub_bass(self, event: BeatEvent | None = None) -> float:
         base_radius = 0.70

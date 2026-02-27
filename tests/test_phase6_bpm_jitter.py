@@ -74,11 +74,11 @@ class TestEffectiveBpm(Phase6Mixin, unittest.TestCase):
         bpm = bi.effective_bpm(ev)
         self.assertAlmostEqual(bpm, 120.0, places=1)
 
-    def test_clamped_above_240(self):
+    def test_clamped_above_200(self):
         bi = self._bi()
         ev = self._event(metronome_bpm=300.0, tempo_locked=True)
         bpm = bi.effective_bpm(ev)
-        self.assertLessEqual(bpm, 240.0)
+        self.assertLessEqual(bpm, 200.0)
 
     def test_clamped_below_40(self):
         bi = self._bi()

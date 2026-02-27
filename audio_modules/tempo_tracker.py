@@ -82,7 +82,7 @@ def build_acf_octave_candidates(
         half_val = float(acf[half_lag])
         if half_val > float(peak_value) * 0.60:
             bpm_half = 60.0 * float(fps) / float(half_lag)
-            if 55.0 <= bpm_half <= 185.0:
+            if 55.0 <= bpm_half <= 200.0:
                 candidates.append((float(bpm_half), half_val))
 
     double_lag = int(raw_lag) * 2
@@ -90,7 +90,7 @@ def build_acf_octave_candidates(
         double_val = float(acf[double_lag])
         if double_val > float(peak_value) * 0.60:
             bpm_double = 60.0 * float(fps) / float(double_lag)
-            if 55.0 <= bpm_double <= 185.0:
+            if 55.0 <= bpm_double <= 200.0:
                 candidates.append((float(bpm_double), double_val))
 
     return candidates
@@ -140,7 +140,7 @@ def estimate_onset_bpm_from_times(
     min_interval_s: float = 0.15,
     max_interval_s: float = 1.2,
     min_bpm: float = 55.0,
-    max_bpm: float = 185.0,
+    max_bpm: float = 200.0,
 ) -> float:
     if len(raw_onset_times) < 3:
         return 0.0
