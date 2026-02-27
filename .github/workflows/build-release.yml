@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'  # Trigger on any tag starting with 'v' (e.g., v2.1.0)
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -43,14 +46,11 @@ jobs:
         echo "version=$VERSION" >> $env:GITHUB_OUTPUT
         echo "Version: $VERSION"
     
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Create or Update Release + Upload Asset
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.ref_name }}
-        release_name: bREadbeats ${{ steps.version.outputs.version }}
+        name: bREadbeats ${{ steps.version.outputs.version }}
         body: |
           bREadbeats ${{ steps.version.outputs.version }}
           
@@ -61,15 +61,8 @@ jobs:
           Download `bREadbeats.exe` below and run it directly - no installation required.
           
           See [README](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md) for usage instructions.
-        draft: true  # Create as draft so you can add release notes manually
+        draft: true
         prerelease: false
-    
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./dist/bREadbeats.exe
-        asset_name: bREadbeats.exe
-        asset_content_type: application/octet-stream
+        files: |
+          ./dist/bREadbeats.exe
+        fail_on_unmatched_files: true
