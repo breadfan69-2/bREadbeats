@@ -70,8 +70,8 @@ class BeatIntelligence:
         self.rms_release = 0.05
 
         self.silence_deadzone_active = True   # guilty-until-proven: assume silence until audio proves otherwise
-        self._silence_enter_db: float = -55.0     # below this dBFS = silence (volume-compensated signal)
-        self._silence_exit_db: float = -48.0      # above this dBFS = music (hysteresis gap prevents chatter)
+        self._silence_enter_db: float = -60.0     # below this dBFS = silence (volume-compensated signal)
+        self._silence_exit_db: float = -52.0      # above this dBFS = music (hysteresis gap prevents chatter)
         self._silence_enter_frames: int = 0       # consecutive frames below enter threshold
         self._silence_exit_frames: int = 0        # consecutive frames above exit threshold
         self._silence_enter_required: int = 8     # ~0.13s at 60fps — fast silence entry
@@ -149,7 +149,8 @@ class BeatIntelligence:
         self._silence_fade: float = 0.0            # starts muted (guilty-until-proven)
         self._consecutive_silent_count: int = 0
         self._silence_reset_armed: bool = False
-        self._silence_fade_rate: float = 0.035      # fade per frame (~60fps → ~0.5s full fade)
+        self._silence_fade_rate: float = 0.035      # fade-OUT per frame (~60fps → ~0.5s to reach 0)
+        self._silence_fade_in_rate: float = 0.008   # fade-IN per frame (~60fps → ~2.0s to reach 1.0)
         silence_reset_ms = int(getattr(getattr(self.config, "beat", None), "silence_reset_ms", 180) or 180)
         self._silence_reset_threshold_frames: int = max(1, int(round((silence_reset_ms / 1000.0) * 60.0)))
 
@@ -661,9 +662,9 @@ class BeatIntelligence:
         else:
             self._consecutive_silent_count = 0
             self._silence_reset_armed = False
-            # Restore fade (2x recovery — fast enough to feel responsive,
-            # slow enough that a 1–2 frame gate flicker can't spike volume).
-            self._silence_fade = min(1.0, self._silence_fade + self._silence_fade_rate * 2.0)
+            # Gentle fade-in: ~2 s to reach full motion so the transition
+            # from silence to music doesn't feel abrupt.
+            self._silence_fade = min(1.0, self._silence_fade + self._silence_fade_in_rate)
 
         return float(self._silence_fade), request_reset
 
