@@ -95,14 +95,26 @@ class StrokeMapper:
 
         # ── Fill rotation phase (helicopter / spring-coil visual) ──
         self._fill_rot_phase: float = 0.0        # rotation angle accumulator (radians)
-        self._fill_rot_radius: float = 0.075     # orbit radius in [-1,1] space (diameter 0.15)
+        self._fill_rot_radius: float = 0.06      # orbit radius in [-1,1] space (diameter 0.12)
 
         # ── Bass-frequency orbit modulation ──
         # Dominant bass freq controls fill orbit size:
-        #   50 Hz  → 1.5× (deep sub-bass widens orbit)
-        #  125 Hz  → 1.0× (normal)
-        #  200 Hz  → 0.5× (higher bass tightens orbit)
+        #  200 Hz  → 1.0× (highest bass = base orbit, no expansion)
+        #   50 Hz  → 2.0× (lowest bass = maximum expansion)
         self._fill_bass_freq_history: deque = deque(maxlen=4)
+
+        # ── Full-spectrum dominant freq → Y-axis position ──
+        # Maps dominant freq (80–8000 Hz log scale) to center_y in [-0.5, +0.5]
+        #   Low freq  → +0.5 (high Y position)
+        #   High freq → -0.5 (low Y position)
+        self._fill_dom_freq_history: deque = deque(maxlen=6)
+
+        # ── Hi-hat / snare → downward Y impulse ──
+        # When the 'high' (2–16 kHz) or 'mid' (500–2 kHz) z-score fires,
+        # inject a quick downward kick on the Y axis that decays rapidly.
+        self._fill_hh_impulse: float = 0.0        # current impulse magnitude (positive = downward)
+        self._FILL_HH_IMPULSE_SIZE: float = 0.18  # initial kick magnitude in [-1,1] space
+        self._FILL_HH_IMPULSE_DECAY: float = 8.0  # exponential decay rate (per second)
 
         # ── Fill minimum dwell: stay in fill for at least 1 measure ──
         self._fill_enter_time: float = 0.0      # monotonic time fill mode started
@@ -118,7 +130,7 @@ class StrokeMapper:
         # Fill-exit state: rotation around a quintic-easing center
         self._fill_exit_vc_alpha: float = 0.0    # virtual center alpha (latched at exit)
         self._fill_exit_vc_beta: float = 0.0     # virtual center beta (latched at exit)
-        self._fill_exit_rot_radius: float = 0.075  # initial rotation radius (diameter 0.15)
+        self._fill_exit_rot_radius: float = 0.06   # initial rotation radius (diameter 0.12)
         self._fill_exit_rot_phase: float = 0.0     # rotation phase accumulator
         # Fill visual wobble freq: beta channel oscillates every ~6 samples
         # at 30 Hz → period ≈ 0.2s → ω ≈ 2π/0.2 ≈ 31 rad/s
@@ -538,7 +550,7 @@ class StrokeMapper:
                 self._fill_exit_vc_alpha = float(self.state.alpha)
                 self._fill_exit_vc_beta = float(self.state.beta)
                 self._fill_exit_rot_phase = 0.0
-                self._fill_exit_rot_radius = 0.075  # diameter 0.15, matches fill wander
+                self._fill_exit_rot_radius = 0.06   # diameter 0.12, matches fill wander
 
                 # ── Initialize journey geometry NOW so the live orbit target
                 # is computed from correct values during the transition.
@@ -893,7 +905,7 @@ class StrokeMapper:
         """Funscript idle-fill: circular orbit around a Y-sweeping center.
 
         The center oscillates vertically using the baked 45-sample sweep.
-        The dot orbits that center at radius 0.075 (~31 rad/s) producing
+        The dot orbits that center at radius 0.06 (~31 rad/s) producing
         a tightly-wound spring / helicopter-blade trail.
 
         When resuming from silence the displacement from rest is scaled
@@ -904,9 +916,25 @@ class StrokeMapper:
 
         loop_alpha, _loop_beta = self._sample_idle_loop(dt=dt)
 
-        # Center sweeps on Y (beta axis), stays at X=0
+        # Center Y driven by full-spectrum dominant frequency
         center_x = 0.0
-        center_y = float(-(loop_alpha * 2.0 - 1.0))  # same vertical sweep as before
+        center_y = self._fill_dom_freq_to_y()
+
+        # ── Hi-hat / snare impulse: quick downward kick on Y ──
+        hh_hit = False
+        if self.audio_engine is not None and hasattr(self.audio_engine, '_band_zscore_signals'):
+            sigs = self.audio_engine._band_zscore_signals
+            if sigs.get('high', 0) == 1 or sigs.get('mid', 0) == 1:
+                hh_hit = True
+        if hh_hit:
+            # Re-trigger impulse (take the larger of current residual or fresh kick)
+            self._fill_hh_impulse = max(self._fill_hh_impulse, self._FILL_HH_IMPULSE_SIZE)
+        # Exponential decay
+        self._fill_hh_impulse *= math.exp(-self._FILL_HH_IMPULSE_DECAY * dt)
+        if self._fill_hh_impulse < 0.001:
+            self._fill_hh_impulse = 0.0
+        # Apply impulse downward (negative Y)
+        center_y = float(np.clip(center_y - self._fill_hh_impulse, -0.5, 0.5))
 
         # Advance rotation phase at wobble frequency (~31 rad/s)
         self._fill_rot_phase += self._fill_exit_rot_omega * dt
@@ -935,9 +963,8 @@ class StrokeMapper:
         """Return orbit radius multiplier based on rolling dominant bass frequency.
 
         Maps bass frequency to orbit size on a log scale:
-          50 Hz  → 1.5× (deep sub-bass = wider orbit)
-         125 Hz  → 1.0× (normal)
-         200 Hz  → 0.5× (higher bass = tighter orbit)
+         200 Hz  → 1.0× (highest bass = base orbit, no expansion)
+          50 Hz  → 2.0× (lowest bass = maximum expansion)
         Uses a 4-frame rolling average for stability.
         """
         # Sample dominant frequency in the bass range (30–500 Hz)
@@ -961,26 +988,60 @@ class StrokeMapper:
 
         avg_freq = float(sum(self._fill_bass_freq_history) / len(self._fill_bass_freq_history))
 
-        # Log-linear mapping: log2(50)→1.5, log2(125)→1.0, log2(200)→0.5
-        # Using two-segment piecewise linear in log2 space:
-        #   [50, 125]  → [1.5, 1.0]
-        #   [125, 200] → [1.0, 0.5]
+        # Log-linear mapping: lower bass → wider orbit
+        #   log2(200) → 1.0×  (highest bass, no expansion)
+        #   log2(50)  → 2.0×  (lowest bass, maximum expansion)
         avg_freq = float(np.clip(avg_freq, 50.0, 200.0))
         log_f = math.log2(avg_freq)
         log_50 = math.log2(50.0)    # ~5.644
-        log_125 = math.log2(125.0)  # ~6.966
         log_200 = math.log2(200.0)  # ~7.644
 
-        if log_f <= log_125:
-            # 50→125: 1.5→1.0
-            t = (log_f - log_50) / (log_125 - log_50)
-            mult = 1.5 - 0.5 * t
-        else:
-            # 125→200: 1.0→0.5
-            t = (log_f - log_125) / (log_200 - log_125)
-            mult = 1.0 - 0.5 * t
+        # Linear interpolation in log2 space: high freq → 1.0, low freq → 2.0
+        t = (log_f - log_50) / (log_200 - log_50)  # 0 at 50 Hz, 1 at 200 Hz
+        mult = 2.0 - 1.0 * t                        # 2.0 at 50 Hz, 1.0 at 200 Hz
 
-        return float(np.clip(mult, 0.5, 1.5))
+        return float(np.clip(mult, 1.0, 2.0))
+
+    def _fill_dom_freq_to_y(self) -> float:
+        """Map full-spectrum dominant frequency to fill center Y position.
+
+        Uses log-scale mapping over 80–8000 Hz:
+          Low  freq (80 Hz)   → +0.5  (high Y position)
+          High freq (8000 Hz) → -0.5  (low Y position)
+        Smoothed with a 6-frame rolling average for stability.
+        """
+        freq = 500.0  # neutral default (maps to ~0.0)
+        if self.audio_engine is not None and hasattr(self.audio_engine, '_estimate_frequency'):
+            spectrum = None
+            if hasattr(self.audio_engine, 'get_spectrum'):
+                spectrum = self.audio_engine.get_spectrum()
+            if spectrum is not None:
+                try:
+                    f = float(self.audio_engine._estimate_frequency(spectrum))
+                    if f > 0.0:
+                        freq = f
+                except Exception:
+                    pass
+
+        self._fill_dom_freq_history.append(freq)
+
+        if len(self._fill_dom_freq_history) == 0:
+            return 0.0
+
+        avg_freq = float(sum(self._fill_dom_freq_history) / len(self._fill_dom_freq_history))
+
+        # Log-linear mapping: log2(80)→+0.5, log2(8000)→-0.5
+        avg_freq = float(np.clip(avg_freq, 80.0, 8000.0))
+        log_f = math.log2(avg_freq)
+        log_lo = math.log2(80.0)     # ~6.322
+        log_hi = math.log2(8000.0)   # ~12.966
+
+        # t goes 0→1 as freq rises from 80→8000
+        t = (log_f - log_lo) / (log_hi - log_lo)
+        # Map to +0.5 (low freq) → -0.5 (high freq)
+        y = float(0.5 - 1.0 * t)
+
+        return float(np.clip(y, -0.5, 0.5))
 
     def _sample_idle_loop(self, dt: float) -> tuple[float, float]:
         """Advance and sample the ping-pong funscript idle loop.
