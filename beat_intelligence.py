@@ -11,6 +11,7 @@ from typing import Optional
 import numpy as np
 
 from audio_engine import BeatEvent, RMS_DB_FLOOR, rms_to_dbfs, silence_threshold_to_dbfs
+from audio_modules.adaptive_lead import AdaptiveLead
 from config import Config
 from logging_utils import log_event
 
@@ -105,6 +106,10 @@ class BeatIntelligence:
         self._journey_duration_target_s = 0.0
         self._journey_start_intensity = 0.0  # intensity of current journey's trigger
         self._lazy_glide_active: bool = False
+
+        # ── Adaptive pipeline-lead (auto-adjusts per track) ──
+        _base_lead = float(getattr(config.beat, 'scheduled_lead_ms', 55) or 55)
+        self._adaptive_lead = AdaptiveLead(base_lead_ms=_base_lead)
 
         # ── Phase 1: Rolling history deques (#1) ──
         self._recent_flux_values: deque = deque(maxlen=600)  # ~10 s for lookback features
@@ -1034,6 +1039,7 @@ class BeatIntelligence:
             self._silence_exit_frames = 0
             if self._silence_enter_frames >= self._silence_enter_required:
                 self.silence_deadzone_active = True
+                self._adaptive_lead.reset()  # new track boundary
         elif level_db > self._silence_exit_db:
             self._silence_exit_frames += 1
             self._silence_enter_frames = 0
@@ -1353,6 +1359,12 @@ class BeatIntelligence:
             or (trigger_kind == "beat" and bool(getattr(event, "is_beat", False)))
         )
 
+        # Feed phase error to adaptive lead on real beat events
+        if is_new_beat:
+            _pe = float(getattr(event, 'phase_error_ms', 0.0) or 0.0)
+            if abs(_pe) > 0.5:  # ignore near-zero noise
+                self._adaptive_lead.observe(_pe)
+
         # ── Priority interrupt logic ──
         # KEY: Interrupts only happen ON actual beat events (is_new_beat=True)
         # Never interrupt mid-frame based on classifier changes alone.
@@ -1421,17 +1433,12 @@ class BeatIntelligence:
             else:
                 self.journey_duration_s = target_duration
 
-            # Apply scheduled pipeline-latency lead (config.beat.scheduled_lead_ms).
+            # Apply adaptive pipeline-latency lead.
             # The audio callback fires AFTER the audio buffer is captured (buffer
             # latency) plus WASAPI loopback delay, so beat timestamps arrive late.
-            # Shortening journey_duration_s by this amount makes the orbit reach
-            # the anchor at the actual musical beat rather than lagging behind.
-            # Tune this to: (WASAPI input latency) + (buffer_size / sample_rate / 2).
-            # Typical value on Windows: 40-80 ms.
-            _sched_lead_s = float(np.clip(
-                float(getattr(self.config.beat, 'scheduled_lead_ms', 0) or 0) / 1000.0,
-                0.0, 0.25,
-            ))
+            # Shortening journey_duration_s compensates; the adaptive lead
+            # auto-tunes per track from observed phase error.
+            _sched_lead_s = float(np.clip(self._adaptive_lead.get_lead_s(), 0.0, 0.25))
             if _sched_lead_s > 0.0:
                 self.journey_duration_s = float(max(
                     target_duration * 0.60,
