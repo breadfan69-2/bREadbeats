@@ -393,6 +393,12 @@ class AudioEngine:
         self._metronome_bpm: float = 0.0                # BPM the metronome is running at
         self._metronome_beat_fired: bool = False         # Did metronome fire a beat THIS frame?
         self._metronome_downbeat_fired: bool = False     # Did metronome fire a downbeat THIS frame?
+        # Layer-2 silence gate: set by BeatIntelligence each frame.
+        # When True, beat detection, metronome, ACF feeding, and
+        # syncopation are all suppressed.  Starts True (guilty-until-
+        # proven-innocent) so the first frames before BeatIntelligence
+        # runs cannot leak phantom beats.
+        self.silence_gate_active: bool = True
         self._metronome_last_beat_time: float = 0.0      # When the metronome last ticked a beat
         self._metronome_conf_hold_s: float = 1.5          # Keep metronome coasting through ACF confidence dips (fix #3)
         self._metronome_conf_lost_at: float = 0.0         # Timestamp when ACF confidence dropped below threshold
@@ -1275,6 +1281,15 @@ class AudioEngine:
         # near-digital silence.  The real adaptive silence gate lives in
         # BeatIntelligence.update_silence_deadzone_gate().
         silence_veto_active = bool(raw_rms_db < -96.0)
+
+        # Layer 2: merge BeatIntelligence flatness gate.  If the
+        # flatness-based silence gate says "silent", suppress ALL
+        # beat / metronome / syncopation output just like the
+        # hard -96 dBFS veto.  This prevents phantom beats from
+        # noise-floor energy triggering the adaptive beat detector.
+        if self.silence_gate_active:
+            silence_veto_active = True
+
         if silence_veto_active:
             spectral_flux = 0.0
             self.peak_envelope = 0.0
@@ -1309,7 +1324,9 @@ class AudioEngine:
                 self._acf_onset_fps = (len(self._fps_calibration_times) - 1) / fps_elapsed
         
         # Run ACF tempo estimation periodically
-        if current_time - self._last_acf_time > self._acf_interval_ms / 1000.0:
+        # Skip during silence — feeding silence frames into ACF seeds
+        # ghost tempos that free-run the metronome on noise.
+        if not silence_veto_active and current_time - self._last_acf_time > self._acf_interval_ms / 1000.0:
             self._last_acf_time = current_time
             self._estimate_tempo_acf()
         
@@ -1317,7 +1334,10 @@ class AudioEngine:
         raw_is_beat = False if silence_veto_active else self._detect_beat(band_energy, spectral_flux)
         
         # Advance internal metronome (pass band_energy for energy-based downbeat detection)
-        self._advance_metronome(current_time, band_energy)
+        # Skip entirely during silence so the metronome doesn't free-run
+        # and produce phantom beat ticks that drive the orbit engine.
+        if not silence_veto_active:
+            self._advance_metronome(current_time, band_energy)
         self._predict_next_beat(current_time, wall_time)
 
         tempo_ms = (time.perf_counter() - tempo_started) * 1000.0
@@ -1373,7 +1393,8 @@ class AudioEngine:
         # first off-beat and fires on the second off-beat in the same period.
         # Drops immediately on first beat period without any off-beat onset.
         self._syncopation_detected = False
-        if (self.config.beat.syncopation_enabled
+        if (not silence_veto_active
+                and self.config.beat.syncopation_enabled
                 and self._metronome_bpm > 0
                 and self._any_band_onset
                 and not self._metronome_beat_fired):
@@ -2066,6 +2087,14 @@ class AudioEngine:
         Z-score adapts automatically to any audio level, so it catches beats
         that the manual peak_floor setting would miss - and vice-versa.
         """
+        # Layer 3: absolute energy floor.  Band energy this low is pure
+        # noise — the adaptive threshold can chase it down to zero during
+        # silence, so we need a hard floor that never yields.
+        # 0.001 ≈ -60 dBFS band energy.  Real music beats are 10-100x higher.
+        _BEAT_ENERGY_FLOOR = 0.001
+        if energy < _BEAT_ENERGY_FLOOR:
+            return False
+
         cfg = self.config.beat
         
         # Track valley detection (local minima) for peak_floor metric
