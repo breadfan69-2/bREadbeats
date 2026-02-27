@@ -87,6 +87,14 @@ class BeatIntelligence:
         self._silence_enter_required: int = 8     # ~0.13s at 60fps — fast silence entry
         self._silence_exit_required: int = 4      # ~0.07s at 60fps — fast music detection
 
+        # ── Deep-silence fast path: true digital silence between tracks ──
+        self._deep_silence_db: float = -90.0      # near-digital silence threshold
+        self._deep_silence_frames: int = 0        # consecutive deep-silence frames
+        self._deep_silence_required: int = 3      # ~50-70 ms at typical callback FPS
+
+        # Pull current thresholds from config at startup.
+        self._refresh_silence_gate_thresholds()
+
         self.active_interval_beats = 8
         self.last_trigger_kind = "creep"
 
@@ -252,6 +260,22 @@ class BeatIntelligence:
         if 0.0 < number <= 1.0:
             return self._linear_to_dbfs(number)
         return float(np.clip(number, RMS_DB_FLOOR, 12.0))
+
+    def _refresh_silence_gate_thresholds(self) -> None:
+        """Refresh enter/exit silence thresholds from config (supports dBFS or legacy linear)."""
+        stroke_cfg = getattr(self.config, "stroke", None)
+        enter_cfg = getattr(stroke_cfg, "silence_threshold", -70.0)
+        exit_cfg = getattr(stroke_cfg, "silence_close_threshold", -65.0)
+
+        enter_db = float(silence_threshold_to_dbfs(enter_cfg, default_linear=0.01))
+        exit_db = float(silence_threshold_to_dbfs(exit_cfg, default_linear=0.02))
+
+        # Keep hysteresis valid: exit threshold must stay above enter threshold.
+        if exit_db <= enter_db:
+            exit_db = float(min(0.0, enter_db + 1.5))
+
+        self._silence_enter_db = enter_db
+        self._silence_exit_db = exit_db
 
     def _event_rms_db(self, event: BeatEvent) -> float:
         raw_rms_db = self._to_db(event.raw_rms_db)
@@ -1079,24 +1103,44 @@ class BeatIntelligence:
         return self._to_db(self.rms_envelope)
 
     def update_silence_deadzone_gate(self, overall_amplitude: float, now: float | None = None) -> bool:
-        """Simple fixed-threshold silence gate.
+        """Simple fixed-threshold silence gate with deep-silence fast path.
 
         With volume normalization active, the signal always arrives at
         "100%% Windows volume" equivalent levels, so we can use fixed
         dBFS thresholds instead of adaptive spread/SNR tracking.
 
-        Enter silence:  level_db < _silence_enter_db for N consecutive frames.
-        Exit silence:   level_db > _silence_exit_db for N consecutive frames.
-        Hysteresis gap between the two thresholds prevents chatter.
+        Standard path:
+          Enter silence:  level_db < _silence_enter_db for N consecutive frames.
+          Exit silence:   level_db > _silence_exit_db for N consecutive frames.
+          Hysteresis gap between the two thresholds prevents chatter.
+
+        Deep-silence fast path:
+          Enter silence:  level_db < _deep_silence_db for a few consecutive
+          frames to catch short true-silence gaps between tracks.
         """
+        self._refresh_silence_gate_thresholds()
         level_db = self._to_db(overall_amplitude)
+
+        # ── Deep-silence fast path ──
+        if level_db < self._deep_silence_db:
+            self._deep_silence_frames += 1
+            if self._deep_silence_frames >= self._deep_silence_required:
+                if not self.silence_deadzone_active:
+                    self.silence_deadzone_active = True
+                    self._adaptive_lead.reset()  # new track boundary
+                # Keep standard counters consistent with active silence.
+                self._silence_enter_frames = max(self._silence_enter_frames, self._silence_enter_required)
+                self._silence_exit_frames = 0
+        else:
+            self._deep_silence_frames = 0
 
         if level_db < self._silence_enter_db:
             self._silence_enter_frames += 1
             self._silence_exit_frames = 0
             if self._silence_enter_frames >= self._silence_enter_required:
-                self.silence_deadzone_active = True
-                self._adaptive_lead.reset()  # new track boundary
+                if not self.silence_deadzone_active:
+                    self.silence_deadzone_active = True
+                    self._adaptive_lead.reset()  # new track boundary
         elif level_db > self._silence_exit_db:
             self._silence_exit_frames += 1
             self._silence_enter_frames = 0

@@ -189,24 +189,36 @@ class TestSilenceGateThreshold(Phase2Mixin, unittest.TestCase):
         # First exit silence
         self._feed(bi, -30.0, frames=20)
         self.assertFalse(bi.silence_deadzone_active)
-        # Now drop to silence (below -70 dBFS enter threshold)
+        # Now drop to silence well below enter threshold
         self._feed(bi, -80.0, frames=20)
         self.assertTrue(bi.silence_deadzone_active)
 
     def test_hysteresis_band_holds_state(self):
-        """Signal in the hysteresis band (-70 to -65) does not change state."""
+        """Signal in the hysteresis band does not change state."""
         bi = BeatIntelligence(Config())
         # Exit silence first
         self._feed(bi, -30.0, frames=20)
         self.assertFalse(bi.silence_deadzone_active)
-        # Feed signal in hysteresis band — should stay active (not silent)
-        self._feed(bi, -67.0, frames=60)
+        # Feed midpoint between enter/exit thresholds — state should hold.
+        mid_db = (bi._silence_enter_db + bi._silence_exit_db) * 0.5
+        self._feed(bi, mid_db, frames=60)
         self.assertFalse(bi.silence_deadzone_active)
 
     def test_near_floor_stays_silent(self):
         """Very quiet signal (-80 dB) stays silent even after many frames."""
         bi = BeatIntelligence(Config())
         self._feed(bi, -80.0, frames=200)
+        self.assertTrue(bi.silence_deadzone_active)
+
+    def test_deep_silence_fast_path_enters_quickly(self):
+        """Near-digital silence should re-enter silence quickly (few frames)."""
+        bi = BeatIntelligence(Config())
+        # Exit silence first so we can validate re-entry timing.
+        self._feed(bi, -20.0, frames=20)
+        self.assertFalse(bi.silence_deadzone_active)
+
+        # Standard gate needs more frames; deep-silence path should trigger in ~3.
+        self._feed(bi, -100.0, frames=3)
         self.assertTrue(bi.silence_deadzone_active)
 
 
