@@ -261,9 +261,19 @@ class AudioEngine:
         # Visualizer toggle
         self._visualizer_enabled = getattr(config.audio, 'visualizer_enabled', True)
         
-        # Volume normalization (compensates for Windows master volume)
+        # Volume normalization (compensates for Windows master volume).
+        # Only meaningful for WASAPI loopback capture where the captured PCM is
+        # scaled by the Windows endpoint volume.  For analog/line-in devices the
+        # signal is independent of the Windows volume slider, so applying
+        # compensation would incorrectly inflate the already-full-amplitude signal
+        # and break silence detection.
+        _is_loopback = bool(getattr(config.audio, 'is_loopback', True))
         self._volume_normalizer = VolumeNormalizer(
-            enabled=bool(getattr(config.audio, 'volume_normalize', True)) and platform.system().lower() == 'windows'
+            enabled=(
+                bool(getattr(config.audio, 'volume_normalize', True))
+                and platform.system().lower() == 'windows'
+                and _is_loopback
+            )
         )
         
         # ===== MULTI-BAND Z-SCORE ADAPTIVE PEAK DETECTION =====

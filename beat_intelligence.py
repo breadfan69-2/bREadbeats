@@ -1112,9 +1112,13 @@ class BeatIntelligence:
     def update_silence_deadzone_gate(self, overall_amplitude: float, now: float | None = None) -> bool:
         """Simple fixed-threshold silence gate with deep-silence fast path.
 
-        With volume normalization active, the signal always arrives at
-        "100%% Windows volume" equivalent levels, so we can use fixed
-        dBFS thresholds instead of adaptive spread/SNR tracking.
+        For WASAPI loopback (digital) capture, volume normalization scales the
+        signal to "100%% Windows volume" equivalent levels, so the fixed dBFS
+        thresholds work regardless of the Windows volume slider.
+
+        For analog/line-in capture, volume normalization is automatically
+        disabled (Windows output volume doesn't affect input signal), and the
+        user-configurable silence thresholds apply directly to the raw signal.
 
         Standard path:
           Enter silence:  level_db < _silence_enter_db for N consecutive frames.
