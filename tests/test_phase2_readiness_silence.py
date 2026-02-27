@@ -189,18 +189,18 @@ class TestSilenceGateThreshold(Phase2Mixin, unittest.TestCase):
         # First exit silence
         self._feed(bi, -30.0, frames=20)
         self.assertFalse(bi.silence_deadzone_active)
-        # Now drop to silence
-        self._feed(bi, -70.0, frames=20)
+        # Now drop to silence (below -70 dBFS enter threshold)
+        self._feed(bi, -80.0, frames=20)
         self.assertTrue(bi.silence_deadzone_active)
 
     def test_hysteresis_band_holds_state(self):
-        """Signal in the hysteresis band (-55 to -48) does not change state."""
+        """Signal in the hysteresis band (-70 to -65) does not change state."""
         bi = BeatIntelligence(Config())
         # Exit silence first
         self._feed(bi, -30.0, frames=20)
         self.assertFalse(bi.silence_deadzone_active)
         # Feed signal in hysteresis band — should stay active (not silent)
-        self._feed(bi, -51.0, frames=60)
+        self._feed(bi, -67.0, frames=60)
         self.assertFalse(bi.silence_deadzone_active)
 
     def test_near_floor_stays_silent(self):

@@ -138,6 +138,21 @@ class StrokeMapper:
         self._fill_exit_creep_streak: int = 0
         self._fill_exit_creep_cancel_threshold: int = 3
 
+        # ── Fill-exit direction lock: block reversal until 1 full rotation ──
+        self._fill_exit_direction_locked: bool = False
+        self._fill_exit_lock_start_phase: float = 0.0
+        self._fill_exit_lock_accumulated: float = 0.0
+
+        # ── Beat→Fill entry transition: orbit radius contracts to center ──
+        self._fill_entry_active: bool = False
+        self._fill_entry_elapsed: float = 0.0
+        self._fill_entry_duration_s: float = 1.0   # recomputed from BPM at transition start
+        self._fill_entry_start_radius: float = 0.80
+        self._fill_entry_start_center_y: float = 0.0
+        self._fill_entry_phase: float = 0.0
+        self._fill_entry_omega_start: float = 0.0   # beat angular velocity at start
+        self._fill_entry_omega_end: float = 0.0     # fill rotation angular velocity target
+
         # ── Fill-from-silence speed ramp ──
         # When fill starts after silence, motion displacement starts at 10%
         # and ramps to 100% over 1500 ms so the first motions are gentle.
@@ -379,6 +394,8 @@ class StrokeMapper:
             # ── Silence park: glide smoothly to park position, fade volume ──
             self._anchor_phrase_locked = False
             self._fill_exit_active = False  # cancel fill exit on silence
+            self._fill_entry_active = False  # cancel fill entry on silence
+            self._fill_exit_direction_locked = False  # release direction lock on silence
             self._fill_was_silent = True  # arm silence→fill speed ramp
             self._fill_silence_ramp_active = False  # reset any in-progress ramp
 
@@ -456,6 +473,11 @@ class StrokeMapper:
                         self._actual_radius = float(_live_radius)
                         self._orbit_phase_initialized = True
 
+                        # Lock direction until one full rotation completes
+                        self._fill_exit_direction_locked = True
+                        self._fill_exit_lock_start_phase = float(self._orbit_phase)
+                        self._fill_exit_lock_accumulated = 0.0
+
                         self._journey_start_angle = float(self._orbit_phase)
                         self._journey_start_radius = float(self._actual_radius)
                         self._journey_start_alpha = float(_live_orbit_a)
@@ -503,6 +525,28 @@ class StrokeMapper:
             if fill_enabled and (decision.trigger_kind == "creep" or _in_fill_dwell):
                 if prev_trigger_kind != "creep" and not _in_fill_dwell:
                     self._fill_enter_time = now  # record when fill started
+                    # ── Beat→Fill entry: start radius contraction spiral ──
+                    # Only activate if we have a meaningful orbit to contract from;
+                    # otherwise (e.g. very first frame) just jump to fill.
+                    if self._orbit_phase_initialized and self._actual_radius > 0.15:
+                        self._fill_entry_active = True
+                        self._fill_entry_elapsed = 0.0
+                        _bpm_entry = self._current_bpm()
+                        self._fill_entry_duration_s = float(2.0 * 60.0 / _bpm_entry)  # 2 beats
+                        self._fill_entry_start_radius = float(self._actual_radius)
+                        self._fill_entry_start_center_y = float(self._base_center_y)
+                        self._fill_entry_phase = float(self._orbit_phase)
+                        # Beat orbital velocity (idle cruise speed)
+                        _beat_omega = float(
+                            2.0 * math.pi * (_bpm_entry / 60.0)
+                            * self._idle_loops_per_beat
+                            * self._orbit_direction
+                        )
+                        self._fill_entry_omega_start = _beat_omega
+                        self._fill_entry_omega_end = float(
+                            self._fill_exit_rot_omega
+                            * (1.0 if self._orbit_direction > 0 else -1.0)
+                        )
                 # Arm speed ramp on the first fill frame after any silence
                 # episode — checked every frame, not just on fill-entry edge,
                 # because prev_trigger_kind may already be "creep" when
@@ -516,8 +560,63 @@ class StrokeMapper:
                     # prev_trigger_kind == "creep" for dwell check
                     self._last_trigger_kind = "creep"
                 self._fill_exit_active = False  # cancel any pending exit
+
                 fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+
+                # ── Beat→Fill entry transition: contracting spiral ──
+                if self._fill_entry_active:
+                    self._fill_entry_elapsed += dt
+                    raw_t = float(np.clip(
+                        self._fill_entry_elapsed / max(self._fill_entry_duration_s, 0.01),
+                        0.0, 1.0,
+                    ))
+                    ease_t = quintic_ease(raw_t)
+
+                    # Ease angular velocity from beat cruise → fill rotation
+                    omega = float(
+                        self._fill_entry_omega_start
+                        + (self._fill_entry_omega_end - self._fill_entry_omega_start) * ease_t
+                    )
+                    self._fill_entry_phase += omega * dt
+
+                    # Contract radius from beat orbit → fill orbit
+                    bass_mult = self._fill_bass_freq_orbit_mult()
+                    target_radius = float(self._fill_rot_radius * bass_mult)
+                    current_radius = float(
+                        self._fill_entry_start_radius
+                        + (target_radius - self._fill_entry_start_radius) * ease_t
+                    )
+
+                    # Ease center from beat center → fill center
+                    target_center_y = self._fill_dom_freq_to_y()
+                    center_y = float(
+                        self._fill_entry_start_center_y
+                        + (target_center_y - self._fill_entry_start_center_y) * ease_t
+                    )
+
+                    alpha, beta = orbit_point(
+                        self._fill_entry_phase, current_radius, 0.0, center_y,
+                    )
+
+                    if raw_t >= 1.0:
+                        self._fill_entry_active = False
+                        # Seed fill rotation phase from contraction endpoint
+                        self._fill_rot_phase = float(
+                            self._fill_entry_phase % (2.0 * math.pi)
+                        )
+                        self._orbit_phase_initialized = False
+
+                    volume = float(np.clip(
+                        self.get_volume() * min(fade, ramp), 0.0, 1.0,
+                    ))
+                    self._last_journey_completion = 1.0
+                    self.state.alpha = float(alpha)
+                    self.state.beta = float(beta)
+                    return TCodeCommand(
+                        alpha=alpha, beta=beta, duration_ms=25, volume=volume,
+                    )
+
                 alpha, beta, volume = self._apply_park_motion_frame(dt=dt, fade=min(fade, ramp))
                 self._last_journey_completion = 1.0
                 # Direct output — bypass rate limiter so the fill pattern
@@ -540,6 +639,7 @@ class StrokeMapper:
 
             # ── Detect fill → orbit transition: latch center, start wobble decay ──
             if fill_enabled and prev_trigger_kind == "creep" and not self._fill_exit_active:
+                self._fill_entry_active = False  # cancel any in-progress fill-entry
                 self._fill_exit_active = True
                 self._fill_exit_elapsed = 0.0
                 self._fill_exit_creep_streak = 0
@@ -817,12 +917,35 @@ class StrokeMapper:
             decay = float(max(0.0, 1.0 - 2.0 * dt))
             self._center_y_offset *= decay
 
+        # ── Post-fill-exit direction lock: accumulate rotation, release after 2π ──
+        if self._fill_exit_direction_locked and self._orbit_phase_initialized:
+            # Track how much angle has been swept since the lock started
+            prev_phase = self._fill_exit_lock_start_phase + self._fill_exit_lock_accumulated
+            cur_phase = float(self._orbit_phase)
+            # Compute signed delta, unwrap to [-π, π]
+            delta = cur_phase - (prev_phase % (2.0 * math.pi))
+            if delta > math.pi:
+                delta -= 2.0 * math.pi
+            elif delta < -math.pi:
+                delta += 2.0 * math.pi
+            self._fill_exit_lock_accumulated += abs(delta)
+            if self._fill_exit_lock_accumulated >= 2.0 * math.pi:
+                self._fill_exit_direction_locked = False
+
         # ── §1: Anchor phrase management (direction change → new anchor) ──
         if getattr(self.config.stroke, 'direction_change_enabled', True) and not decision.silence_active:
             interval_s = float(getattr(self.config.stroke, 'direction_change_interval_s', 15.0) or 15.0)
             drop_needed = float(getattr(self.config.stroke, 'direction_change_energy_drop', 0.35) or 0.35)
 
-            if (now - self._last_direction_change_time > interval_s
+            # Block direction reversal during fill-exit transition or
+            # until one full rotation has been completed after it.
+            _direction_allowed = bool(
+                not self._fill_exit_active
+                and not self._fill_exit_direction_locked
+            )
+
+            if (_direction_allowed
+                    and now - self._last_direction_change_time > interval_s
                     and len(self._energy_history) >= 75
                     and self._actual_radius > 0.9):
                 recent = list(self._energy_history)
