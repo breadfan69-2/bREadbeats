@@ -388,6 +388,7 @@ class StrokeMapper:
             self._smoothed_db = 0.0
         else:
             progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
+            fill_enabled = bool(getattr(self.config.jitter, "enabled", True))
 
             # ── Fill-exit: center eases to live orbit, wobble decays ────
             if self._fill_exit_active:
@@ -487,7 +488,7 @@ class StrokeMapper:
                 if (now - self._fill_enter_time) < _measure_s:
                     _in_fill_dwell = True
 
-            if decision.trigger_kind == "creep" or _in_fill_dwell:
+            if fill_enabled and (decision.trigger_kind == "creep" or _in_fill_dwell):
                 if prev_trigger_kind != "creep" and not _in_fill_dwell:
                     self._fill_enter_time = now  # record when fill started
                 # Arm speed ramp on the first fill frame after any silence
@@ -513,8 +514,20 @@ class StrokeMapper:
                 self.state.beta = beta
                 return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
 
+            if not fill_enabled and decision.trigger_kind == "creep":
+                self._fill_exit_active = False
+                self._fill_silence_ramp_active = False
+                self._fill_was_silent = False
+                self._orbit_phase_initialized = False
+                self._last_journey_completion = 1.0
+
+                fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
+                ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+                volume = float(np.clip(self.get_volume() * min(fade, ramp), 0.0, 1.0))
+                return self._rate_limited_output(0.0, self._park_y, volume, dt)
+
             # ── Detect fill → orbit transition: latch center, start wobble decay ──
-            if prev_trigger_kind == "creep" and not self._fill_exit_active:
+            if fill_enabled and prev_trigger_kind == "creep" and not self._fill_exit_active:
                 self._fill_exit_active = True
                 self._fill_exit_elapsed = 0.0
                 self._fill_exit_creep_streak = 0
@@ -663,7 +676,7 @@ class StrokeMapper:
                 bpm_for_terminal = float(getattr(event, "metronome_bpm", 0.0) or 0.0)
                 if bpm_for_terminal <= 0.0:
                     bpm_for_terminal = float(getattr(event, "bpm", 0.0) or 0.0)
-                bpm_for_terminal = float(np.clip(bpm_for_terminal if bpm_for_terminal > 0.0 else 120.0, 40.0, 240.0))
+                bpm_for_terminal = float(np.clip(bpm_for_terminal if bpm_for_terminal > 0.0 else 120.0, 40.0, 200.0))
                 fallback_terminal_speed = float((2.0 * math.pi) * (bpm_for_terminal / 60.0) * self._idle_loops_per_beat)
                 # Use the BPM-derived idle orbit speed — NOT the journey's
                 # angular velocity.  Journey velocity can be 10-25 rad/s
@@ -1031,5 +1044,5 @@ class StrokeMapper:
         if self.audio_engine is not None:
             met = float(getattr(self.audio_engine, "_metronome_bpm", 0.0) or 0.0)
             if met > 0:
-                return float(np.clip(met, 40.0, 240.0))
+                return float(np.clip(met, 40.0, 200.0))
         return 120.0

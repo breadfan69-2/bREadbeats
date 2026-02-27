@@ -216,7 +216,7 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertEqual(cmd.duration_ms, 25)
 
     def test_fill_parks_motion_when_jitter_off(self):
-        """Fill mode: dot parks gracefully (not instant park)."""
+        """Creep mode parks when Jitter/Fill is disabled."""
         cfg = Config()
         cfg.jitter.enabled = False
         mapper = StrokeMapper(cfg)
@@ -233,23 +233,16 @@ class TestStrokeMapperContract(unittest.TestCase):
 
         self.assertIsNotNone(cmd)
         assert cmd is not None
-        # Gate-idle deceleration: dot keeps orbiting but starts decelerating.
-        # Motion is preserved (not zero) — prevents the hard "stick" effect.
-        self.assertGreaterEqual(cmd.beta, -1.0)
-        self.assertLessEqual(cmd.beta, 1.0)
+        self.assertAlmostEqual(cmd.alpha, 0.0, places=3)
+        self.assertAlmostEqual(cmd.beta, mapper._park_y, places=3)
 
         # Simulate ~2 seconds at 60fps with proper timestamps
         for i in range(120):
             t = t0 + (i + 1) * (1.0 / 60.0)
             cmd = mapper.process_beat(self._event(is_beat=False, frequency=120.0, monotonic_timestamp=t))
         assert cmd is not None
-        # After full deceleration, orbit is still present (park_radius=0.70 for
-        # creep geometry) but angular velocity has dropped to idle speed (0.3 rad/s).
-        # Position depends on angle, so just verify it stays in valid bounds.
-        self.assertGreaterEqual(cmd.alpha, -1.0)
-        self.assertLessEqual(cmd.alpha, 1.0)
-        self.assertGreaterEqual(cmd.beta, -1.0)
-        self.assertLessEqual(cmd.beta, 1.0)
+        self.assertAlmostEqual(cmd.alpha, 0.0, places=3)
+        self.assertAlmostEqual(cmd.beta, mapper._park_y, places=3)
 
     def test_compute_landing_rotation_from_park_for_beat_is_non_zero(self):
         mapper = StrokeMapper(Config())
