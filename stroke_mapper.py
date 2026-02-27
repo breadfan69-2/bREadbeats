@@ -28,6 +28,7 @@ from geometry_utils import (
 )
 from network_engine import TCodeCommand
 from ramp_engine import RampEngine
+from stroke_mapper_experimental import ExperimentalSimpleMapper
 
 
 @dataclass
@@ -188,6 +189,14 @@ class StrokeMapper:
         self._rate_limiter_clipped: bool = False  # True when rate limiter clamped last frame
 
         self._intelligence = BeatIntelligence(config=self.config, audio_engine=self.audio_engine, park_y=self._park_y)
+
+        # ── Experimental simple-mode mapper (beat-reactive shuttle + arc) ──
+        self._experimental_simple = ExperimentalSimpleMapper(
+            config=self.config,
+            get_volume=self.get_volume,
+            audio_engine=self.audio_engine,
+        )
+        self._experimental_simple.set_intelligence(self._intelligence)
 
         self._learning_enabled = bool(getattr(self.config.beat, "teaching_learning_enabled", False))
         self._learning_use_fitted_rules = bool(getattr(self.config.beat, "teaching_use_fitted_rules", False))
@@ -493,8 +502,16 @@ class StrokeMapper:
             self.state.beta = float(np.clip(self.state.beta, -1.0, 1.0))
             return TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
 
-        # ── Simple mode: bypass all intelligence/expression, pure circles ──
+        # ── Simple mode: bypass all intelligence/expression ──
         if not getattr(self.config.stroke, 'intelligence_enabled', True):
+            if getattr(self.config.stroke, 'experimental_simple', False):
+                cmd = self._experimental_simple.process(
+                    event=event, decision=decision, dt=dt, now=now,
+                )
+                # Sync state back so display/diagnostics stay consistent
+                self.state.alpha = cmd.alpha
+                self.state.beta = cmd.beta
+                return cmd
             return self._process_simple_mode(event=event, decision=decision, dt=dt, now=now)
 
         # ── Expression layer: per-frame updates ──

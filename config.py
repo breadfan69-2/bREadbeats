@@ -192,6 +192,7 @@ class StrokeConfig:
 
     # ── Simple Mode (intelligence disabled) ──
     intelligence_enabled: bool = True       # False = simple mode: no gating, no expression, pure circles
+    experimental_simple: bool = False       # True = beat-reactive Y shuttle + half-circle arc (experimental)
     simple_mode_beats_per_rotation: int = 1 # 1, 2, or 4 beats per full 360° circle
     simple_mode_base_radius: float = 0.90   # constant orbit radius (energy can push to 1.0)
 
