@@ -119,6 +119,15 @@ class StrokeMapper:
         self._fill_exit_creep_streak: int = 0
         self._fill_exit_creep_cancel_threshold: int = 3
 
+        # ── Fill-from-silence speed ramp ──
+        # When fill starts after silence, motion displacement starts at 10%
+        # and ramps to 100% over 1500 ms so the first motions are gentle.
+        self._fill_silence_ramp_active: bool = False
+        self._fill_silence_ramp_start: float = 0.0
+        self._FILL_SILENCE_RAMP_DURATION_S: float = 1.5   # 1500 ms
+        self._FILL_SILENCE_RAMP_FLOOR: float = 0.10        # 10 % speed at onset
+        self._fill_was_silent: bool = True  # start True so first-ever fill ramps in
+
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
         self._last_decision = None      # latest BeatDecision (for keyboard teacher snapshot)
 
@@ -351,6 +360,8 @@ class StrokeMapper:
             # ── Silence park: glide smoothly to park position, fade volume ──
             self._anchor_phrase_locked = False
             self._fill_exit_active = False  # cancel fill exit on silence
+            self._fill_was_silent = True  # arm silence→fill speed ramp
+            self._fill_silence_ramp_active = False  # reset any in-progress ramp
 
             fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
             # Glide toward park position (0, park_y) with quintic ease
@@ -472,6 +483,14 @@ class StrokeMapper:
             if decision.trigger_kind == "creep" or _in_fill_dwell:
                 if prev_trigger_kind != "creep" and not _in_fill_dwell:
                     self._fill_enter_time = now  # record when fill started
+                # Arm speed ramp on the first fill frame after any silence
+                # episode — checked every frame, not just on fill-entry edge,
+                # because prev_trigger_kind may already be "creep" when
+                # silence lifts (silence parks in creep mode).
+                if self._fill_was_silent:
+                    self._fill_silence_ramp_active = True
+                    self._fill_silence_ramp_start = now
+                    self._fill_was_silent = False
                 if _in_fill_dwell:
                     # Override last_trigger so next frame still sees
                     # prev_trigger_kind == "creep" for dwell check
@@ -837,13 +856,32 @@ class StrokeMapper:
             self._orbit_phase = float(inferred_phase % (2.0 * math.pi))
             self._actual_radius = float(inferred_r)
 
+    def _fill_silence_speed_scale(self, now: float) -> float:
+        """Return 0.10→1.0 speed-scale multiplier for the silence→fill ramp."""
+        if not self._fill_silence_ramp_active:
+            return 1.0
+        elapsed = now - self._fill_silence_ramp_start
+        if elapsed >= self._FILL_SILENCE_RAMP_DURATION_S:
+            self._fill_silence_ramp_active = False
+            return 1.0
+        t = float(np.clip(elapsed / self._FILL_SILENCE_RAMP_DURATION_S, 0.0, 1.0))
+        # Smooth ease-in (quadratic) so acceleration feels natural
+        eased = t * t
+        return float(self._FILL_SILENCE_RAMP_FLOOR + (1.0 - self._FILL_SILENCE_RAMP_FLOOR) * eased)
+
     def _apply_park_motion_frame(self, dt: float, fade: float) -> tuple[float, float, float]:
         """Funscript idle-fill: circular orbit around a Y-sweeping center.
 
         The center oscillates vertically using the baked 45-sample sweep.
         The dot orbits that center at radius 0.075 (~31 rad/s) producing
         a tightly-wound spring / helicopter-blade trail.
+
+        When resuming from silence the displacement from rest is scaled
+        by a 10%→100% ramp over 1500 ms so the first motions are gentle.
         """
+        now = time.perf_counter()
+        speed_scale = self._fill_silence_speed_scale(now)
+
         loop_alpha, _loop_beta = self._sample_idle_loop(dt=dt)
 
         # Center sweeps on Y (beta axis), stays at X=0
@@ -858,6 +896,13 @@ class StrokeMapper:
         # Orbit around the moving center
         alpha = float(center_x + self._fill_rot_radius * math.cos(self._fill_rot_phase))
         beta  = float(center_y + self._fill_rot_radius * math.sin(self._fill_rot_phase))
+
+        # ── Silence→fill speed ramp: scale displacement from rest ──
+        if speed_scale < 1.0:
+            rest_alpha = 0.0
+            rest_beta = float(-(self._park_y * 2.0 - 1.0))  # park_y in display coords
+            alpha = float(rest_alpha + (alpha - rest_alpha) * speed_scale)
+            beta  = float(rest_beta  + (beta  - rest_beta)  * speed_scale)
 
         volume = float(np.clip(self.get_volume() * float(np.clip(fade, 0.0, 1.0)), 0.0, 1.0))
         return alpha, beta, volume

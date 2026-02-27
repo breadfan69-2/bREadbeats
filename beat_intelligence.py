@@ -72,6 +72,8 @@ class BeatIntelligence:
         self.silence_deadzone_active = True   # guilty-until-proven: assume silence until audio proves otherwise
         self.silence_open_count = 0
         self.silence_close_count = 0
+        self._silence_reenter_holdoff_until: float = 0.0  # monotonic time before which silence cannot re-activate
+        self._SILENCE_REENTER_HOLDOFF_S: float = 2.0      # seconds of holdoff after silence lifts
         self._silence_default_enter_db = -66.0
         self._silence_default_exit_db = -58.0
 
@@ -1164,13 +1166,26 @@ class BeatIntelligence:
             self.silence_open_count += 1
             self.silence_close_count = 0
             if self.silence_open_count >= 20:   # ~0.33 s of continuous flatness
-                self.silence_deadzone_active = True
+                # Hold-off guard: if silence recently lifted, suppress re-entry.
+                # Only applies when caller provides a real monotonic timestamp;
+                # tests that omit `now` bypass the holdoff.
+                if now is not None and now < self._silence_reenter_holdoff_until:
+                    # Inside the hold-off window — do NOT re-activate.
+                    # Reset open count so we keep requiring a full 20-frame
+                    # streak once the hold-off expires.
+                    self.silence_open_count = 0
+                else:
+                    self.silence_deadzone_active = True
         elif spread > flat_close_spread and has_snr and abs_level_ok:
             # Must have BOTH real dynamics AND meaningful signal above noise
             self.silence_close_count += 1
             self.silence_open_count = 0
             if self.silence_close_count >= close_frames_required:
+                was_silent = self.silence_deadzone_active
                 self.silence_deadzone_active = False
+                # Start hold-off timer so silence can't immediately re-trigger
+                if was_silent and now is not None:
+                    self._silence_reenter_holdoff_until = now + self._SILENCE_REENTER_HOLDOFF_S
         else:
             self.silence_open_count = max(0, self.silence_open_count - 1)
             self.silence_close_count = max(0, self.silence_close_count - 1)
