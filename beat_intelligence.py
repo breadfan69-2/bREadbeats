@@ -170,8 +170,8 @@ class BeatIntelligence:
         self._silence_reset_armed: bool = False
         self._silence_fade_rate: float = 0.035      # fade-OUT per frame (~60fps → ~0.5s to reach 0)
         self._silence_fade_in_rate: float = 0.008   # fade-IN per frame (~60fps → ~2.0s to reach 1.0)
-        silence_reset_ms = int(getattr(getattr(self.config, "beat", None), "silence_reset_ms", 180) or 180)
-        self._silence_reset_threshold_frames: int = max(1, int(round((silence_reset_ms / 1000.0) * 60.0)))
+        self._silence_reset_threshold_frames: int = 1
+        self._refresh_silence_reset_threshold_frames()
 
         # ── Phase 2: Post-silence ramp (#14) ──
         self._post_silence_ramp_active: bool = False
@@ -276,6 +276,12 @@ class BeatIntelligence:
 
         self._silence_enter_db = enter_db
         self._silence_exit_db = exit_db
+
+    def _refresh_silence_reset_threshold_frames(self) -> None:
+        """Refresh prolonged-silence reset threshold from config."""
+        beat_cfg = getattr(self.config, "beat", None)
+        silence_reset_ms = int(getattr(beat_cfg, "silence_reset_ms", 180) or 180)
+        self._silence_reset_threshold_frames = max(1, int(round((silence_reset_ms / 1000.0) * 60.0)))
 
     def _event_rms_db(self, event: BeatEvent) -> float:
         raw_rms_db = self._to_db(event.raw_rms_db)
@@ -682,6 +688,7 @@ class BeatIntelligence:
         Returns (fade_scalar 0..1, request_tempo_reset bool).
         """
         request_reset = False
+        self._refresh_silence_reset_threshold_frames()
 
         if silence_active:
             self._consecutive_silent_count += 1

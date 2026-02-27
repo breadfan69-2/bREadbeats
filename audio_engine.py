@@ -946,6 +946,9 @@ class AudioEngine:
         # first off-beat and fires on the second off-beat in the same period.
         # Drops immediately on first beat period without any off-beat onset.
         combo_texture = float(getattr(self.config.stroke, 'combo_texture', 1.0) or 1.0)
+        sync_window = float(getattr(self.config.beat, 'syncopation_window', self._syncopation.window) or self._syncopation.window)
+        if np.isfinite(sync_window):
+            self._syncopation.window = float(np.clip(sync_window, 0.05, 0.45))
         self._syncopation_detected = self._syncopation.process_frame(
             silence_veto_active=bool(silence_veto_active),
             sync_enabled=bool(self.config.beat.syncopation_enabled),

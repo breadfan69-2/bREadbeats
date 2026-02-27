@@ -266,6 +266,18 @@ class TestSilenceDecayState(Phase2Mixin, unittest.TestCase):
                 reset_count += 1
         self.assertEqual(reset_count, 1)
 
+    def test_silence_reset_ms_live_update_takes_effect(self):
+        cfg = Config()
+        cfg.beat.silence_reset_ms = 180
+        bi = BeatIntelligence(cfg)
+        now = time.perf_counter()
+
+        cfg.beat.silence_reset_ms = 1000
+        bi._update_silence_fade(silence_active=True, now=now)
+
+        expected = max(1, int(round((1000 / 1000.0) * 60.0)))
+        self.assertEqual(bi._silence_reset_threshold_frames, expected)
+
     def test_silence_fade_in_decision(self):
         bi = BeatIntelligence(Config())
         # During silence, fade should be < 1
