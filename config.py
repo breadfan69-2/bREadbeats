@@ -190,6 +190,11 @@ class StrokeConfig:
     post_silence_ramp_seconds: float = 2.7    # Seconds to ramp volume back to full (1.0-8.0)
     silence_fade_drop_points: int = 10        # Max points (out of 100) fade can lower volume by in runtime fade pass
 
+    # ── Simple Mode (intelligence disabled) ──
+    intelligence_enabled: bool = True       # False = simple mode: no gating, no expression, pure circles
+    simple_mode_beats_per_rotation: int = 1 # 1, 2, or 4 beats per full 360° circle
+    simple_mode_base_radius: float = 0.90   # constant orbit radius (energy can push to 1.0)
+
     # ── Expression Layer ──
     # Center wandering: orbit center drifts horizontally over time
     center_wander_enabled: bool = True

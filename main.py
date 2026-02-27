@@ -214,6 +214,9 @@ class BREadbeatsWindow(QMainWindow):
         self._trigger_settings_tab_content = None
         self._auto_fill_tab_content = None
         self.jitter_effect_action = None
+        self.intelligence_enabled_action = None
+        self._beats_per_rotation_menu = None
+        self._beats_per_rotation_actions = []
         self.connection_toggle_action = None
         self.connection_test_action = None
         
@@ -718,11 +721,42 @@ class BREadbeatsWindow(QMainWindow):
     def _on_effects_jitter_toggle(self, checked: bool):
         self.config.jitter.enabled = bool(checked)
 
+    def _on_intelligence_toggle(self, checked: bool):
+        """Toggle intelligence (checked=on=normal mode, unchecked=simple mode)."""
+        self.config.stroke.intelligence_enabled = bool(checked)
+        # Show/hide beats-per-rotation submenu
+        bpr_menu = getattr(self, '_beats_per_rotation_menu', None)
+        if bpr_menu is not None:
+            bpr_menu.menuAction().setVisible(not checked)
+        # Grey out intelligence-dependent controls when in simple mode
+        self._sync_intelligence_dependent_controls()
+
+    def _on_beats_per_rotation_change(self, value: int):
+        """Set beats-per-rotation for simple mode (1, 2, or 4)."""
+        self.config.stroke.simple_mode_beats_per_rotation = max(1, min(4, value))
+        # Update radio checkmarks
+        for action in getattr(self, '_beats_per_rotation_actions', []):
+            action.setChecked(action.text() == str(value))
+
+    def _sync_intelligence_dependent_controls(self):
+        """Grey out controls that are irrelevant in simple mode."""
+        is_simple = not bool(getattr(self.config.stroke, 'intelligence_enabled', True))
+        # These menu actions are all bypassed in simple mode
+        for attr_name in ('jitter_effect_action', 'metronome_lock_required_action'):
+            action = getattr(self, attr_name, None)
+            if action is not None:
+                action.setEnabled(not is_simple)
+
     def _sync_effects_menu_actions(self):
         jitter_action = getattr(self, 'jitter_effect_action', None)
         if jitter_action is not None:
             with self._signals_blocked(jitter_action):
                 jitter_action.setChecked(bool(getattr(self.config.jitter, 'enabled', True)))
+        intel_action = getattr(self, 'intelligence_enabled_action', None)
+        if intel_action is not None:
+            with self._signals_blocked(intel_action):
+                intel_action.setChecked(bool(getattr(self.config.stroke, 'intelligence_enabled', True)))
+        self._sync_intelligence_dependent_controls()
 
     def _on_toggle_beat_band(self, checked: bool):
         """Toggle visibility of beat detection band (red) on all visualizers"""

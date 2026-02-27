@@ -135,13 +135,40 @@ def create_menu_bar(win):
     effects_menu = options_menu.addMenu("Effects")
     assert effects_menu is not None
 
+    # Intelligence toggle (unchecking = Simple Mode)
+    win.intelligence_enabled_action = effects_menu.addAction("Intelligence")
+    assert win.intelligence_enabled_action is not None
+    win.intelligence_enabled_action.setCheckable(True)
+    win.intelligence_enabled_action.setChecked(bool(getattr(win.config.stroke, 'intelligence_enabled', True)))
+    win.intelligence_enabled_action.toggled.connect(win._on_intelligence_toggle)
+
+    # Beats per Rotation submenu (visible only when intelligence is disabled)
+    win._beats_per_rotation_menu = effects_menu.addMenu("Beats per Rotation")
+    assert win._beats_per_rotation_menu is not None
+    win._beats_per_rotation_actions = []
+    current_bpr = int(getattr(win.config.stroke, 'simple_mode_beats_per_rotation', 1) or 1)
+    for bpr in (1, 2, 4):
+        action = win._beats_per_rotation_menu.addAction(f"{bpr}")
+        assert action is not None
+        action.setCheckable(True)
+        action.setChecked(bpr == current_bpr)
+        action.triggered.connect(lambda checked, val=bpr: win._on_beats_per_rotation_change(val))
+        win._beats_per_rotation_actions.append(action)
+    # Only show submenu when intelligence is disabled
+    win._beats_per_rotation_menu.menuAction().setVisible(
+        not bool(getattr(win.config.stroke, 'intelligence_enabled', True))
+    )
+
+    effects_menu.addSeparator()
+
     win.jitter_effect_action = effects_menu.addAction("Jitter")
     assert win.jitter_effect_action is not None
     win.jitter_effect_action.setCheckable(True)
     win.jitter_effect_action.setChecked(bool(getattr(win.config.jitter, 'enabled', True)))
     win.jitter_effect_action.triggered.connect(win._on_effects_jitter_toggle)
 
-    win.metronome_lock_required_action = options_menu.addAction("Metronome Lock Req'd")
+    # Metronome Lock Req'd (moved into Effects menu)
+    win.metronome_lock_required_action = effects_menu.addAction("Metronome Lock Req'd")
     assert win.metronome_lock_required_action is not None
     win.metronome_lock_required_action.setCheckable(True)
     win.metronome_lock_required_action.setChecked(bool(getattr(win.config.beat, 'tempo_lock_required', False)))
