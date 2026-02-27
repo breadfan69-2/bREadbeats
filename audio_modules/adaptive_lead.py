@@ -117,6 +117,13 @@ class AdaptiveLead:
             min(self._max_lead_ms, self._current_lead_ms + adjustment),
         )
 
+    def set_base_lead_ms(self, base_lead_ms: float) -> None:
+        """Update the base lead and reset tracking to the new value."""
+        self._base_lead_ms = float(base_lead_ms)
+        self._current_lead_ms = self._base_lead_ms
+        self._error_ema = 0.0
+        self._observation_count = 0
+
     def reset(self) -> None:
         """Reset to base lead.  Call on track change / silence boundary."""
         self._current_lead_ms = self._base_lead_ms

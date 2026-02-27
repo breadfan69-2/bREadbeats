@@ -62,8 +62,11 @@ def compute_and_attach_tcode(win, cmd: TCodeCommand, event: BeatEvent, spectrum:
         elif pulse_mode == 2:  # Band (sub_bass) mode
             # Use sub_bass band energy directly — long booming bass = "feeling" the pulse
             sub_bass_energy = 0.0
-            if win.audio_engine and hasattr(win.audio_engine, '_band_energies'):
-                sub_bass_energy = win.audio_engine._band_energies.get('sub_bass', 0.0)
+            if win.audio_engine:
+                if hasattr(win.audio_engine, 'get_band_energies'):
+                    sub_bass_energy = win.audio_engine.get_band_energies().get('sub_bass', 0.0)
+                elif hasattr(win.audio_engine, '_band_energies'):
+                    sub_bass_energy = win.audio_engine._band_energies.get('sub_bass', 0.0)
             # Normalize: typical sub_bass energy 0-0.3 after gain
             norm = min(1.0, sub_bass_energy * 4.0)
         else:  # Speed mode
@@ -125,8 +128,11 @@ def compute_and_attach_tcode(win, cmd: TCodeCommand, event: BeatEvent, spectrum:
         elif f0_mode == 2:  # Band (mid) mode — voice, brass, dominant strings (500-2000 Hz)
             # Use mid band energy directly — strict rate limit below
             mid_energy = 0.0
-            if win.audio_engine and hasattr(win.audio_engine, '_band_energies'):
-                mid_energy = win.audio_engine._band_energies.get('mid', 0.0)
+            if win.audio_engine:
+                if hasattr(win.audio_engine, 'get_band_energies'):
+                    mid_energy = win.audio_engine.get_band_energies().get('mid', 0.0)
+                elif hasattr(win.audio_engine, '_band_energies'):
+                    mid_energy = win.audio_engine._band_energies.get('mid', 0.0)
             # Normalize: typical mid energy 0-0.2 after gain
             f0_norm = min(1.0, mid_energy * 5.0)
         else:  # Speed mode

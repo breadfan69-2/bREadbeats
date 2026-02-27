@@ -6,6 +6,25 @@ from typing import Optional
 import numpy as np
 
 
+RMS_DB_FLOOR = -120.0
+
+
+def rms_to_dbfs(rms: float, floor_db: float = RMS_DB_FLOOR) -> float:
+    value = max(float(rms), 1e-12)
+    return float(np.clip(20.0 * np.log10(value), floor_db, 12.0))
+
+
+def silence_threshold_to_dbfs(value: float | None, default_linear: float) -> float:
+    if value is None:
+        return rms_to_dbfs(default_linear)
+    numeric = float(value)
+    if not np.isfinite(numeric):
+        return rms_to_dbfs(default_linear)
+    if numeric <= 0.0:
+        return float(np.clip(numeric, RMS_DB_FLOOR, 12.0))
+    return rms_to_dbfs(float(np.clip(numeric, 0.0, 1.0)))
+
+
 @dataclass(slots=True)
 class FrontendFrame:
     mono_time: float
@@ -15,6 +34,34 @@ class FrontendFrame:
     spectral_flux: float
     raw_rms: float
     raw_rms_db: float
+
+
+@dataclass
+class BeatEvent:
+    timestamp: float
+    intensity: float
+    frequency: float
+    is_beat: bool
+    spectral_flux: float
+    peak_energy: float
+    is_downbeat: bool = False
+    bpm: float = 0.0
+    tempo_reset: bool = False
+    tempo_locked: bool = False
+    phase_error_ms: float = 0.0
+    beat_band: str = 'sub_bass'
+    fired_bands: list = field(default_factory=list)
+    metronome_bpm: float = 0.0
+    acf_confidence: float = 0.0
+    is_syncopated: bool = False
+    monotonic_timestamp: float = 0.0
+    beat_features: Optional[dict] = None
+    raw_rms: float = 0.0
+    raw_rms_db: float = RMS_DB_FLOOR
+
+    def __post_init__(self) -> None:
+        if (self.raw_rms_db <= RMS_DB_FLOOR) and (self.raw_rms > 0.0):
+            self.raw_rms_db = rms_to_dbfs(self.raw_rms)
 
 
 @dataclass(slots=True)

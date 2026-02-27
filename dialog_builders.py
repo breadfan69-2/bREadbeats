@@ -613,16 +613,6 @@ def on_options_motion_readiness(win, as_tab: bool = False):
     finish_row.addWidget(finish_spin)
     readiness_layout.addLayout(finish_row)
 
-    relax_phase1_cb = QCheckBox("Relax Phase-1 gates during learning")
-    relax_phase1_cb.setChecked(bool(getattr(win.config.beat, 'teaching_relax_phase1_gates', False)))
-    relax_phase1_cb.setToolTip(
-        "When enabled, learning mode can bypass mid-trigger and dual-band gate strictness."
-    )
-    relax_phase1_cb.stateChanged.connect(
-        lambda state: setattr(win.config.beat, 'teaching_relax_phase1_gates', state == 2)
-    )
-    readiness_layout.addWidget(relax_phase1_cb)
-
     ignore_traffic_cb = QCheckBox("Use metronome-only readiness (legacy permissive)")
     ignore_traffic_cb.setChecked(bool(getattr(win.config.beat, 'teaching_ignore_traffic_lights', False)))
     ignore_traffic_cb.setToolTip(
@@ -1534,9 +1524,13 @@ def on_advanced_controls(win, scroll_to_flux: bool = False, as_tab: bool = False
         "Compensates for WASAPI loopback delay + audio buffer latency.\n"
         "Typical range: 40-80 ms. Increase if motion arrives late; decrease if early."
     )
-    lead_spin.valueChanged.connect(
-        lambda v: setattr(win.config.beat, 'scheduled_lead_ms', int(v))
-    )
+    def _on_lead_ms_changed(v):
+        val = int(v)
+        win.config.beat.scheduled_lead_ms = val
+        mapper = getattr(win, 'stroke_mapper', None)
+        if mapper is not None:
+            mapper.set_scheduled_lead_ms(val)
+    lead_spin.valueChanged.connect(_on_lead_ms_changed)
     lead_row.addWidget(lead_spin)
     scheduling_layout.addLayout(lead_row)
 
@@ -1615,92 +1609,12 @@ def on_advanced_controls(win, scroll_to_flux: bool = False, as_tab: bool = False
                 )
         return _handler
 
-    def _style_ref_slider(widget: SliderWithLabel, ref_color: str, ref_label: str):
-        hint = f"Adjusts '{ref_label}' spectral gate reference on the dB/Hz visualizer"
-        widget.label.setStyleSheet(f"color: {ref_color};")
-        widget.setToolTip(hint)
-        widget.label.setToolTip(hint)
-        widget.slider.setToolTip(hint)
-        widget.value_label.setToolTip(hint)
-
-    def _set_beat_attr_with_ref(
-        attr_name: str,
-        ref_key: str,
-        ref_label: str,
-        ref_color: str,
-        dashed: bool = False,
-        ghost_band: str = 'full',
-        ghost_range: bool = False,
-        ghost_mode: str = 'threshold',
-    ):
-        def _handler(v: float):
-            value = float(v)
-            setattr(win.config.beat, attr_name, value)
-            if hasattr(win, 'freqdb_canvas') and hasattr(win.freqdb_canvas, 'show_flux_ghost'):
-                win.freqdb_canvas.show_flux_ghost(
-                    ref_key,
-                    value,
-                    ref_label,
-                    color=ref_color,
-                    duration_s=15.0,
-                    dashed=dashed,
-                    band=ghost_band,
-                    range_box=ghost_range,
-                    mode=ghost_mode,
-                )
-        return _handler
-
     high_include_mid_cb = QCheckBox("Include mid band in upper-range visualization")
     high_include_mid_cb.setChecked(bool(getattr(win.config.stroke, 'high_band_include_mid', True)))
     high_include_mid_cb.stateChanged.connect(
         lambda state: setattr(win.config.stroke, 'high_band_include_mid', state == 2)
     )
     flux_layout.addWidget(high_include_mid_cb)
-
-    center_guard_cb = QCheckBox("Block center+jitter reset while flux activity is high")
-    center_guard_cb.setChecked(bool(getattr(win.config.beat, 'center_jitter_flux_guard_enabled', False)))
-    center_guard_cb.stateChanged.connect(
-        lambda state: setattr(win.config.beat, 'center_jitter_flux_guard_enabled', state == 2)
-    )
-    flux_layout.addWidget(center_guard_cb)
-
-    center_guard_delta_slider = SliderWithLabel(
-        "Center reset guard Δflux",
-        0.01,
-        3.00,
-        float(getattr(win.config.beat, 'center_jitter_flux_delta_threshold', 0.20) or 0.20),
-        2,
-    )
-    center_guard_delta_slider.valueChanged.connect(_set_beat_attr_with_ref(
-        'center_jitter_flux_delta_threshold',
-        'center_reset_guard_delta',
-        'Center reset Δflux',
-        '#F7D774',
-        dashed=True,
-        ghost_band='full',
-        ghost_range=True,
-    ))
-    _style_ref_slider(center_guard_delta_slider, '#F7D774', 'Center reset Δflux')
-    flux_layout.addWidget(center_guard_delta_slider)
-
-    center_guard_avg_slider = SliderWithLabel(
-        "Center reset guard avg",
-        0.01,
-        3.00,
-        float(getattr(win.config.beat, 'center_jitter_flux_avg_threshold', 0.25) or 0.25),
-        2,
-    )
-    center_guard_avg_slider.valueChanged.connect(_set_beat_attr_with_ref(
-        'center_jitter_flux_avg_threshold',
-        'center_reset_guard_avg',
-        'Center reset avg',
-        '#E8C96A',
-        dashed=True,
-        ghost_band='full',
-        ghost_range=True,
-    ))
-    _style_ref_slider(center_guard_avg_slider, '#E8C96A', 'Center reset avg')
-    flux_layout.addWidget(center_guard_avg_slider)
 
     scroll_layout.addWidget(flux_group)
 

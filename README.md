@@ -115,7 +115,6 @@ bREadbeats.exe
 config.json
 breadbeats.log
 learned_profile_slots.json
-presets.json (if you've saved presets)
 defaults/
   â””â”€ learning/
       â”œâ”€ profile.refresh_3h_single.json
@@ -125,7 +124,7 @@ datasets/
 ```
 
 **Safe to delete:** If you delete `defaults/` or `datasets/`, they will be re-extracted from the EXE on next launch.  
-**Not regenerated:** `config.json`, `presets.json`, and `breadbeats.log` are runtime files â€” deleting them loses your settings/logs.
+**Not regenerated:** `config.json` and `breadbeats.log` are runtime files — deleting them loses your settings/logs.
 
 
 ---
