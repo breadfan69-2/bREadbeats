@@ -91,8 +91,8 @@ class BeatIntelligence:
         self._gate_flux_ema: float = 0.0       # EMA of flux (every frame)
         self._gate_flux_peak: float = 0.0      # rolling peak for comparison
         self._gate_flux_drop_frames: int = 0   # consecutive frames below threshold
-        self._gate_flux_drop_required: int = 18 # ~0.3 s at 60 fps
-        self._gate_flux_drop_ratio: float = 0.25  # demote when flux < 25% of peak
+        self._gate_flux_drop_required: int = 27 # ~0.45 s at 60 fps
+        self._gate_flux_drop_ratio: float = 0.40  # demote when flux < 40% of peak
 
         self.journey_duration_s = 0.0
         self.journey_elapsed_s = 0.0
@@ -1134,7 +1134,7 @@ class BeatIntelligence:
         if spread < flat_open_spread:
             self.silence_open_count += 1
             self.silence_close_count = 0
-            if self.silence_open_count >= 1:
+            if self.silence_open_count >= 20:   # ~0.33 s of continuous flatness
                 self.silence_deadzone_active = True
         elif spread > flat_close_spread and has_snr and abs_level_ok:
             # Must have BOTH real dynamics AND meaningful signal above noise

@@ -159,6 +159,72 @@ class TestReadinessState(Phase2Mixin, unittest.TestCase):
         self.assertEqual(decision.trigger_kind, "creep")
 
 
+# ── Silence gate: detrend + SNR ────────────────────────────────────────
+
+
+class TestSilenceGateDetrend(Phase2Mixin, unittest.TestCase):
+    """Volume ramps should not open the silence gate."""
+
+    def _prime_gate(self, bi, level_db: float, frames: int = 90):
+        """Feed constant dBFS to fill initial history."""
+        for _ in range(frames):
+            bi.update_silence_deadzone_gate(level_db)
+
+    def test_volume_ramp_stays_silent(self):
+        """A monotonic noise-floor ramp (volume turned up) must not exit silence."""
+        bi = BeatIntelligence(Config())
+        # Prime with low noise floor
+        self._prime_gate(bi, -80.0, frames=60)
+        self.assertTrue(bi.silence_deadzone_active)
+
+        # Gradual ramp from -80 to -50 over 60 frames (~1 s)
+        for i in range(60):
+            level = -80.0 + (30.0 * i / 59)
+            bi.update_silence_deadzone_gate(level)
+        # Should still be silent — the ramp is detrended away
+        self.assertTrue(bi.silence_deadzone_active)
+
+    def test_step_volume_change_stays_silent(self):
+        """An abrupt volume jump (step) should not exit silence."""
+        bi = BeatIntelligence(Config())
+        self._prime_gate(bi, -80.0, frames=60)
+        self.assertTrue(bi.silence_deadzone_active)
+
+        # Sudden step to -50 (new constant noise floor)
+        for _ in range(120):
+            bi.update_silence_deadzone_gate(-50.0)
+        self.assertTrue(bi.silence_deadzone_active)
+
+    def test_real_music_exits_silence(self):
+        """Alternating loud/quiet frames (music) should open the gate."""
+        import random
+        bi = BeatIntelligence(Config())
+        # Prime in silence so floor establishes low
+        self._prime_gate(bi, -80.0, frames=60)
+        self.assertTrue(bi.silence_deadzone_active)
+
+        # Simulate music: alternating peaks and valleys (20 dB swing)
+        random.seed(42)
+        for _ in range(120):
+            level = random.choice([-20.0, -40.0, -25.0, -35.0, -18.0, -42.0])
+            bi.update_silence_deadzone_gate(level)
+        self.assertFalse(bi.silence_deadzone_active)
+
+    def test_snr_gate_blocks_quiet_dynamics(self):
+        """Dynamics near the noise floor (no real signal) must stay silent."""
+        bi = BeatIntelligence(Config())
+        # Prime at a high noise floor (volume way up, but no music)
+        self._prime_gate(bi, -45.0, frames=120)
+        self.assertTrue(bi.silence_deadzone_active)
+
+        # Small oscillations around the noise floor (4 dB swing, below
+        # the flat_close_spread of 6 dB detrended) — should stay silent
+        for _ in range(60):
+            bi.update_silence_deadzone_gate(-44.0)
+            bi.update_silence_deadzone_gate(-48.0)
+        self.assertTrue(bi.silence_deadzone_active)
+
+
 # ── §19 SilenceDecayState ──────────────────────────────────────────────
 
 
@@ -346,6 +412,96 @@ class TestStrokeMapperPhase2Integration(Phase2Mixin, unittest.TestCase):
         self.assertIsNotNone(cmd)
         assert cmd is not None
         self.assertAlmostEqual(cmd.volume, 0.85, delta=0.01)
+
+
+# ── Layer-2 / Layer-3 silence suppression tests ────────────────────────
+
+
+class TestSilenceGatePropagation(Phase2Mixin, unittest.TestCase):
+    """Layer 2: BeatIntelligence writes silence_gate_active back to AudioEngine."""
+
+    def _make_bi_with_engine(self):
+        """Create BeatIntelligence with a lightweight AudioEngine stub."""
+        cfg = Config()
+        bi = BeatIntelligence(cfg)
+        # Minimal stub with the silence_gate_active attribute
+        class _EngineStub:
+            silence_gate_active: bool = True
+        engine = _EngineStub()
+        bi.audio_engine = engine
+        return bi, engine
+
+    def test_silence_propagates_to_engine(self):
+        """When BeatIntelligence says silence, engine.silence_gate_active is True."""
+        bi, engine = self._make_bi_with_engine()
+        # Feed flat noise to stay in silence
+        for _ in range(30):
+            bi.build_decision(self._event(raw_rms=0.0001), dt=1/60)
+        self.assertTrue(engine.silence_gate_active)
+
+    def test_music_clears_engine_silence_flag(self):
+        """When BeatIntelligence exits silence, engine.silence_gate_active becomes False."""
+        bi, engine = self._make_bi_with_engine()
+        # Prime with stable low noise
+        for _ in range(30):
+            bi.build_decision(self._event(raw_rms=0.0001), dt=1/60)
+        self.assertTrue(engine.silence_gate_active)
+
+        # Feed loud music dynamics (high raw_rms → high dBFS with variation)
+        import random
+        random.seed(99)
+        for _ in range(120):
+            rms = random.choice([0.05, 0.15, 0.08, 0.20, 0.03, 0.18])
+            bi.build_decision(self._event(raw_rms=rms), dt=1/60)
+        self.assertFalse(engine.silence_gate_active)
+
+
+class TestBeatEnergyFloor(unittest.TestCase):
+    """Layer 3: Absolute energy floor in _detect_beat."""
+
+    def _make_engine(self):
+        """Create minimal AudioEngine for _detect_beat testing."""
+        from audio_engine import AudioEngine
+        from config import Config
+        engine = AudioEngine.__new__(AudioEngine)
+        cfg = Config()
+        engine.config = cfg
+        engine.energy_history = []
+        engine.flux_history = []
+        engine._last_beat_time = 0
+        engine._prev_energy_for_valley = 0.0
+        engine._energy_was_falling = False
+        engine._valley_history = []
+        engine._valley_max_samples = 50
+        engine._primary_beat_band = "sub_bass"
+        engine._band_zscore_signals = {"sub_bass": 0, "low_mid": 0, "mid": 0, "high": 0}
+        engine._metronome_bpm = 0.0
+        return engine
+
+    def test_noise_level_energy_rejected(self):
+        """Band energy < 0.001 should never count as a beat."""
+        engine = self._make_engine()
+        # Even if we have history that would make 0.0005 pass the adaptive
+        # threshold, the absolute floor should block it.
+        engine.energy_history = [0.0002] * 20
+        engine.flux_history = [0.0001] * 20
+        result = engine._detect_beat(0.0005, 0.0001)
+        self.assertFalse(result)
+
+    def test_real_energy_can_pass(self):
+        """Band energy above floor should be evaluated normally."""
+        engine = self._make_engine()
+        # Prime with low history so a big spike exceeds adaptive threshold
+        engine.energy_history = [0.002] * 20
+        engine.flux_history = [0.002] * 20
+        engine.tempo_tracking_enabled = False
+        engine.smoothed_tempo = 0.0
+        engine.last_known_tempo = 120.0
+        engine.beat_intervals = []
+        engine.beat_times = []
+        # A spike well above average should trigger
+        result = engine._detect_beat(0.05, 0.05)
+        self.assertTrue(result)
 
 
 if __name__ == "__main__":
