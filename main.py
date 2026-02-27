@@ -341,6 +341,7 @@ class BREadbeatsWindow(QMainWindow):
         self._play_warmup_seen_beat: bool = False
         self._play_warmup_min_seconds: float = 1.0
         self._play_warmup_max_seconds: float = 3.0
+        self._pause_park_active: bool = False
         
         # Auto-connect TCP on startup
         self._auto_connect_tcp()

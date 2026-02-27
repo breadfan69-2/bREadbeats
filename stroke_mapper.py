@@ -332,7 +332,7 @@ class StrokeMapper:
     def get_current_position(self) -> tuple[float, float]:
         return self.state.alpha, self.state.beta
 
-    def process_beat(self, event: BeatEvent) -> Optional[TCodeCommand]:
+    def process_beat(self, event: BeatEvent, silence_override: bool | None = None) -> Optional[TCodeCommand]:
         now = event.monotonic_timestamp if getattr(event, "monotonic_timestamp", 0.0) > 0 else time.perf_counter()
         raw_dt = (now - self.state.last_time) if self.state.last_time > 0 else (1.0 / 60.0)
         dt = float(np.clip(raw_dt, 1e-4, 0.05))
@@ -340,7 +340,7 @@ class StrokeMapper:
         self.state.last_time = now
 
         self._intelligence.set_audio_engine(self.audio_engine)
-        decision = self._intelligence.build_decision(event=event, dt=dt)
+        decision = self._intelligence.build_decision(event=event, dt=dt, silence_override=silence_override)
 
         prev_trigger_kind = self._last_trigger_kind
         self._last_trigger_kind = decision.trigger_kind

@@ -514,6 +514,7 @@ def on_start_stop(win, checked: bool | None = None):
                 win._sync_transport_buttons()
 
                 win._start_engines()
+                win._pause_park_active = False
                 ui_state = start_stop_ui_state(True)
                 win.start_btn.setText(ui_state.start_text)
                 win.play_btn.setEnabled(ui_state.play_enabled)
@@ -531,6 +532,7 @@ def on_start_stop(win, checked: bool | None = None):
             win._play_warmup_active = False
             win._play_warmup_seen_beat = False
             win.is_sending = False
+            win._pause_park_active = False
             win._transport_pending_play = None
 
             # Make stop visually immediate and prevent second-click feel.
@@ -586,6 +588,7 @@ def on_play_pause(win, checked: bool | None = None):
         return
     win.is_sending = checked
     if checked:
+        win._pause_park_active = False
         # Re-instantiate StrokeMapper with current config (for live mode switching)
         win.stroke_mapper = StrokeMapper(win.config, get_volume=lambda: win.volume_slider.value() / 100.0, audio_engine=win.audio_engine)
         win._apply_geometry_rest_to_mapper()
@@ -603,6 +606,7 @@ def on_play_pause(win, checked: bool | None = None):
         win._volume_ramp_to = ramp_state.to_volume
         # sending_enabled already True from Start — no need to set again
     else:
+        win._pause_park_active = True
         # Send V0=0 immediately with fade, but keep TCode pipeline active
         win._play_warmup_active = False
         win._play_warmup_seen_beat = False
@@ -650,7 +654,8 @@ def audio_callback(win, event: BeatEvent):
             win.signals.spectrum_ready.emit(spectrum_with_stats)
 
     # Process through stroke mapper
-    if win.stroke_mapper and win.is_sending:
+    pause_park_active = bool(getattr(win, '_pause_park_active', False))
+    if win.stroke_mapper and (win.is_sending or pause_park_active):
         if win._play_warmup_active:
             if event.is_beat:
                 win._play_warmup_seen_beat = True
@@ -665,7 +670,10 @@ def audio_callback(win, event: BeatEvent):
 
             win._play_warmup_active = False
 
-        cmd = win.stroke_mapper.process_beat(event)
+        cmd = win.stroke_mapper.process_beat(
+            event,
+            silence_override=(True if pause_park_active and not win.is_sending else None),
+        )
 
         # Sync Energy Response slider when the ramp engine is driving it
         _ramp = getattr(win.stroke_mapper, '_ramp_engine', None)
@@ -682,14 +690,17 @@ def audio_callback(win, event: BeatEvent):
         if cmd and win.network_engine:
             # Compute P0/F0 and attach to command (thread-safe, no widget access)
             win._compute_and_attach_tcode(cmd, event, spectrum)
-            apply_volume_ramp(
-                cmd,
-                volume_ramp_active=win._volume_ramp_active,
-                volume_ramp_start_time=win._volume_ramp_start_time,
-                volume_ramp_duration=win._volume_ramp_duration,
-                volume_ramp_from=win._volume_ramp_from,
-                volume_ramp_to=win._volume_ramp_to,
-            )
+            if pause_park_active and not win.is_sending:
+                cmd.volume = 0.0
+            else:
+                apply_volume_ramp(
+                    cmd,
+                    volume_ramp_active=win._volume_ramp_active,
+                    volume_ramp_start_time=win._volume_ramp_start_time,
+                    volume_ramp_duration=win._volume_ramp_duration,
+                    volume_ramp_from=win._volume_ramp_from,
+                    volume_ramp_to=win._volume_ramp_to,
+                )
             win._last_sent_volume_pct = float(cmd.volume) * 100.0
             win.network_engine.send_command(cmd)
     elif event.is_beat and not win.is_sending:
