@@ -5,11 +5,18 @@ Uses pyaudiowpatch for WASAPI loopback capture.
 """
 
 import numpy as np
-import pyaudiowpatch as pyaudio
+try:
+    import pyaudiowpatch as pyaudio
+except Exception:
+    class _PyAudioFallback:
+        paContinue = 0
+
+    pyaudio = _PyAudioFallback()
 import threading
 from collections import deque
 from typing import Any, Callable, Optional
 import time
+import platform
 
 from logging_utils import log_event
 from audio_modules.feature_extractors import (
@@ -256,7 +263,7 @@ class AudioEngine:
         
         # Volume normalization (compensates for Windows master volume)
         self._volume_normalizer = VolumeNormalizer(
-            enabled=getattr(config.audio, 'volume_normalize', True)
+            enabled=bool(getattr(config.audio, 'volume_normalize', True)) and platform.system().lower() == 'windows'
         )
         
         # ===== MULTI-BAND Z-SCORE ADAPTIVE PEAK DETECTION =====

@@ -89,7 +89,7 @@ def dialog_set_device_loopback(win, combo: QComboBox):
     """Set loopback/system audio device in dialog combo"""
     for i in range(combo.count()):
         text = combo.itemText(i).lower()
-        if 'loopback' in text or 'stereo mix' in text or 'wasapi' in text:
+        if 'blackhole' in text or 'loopback' in text or 'stereo mix' in text or 'wasapi' in text:
             combo.setCurrentIndex(i)
             return
     # Fallback to speakers

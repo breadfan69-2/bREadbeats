@@ -220,99 +220,41 @@ def apply_config_to_ui(win):
         print(f"[UI] Warning: Could not apply all config values: {e}")
 
 def populate_audio_devices(win):
-    """Populate audio device dropdown - WASAPI devices only (deduplicated)"""
-    import sounddevice as sd
-    devices = sd.query_devices()
-    hostapis = sd.query_hostapis()
+    """Populate audio device dropdown across supported platforms."""
+    from audio_modules.platform_audio import enumerate_capture_devices
 
-    # Find WASAPI host API index and default output device
-    wasapi_idx = None
-    default_output_idx = None
-    for idx, api in enumerate(hostapis):
-        if 'WASAPI' in api['name']:
-            wasapi_idx = idx
-            default_output_idx = api.get('default_output_device', None)
-            break
+    devices = enumerate_capture_devices()
 
     win.device_combo.clear()
     win.audio_device_map = {}  # Map combo index to device index
-    win.audio_device_is_loopback = {}  # Track which devices should use WASAPI loopback
+    win.audio_device_is_loopback = {}  # Track devices that should use explicit loopback path
 
-    loopback_keywords = ['stereo mix', 'what u hear', 'loopback', 'wave out mix', 'system audio']
-    loopback_idx = None
-    default_output_combo_idx = None  # Track where default output appears
-    combo_idx = 0
-    seen_names = set()  # For deduplication
+    preferred_blackhole_idx = None
+    preferred_default_loopback_idx = None
+    preferred_default_idx = None
 
-    if wasapi_idx is not None:
-        # Add WASAPI input devices (microphones) - deduplicated by name
-        for i, dev in enumerate(devices):
-            if dev['hostapi'] == wasapi_idx and dev['max_input_channels'] > 0:
-                # Normalize name for dedup
-                clean_name = dev['name'].strip()
-                if clean_name in seen_names:
-                    continue
-                seen_names.add(clean_name)
+    for combo_idx, dev in enumerate(devices):
+        win.device_combo.addItem(dev.display_name)
+        win.audio_device_map[combo_idx] = int(dev.device_index)
+        win.audio_device_is_loopback[combo_idx] = bool(dev.is_loopback)
 
-                name = f"{clean_name} (Input)"
-                win.device_combo.addItem(name)
-                win.audio_device_map[combo_idx] = i
-                win.audio_device_is_loopback[combo_idx] = False
+        name_lc = dev.display_name.lower()
+        if preferred_blackhole_idx is None and 'blackhole' in name_lc:
+            preferred_blackhole_idx = combo_idx
+        if preferred_default_loopback_idx is None and dev.is_loopback and dev.is_default:
+            preferred_default_loopback_idx = combo_idx
+        if preferred_default_idx is None and dev.is_default:
+            preferred_default_idx = combo_idx
 
-                # Find loopback device for default selection
-                if loopback_idx is None and any(keyword in dev['name'].lower() for keyword in loopback_keywords):
-                    loopback_idx = combo_idx
-
-                combo_idx += 1
-
-        # Add WASAPI output devices as loopback sources - deduplicated by name
-        seen_output_names = set()
-        for i, dev in enumerate(devices):
-            if dev['hostapi'] == wasapi_idx and dev['max_output_channels'] > 0:
-                clean_name = dev['name'].strip()
-                if clean_name in seen_output_names:
-                    continue
-                seen_output_names.add(clean_name)
-
-                # Mark if this is the system default output device
-                is_default = (i == default_output_idx)
-                prefix = "★ " if is_default else ""
-                name = f"{prefix}{clean_name} [WASAPI Loopback]"
-                win.device_combo.addItem(name)
-                win.audio_device_map[combo_idx] = i
-                win.audio_device_is_loopback[combo_idx] = True
-
-                # Track default output device's combo index
-                if is_default:
-                    default_output_combo_idx = combo_idx
-
-                # Fallback: first WASAPI loopback if no default found
-                if loopback_idx is None:
-                    loopback_idx = combo_idx
-
-                combo_idx += 1
-    else:
-        # Fallback: no WASAPI found, show all input devices deduplicated
-        for i, dev in enumerate(devices):
-            if dev['max_input_channels'] > 0:
-                clean_name = dev['name'].strip()
-                if clean_name in seen_names:
-                    continue
-                seen_names.add(clean_name)
-
-                name = f"{clean_name}"
-                win.device_combo.addItem(name)
-                win.audio_device_map[combo_idx] = i
-                win.audio_device_is_loopback[combo_idx] = False
-                combo_idx += 1
-
-    # Pre-select: prefer system default output loopback > stereo mix/loopback > first device
-    if default_output_combo_idx is not None:
-        win.device_combo.setCurrentIndex(default_output_combo_idx)
-        print(f"[Main] Auto-selected system default output device for loopback")
-    elif loopback_idx is not None:
-        win.device_combo.setCurrentIndex(loopback_idx)
-    elif combo_idx > 0:
+    if preferred_blackhole_idx is not None:
+        win.device_combo.setCurrentIndex(preferred_blackhole_idx)
+        print("[Main] Auto-selected BlackHole device")
+    elif preferred_default_loopback_idx is not None:
+        win.device_combo.setCurrentIndex(preferred_default_loopback_idx)
+        print("[Main] Auto-selected system default output device for loopback")
+    elif preferred_default_idx is not None:
+        win.device_combo.setCurrentIndex(preferred_default_idx)
+    elif len(devices) > 0:
         win.device_combo.setCurrentIndex(0)
 
 def apply_release_learning_defaults(win) -> None:

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import pyaudiowpatch as pyaudio
-
 from logging_utils import log_event
+from audio_modules.platform_audio import PlatformAudioCapture
 
 try:
     from scipy.signal import butter, sosfilt_zi
@@ -16,6 +15,7 @@ except ImportError:
 class AudioIOController:
     def __init__(self, engine: Any) -> None:
         self.engine = engine
+        self._platform_capture = PlatformAudioCapture(engine)
 
     def init_butterworth_filter(self) -> None:
         eng = self.engine
@@ -51,121 +51,27 @@ class AudioIOController:
         if hasattr(eng, '_signal_frontend'):
             eng._signal_frontend.reset()
         eng.running = True
-        eng.pyaudio = pyaudio.PyAudio()
 
         use_loopback = getattr(eng.config.audio, 'is_loopback', True)
         device_index = getattr(eng.config.audio, 'device_index', None)
 
         try:
             if use_loopback:
-                self.start_loopback_capture(device_index)
+                self._platform_capture.start_loopback_capture(device_index)
             else:
-                self.start_input_capture(device_index)
+                self._platform_capture.start_input_capture(device_index)
 
             self.init_butterworth_filter()
         except Exception as e:
             log_event("ERROR", "AudioEngine", "Failed to start", error=e)
             eng.running = False
-            if eng.pyaudio:
-                eng.pyaudio.terminate()
-                eng.pyaudio = None
+            self.stop()
 
     def start_loopback_capture(self, device_index=None) -> None:
-        eng = self.engine
-        pa = eng.pyaudio
-        if pa is None:
-            raise RuntimeError("PyAudio is not initialized")
-
-        wasapi_info = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-
-        if device_index is not None:
-            device_info = pa.get_device_info_by_index(device_index)
-            if not device_info.get("isLoopbackDevice", False):
-                for loopback in pa.get_loopback_device_info_generator():
-                    if device_info["name"] in loopback["name"]:
-                        device_info = loopback
-                        break
-        else:
-            device_info = pa.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
-            if not device_info.get("isLoopbackDevice", False):
-                for loopback in pa.get_loopback_device_info_generator():
-                    if device_info["name"] in loopback["name"]:
-                        device_info = loopback
-                        break
-
-        log_event("INFO", "AudioEngine", "Using WASAPI loopback", device=device_info['name'])
-        log_event("INFO", "AudioEngine", "Loopback format", channels=device_info['maxInputChannels'], sample_rate=int(device_info['defaultSampleRate']))
-
-        eng.config.audio.sample_rate = int(device_info['defaultSampleRate'])
-        eng.config.audio.channels = device_info['maxInputChannels']
-
-        if hasattr(eng, '_signal_frontend'):
-            eng._signal_frontend.configure_runtime(
-                sample_rate=int(eng.config.audio.sample_rate),
-                channels=int(eng.config.audio.channels),
-                gain=float(eng.config.audio.gain),
-                fft_size=int(eng.fft_size),
-                hop_size=int(eng.hop_size),
-                freq_low=float(eng.config.beat.freq_low),
-                freq_high=float(eng.config.beat.freq_high),
-                flux_multiplier=float(eng.config.beat.flux_multiplier),
-            )
-
-        eng.stream = pa.open(
-            format=pyaudio.paFloat32,
-            channels=eng.config.audio.channels,
-            rate=eng.config.audio.sample_rate,
-            frames_per_buffer=eng.config.audio.buffer_size,
-            input=True,
-            input_device_index=device_info["index"],
-            stream_callback=eng._audio_callback_pyaudio
-        )
-
-        eng.stream.start_stream()
-        log_event("INFO", "AudioEngine", "WASAPI loopback capture started")
+        self._platform_capture.start_loopback_capture(device_index)
 
     def start_input_capture(self, device_index) -> None:
-        eng = self.engine
-        pa = eng.pyaudio
-        if pa is None:
-            raise RuntimeError("PyAudio is not initialized")
-
-        if device_index is None:
-            wasapi_info = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
-            device_index = wasapi_info.get("defaultInputDevice", 0)
-
-        device_info = pa.get_device_info_by_index(device_index)
-
-        log_event("INFO", "AudioEngine", "Using input device", device=device_info['name'])
-        log_event("INFO", "AudioEngine", "Input format", channels=device_info['maxInputChannels'], sample_rate=int(device_info['defaultSampleRate']))
-
-        eng.config.audio.sample_rate = int(device_info['defaultSampleRate'])
-        eng.config.audio.channels = min(device_info['maxInputChannels'], 2)
-
-        if hasattr(eng, '_signal_frontend'):
-            eng._signal_frontend.configure_runtime(
-                sample_rate=int(eng.config.audio.sample_rate),
-                channels=int(eng.config.audio.channels),
-                gain=float(eng.config.audio.gain),
-                fft_size=int(eng.fft_size),
-                hop_size=int(eng.hop_size),
-                freq_low=float(eng.config.beat.freq_low),
-                freq_high=float(eng.config.beat.freq_high),
-                flux_multiplier=float(eng.config.beat.flux_multiplier),
-            )
-
-        eng.stream = pa.open(
-            format=pyaudio.paFloat32,
-            channels=eng.config.audio.channels,
-            rate=eng.config.audio.sample_rate,
-            frames_per_buffer=eng.config.audio.buffer_size,
-            input=True,
-            input_device_index=device_index,
-            stream_callback=eng._audio_callback_pyaudio
-        )
-
-        eng.stream.start_stream()
-        log_event("INFO", "AudioEngine", "Input capture started")
+        self._platform_capture.start_input_capture(device_index)
 
     def stop(self) -> None:
         eng = self.engine
@@ -174,10 +80,22 @@ class AudioIOController:
         if hasattr(eng, '_volume_normalizer'):
             eng._volume_normalizer.shutdown()
         if eng.stream:
-            eng.stream.stop_stream()
-            eng.stream.close()
+            try:
+                eng.stream.stop_stream()
+            except Exception:
+                try:
+                    eng.stream.stop()
+                except Exception:
+                    pass
+            try:
+                eng.stream.close()
+            except Exception:
+                pass
             eng.stream = None
         if eng.pyaudio:
-            eng.pyaudio.terminate()
+            try:
+                eng.pyaudio.terminate()
+            except Exception:
+                pass
             eng.pyaudio = None
         log_event("INFO", "AudioEngine", "Stopped")

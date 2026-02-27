@@ -2,7 +2,7 @@
 
 Real time music-reactive motion generation for Restim.
 
-bREadbeats listens to any audio playing on your PC and turns it into smooth, rhythmic motion. Everything happens live, with no scripting required.
+bREadbeats listens to audio playing on your computer and turns it into smooth, rhythmic motion. Everything happens live, with no scripting required.
 
 >v2.0 is a major release. The motion engine has been completely rebuilt from the ground up, delivering a level of musical responsiveness and timing accuracy not previously possible. See the [What's New in v2.0](#whats-new-in-v20) section for details.
 
@@ -16,8 +16,10 @@ bREadbeats listens to any audio playing on your PC and turns it into smooth, rhy
 
 ## What bREadbeats Does
 
-- **Captures live audio** from any Windows playback device using WASAPI loopback your speakers, headphones, or any active output.
---NOTE: if using a digital audio output such as HDMI, windows volume has control of the signal sent to bReadbeats, so you will prefer 50% or higher system volume.  With analog speakers, windows volume does not have any effect.
+- **Captures live audio** from your selected audio input path:
+  - **Windows:** WASAPI loopback from your playback device (speakers/headphones/active output)
+  - **macOS:** virtual input via **BlackHole** for system-audio capture
+- NOTE (Windows): with some digital outputs (for example HDMI), Windows volume can affect the signal level delivered to bREadbeats. With analog outputs this may not apply.
 - **Detects rhythm and tempo** in real time, locking onto BPM and tracking beats, downbeats, and musical energy.
 - **Generates orbital motion** that follows the music timing, depth, and intensity all respond to what the audio is doing moment-to-moment
 
@@ -42,18 +44,39 @@ Everything is automatic. Put on music, press Start and Play, and it works.
 
 ## Requirements
 
-- Windows 10 or 11 (64-bit)
+- Windows 10/11 (64-bit) **or** macOS
 - [Restim](https://github.com/diglet48/restim) running and connected to your device
 - A compatible e-stim device supported by Restim
 - Audio playing on your PC (music, video, game audio â€” anything)
-- MAC AUDIO IN DEVELOPMENT
+- macOS users: [BlackHole](https://existential.audio/blackhole/) installed for system-audio capture
+---
+
+## macOS BlackHole Setup (One-Time)
+
+If you are on macOS and want system-audio reactivity, do this once before using bREadbeats:
+
+1. Install [BlackHole](https://existential.audio/blackhole/) (2ch is usually enough)
+2. Open **Audio MIDI Setup**
+3. Create a **Multi-Output Device** containing:
+  - your speakers/headphones
+  - **BlackHole**
+4. Set that Multi-Output Device as your macOS sound output
+5. In bREadbeats, open **Menu â†’ Audio Device** and select the **BlackHole** input
+6. Grant microphone permission to bREadbeats (System Settings â†’ Privacy & Security â†’ Microphone)
+
+Tips:
+- If audio drifts or glitches, enable **Drift Correction** for non-clock devices in the Multi-Output setup.
+- If you hear no audio, verify your playback app is still routed to the Multi-Output Device.
+
 ---
 
 ## Quick Start (EXE)
 
 1. **Launch Restim** first and connect your device
 2. **Launch** `bREadbeats.exe`  Restim should connect automatically.
-3. **Set your audio device** `Menu’ Audio Device` â€” select the output you're listening through (e.g. your speakers or headphones listed as a loopback source)
+3. **Set your audio device** `Menu’ Audio Device`
+  - **Windows:** select your playback device listed as a WASAPI loopback source
+  - **macOS:** select your BlackHole input device
 4. **Set the connection** `Options â†’ Connection Settings` â€” defaults (`127.0.0.1 : 12347`) work if Restim is on the same machine (if not connected auto, check enable TCP in restim setup->preferences->network
 5. **Click `â–¶ Start`** to begin audio capture
 6. **Click `â–¶ Play`** to enable motion output
@@ -237,7 +260,7 @@ BREADBEATS_DEBUG_STDIO=1
 
 ## Known Limitations
 
-- **Windows only** â€” WASAPI loopback is a Windows-specific audio API; no Mac or Linux support
+- **macOS system audio requires BlackHole** â€” this is required to route system output into a capture input
 - **Requires Restim** â€” bREadbeats is a controller, not a standalone device driver
 - **No Bluetooth audio loopback** â€” if your audio output is Bluetooth, loopback capture may not be available; use a wired output or a virtual audio cable.  **Untested- results may vary.
 - **High-BPM tracks (>160 BPM)** â€” the system may halve the detected BPM on very fast material; this is intentional to maintain comfortable motion timing
