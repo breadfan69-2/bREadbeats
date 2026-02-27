@@ -12,14 +12,14 @@ def get_version() -> str:
     """
     Get application version from git tags or fallback to default.
     
-    Returns version in format: v2.1.0 or v2.0 (fallback)
+    Returns version in format: v2.1.0 or v3.0 (fallback)
     """
     version = get_git_version()
     if version:
         return version
     
     # Fallback version when git is not available or no tags exist
-    return "v2.0"
+    return "v3.0"
 
 
 def get_git_version() -> Optional[str]:

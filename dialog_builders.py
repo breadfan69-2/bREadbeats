@@ -1792,15 +1792,21 @@ def on_fft_bin_diagnostics(win):
 
 def on_about(win):
     """Show About dialog"""
+    display_version = __version__
+    if display_version.startswith("v"):
+        display_version = display_version[1:]
+    if "-" in display_version:
+        display_version = display_version.split("-", 1)[0]
+
     about_html = f"""
-<b>bREadbeats {__version__}</b><br>
+<b>bREadbeats {display_version}</b><br>
 Live Audio to Restim<br><br>
 Inspired by:<br>
 &nbsp;&nbsp;&nbsp;&nbsp;digitalparkinglot's creations<br>
 &nbsp;&nbsp;&nbsp;&nbsp;edger477 (ideas from generator tooling)<br>
 &nbsp;&nbsp;&nbsp;&nbsp;diglet48 (wouldn't be here without restim!)<br>
 &nbsp;&nbsp;&nbsp;&nbsp;shadlock0133 (music-vibes)<br><br>
-Bug reports/share your presets:<br>
+Bug reports:<br>
 bREadfan_69@hotmail.com<br><br>
 Like the app?<br>
 <a href="https://ko-fi.com/breadbeats">https://ko-fi.com/breadbeats</a>
