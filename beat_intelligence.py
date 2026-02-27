@@ -164,6 +164,9 @@ class BeatIntelligence:
         self._post_silence_ramp_start: float = 0.0
         self._was_silent: bool = False
 
+        # ── Energy response: live energy_fullness cached for fill-gate modulation ──
+        self._current_energy_fullness: float = 0.0
+
         # ── Phase 3: Auto-fill adaptation (#20) ──
         self._auto_fill_offsets: dict[str, float] = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
         self._auto_fill_ema: dict[str, float] = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
@@ -216,6 +219,10 @@ class BeatIntelligence:
 
         # ── Session arc: very slow energy tracking ──
         self._session_intensity_ema: float = 0.5
+
+    def set_scheduled_lead_ms(self, value_ms: int) -> None:
+        """Live-update the pipeline lead from the GUI spinbox."""
+        self._adaptive_lead.set_base_lead_ms(float(value_ms))
 
     @staticmethod
     def _linear_to_dbfs(value: float) -> float:
@@ -908,7 +915,18 @@ class BeatIntelligence:
         return consecutive >= sustain_frames
 
     def _get_overall_amp_fill_required(self, trigger_kind: str) -> float:
-        """Get fill required for phase, including auto-adapt offset (#20)."""
+        """Get fill required for phase, including auto-adapt offset (#20)
+        and energy-response modulation.
+
+        Energy response: when music is "full" (high energy_fullness) and
+        energy_response_strength > 0, the required fill threshold is
+        *lowered*, making it easier for beats to pass the gate and
+        produce orbit motion.  The user-facing slider (0..2, default 1.0)
+        scales the effect:
+          0.0 → no fullness modulation
+          1.0 → moderate (up to 35 % threshold reduction at max fullness)
+          2.0 → strong  (up to 70 % threshold reduction at max fullness)
+        """
         cfg = self.config.stroke
         base_map = {
             "downbeat": float(getattr(cfg, 'downbeat_overall_amp_fill_required', 0.04)),
@@ -919,10 +937,21 @@ class BeatIntelligence:
         scale = float(np.clip(getattr(cfg, 'overall_amp_fill_required_scale', 1.0) or 1.0, 0.05, 20.0))
         offset = self._auto_fill_offsets.get(trigger_kind, 0.0)
 
+        raw = (base * scale) + offset
+
+        # ── Energy-response modulation ──
+        _ers = getattr(cfg, 'energy_response_strength', 1.0)
+        strength = float(np.clip(_ers if _ers is not None else 1.0, 0.0, 2.0))
+        fullness = float(np.clip(self._current_energy_fullness, 0.0, 1.0))
+        # energy_mod: 1.0 (no change) down to (1 - 0.35*strength) at max fullness.
+        # strength=1 → up to 35% reduction; strength=2 → up to 70% reduction.
+        energy_mod = 1.0 - (fullness * strength * 0.35)
+        raw *= max(energy_mod, 0.05)  # floor prevents threshold going to zero
+
         min_req = float(getattr(cfg, 'overall_amp_fill_auto_min_required', 0.05))
         max_req = float(getattr(cfg, 'overall_amp_fill_auto_max_required', 0.98))
 
-        return float(np.clip((base * scale) + offset, min_req, max_req))
+        return float(np.clip(raw, min_req, max_req))
 
     def _update_auto_fill_required(self, trigger_kind: str, gate_passed: bool) -> None:
         """Auto-fill adaptation (#20): adjust offset per phase targeting pass rate."""
@@ -974,10 +1003,15 @@ class BeatIntelligence:
 
     def update_band_energies(self) -> None:
         raw_energies = {}
-        if self.audio_engine is not None and hasattr(self.audio_engine, "_band_energies"):
-            maybe = getattr(self.audio_engine, "_band_energies", None)
-            if isinstance(maybe, dict):
-                raw_energies = maybe
+        if self.audio_engine is not None:
+            if hasattr(self.audio_engine, 'get_band_energies'):
+                maybe = self.audio_engine.get_band_energies()
+                if isinstance(maybe, dict):
+                    raw_energies = maybe
+            elif hasattr(self.audio_engine, "_band_energies"):
+                maybe = getattr(self.audio_engine, "_band_energies", None)
+                if isinstance(maybe, dict):
+                    raw_energies = maybe
 
         for band_name in ("sub_bass", "low_mid", "mid", "high"):
             raw = float(raw_energies.get(band_name, 0.0))
@@ -1542,6 +1576,7 @@ class BeatIntelligence:
         self._populate_rolling_deques(event)
 
         energy_fullness_now = self.compute_energy_fullness()
+        self._current_energy_fullness = energy_fullness_now
 
         # Session arc: very slow EMA of energy fullness for long-term modulation
         if getattr(self.config.stroke, 'session_arc_enabled', True):
@@ -1564,7 +1599,10 @@ class BeatIntelligence:
         # captures audio → BeatIntelligence decides silence → AudioEngine
         # suppresses all rhythm output until silence lifts.
         if self.audio_engine is not None:
-            self.audio_engine.silence_gate_active = silence_active
+            if hasattr(self.audio_engine, 'set_silence_gate'):
+                self.audio_engine.set_silence_gate(silence_active)
+            else:
+                self.audio_engine.silence_gate_active = silence_active
 
         recovery_start = False
         if silence_active:

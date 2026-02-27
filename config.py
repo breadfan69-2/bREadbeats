@@ -129,6 +129,11 @@ class StrokeConfig:
     silence_close_threshold: float = -58.0  # dBFS threshold to exit silence deadzone gate
     combo_texture: float = 0.94   # syncopation/texture behavior
 
+    # Energy Response: scales fill-gate thresholds based on energy_fullness.
+    # 0.0 = no fullness effect on gates, 1.0 = moderate (35% reduction at
+    # max fullness), 2.0 = strong (70% reduction at max fullness).
+    energy_response_strength: float = 1.0
+
     # Beat-type-specific orbital geometry: each type blooms from a different center
     # All journey types share the same radius range; only center differs.
     orbit_geometry: dict = field(default_factory=lambda: {

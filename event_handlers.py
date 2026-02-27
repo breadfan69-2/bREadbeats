@@ -125,9 +125,7 @@ def apply_config_to_ui(win):
                 )
             if hasattr(win, 'main_silence_close_slider'):
                 win.main_silence_close_slider.setValue(
-                    win._silence_close_to_normalized(
-                        float(getattr(win.config.stroke, 'silence_close_threshold', 0.01) or 0.01)
-                    )
+                    float(getattr(win.config.stroke, 'energy_response_strength', 1.0))
                 )
             advanced_flux_slider = getattr(win, '_advanced_flux_threshold_slider', None)
             if advanced_flux_slider is not None:
@@ -668,6 +666,19 @@ def audio_callback(win, event: BeatEvent):
             win._play_warmup_active = False
 
         cmd = win.stroke_mapper.process_beat(event)
+
+        # Sync Energy Response slider when the ramp engine is driving it
+        _ramp = getattr(win.stroke_mapper, '_ramp_engine', None)
+        if _ramp is not None:
+            _sv = _ramp.speed_display_value
+            _slider = getattr(win, 'main_silence_close_slider', None)
+            if _sv is not None and _slider is not None:
+                _slider.blockSignals(True)
+                _slider.setValue(_sv)
+                _slider.blockSignals(False)
+                if hasattr(win, '_set_energy_response_display'):
+                    win._set_energy_response_display(_sv)
+
         if cmd and win.network_engine:
             # Compute P0/F0 and attach to command (thread-safe, no widget access)
             win._compute_and_attach_tcode(cmd, event, spectrum)

@@ -27,6 +27,7 @@ from geometry_utils import (
     radius_cap_for_center,
 )
 from network_engine import TCodeCommand
+from ramp_engine import RampEngine
 
 
 @dataclass
@@ -179,11 +180,7 @@ class StrokeMapper:
         self._session_energy_ema: float = 0.5
 
         # ── Intensity timer ramp (session-level escalation) ──
-        self._intensity_ramp_start_time: float = 0.0
-        self._intensity_ramp_started: bool = False
-        self._intensity_ramp_mult: float = 1.0
-        self._intensity_ramp_floor: float = 0.25
-        self._intensity_ramp_affect_size: bool = True
+        self._ramp_engine = RampEngine(config)
 
         # ── Rate-limiter velocity state (for smoothing across ALL paths) ──
         self._smoothed_da: float = 0.0
@@ -224,6 +221,11 @@ class StrokeMapper:
 
         # Forward to BeatIntelligence
         self._sync_learning_to_intelligence()
+
+    def set_scheduled_lead_ms(self, value_ms: int) -> None:
+        """Forward live lead-ms update to the intelligence layer."""
+        if hasattr(self, '_intelligence') and self._intelligence is not None:
+            self._intelligence.set_scheduled_lead_ms(value_ms)
 
     def _sync_learning_to_intelligence(self) -> None:
         """Forward learning config and model path to BeatIntelligence."""
@@ -367,28 +369,7 @@ class StrokeMapper:
         self._update_expression_layer(decision=decision, dt=dt, now=now)
 
         # ── Intensity timer ramp: session-level escalation ──
-        ramp_target = str(getattr(self.config.stroke, 'intensity_ramp_target', 'both') or 'both').strip().lower()
-        if ramp_target not in ('size', 'speed', 'both'):
-            ramp_target = 'both'
-        self._intensity_ramp_affect_size = ramp_target in ('size', 'both')
-
-        ramp_hours = float(getattr(self.config.stroke, 'intensity_ramp_hours', 0.0) or 0.0)
-        if ramp_hours > 0.0:
-            if not decision.silence_active and not self._intensity_ramp_started:
-                self._intensity_ramp_started = True
-                self._intensity_ramp_start_time = now
-            if self._intensity_ramp_started:
-                elapsed_s = now - self._intensity_ramp_start_time
-                ramp_s = ramp_hours * 3600.0
-                raw_t = float(np.clip(elapsed_s / max(ramp_s, 1.0), 0.0, 1.0))
-                eased_t = quintic_ease(raw_t)
-                self._intensity_ramp_mult = float(
-                    self._intensity_ramp_floor + ((1.0 - self._intensity_ramp_floor) * eased_t)
-                )
-            else:
-                self._intensity_ramp_mult = self._intensity_ramp_floor
-        else:
-            self._intensity_ramp_mult = 1.0
+        self._ramp_engine.tick(now, decision.silence_active)
 
         if decision.silence_active:
             # ── Silence park: glide smoothly to park position, fade volume ──
@@ -712,12 +693,14 @@ class StrokeMapper:
                     expanded_max = float(np.clip(expanded_max + session_nudge, base_max, 1.0))
                 self._journey_max_radius = float(np.clip(expanded_max, base_max, 1.0))
 
-                # Intensity timer: scale available dynamic range toward park radius
-                if self._intensity_ramp_affect_size and self._intensity_ramp_mult < 1.0:
-                    self._journey_max_radius = float(
-                        self._journey_park_radius
-                        + ((self._journey_max_radius - self._journey_park_radius) * self._intensity_ramp_mult)
-                    )
+                # Size ramp: expand max_radius by up to 60 % over the timer duration
+                _size_exp = self._ramp_engine.size_expansion
+                if _size_exp > 0.0:
+                    self._journey_max_radius = float(np.clip(
+                        self._journey_max_radius * (1.0 + _size_exp),
+                        self._journey_park_radius,
+                        1.0,
+                    ))
 
                 self._journey_start_alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
                 self._journey_start_beta = float(np.clip(self.state.beta, -1.0, 1.0))
@@ -1067,6 +1050,11 @@ class StrokeMapper:
         # Bass-frequency orbit modulation: widen for sub-bass, tighten for upper bass
         bass_mult = self._fill_bass_freq_orbit_mult()
         effective_rot_radius = self._fill_rot_radius * bass_mult
+
+        # Size ramp: expand fill orbit by up to 60 % over timer duration
+        _size_exp = self._ramp_engine.size_expansion
+        if _size_exp > 0.0:
+            effective_rot_radius *= (1.0 + _size_exp)
 
         # Orbit around the moving center
         alpha = float(center_x + effective_rot_radius * math.cos(self._fill_rot_phase))

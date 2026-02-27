@@ -190,7 +190,6 @@ class BREadbeatsWindow(QMainWindow):
         
         self.config.stroke.mode = StrokeMode.SIMPLE_CIRCLE
         self._apply_release_learning_defaults()
-        self._apply_learning_config_to_mapper()
         # Apply persisted log level early so downstream modules inherit
         set_log_level(getattr(self.config, 'log_level', 'INFO'))
         self.signals = SignalBridge()
@@ -745,7 +744,6 @@ class BREadbeatsWindow(QMainWindow):
         # Update checkmarks
         for i, action in enumerate(self._viz_type_actions):
             action.setChecked(i == index)
-        # Sync hidden combo (for preset save/load compatibility)
         self.visualizer_type_combo.setCurrentIndex(index)
         self._on_visualizer_type_change(index)
     
@@ -761,24 +759,6 @@ class BREadbeatsWindow(QMainWindow):
         percent_internal = -300.0 + ((ui_value - 1.0) * (600.0 / 99.0))
         scale = float(np.power(2.0, -percent_internal / 100.0))
         return float(np.clip(scale, 0.05, 20.0))
-
-    def _silence_close_to_normalized(self, close_threshold: float) -> float:
-        min_close_db = -90.0
-        base_close_db = self._silence_threshold_to_db(0.048, default_linear=0.048)
-        max_close_db = -3.0
-        close_v = float(np.clip(self._silence_threshold_to_db(close_threshold, default_linear=0.01), min_close_db, max_close_db))
-        if close_v <= base_close_db:
-            return float((close_v - min_close_db) / max(1e-9, (base_close_db - min_close_db)))
-        return float(1.0 + ((close_v - base_close_db) / max(1e-9, (max_close_db - base_close_db))))
-
-    def _silence_normalized_to_close(self, normalized_value: float) -> float:
-        min_close_db = -90.0
-        base_close_db = self._silence_threshold_to_db(0.048, default_linear=0.048)
-        max_close_db = -3.0
-        norm_v = float(np.clip(float(normalized_value), 0.0, 2.0))
-        if norm_v <= 1.0:
-            return float(min_close_db + ((base_close_db - min_close_db) * norm_v))
-        return float(base_close_db + ((max_close_db - base_close_db) * (norm_v - 1.0)))
 
     def _silence_threshold_to_db(self, threshold_value: float, default_linear: float = 0.01) -> float:
         try:
@@ -852,32 +832,19 @@ class BREadbeatsWindow(QMainWindow):
                 f"color: {active_color if idx == active_idx else inactive_color};"
             )
 
-    def _on_main_silence_close_change(self, value: float) -> None:
-        hysteresis_db = 12.0
-        self._set_main_silence_close_display(value)
+    def _on_energy_response_change(self, value: float) -> None:
+        """Slider callback: update energy_response_strength in config."""
+        strength = float(np.clip(float(value), 0.0, 2.0))
+        setattr(self.config.stroke, 'energy_response_strength', strength)
+        self._set_energy_response_display(strength)
 
-        close_v = float(np.clip(self._silence_normalized_to_close(float(value)), -90.0, -3.0))
-        open_v = float(np.clip(close_v - hysteresis_db, -120.0, 12.0))
-
-        if close_v <= open_v:
-            close_v = float(min(12.0, open_v + 1.5))
-
-        setattr(self.config.stroke, 'silence_threshold', open_v)
-        setattr(self.config.stroke, 'silence_close_threshold', close_v)
-
-        normalized_close = self._silence_close_to_normalized(close_v)
-        if hasattr(self, 'main_silence_close_slider') and abs(normalized_close - float(value)) > 1e-9:
-            self.main_silence_close_slider.blockSignals(True)
-            self.main_silence_close_slider.setValue(normalized_close)
-            self.main_silence_close_slider.blockSignals(False)
-            self._set_main_silence_close_display(normalized_close)
-
-    def _set_main_silence_close_display(self, normalized_value: float) -> None:
+    def _set_energy_response_display(self, value: float) -> None:
+        """Update the value label on the Energy Response slider."""
         slider_widget = getattr(self, 'main_silence_close_slider', None)
         if slider_widget is None or not hasattr(slider_widget, 'value_label'):
             return
-        close_db = float(np.clip(self._silence_normalized_to_close(float(normalized_value)), -90.0, -3.0))
-        slider_widget.value_label.setText(f"{close_db:.1f} dBFS")
+        v = float(np.clip(float(value), 0.0, 2.0))
+        slider_widget.value_label.setText(f"{v:.2f}")
 
     def _on_butterworth_toggle(self, state: int):
         """Toggle Butterworth filter (requires restart)"""
@@ -902,7 +869,7 @@ class BREadbeatsWindow(QMainWindow):
         skip_values = [1, 2, 4]
         self.config.audio.spectrum_skip_frames = skip_values[index]
         if self.audio_engine:
-            self.audio_engine._spectrum_skip_frames = skip_values[index]
+            self.audio_engine.set_spectrum_skip_frames(skip_values[index])
         print(f"[Config] Spectrum skip frames changed to {skip_values[index]}")
     
     def _on_metrics_global_toggle(self, state):
@@ -1031,7 +998,7 @@ class BREadbeatsWindow(QMainWindow):
         
         # Re-initialize Butterworth filter with new band so beat detection actually uses it
         if hasattr(self, 'audio_engine') and self.audio_engine is not None:
-            self.audio_engine._init_butterworth_filter()
+            self.audio_engine.reinitialize_butterworth_filter()
         
         # Update spectrum overlay
         sr = self.config.audio.sample_rate
@@ -1197,7 +1164,7 @@ class BREadbeatsWindow(QMainWindow):
         """Toggle confidence-gated aggressive metronome BPM snapping."""
         self.config.beat.aggressive_tempo_snap_enabled = enabled
         if self.audio_engine:
-            self.audio_engine._aggressive_tempo_snap_enabled = enabled
+            self.audio_engine.set_aggressive_tempo_snap_enabled(enabled)
 
     def _auto_connect_tcp(self):
         """Auto-connect TCP on program startup"""

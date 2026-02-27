@@ -31,7 +31,6 @@ def create_menu_bar(win):
     menubar = win.menuBar()
     assert menubar is not None
     
-    # Menu (main menu with preset load and About)
     main_menu = menubar.addMenu("Menu")
     assert main_menu is not None
     
@@ -643,8 +642,8 @@ def create_main_controls_panel(win) -> QWidget:
     win.intensity_ramp_spin.setMinimumWidth(180)
     win.intensity_ramp_spin.setToolTip(
         "Session intensity ramp duration (0 = disabled).\n"
-        "Reactions gradually climb from gentle to full power\n"
-        "over this many hours."
+        "Over this many hours, the selected targets ramp\n"
+        "from their current values to maximum."
     )
     win.intensity_ramp_spin.valueChanged.connect(
         lambda v: (
@@ -668,7 +667,9 @@ def create_main_controls_panel(win) -> QWidget:
     win.intensity_ramp_target_combo.setValue(target_to_idx.get(current_target, 2))
     win.intensity_ramp_target_combo.setToolTip(
         "Choose what the intensity timer affects:\n"
-        "size = orbit size only, speed = orbit speed only, both = size + speed."
+        "Size = orbit & fill pattern expand up to 60 %.\n"
+        "Speed = Energy Response ramps from current to max.\n"
+        "Both = size + speed simultaneously."
     )
     win.intensity_ramp_target_combo.valueChanged.connect(
         lambda idx: (
@@ -726,25 +727,22 @@ def create_main_controls_panel(win) -> QWidget:
     win.pulse_settings_btn.setStyleSheet("text-align: center;")
 
     win.main_silence_close_slider = SliderWithLabel(
-        "Volume/Motion Threshold (dBFS)",
+        "Energy Response",
         0.0,
         2.0,
-        win._silence_close_to_normalized(
-            win._silence_threshold_to_db(
-                getattr(win.config.stroke, 'silence_close_threshold', -26.0),
-                default_linear=0.01,
-            )
-        ),
+        float(getattr(win.config.stroke, 'energy_response_strength', 1.0)),
         2,
         step=0.01,
     )
     win.main_silence_close_slider.setToolTip(
-        "Controls the close threshold shown in dBFS.\n"
-        "Internally uses a normalized 0-2 control mapped to close/open thresholds with fixed 12 dB hysteresis."
+        "How much extra motion when music is full/energetic.\n"
+        "0 = energy has no effect on gates.\n"
+        "1 = moderate (default): gates ease ~35% at full energy.\n"
+        "2 = strong: gates ease ~70% at full energy."
     )
     win.main_silence_close_slider.setMinimumWidth(260)
-    win.main_silence_close_slider.valueChanged.connect(win._on_main_silence_close_change)
-    win._set_main_silence_close_display(win.main_silence_close_slider.value())
+    win.main_silence_close_slider.valueChanged.connect(win._on_energy_response_change)
+    win._set_energy_response_display(win.main_silence_close_slider.value())
 
     win._refresh_main_controls_value_label_colors()
 
