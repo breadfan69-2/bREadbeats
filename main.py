@@ -1493,6 +1493,13 @@ class BREadbeatsWindow(QMainWindow):
         except RuntimeError:
             pass
 
+    _ARROW_MAP = {
+        Qt.Key.Key_Up: "up",
+        Qt.Key.Key_Down: "down",
+        Qt.Key.Key_Left: "left",
+        Qt.Key.Key_Right: "right",
+    }
+
     def _handle_keyboard_teacher_key_event(self, event, is_press: bool) -> bool:
         teacher = getattr(self, '_keyboard_teacher', None)
         if teacher is None:
