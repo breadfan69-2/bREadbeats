@@ -15,3 +15,4 @@ pyqtgraph>=0.13.0              # Real-time audio/beat visualization
 
 # Windows Audio Support
 comtypes>=1.2.0                # Windows COM interface for WASAPI
+pycaw>=20230407                 # Windows audio session control (volume normalization)

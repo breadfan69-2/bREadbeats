@@ -40,6 +40,7 @@ from audio_modules.tempo_tracker import (
     within_dedup_window,
 )
 from audio_modules.telemetry_tuning import TelemetryTuning, TriggerTelemetry
+from audio_modules.volume_normalizer import VolumeNormalizer
 
 # Scipy for Butterworth bandpass filter
 try:
@@ -290,6 +291,11 @@ class AudioEngine:
         
         # Visualizer toggle
         self._visualizer_enabled = getattr(config.audio, 'visualizer_enabled', True)
+        
+        # Volume normalization (compensates for Windows master volume)
+        self._volume_normalizer = VolumeNormalizer(
+            enabled=getattr(config.audio, 'volume_normalize', True)
+        )
         
         # ===== MULTI-BAND Z-SCORE ADAPTIVE PEAK DETECTION =====
         # Instead of a single z-score detector on overall band_energy, we run
@@ -1092,6 +1098,9 @@ class AudioEngine:
         """Stop audio capture"""
         self.running = False
         self._log_shutdown_summary()
+        # Shut down volume normalizer poller thread
+        if hasattr(self, '_volume_normalizer'):
+            self._volume_normalizer.shutdown()
         if self.stream:
             self.stream.stop_stream()
             self.stream.close()
@@ -1117,6 +1126,20 @@ class AudioEngine:
             mono = np.mean(indata, axis=1)
         else:
             mono = indata[:, 0]
+        
+        # Compensate for Windows master volume so ALL processing (beat detection
+        # AND silence detection) sees "100%-equivalent" signal levels.
+        # With normalization active, absolute dBFS thresholds work reliably
+        # regardless of the Windows volume slider position.
+        vol_gain = self._volume_normalizer.get_compensation_gain()
+        if vol_gain != 1.0:
+            mono = mono * vol_gain
+        
+        # Compute raw RMS from the COMPENSATED mono.  With volume normalization
+        # the signal is always at consistent levels, so the silence gate can use
+        # simple fixed dBFS thresholds instead of complex adaptive logic.
+        raw_rms = float(np.sqrt(np.mean(mono ** 2)))
+        raw_rms_db = rms_to_dbfs(raw_rms)
         
         # Apply Butterworth bandpass filter for beat detection (if available)
         if self._butter_sos is not None and self._butter_zi is not None:
@@ -1186,8 +1209,8 @@ class AudioEngine:
             with self.waveform_lock:
                 self.waveform_data = mono.astype(np.float32, copy=True)
 
-        raw_rms = np.sqrt(np.mean(mono ** 2))
-        raw_rms_db = rms_to_dbfs(raw_rms)
+        # raw_rms / raw_rms_db already computed above from the volume-compensated
+        # mono signal — consistent levels regardless of Windows volume setting.
         
         # Note: Audio gain already applied to band_spectrum above, no need to apply again
         

@@ -159,69 +159,54 @@ class TestReadinessState(Phase2Mixin, unittest.TestCase):
         self.assertEqual(decision.trigger_kind, "creep")
 
 
-# ── Silence gate: detrend + SNR ────────────────────────────────────────
+# ── Silence gate: simple fixed-threshold ───────────────────────────────
 
 
-class TestSilenceGateDetrend(Phase2Mixin, unittest.TestCase):
-    """Volume ramps should not open the silence gate."""
+class TestSilenceGateThreshold(Phase2Mixin, unittest.TestCase):
+    """Fixed-threshold silence gate with hysteresis."""
 
-    def _prime_gate(self, bi, level_db: float, frames: int = 90):
-        """Feed constant dBFS to fill initial history."""
+    def _feed(self, bi, level_db: float, frames: int):
+        """Feed constant dBFS for N frames."""
         for _ in range(frames):
             bi.update_silence_deadzone_gate(level_db)
 
-    def test_volume_ramp_stays_silent(self):
-        """A monotonic noise-floor ramp (volume turned up) must not exit silence."""
+    def test_starts_silent(self):
+        """Gate starts in silence (guilty-until-proven)."""
         bi = BeatIntelligence(Config())
-        # Prime with low noise floor
-        self._prime_gate(bi, -80.0, frames=60)
         self.assertTrue(bi.silence_deadzone_active)
 
-        # Gradual ramp from -80 to -50 over 60 frames (~1 s)
-        for i in range(60):
-            level = -80.0 + (30.0 * i / 59)
-            bi.update_silence_deadzone_gate(level)
-        # Should still be silent — the ramp is detrended away
-        self.assertTrue(bi.silence_deadzone_active)
-
-    def test_step_volume_change_stays_silent(self):
-        """An abrupt volume jump (step) should not exit silence."""
+    def test_loud_signal_exits_silence(self):
+        """Sustained signal above exit threshold opens the gate."""
         bi = BeatIntelligence(Config())
-        self._prime_gate(bi, -80.0, frames=60)
         self.assertTrue(bi.silence_deadzone_active)
-
-        # Sudden step to -50 (new constant noise floor)
-        for _ in range(120):
-            bi.update_silence_deadzone_gate(-50.0)
-        self.assertTrue(bi.silence_deadzone_active)
-
-    def test_real_music_exits_silence(self):
-        """Alternating loud/quiet frames (music) should open the gate."""
-        import random
-        bi = BeatIntelligence(Config())
-        # Prime in silence so floor establishes low
-        self._prime_gate(bi, -80.0, frames=60)
-        self.assertTrue(bi.silence_deadzone_active)
-
-        # Simulate music: alternating peaks and valleys (20 dB swing)
-        random.seed(42)
-        for _ in range(120):
-            level = random.choice([-20.0, -40.0, -25.0, -35.0, -18.0, -42.0])
-            bi.update_silence_deadzone_gate(level)
+        # Feed well above exit threshold (-48 dB) for enough frames
+        self._feed(bi, -30.0, frames=20)
         self.assertFalse(bi.silence_deadzone_active)
 
-    def test_snr_gate_blocks_quiet_dynamics(self):
-        """Dynamics near the noise floor (no real signal) must stay silent."""
+    def test_quiet_signal_enters_silence(self):
+        """Signal dropping below enter threshold closes the gate."""
         bi = BeatIntelligence(Config())
-        # Prime at a high noise floor (volume way up, but no music)
-        self._prime_gate(bi, -45.0, frames=120)
+        # First exit silence
+        self._feed(bi, -30.0, frames=20)
+        self.assertFalse(bi.silence_deadzone_active)
+        # Now drop to silence
+        self._feed(bi, -70.0, frames=20)
         self.assertTrue(bi.silence_deadzone_active)
 
-        # Small oscillations around the noise floor (4 dB swing, below
-        # the flat_close_spread of 6 dB detrended) — should stay silent
-        for _ in range(60):
-            bi.update_silence_deadzone_gate(-44.0)
-            bi.update_silence_deadzone_gate(-48.0)
+    def test_hysteresis_band_holds_state(self):
+        """Signal in the hysteresis band (-55 to -48) does not change state."""
+        bi = BeatIntelligence(Config())
+        # Exit silence first
+        self._feed(bi, -30.0, frames=20)
+        self.assertFalse(bi.silence_deadzone_active)
+        # Feed signal in hysteresis band — should stay active (not silent)
+        self._feed(bi, -51.0, frames=60)
+        self.assertFalse(bi.silence_deadzone_active)
+
+    def test_near_floor_stays_silent(self):
+        """Very quiet signal (-80 dB) stays silent even after many frames."""
+        bi = BeatIntelligence(Config())
+        self._feed(bi, -80.0, frames=200)
         self.assertTrue(bi.silence_deadzone_active)
 
 

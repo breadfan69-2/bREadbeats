@@ -327,6 +327,7 @@ class AudioConfig:
     visualizer_enabled: bool = True   # Enable/disable spectrum visualizer (saves CPU)
     highpass_filter_hz: int = 30      # High-pass filter cutoff (0=disabled, 30=filter sub-bass noise)
     use_butterworth: bool = True      # Use Butterworth bandpass for beat detection
+    volume_normalize: bool = True     # Compensate for Windows volume (pycaw) so beat detection is volume-independent
 
 @dataclass
 class Config:

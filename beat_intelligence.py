@@ -70,12 +70,12 @@ class BeatIntelligence:
         self.rms_release = 0.05
 
         self.silence_deadzone_active = True   # guilty-until-proven: assume silence until audio proves otherwise
-        self.silence_open_count = 0
-        self.silence_close_count = 0
-        self._silence_reenter_holdoff_until: float = 0.0  # monotonic time before which silence cannot re-activate
-        self._SILENCE_REENTER_HOLDOFF_S: float = 2.0      # seconds of holdoff after silence lifts
-        self._silence_default_enter_db = -66.0
-        self._silence_default_exit_db = -58.0
+        self._silence_enter_db: float = -55.0     # below this dBFS = silence (volume-compensated signal)
+        self._silence_exit_db: float = -48.0      # above this dBFS = music (hysteresis gap prevents chatter)
+        self._silence_enter_frames: int = 0       # consecutive frames below enter threshold
+        self._silence_exit_frames: int = 0        # consecutive frames above exit threshold
+        self._silence_enter_required: int = 8     # ~0.13s at 60fps — fast silence entry
+        self._silence_exit_required: int = 4      # ~0.07s at 60fps — fast music detection
 
         self.active_interval_beats = 8
         self.last_trigger_kind = "creep"
@@ -115,34 +115,6 @@ class BeatIntelligence:
 
         # Rolling RMS history for dynamic amp-gate (adapts to current volume)
         self._recent_rms_db: deque = deque(maxlen=600)  # ~10 s at 60 fps
-
-        # Separate raw-RMS deque for the silence flatness gate.
-        # _recent_rms_db stores the *smoothed envelope*, which intentionally
-        # flattens beat-to-beat dynamics — great for amp-gate thresholds but
-        # terrible for silence detection (it makes music look flat → false
-        # silence).  This deque stores the *raw per-frame* dBFS so the
-        # P95-P5 spread accurately reflects real audio dynamics.
-        self._silence_raw_rms_db: deque = deque(maxlen=600)
-
-        # Auto-calibrated noise floor (dBFS).  P5 of _recent_rms_db, updated
-        # each frame in update_silence_deadzone_gate.  Used to lift silence
-        # thresholds above the WASAPI noise floor at any Windows volume.
-        self._noise_floor_db: float = RMS_DB_FLOOR
-
-        # Long-term noise-floor tracker (very slow EMA on _noise_floor_db).
-        # Rises slowly so music peaks don't pull it up; falls quickly so
-        # volume-down is tracked promptly.  Used by the SNR gate: audio
-        # must be meaningfully louder than this floor to exit silence.
-        self._long_term_floor_db: float = RMS_DB_FLOOR
-
-        # Dynamic spread tracker for adaptive silence detection.
-        # Tracks the typical RMS spread (P95-P5) during active audio so
-        # the silence threshold scales with the music's dynamic range.
-        self._spread_ema: float = 0.0          # EMA of recent spread values
-        self._spread_peak: float = 0.0         # rolling peak spread (slow decay)
-        self._spread_open_ratio: float = 0.10  # silence when spread < 10% of peak
-        self._spread_close_ratio: float = 0.20 # exit silence when spread > 20% of peak
-        self._spread_abs_floor: float = 1.0    # absolute minimum: 1 dB spread is always silence
 
         # Rolling band energy history for volume-adaptive normalization.
         # Raw band energies scale with OS volume; these deques let us normalize
@@ -1044,151 +1016,32 @@ class BeatIntelligence:
         return float(np.clip(self.rms_envelope, RMS_DB_FLOOR, 12.0))
 
     def update_silence_deadzone_gate(self, overall_amplitude: float, now: float | None = None) -> bool:
-        close_frames_required = 6
+        """Simple fixed-threshold silence gate.
+
+        With volume normalization active, the signal always arrives at
+        "100%% Windows volume" equivalent levels, so we can use fixed
+        dBFS thresholds instead of adaptive spread/SNR tracking.
+
+        Enter silence:  level_db < _silence_enter_db for N consecutive frames.
+        Exit silence:   level_db > _silence_exit_db for N consecutive frames.
+        Hysteresis gap between the two thresholds prevents chatter.
+        """
         level_db = self._coerce_amplitude_db(overall_amplitude)
 
-        # Feed raw (unsmoothed) dBFS into the silence deque so the
-        # flatness check sees real beat-to-beat dynamics, not the
-        # flattened envelope.
-        #
-        # Skip floor-level values (≤ RMS_DB_FLOOR + 1).  The audio engine
-        # emits -120 dBFS for the first few frames before WASAPI returns
-        # real data.  If these floor values enter the deque, the subsequent
-        # step from -120 → real noise floor (~-78) creates artificial
-        # spread that neither detrending nor SNR can fully absorb,
-        # causing a ~1.5 s false "active" window on every startup.
-        if level_db > RMS_DB_FLOOR + 1.0:
-            self._silence_raw_rms_db.append(level_db)
-
-        # --- Flatness-based silence detection ---
-        # If the waveform is flat (low dynamic range), it's silence/noise
-        # regardless of absolute dB level.  Inherently volume-independent —
-        # works at any Windows volume.
-        #
-        # "Flat" = P95-P5 spread of recent RAW RMS < 3 dB (all frames similar).
-        # "Active" = spread >= 6 dB (real dynamic content).
-        # Hysteresis band between 3-6 dB prevents chatter.
-        #
-        # Uses a SHORT recent window (last ~1 s) so silence is detected
-        # within ~1 second, not after 10 s of flushing old samples.
-        #
-        # Detrending: the raw dBFS values are linearly detrended before
-        # computing spread.  When the user changes the Windows volume,
-        # the noise floor ramps up/down monotonically.  Without detrending
-        # this ramp creates artificial P95-P5 spread and fools the gate.
-        # After detrending, only *fluctuations around the trend* (i.e.
-        # real beat dynamics) contribute to spread.
-        #
-        # SNR gate: even if detrended spread says "dynamic", the raw P95
-        # must be meaningfully above a long-term noise floor tracker.
-        # This prevents low-level electrical noise patterns from opening
-        # the gate.
-        flatness_window = 60     # frames (~1 s at 60 fps)
-        snr_margin = 10.0        # dB above long-term floor to count as signal
-        absolute_silence_ceiling = -78.0  # dBFS; below this is pure noise floor
-
-        n_available = len(self._silence_raw_rms_db)
-        has_snr = False
-        if n_available >= 15:
-            # Short window for fast reaction
-            recent_slice = list(self._silence_raw_rms_db)[-min(flatness_window, n_available):]
-            arr = np.array(recent_slice, dtype=np.float64)
-
-            # --- Detrend: remove linear ramp (volume changes) ---
-            if len(arr) > 1:
-                x = np.arange(len(arr), dtype=np.float64)
-                coeffs = np.polyfit(x, arr, 1)
-                trend = np.polyval(coeffs, x)
-                detrended = arr - trend
-            else:
-                detrended = arr - arr[0]
-
-            p5_dt = float(np.percentile(detrended, 5))
-            p95_dt = float(np.percentile(detrended, 95))
-            spread = p95_dt - p5_dt
-
-            # --- Dynamic spread tracker ---
-            # Track typical spread with asymmetric EMA: rises fast to
-            # capture music dynamics, decays slowly (~5 s half-life)
-            # so quiet passages don't reset the baseline too quickly.
-            sp_alpha_up = 0.15
-            sp_alpha_down = 0.002
-            sp_delta = spread - self._spread_ema
-            self._spread_ema += (sp_alpha_up if sp_delta > 0 else sp_alpha_down) * sp_delta
-            if spread > self._spread_peak:
-                self._spread_peak = spread
-            else:
-                self._spread_peak *= 0.998  # slow decay
-
-            # Dynamic thresholds: fraction of the peak spread we've seen
-            # with an absolute floor so true digital silence always triggers
-            flat_open_spread = max(self._spread_peak * self._spread_open_ratio,
-                                   self._spread_abs_floor)
-            flat_close_spread = max(self._spread_peak * self._spread_close_ratio,
-                                    self._spread_abs_floor * 2.0)
-
-            # Raw P95 for SNR check (original scale, not detrended)
-            raw_p95 = float(np.percentile(arr, 95))
-
-            # Noise floor from full history (stable)
-            if n_available >= 30:
-                self._noise_floor_db = float(np.percentile(list(self._silence_raw_rms_db), 5))
-
-            # --- Long-term floor tracker (asymmetric EMA) ---
-            # Rises slowly (alpha 0.005 ≈ 200-frame / 3.3 s time constant)
-            # so music peaks don't drag the floor up.  Falls quickly
-            # (alpha 0.05) so a volume reduction is tracked promptly.
-            if self._long_term_floor_db <= RMS_DB_FLOOR + 1.0:
-                # First real reading: snap to current noise floor
-                self._long_term_floor_db = self._noise_floor_db
-            else:
-                delta = self._noise_floor_db - self._long_term_floor_db
-                alpha = 0.05 if delta < 0 else 0.005
-                self._long_term_floor_db += alpha * delta
-
-            # SNR gate: current signal peak must be meaningfully loud
-            # AND above an absolute floor — pure noise floor (even with
-            # Windows volume adjustment) is always below -60 dBFS.
-            has_snr = raw_p95 > max(self._long_term_floor_db + snr_margin,
-                                     absolute_silence_ceiling)
-
-            # Absolute-level gate: refuse to exit silence unless the
-            # loudest frames in the window are above a hard floor.
-            # WASAPI loopback noise is typically ≤ −69 dBFS even at
-            # max Windows volume; −55 gives 14 dB of margin.
-            abs_level_ok = raw_p95 > -55.0
-        else:
-            spread = 0.0  # not enough data → assume flat/silent (guilty)
-            flat_open_spread = self._spread_abs_floor
-            flat_close_spread = self._spread_abs_floor * 2.0
-
-        if spread < flat_open_spread:
-            self.silence_open_count += 1
-            self.silence_close_count = 0
-            if self.silence_open_count >= 20:   # ~0.33 s of continuous flatness
-                # Hold-off guard: if silence recently lifted, suppress re-entry.
-                # Only applies when caller provides a real monotonic timestamp;
-                # tests that omit `now` bypass the holdoff.
-                if now is not None and now < self._silence_reenter_holdoff_until:
-                    # Inside the hold-off window — do NOT re-activate.
-                    # Reset open count so we keep requiring a full 20-frame
-                    # streak once the hold-off expires.
-                    self.silence_open_count = 0
-                else:
-                    self.silence_deadzone_active = True
-        elif spread > flat_close_spread and has_snr and abs_level_ok:
-            # Must have BOTH real dynamics AND meaningful signal above noise
-            self.silence_close_count += 1
-            self.silence_open_count = 0
-            if self.silence_close_count >= close_frames_required:
-                was_silent = self.silence_deadzone_active
+        if level_db < self._silence_enter_db:
+            self._silence_enter_frames += 1
+            self._silence_exit_frames = 0
+            if self._silence_enter_frames >= self._silence_enter_required:
+                self.silence_deadzone_active = True
+        elif level_db > self._silence_exit_db:
+            self._silence_exit_frames += 1
+            self._silence_enter_frames = 0
+            if self._silence_exit_frames >= self._silence_exit_required:
                 self.silence_deadzone_active = False
-                # Start hold-off timer so silence can't immediately re-trigger
-                if was_silent and now is not None:
-                    self._silence_reenter_holdoff_until = now + self._SILENCE_REENTER_HOLDOFF_S
         else:
-            self.silence_open_count = max(0, self.silence_open_count - 1)
-            self.silence_close_count = max(0, self.silence_close_count - 1)
+            # In the hysteresis band — hold current state, decay counters
+            self._silence_enter_frames = max(0, self._silence_enter_frames - 1)
+            self._silence_exit_frames = max(0, self._silence_exit_frames - 1)
 
         return self.silence_deadzone_active
 
