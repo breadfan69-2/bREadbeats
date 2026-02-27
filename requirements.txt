@@ -5,7 +5,7 @@
 PyQt6>=6.5.0
 
 # Audio Processing & Math
-numpy>=1.24.0
+numpy>=1.24.0                    # Core DSP/math used across the app
 pyaudiowpatch>=0.2.12          # Audio device enumeration
 sounddevice>=0.4.6             # Audio input capture
 scipy>=1.10.0                  # Butterworth bandpass filter for beat detection
@@ -15,4 +15,4 @@ pyqtgraph>=0.13.0              # Real-time audio/beat visualization
 
 # Windows Audio Support
 comtypes>=1.2.0                # Windows COM interface for WASAPI
-pycaw>=20230407                 # Windows audio session control (volume normalization)
+pycaw>=20230407                 # Windows volume sensing (enabled by default; pulls psutil transitively)

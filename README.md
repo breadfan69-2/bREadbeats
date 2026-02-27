@@ -300,6 +300,11 @@ Yes â€” settings are written to `config.json` when you close the app. You c
 - Required packages: `pip install -r requirements.txt`
 - PyInstaller for building executable: `pip install -r requirements-dev.txt`
 
+Dependency note (lean build):
+- Windows volume sensing is part of the default runtime path (`audio.volume_normalize=true`).
+- It requires `pycaw` + `comtypes` (already in `requirements.txt`), and `psutil` is pulled transitively by `pycaw`.
+- `numpy` remains a core app dependency and is not added specifically for volume sensing.
+
 ### Intelligence Files Setup
 The motion intelligence system requires profile and rule_fit files to be present:
 
