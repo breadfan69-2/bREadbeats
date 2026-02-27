@@ -97,6 +97,13 @@ class StrokeMapper:
         self._fill_rot_phase: float = 0.0        # rotation angle accumulator (radians)
         self._fill_rot_radius: float = 0.075     # orbit radius in [-1,1] space (diameter 0.15)
 
+        # ── Bass-frequency orbit modulation ──
+        # Dominant bass freq controls fill orbit size:
+        #   50 Hz  → 1.5× (deep sub-bass widens orbit)
+        #  125 Hz  → 1.0× (normal)
+        #  200 Hz  → 0.5× (higher bass tightens orbit)
+        self._fill_bass_freq_history: deque = deque(maxlen=4)
+
         # ── Fill minimum dwell: stay in fill for at least 1 measure ──
         self._fill_enter_time: float = 0.0      # monotonic time fill mode started
         self._fill_min_beats: int = 4            # minimum beats before exit allowed
@@ -893,9 +900,13 @@ class StrokeMapper:
         if self._fill_rot_phase > 2.0 * math.pi:
             self._fill_rot_phase -= 2.0 * math.pi
 
+        # Bass-frequency orbit modulation: widen for sub-bass, tighten for upper bass
+        bass_mult = self._fill_bass_freq_orbit_mult()
+        effective_rot_radius = self._fill_rot_radius * bass_mult
+
         # Orbit around the moving center
-        alpha = float(center_x + self._fill_rot_radius * math.cos(self._fill_rot_phase))
-        beta  = float(center_y + self._fill_rot_radius * math.sin(self._fill_rot_phase))
+        alpha = float(center_x + effective_rot_radius * math.cos(self._fill_rot_phase))
+        beta  = float(center_y + effective_rot_radius * math.sin(self._fill_rot_phase))
 
         # ── Silence→fill speed ramp: scale displacement from rest ──
         if speed_scale < 1.0:
@@ -906,6 +917,57 @@ class StrokeMapper:
 
         volume = float(np.clip(self.get_volume() * float(np.clip(fade, 0.0, 1.0)), 0.0, 1.0))
         return alpha, beta, volume
+
+    def _fill_bass_freq_orbit_mult(self) -> float:
+        """Return orbit radius multiplier based on rolling dominant bass frequency.
+
+        Maps bass frequency to orbit size on a log scale:
+          50 Hz  → 1.5× (deep sub-bass = wider orbit)
+         125 Hz  → 1.0× (normal)
+         200 Hz  → 0.5× (higher bass = tighter orbit)
+        Uses a 4-frame rolling average for stability.
+        """
+        # Sample dominant frequency in the bass range (30–500 Hz)
+        freq = 125.0  # neutral default
+        if self.audio_engine is not None and hasattr(self.audio_engine, '_estimate_frequency'):
+            spectrum = None
+            if hasattr(self.audio_engine, 'get_spectrum'):
+                spectrum = self.audio_engine.get_spectrum()
+            if spectrum is not None:
+                try:
+                    f = float(self.audio_engine._estimate_frequency(spectrum, 30.0, 500.0))
+                    if f > 0.0:
+                        freq = f
+                except Exception:
+                    pass
+
+        self._fill_bass_freq_history.append(freq)
+
+        if len(self._fill_bass_freq_history) == 0:
+            return 1.0
+
+        avg_freq = float(sum(self._fill_bass_freq_history) / len(self._fill_bass_freq_history))
+
+        # Log-linear mapping: log2(50)→1.5, log2(125)→1.0, log2(200)→0.5
+        # Using two-segment piecewise linear in log2 space:
+        #   [50, 125]  → [1.5, 1.0]
+        #   [125, 200] → [1.0, 0.5]
+        avg_freq = float(np.clip(avg_freq, 50.0, 200.0))
+        log_f = math.log2(avg_freq)
+        log_50 = math.log2(50.0)    # ~5.644
+        log_125 = math.log2(125.0)  # ~6.966
+        log_200 = math.log2(200.0)  # ~7.644
+
+        if log_f <= log_125:
+            # 50→125: 1.5→1.0
+            t = (log_f - log_50) / (log_125 - log_50)
+            mult = 1.5 - 0.5 * t
+        else:
+            # 125→200: 1.0→0.5
+            t = (log_f - log_125) / (log_200 - log_125)
+            mult = 1.0 - 0.5 * t
+
+        return float(np.clip(mult, 0.5, 1.5))
 
     def _sample_idle_loop(self, dt: float) -> tuple[float, float]:
         """Advance and sample the ping-pong funscript idle loop.
