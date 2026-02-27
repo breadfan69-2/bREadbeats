@@ -933,11 +933,11 @@ class BeatIntelligence:
         """Get fill required for phase, including auto-adapt offset (#20)."""
         cfg = self.config.stroke
         base_map = {
-            "downbeat": float(getattr(cfg, 'downbeat_overall_amp_fill_required', 0.75)),
-            "beat": float(getattr(cfg, 'beat_overall_amp_fill_required', 0.90)),
-            "syncopation": float(getattr(cfg, 'syncopation_overall_amp_fill_required', 1.00)),
+            "downbeat": float(getattr(cfg, 'downbeat_overall_amp_fill_required', 0.04)),
+            "beat": float(getattr(cfg, 'beat_overall_amp_fill_required', 0.06)),
+            "syncopation": float(getattr(cfg, 'syncopation_overall_amp_fill_required', 0.08)),
         }
-        base = base_map.get(trigger_kind, base_map.get("beat", 0.90))
+        base = base_map.get(trigger_kind, base_map.get("beat", 0.06))
         scale = float(np.clip(getattr(cfg, 'overall_amp_fill_required_scale', 1.0) or 1.0, 0.05, 20.0))
         offset = self._auto_fill_offsets.get(trigger_kind, 0.0)
 
@@ -1792,6 +1792,9 @@ class BeatIntelligence:
             elif _flux_drop_confirmed:
                 gate_passed = False
                 gate_fail_reason = "flux_drop"
+            elif not self._passes_overall_amp_fill_gate(event, raw_trigger_kind):
+                gate_passed = False
+                gate_fail_reason = "spectral_fill"
 
             if gate_passed:
                 self._gate_fail_preserve_count = 0
