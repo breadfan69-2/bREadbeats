@@ -332,6 +332,135 @@ class StrokeMapper:
     def get_current_position(self) -> tuple[float, float]:
         return self.state.alpha, self.state.beta
 
+    # ── Simple mode: pure fixed-radius circles ──────────────────────
+
+    # Simple-mode state (initialised lazily on first call)
+    _simple_phase: float = float(math.pi / 2.0)   # start at anchor (top)
+    _simple_radius: float = 0.90                    # latched per-rotation
+    _simple_was_orbiting: bool = False               # for transition detection
+    _simple_last_completion: float = 1.0             # previous frame completion
+
+    def _process_simple_mode(
+        self,
+        event: BeatEvent,
+        decision: 'BeatDecision',
+        dt: float,
+        now: float,
+    ) -> TCodeCommand:
+        """Simple mode: no gating, no expression, no direction changes, no radius variation.
+
+        - Fixed CCW direction
+        - Single anchor at y=+1 (π/2) ±10° buffer
+        - Radius decided at rotation start (energy-based, 0.9 → 1.0), constant mid-flight
+        - Center at 0.0
+        - Silence → park + sub-bass bounce
+        """
+        ANCHOR_ANGLE = float(math.pi / 2.0)     # top of circle (y=+1)
+        DIRECTION = -1                            # CCW (counter-clockwise)
+
+        fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
+        ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
+
+        if decision.silence_active:
+            # ── Park + sub-bass bounce ──
+            self._simple_was_orbiting = False
+            self._simple_last_completion = 1.0
+            self._orbit_phase_initialized = False
+
+            # Glide toward park position
+            park_alpha = 0.0
+            park_beta = self._park_y
+            glide_speed = 2.0
+            glide_t = float(np.clip(glide_speed * dt, 0.0, 1.0))
+            alpha = float(self.state.alpha + (park_alpha - self.state.alpha) * glide_t)
+            beta = float(self.state.beta + (park_beta - self.state.beta) * glide_t)
+
+            # Sub-bass bounce while parked: small radius wobble on audio energy
+            raw_rms = float(getattr(event, 'raw_rms_db', -120.0) or -120.0)
+            if raw_rms > -96.0:
+                sub_bass = float(np.clip(self._intelligence.energies.sub_bass, 0.0, 1.0))
+                # 0.075 base bounce + up to 80% more with strong bass
+                bounce_r = 0.075 * (1.0 + 0.80 * sub_bass)
+                # Oscillate around park position using a simple sine
+                bounce_phase = float(now * 2.0 * math.pi * 1.5)  # ~1.5 Hz gentle pulse
+                alpha += float(bounce_r * math.cos(bounce_phase) * sub_bass)
+                beta += float(bounce_r * math.sin(bounce_phase) * sub_bass * 0.5)
+
+            volume = float(np.clip(self.get_volume() * fade, 0.0, 1.0))
+            self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
+            self.state.beta = float(np.clip(beta, -1.0, 1.0))
+            self._smoothed_da = 0.0
+            self._smoothed_db = 0.0
+            return TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
+
+        if decision.trigger_kind == "creep":
+            # Not orbiting yet (no tempo). Stay parked, apply fade.
+            park_alpha = 0.0
+            park_beta = self._park_y
+            glide_speed = 2.0
+            glide_t = float(np.clip(glide_speed * dt, 0.0, 1.0))
+            alpha = float(self.state.alpha + (park_alpha - self.state.alpha) * glide_t)
+            beta = float(self.state.beta + (park_beta - self.state.beta) * glide_t)
+
+            # Sub-bass bounce even when parked-not-silent
+            sub_bass = float(np.clip(self._intelligence.energies.sub_bass, 0.0, 1.0))
+            if sub_bass > 0.05:
+                bounce_r = 0.075 * (1.0 + 0.80 * sub_bass)
+                bounce_phase = float(now * 2.0 * math.pi * 1.5)
+                alpha += float(bounce_r * math.cos(bounce_phase) * sub_bass)
+                beta += float(bounce_r * math.sin(bounce_phase) * sub_bass * 0.5)
+
+            volume = float(np.clip(self.get_volume() * min(fade, ramp), 0.0, 1.0))
+            self._simple_was_orbiting = False
+            self._simple_last_completion = 1.0
+            self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
+            self.state.beta = float(np.clip(beta, -1.0, 1.0))
+            self._smoothed_da = 0.0
+            self._smoothed_db = 0.0
+            return TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
+
+        # ── Active orbit: full circle at BPM pace ──
+        progress = float(np.clip(decision.journey_completion, 0.0, 1.0))
+
+        if not self._simple_was_orbiting:
+            # First rotation after park: latch radius, snap to anchor
+            self._simple_radius = float(np.clip(decision.radius_bloom, 0.80, 1.0))
+            self._simple_phase = ANCHOR_ANGLE
+            self._orbit_phase_initialized = True
+            self._simple_was_orbiting = True
+        elif progress <= 0.01 and self._simple_last_completion > 0.5:
+            # New journey just started — latch fresh radius
+            self._simple_radius = float(np.clip(decision.radius_bloom, 0.80, 1.0))
+
+        # Journey complete (progress==1.0) → hold at anchor
+        if progress >= 1.0:
+            angle = ANCHOR_ANGLE
+        else:
+            # Gentle brake: last 20% runs ~5% slower
+            if progress <= 0.80:
+                shaped = progress * (0.81 / 0.80)
+            else:
+                shaped = 0.81 + (progress - 0.80) * (0.19 / 0.20)
+            shaped = float(np.clip(shaped, 0.0, 1.0))
+            angle = float(ANCHOR_ANGLE + DIRECTION * 2.0 * math.pi * shaped)
+
+        self._simple_phase = float(angle % (2.0 * math.pi))
+        self._orbit_phase = self._simple_phase
+
+        radius = self._simple_radius
+        alpha, beta = orbit_point(angle, radius, center_x=0.0, center_y=0.0)
+
+        volume = float(np.clip(self.get_volume() * min(fade, ramp), 0.0, 1.0))
+        self._simple_last_completion = progress
+
+        # Set position directly — no rate limiter EMA during orbit
+        # (the EMA collapses full circles into half-arcs)
+        self.state.alpha = float(np.clip(alpha, -1.0, 1.0))
+        self.state.beta = float(np.clip(beta, -1.0, 1.0))
+        self._smoothed_da = float(alpha - self.state.alpha) if dt > 0 else 0.0
+        self._smoothed_db = float(beta - self.state.beta) if dt > 0 else 0.0
+        return TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
+
     def process_beat(self, event: BeatEvent, silence_override: bool | None = None) -> Optional[TCodeCommand]:
         now = event.monotonic_timestamp if getattr(event, "monotonic_timestamp", 0.0) > 0 else time.perf_counter()
         raw_dt = (now - self.state.last_time) if self.state.last_time > 0 else (1.0 / 60.0)
@@ -363,6 +492,10 @@ class StrokeMapper:
             self.state.alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
             self.state.beta = float(np.clip(self.state.beta, -1.0, 1.0))
             return TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
+
+        # ── Simple mode: bypass all intelligence/expression, pure circles ──
+        if not getattr(self.config.stroke, 'intelligence_enabled', True):
+            return self._process_simple_mode(event=event, decision=decision, dt=dt, now=now)
 
         # ── Expression layer: per-frame updates ──
         self._update_expression_layer(decision=decision, dt=dt, now=now)

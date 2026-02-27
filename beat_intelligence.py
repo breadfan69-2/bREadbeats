@@ -1734,6 +1734,187 @@ class BeatIntelligence:
 
         return trigger_kind
 
+    # ── Simple mode: intelligence-disabled bypass ────────────────────
+
+    def _build_simple_mode_decision(
+        self,
+        event: BeatEvent,
+        dt: float,
+        audio_snapshot,
+        silence_active: bool,
+        silence_fade: float,
+        post_silence_ramp: float,
+        now: float,
+        energy_fullness: float,
+    ) -> BeatDecision:
+        """Minimal decision for Simple Mode: no gating, no expression, pure beat circles.
+
+        Rules:
+        - Silence → immediate park (trigger_kind="creep", journey_completion=1.0)
+        - Tempo loss + flux/energy drop → park until tempo returns
+        - Otherwise: continuous "beat" journey at fixed interval_beats from config
+        - Radius decided once per rotation from energy level (0.9 base, up to 1.0)
+        """
+        bpm = self.effective_bpm(event)
+        beats_per_rot = int(getattr(self.config.stroke, 'simple_mode_beats_per_rotation', 1) or 1)
+        beats_per_rot = max(1, min(4, beats_per_rot))
+
+        # Determine if we should be orbiting or parked
+        metro_bpm = float(event.metronome_bpm or 0.0)
+        acf_conf = float(event.acf_confidence or 0.0)
+        has_tempo = bool(metro_bpm > 0.0 and acf_conf >= 0.05)
+
+        # Flux/energy drop detection for parking on tempo loss
+        should_park = False
+        if silence_active:
+            should_park = True
+        elif not has_tempo:
+            # Park on tempo loss ONLY if there's also an energy/flux drop
+            raw_flux = float(event.spectral_flux or 0.0)
+            flux_weak = bool(self._gate_flux_peak > 1e-6
+                             and self._gate_flux_ema < self._gate_flux_peak * 0.45)
+            energy_weak = bool(energy_fullness < 0.15)
+            if flux_weak or energy_weak:
+                should_park = True
+            # If energy is still high but tempo lost, keep last orbit going
+
+        if should_park:
+            # Park: stop journey, report creep
+            self.journey_active = False
+            self.last_trigger_kind = "creep"
+            # After parking, require metronome before firing beats again
+            self._simple_needs_metro = True
+            return BeatDecision(
+                trigger_kind="creep",
+                interval_beats=beats_per_rot,
+                radius_bloom=float(getattr(self.config.stroke, 'simple_mode_base_radius', 0.90)),
+                silence_active=bool(silence_active),
+                journey_completion=1.0,
+                silence_fade=float(silence_fade),
+                post_silence_ramp=float(post_silence_ramp),
+                lazy_glide_active=False,
+                gate_fail="",
+                energy_fullness=energy_fullness,
+                session_intensity=energy_fullness,
+                learning=LearningOutputs(),
+            )
+
+        # ── Simple journey progress: continuous fixed-duration orbits ──
+        trigger_kind = "beat"
+        interval_beats = beats_per_rot
+
+        # Compute radius once per rotation from energy (latched at journey start)
+        base_r = float(getattr(self.config.stroke, 'simple_mode_base_radius', 0.90) or 0.90)
+        energy_push = float(np.clip(energy_fullness, 0.0, 1.0)) * (1.0 - base_r)
+        radius_bloom = float(np.clip(base_r + energy_push, base_r, 1.0))
+
+        # Simple mode follows normal beat detection only: start/reset on beat.
+        is_new_beat = bool(event.is_beat)
+
+        beat_period_s = 60.0 / max(1e-6, bpm)
+        # ~6% speed boost so the dot reaches the 20° acceptance window
+        # before the next beat: 360/(360-20) ≈ 1.059
+        target_duration = max(1e-3, beat_period_s * float(interval_beats) / 1.059)
+
+        # 20° acceptance window before anchor ≈ progress >= 0.9444
+        _ACCEPT_PROGRESS = 340.0 / 360.0  # 0.9444
+
+        # Simple bass gate: require some sub-bass energy to fire a beat
+        has_bass = bool(float(np.clip(self.energies.sub_bass, 0.0, 1.0)) >= 0.05)
+
+        # After silence or energy drop, require metronome lock before firing
+        # only when tempo lock is enabled in config/UI.
+        tempo_lock_required = bool(getattr(self.config.beat, 'tempo_lock_required', False))
+        if not hasattr(self, '_simple_needs_metro'):
+            self._simple_needs_metro = True  # start conservatively
+        if self._simple_needs_metro and has_tempo:
+            self._simple_needs_metro = False  # metronome established, clear gate
+        metro_ok = bool((not tempo_lock_required) or (not self._simple_needs_metro))
+
+        # Beats fire from anchor (idle) OR within 20° of anchor, with bass + metro.
+        can_accept_beat = bool(
+            has_bass
+            and metro_ok
+            and (
+                not self.journey_active
+                or (
+                    self.journey_active
+                    and (self.journey_elapsed_s / max(1e-6, self.journey_duration_s)) >= _ACCEPT_PROGRESS
+                )
+            )
+        )
+
+        if can_accept_beat and is_new_beat:
+            self.journey_duration_s = target_duration
+            self._journey_duration_target_s = target_duration
+            self.journey_elapsed_s = 0.0
+            self.journey_active = True
+            self._lazy_glide_active = False
+            self._committed_divisor_hint = 1
+            self.last_trigger_kind = trigger_kind
+            self.active_interval_beats = interval_beats
+            return BeatDecision(
+                trigger_kind=trigger_kind,
+                interval_beats=interval_beats,
+                radius_bloom=radius_bloom,
+                silence_active=False,
+                journey_completion=0.0,
+                silence_fade=float(silence_fade),
+                post_silence_ramp=float(post_silence_ramp),
+                lazy_glide_active=False,
+                gate_fail="",
+                energy_fullness=energy_fullness,
+                session_intensity=energy_fullness,
+                learning=LearningOutputs(),
+            )
+
+        if not self.journey_active:
+            # No beat yet — stay parked at anchor
+            return BeatDecision(
+                trigger_kind="creep",
+                interval_beats=interval_beats,
+                radius_bloom=radius_bloom,
+                silence_active=False,
+                journey_completion=1.0,
+                silence_fade=float(silence_fade),
+                post_silence_ramp=float(post_silence_ramp),
+                lazy_glide_active=False,
+                gate_fail="",
+                energy_fullness=energy_fullness,
+                session_intensity=energy_fullness,
+                learning=LearningOutputs(),
+            )
+
+        # Journey is active — advance elapsed, ignore beats outside window.
+        step = float(np.clip(dt, 1e-4, 0.25))
+        self.journey_elapsed_s = min(self.journey_duration_s, self.journey_elapsed_s + step)
+        completion = float(np.clip(
+            self.journey_elapsed_s / max(1e-6, self.journey_duration_s), 0.0, 1.0
+        ))
+
+        # Journey complete: return to anchor, ready for next beat.
+        if completion >= 1.0:
+            self.journey_active = False
+            completion = 1.0
+
+        self.last_trigger_kind = trigger_kind
+        self.active_interval_beats = interval_beats
+
+        return BeatDecision(
+            trigger_kind=trigger_kind,
+            interval_beats=interval_beats,
+            radius_bloom=radius_bloom,
+            silence_active=False,
+            journey_completion=completion,
+            silence_fade=float(silence_fade),
+            post_silence_ramp=float(post_silence_ramp),
+            lazy_glide_active=False,
+            gate_fail="",
+            energy_fullness=energy_fullness,
+            session_intensity=energy_fullness,
+            learning=LearningOutputs(),
+        )
+
     def build_decision(self, event: BeatEvent, dt: float, silence_override: bool | None = None) -> BeatDecision:
         audio_snapshot = self._capture_audio_snapshot(event)
 
@@ -1788,6 +1969,15 @@ class BeatIntelligence:
         if request_tempo_reset:
             self._auto_fill_offsets = {"downbeat": 0.0, "beat": 0.0, "syncopation": 0.0}
             self._auto_fill_ema = {"downbeat": 0.5, "beat": 0.5, "syncopation": 0.5}
+
+        # ── Simple mode early return: bypass all gating / intelligence ──
+        if not getattr(self.config.stroke, 'intelligence_enabled', True):
+            return self._build_simple_mode_decision(
+                event=event, dt=dt, audio_snapshot=audio_snapshot,
+                silence_active=silence_active, silence_fade=silence_fade,
+                post_silence_ramp=post_silence_ramp, now=now,
+                energy_fullness=energy_fullness_now,
+            )
 
         # Phase 5: learning adapter
         learning = self._update_learning_adapter(event)
