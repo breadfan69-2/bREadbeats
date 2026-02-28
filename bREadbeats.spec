@@ -1,5 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+
+LEARNING_DATA_FILES = [
+    (str(path), 'defaults/learning')
+    for path in sorted(Path('defaults/learning').glob('*.json'))
+]
+
 
 a = Analysis(
     ['main.py'],
@@ -10,8 +18,7 @@ a = Analysis(
         ('splash_screen.png', '.'),
         # Bundled learning assets (materialized to local files at frozen startup)
         ('learned_profile_slots.json', '.'),
-        ('defaults/learning/profile.refresh_3h_single.json', 'defaults/learning'),
-        ('defaults/learning/rule_fit.refresh_3h_single_v3.json', 'defaults/learning'),
+        *LEARNING_DATA_FILES,
         ('datasets/rule_fit.json', 'datasets'),
     ],
     hiddenimports=[
