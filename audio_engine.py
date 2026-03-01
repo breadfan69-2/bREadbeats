@@ -196,6 +196,7 @@ class AudioEngine:
                 freq_low=float(self.config.beat.freq_low),
                 freq_high=float(self.config.beat.freq_high),
                 flux_multiplier=float(self.config.beat.flux_multiplier),
+                superflux_max_filter_size=int(getattr(self.config.beat, 'superflux_max_filter_size', 3)),
             )
         )
         

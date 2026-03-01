@@ -30,6 +30,7 @@ class BeatDetectionConfig:
     rise_sensitivity: float = 0.1     # How fast a peak must hit
     amplification: float = 1.0        # Audio amplification
     flux_multiplier: float = 1.0      # Weight of spectral flux
+    superflux_max_filter_size: int = 3 # SuperFlux vibrato suppression (1=off, 3=default)
     freq_low: float = 100.0           
     freq_high: float = 8000.0        
     motion_freq_cutoff: float = 180.0  

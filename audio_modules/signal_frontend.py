@@ -27,6 +27,7 @@ class SignalFrontendConfig:
     freq_low: float = 100.0
     freq_high: float = 8000.0
     flux_multiplier: float = 1.0
+    superflux_max_filter_size: int = 3  # 1 = classic flux, 3 = SuperFlux (±1 bin)
 
 
 class SignalFrontend:
@@ -62,6 +63,10 @@ class SignalFrontend:
         self.config.freq_low = float(freq_low)
         self.config.freq_high = float(freq_high)
         self.config.flux_multiplier = float(flux_multiplier)
+
+    def configure_superflux(self, *, max_filter_size: int = 3) -> None:
+        """Set SuperFlux max-filter width (1 = disabled, 3 = default)."""
+        self.config.superflux_max_filter_size = max(1, int(max_filter_size))
 
     def _to_mono(self, indata: np.ndarray) -> np.ndarray:
         data = np.asarray(indata, dtype=np.float32)
@@ -110,7 +115,11 @@ class SignalFrontend:
             band_spectrum = band_spectrum * float(self.config.gain)
 
             band_energy = float(np.sqrt(np.mean(band_spectrum ** 2))) if len(band_spectrum) > 0 else 0.0
-            spectral_flux = positive_spectral_flux(self._prev_band_spectrum, band_spectrum)
+            spectral_flux = positive_spectral_flux(
+                self._prev_band_spectrum,
+                band_spectrum,
+                max_filter_size=int(self.config.superflux_max_filter_size),
+            )
             self._prev_band_spectrum = band_spectrum.copy()
 
             raw_rms = float(np.sqrt(np.mean(frame ** 2))) if len(frame) > 0 else 0.0
@@ -183,7 +192,11 @@ class SignalFrontend:
                 band_spectrum = band_spectrum * float(self.config.gain)
                 band_energy = float(np.sqrt(np.mean(band_spectrum ** 2))) if len(band_spectrum) > 0 else 0.0
 
-            spectral_flux = positive_spectral_flux(self._prev_band_spectrum, band_spectrum)
+            spectral_flux = positive_spectral_flux(
+                self._prev_band_spectrum,
+                band_spectrum,
+                max_filter_size=int(self.config.superflux_max_filter_size),
+            )
             spectral_flux *= float(self.config.flux_multiplier)
             self._prev_band_spectrum = band_spectrum.copy()
 

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import numpy as np
+from scipy.ndimage import maximum_filter1d
 
 from .contracts import FeatureFrame, FrontendFrame
 
@@ -90,11 +91,27 @@ def slice_spectrum_band(
     return spectrum[low_bin:high_bin + 1]
 
 
-def positive_spectral_flux(previous_spectrum: Optional[np.ndarray], spectrum: np.ndarray) -> float:
+def positive_spectral_flux(
+    previous_spectrum: Optional[np.ndarray],
+    spectrum: np.ndarray,
+    max_filter_size: int = 1,
+) -> float:
+    """Compute positive spectral flux between two consecutive spectra.
+
+    When *max_filter_size* > 1 the previous spectrum is widened with a
+    1-D maximum filter (SuperFlux algorithm, Böck & Widmer DAFx-2013).
+    A size of 3 covers ±1 bin and is the recommended setting for
+    vibrato suppression – it reduces false-positive onset detections
+    by up to 60 % without missing real onsets.
+    """
     if previous_spectrum is None or len(previous_spectrum) != len(spectrum):
         return 0.0
 
-    diff = spectrum - previous_spectrum
+    prev = previous_spectrum
+    if max_filter_size >= 3:
+        prev = maximum_filter1d(prev, size=int(max_filter_size), mode='constant')
+
+    diff = spectrum - prev
     flux = float(np.sum(np.maximum(0.0, diff)))
     if len(spectrum) > 0:
         flux /= float(len(spectrum))
