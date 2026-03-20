@@ -245,6 +245,9 @@ class PulseFreqConfig:
     tcode_min: int = 2010             # Min sent TCode value (0-9999)
     tcode_max: int = 7035             # Max sent TCode value (0-9999)
     freq_weight: float = 1.0          # How much frequency affects P0 (0=none, 1=full)
+    mode: int = 0                     # 0=Hz, 1=Speed, 2=Band
+    invert: bool = False              # Invert mapped output
+    enabled: bool = False             # Enable P0 sending
 
 @dataclass
 class CarrierFreqConfig:
@@ -254,6 +257,9 @@ class CarrierFreqConfig:
     tcode_min: int = 0                # Min sent TCode value (0-9999)
     tcode_max: int = 5000             # Max sent TCode value (0-9999)
     freq_weight: float = 1.0          # How much frequency affects C0 (0=none, 1=full)
+    mode: int = 0                     # 0=Hz, 1=Speed, 2=Band
+    invert: bool = False              # Invert mapped output
+    enabled: bool = False             # Enable C0 sending
 
 @dataclass
 class DeviceLimitsConfig:

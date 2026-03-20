@@ -14,14 +14,37 @@ def _optional_window_attr(window, attr_name: str):
     return getattr(window, attr_name, None)
 
 
+def _commit_pending_spinbox_text(window) -> None:
+    """Force-edit commit for spinboxes so close-save captures typed values."""
+    spinbox_names = (
+        "p0_monitor_min_spin", "p0_monitor_max_spin",
+        "p0_sent_min_spin", "p0_sent_max_spin",
+        "f0_monitor_min_spin", "f0_monitor_max_spin",
+        "f0_sent_min_spin", "f0_sent_max_spin",
+    )
+    for name in spinbox_names:
+        control = getattr(window, name, None)
+        interpret_text = getattr(control, "interpretText", None)
+        if callable(interpret_text):
+            interpret_text()
+
+
 def persist_runtime_ui_to_config(window, config: Config) -> None:
     """Copy selected runtime UI control values into config on shutdown."""
+    _commit_pending_spinbox_text(window)
+
     pulse_freq_range_slider = _optional_window_attr(window, "pulse_freq_range_slider")
     tcode_freq_range_slider = _optional_window_attr(window, "tcode_freq_range_slider")
     freq_weight_slider = _optional_window_attr(window, "freq_weight_slider")
+    pulse_mode_combo = _optional_window_attr(window, "pulse_mode_combo")
+    pulse_invert_checkbox = _optional_window_attr(window, "pulse_invert_checkbox")
+    pulse_enabled_checkbox = _optional_window_attr(window, "pulse_enabled_checkbox")
     f0_freq_range_slider = _optional_window_attr(window, "f0_freq_range_slider")
     f0_tcode_range_slider = _optional_window_attr(window, "f0_tcode_range_slider")
     f0_weight_slider = _optional_window_attr(window, "f0_weight_slider")
+    f0_mode_combo = _optional_window_attr(window, "f0_mode_combo")
+    f0_invert_checkbox = _optional_window_attr(window, "f0_invert_checkbox")
+    f0_enabled_checkbox = _optional_window_attr(window, "f0_enabled_checkbox")
     volume_slider = _optional_window_attr(window, "volume_slider")
     tempo_tracking_checkbox = _optional_window_attr(window, "tempo_tracking_checkbox")
     time_sig_combo = _optional_window_attr(window, "time_sig_combo")
@@ -38,6 +61,12 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
         config.pulse_freq.tcode_max = int(tcode_freq_range_slider.high())
     if hasattr(freq_weight_slider, "value"):
         config.pulse_freq.freq_weight = freq_weight_slider.value()
+    if hasattr(pulse_mode_combo, "currentIndex"):
+        config.pulse_freq.mode = int(pulse_mode_combo.currentIndex())
+    if hasattr(pulse_invert_checkbox, "isChecked"):
+        config.pulse_freq.invert = bool(pulse_invert_checkbox.isChecked())
+    if hasattr(pulse_enabled_checkbox, "isChecked"):
+        config.pulse_freq.enabled = bool(pulse_enabled_checkbox.isChecked())
 
     if hasattr(f0_freq_range_slider, "low") and hasattr(f0_freq_range_slider, "high"):
         config.carrier_freq.monitor_freq_min = f0_freq_range_slider.low()
@@ -47,6 +76,12 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
         config.carrier_freq.tcode_max = int(f0_tcode_range_slider.high())
     if hasattr(f0_weight_slider, "value"):
         config.carrier_freq.freq_weight = f0_weight_slider.value()
+    if hasattr(f0_mode_combo, "currentIndex"):
+        config.carrier_freq.mode = int(f0_mode_combo.currentIndex())
+    if hasattr(f0_invert_checkbox, "isChecked"):
+        config.carrier_freq.invert = bool(f0_invert_checkbox.isChecked())
+    if hasattr(f0_enabled_checkbox, "isChecked"):
+        config.carrier_freq.enabled = bool(f0_enabled_checkbox.isChecked())
 
     if hasattr(volume_slider, "value"):
         config.volume = volume_slider.value() / 100.0

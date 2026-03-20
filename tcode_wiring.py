@@ -59,16 +59,6 @@ def compute_and_attach_tcode(win, cmd: TCodeCommand, event: BeatEvent, spectrum:
             in_low = win.config.pulse_freq.monitor_freq_min
             in_high = win.config.pulse_freq.monitor_freq_max
             norm = (p0_dom_freq - in_low) / max(1.0, in_high - in_low)
-        elif pulse_mode == 2:  # Band (sub_bass) mode
-            # Use sub_bass band energy directly — long booming bass = "feeling" the pulse
-            sub_bass_energy = 0.0
-            if win.audio_engine:
-                if hasattr(win.audio_engine, 'get_band_energies'):
-                    sub_bass_energy = win.audio_engine.get_band_energies().get('sub_bass', 0.0)
-                elif hasattr(win.audio_engine, '_band_energies'):
-                    sub_bass_energy = win.audio_engine._band_energies.get('sub_bass', 0.0)
-            # Normalize: typical sub_bass energy 0-0.3 after gain
-            norm = min(1.0, sub_bass_energy * 4.0)
         else:  # Speed mode
             norm = min(1.0, dot_speed / 10.0)
         
@@ -125,16 +115,6 @@ def compute_and_attach_tcode(win, cmd: TCodeCommand, event: BeatEvent, spectrum:
             f0_in_low = win.config.carrier_freq.monitor_freq_min
             f0_in_high = win.config.carrier_freq.monitor_freq_max
             f0_norm = (f0_dom_freq - f0_in_low) / max(1.0, f0_in_high - f0_in_low)
-        elif f0_mode == 2:  # Band (mid) mode — voice, brass, dominant strings (500-2000 Hz)
-            # Use mid band energy directly — strict rate limit below
-            mid_energy = 0.0
-            if win.audio_engine:
-                if hasattr(win.audio_engine, 'get_band_energies'):
-                    mid_energy = win.audio_engine.get_band_energies().get('mid', 0.0)
-                elif hasattr(win.audio_engine, '_band_energies'):
-                    mid_energy = win.audio_engine._band_energies.get('mid', 0.0)
-            # Normalize: typical mid energy 0-0.2 after gain
-            f0_norm = min(1.0, mid_energy * 5.0)
         else:  # Speed mode
             f0_norm = min(1.0, dot_speed / 10.0)
         
@@ -168,37 +148,7 @@ def compute_and_attach_tcode(win, cmd: TCodeCommand, event: BeatEvent, spectrum:
         f0_val_raw = max(0, min(9999, f0_val_raw))
         
         # Smooth F0: limit change rate for smoother transitions
-        if f0_mode == 2:
-            # Band (mid) mode: strict rate limiter — ±500 tcode per 2 seconds
-            # Must finish traveling to current target before accepting new one
-            if win._c0_band_current is None:
-                win._c0_band_current = f0_val_raw
-                win._c0_band_target = f0_val_raw
-
-            # Check if we've arrived at current target
-            at_target = (win._c0_band_target is not None
-                         and abs(win._c0_band_current - win._c0_band_target) < 5)
-
-            if at_target:
-                # Accept new target only if different enough (>50 tcode)
-                current_target = win._c0_band_target
-                if current_target is not None and abs(f0_val_raw - current_target) > 50:
-                    # Clamp new target to bounded jump from current position
-                    delta_from_current = f0_val_raw - win._c0_band_current
-                    delta_from_current = max(-win._c0_band_max_target_delta, min(win._c0_band_max_target_delta, delta_from_current))
-                    win._c0_band_target = win._c0_band_current + delta_from_current
-                    win._c0_band_target = max(0, min(9999, win._c0_band_target))
-
-            # Travel toward target at _c0_band_travel_rate tcode/sec (=250/s → 500 per 2s)
-            if win._c0_band_target is not None and win._c0_band_current != win._c0_band_target:
-                max_step = max(1, int(win._c0_band_travel_rate * dt))
-                diff = win._c0_band_target - win._c0_band_current
-                step = max(-max_step, min(max_step, diff))
-                win._c0_band_current += step
-                win._c0_band_current = max(0, min(9999, win._c0_band_current))
-
-            f0_val = int(win._c0_band_current)
-        elif win._f0_last_sent_tcode is not None:
+        if win._f0_last_sent_tcode is not None:
             delta = f0_val_raw - win._f0_last_sent_tcode
             if abs(delta) > win._f0_max_change_per_send:
                 if delta > 0:

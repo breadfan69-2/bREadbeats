@@ -45,10 +45,16 @@ class _WindowStub:
         self.pulse_freq_range_slider = _Range(33.0, 222.0)
         self.tcode_freq_range_slider = _Range(2001, 7007)
         self.freq_weight_slider = _Value(0.75)
+        self.pulse_mode_combo = _Combo(2)
+        self.pulse_invert_checkbox = _Check(True)
+        self.pulse_enabled_checkbox = _Check(True)
 
         self.f0_freq_range_slider = _Range(44.0, 333.0)
         self.f0_tcode_range_slider = _Range(111, 4444)
         self.f0_weight_slider = _Value(0.5)
+        self.f0_mode_combo = _Combo(1)
+        self.f0_invert_checkbox = _Check(False)
+        self.f0_enabled_checkbox = _Check(True)
 
         self.volume_slider = _Value(84)
 
@@ -73,12 +79,18 @@ class TestClosePersistWiring(unittest.TestCase):
         self.assertEqual(cfg.pulse_freq.tcode_min, 2001)
         self.assertEqual(cfg.pulse_freq.tcode_max, 7007)
         self.assertAlmostEqual(cfg.pulse_freq.freq_weight, 0.75, places=6)
+        self.assertEqual(cfg.pulse_freq.mode, 2)
+        self.assertTrue(cfg.pulse_freq.invert)
+        self.assertTrue(cfg.pulse_freq.enabled)
 
         self.assertAlmostEqual(cfg.carrier_freq.monitor_freq_min, 44.0, places=6)
         self.assertAlmostEqual(cfg.carrier_freq.monitor_freq_max, 333.0, places=6)
         self.assertEqual(cfg.carrier_freq.tcode_min, 111)
         self.assertEqual(cfg.carrier_freq.tcode_max, 4444)
         self.assertAlmostEqual(cfg.carrier_freq.freq_weight, 0.5, places=6)
+        self.assertEqual(cfg.carrier_freq.mode, 1)
+        self.assertFalse(cfg.carrier_freq.invert)
+        self.assertTrue(cfg.carrier_freq.enabled)
 
         self.assertAlmostEqual(cfg.volume, 0.84, places=6)
         self.assertAlmostEqual(cfg.alpha_weight, 1.0, places=6)

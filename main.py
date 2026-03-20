@@ -254,12 +254,12 @@ class BREadbeatsWindow(QMainWindow):
         self._viz_flux_ref: float = 0.02
         
         # Cached P0/F0 values for thread-safe access (written by audio thread, read by GUI + send_direct)
-        self._cached_p0_enabled: bool = False
-        self._cached_f0_enabled: bool = False
-        self._cached_pulse_mode: int = 0  # 0=Hz, 1=Speed
-        self._cached_pulse_invert: bool = False
-        self._cached_f0_mode: int = 0
-        self._cached_f0_invert: bool = False
+        self._cached_p0_enabled: bool = bool(getattr(self.config.pulse_freq, 'enabled', False))
+        self._cached_f0_enabled: bool = bool(getattr(self.config.carrier_freq, 'enabled', False))
+        self._cached_pulse_mode: int = max(0, min(1, int(getattr(self.config.pulse_freq, 'mode', 0) or 0)))
+        self._cached_pulse_invert: bool = bool(getattr(self.config.pulse_freq, 'invert', False))
+        self._cached_f0_mode: int = max(0, min(1, int(getattr(self.config.carrier_freq, 'mode', 0) or 0)))
+        self._cached_f0_invert: bool = bool(getattr(self.config.carrier_freq, 'invert', False))
         self._cached_pulse_display: str = "Pulse Freq: off"
         self._cached_carrier_display: str = "Carrier Freq: off"
         # Cached TCode Sent slider values (0-9999) for thread-safe P0/C0 computation
@@ -584,7 +584,11 @@ class BREadbeatsWindow(QMainWindow):
             self._apply_config_to_ui()
         layout.addWidget(content)
 
-        dialog.finished.connect(lambda _r: save_config(self.config))
+        def _persist_pulse_dialog_settings(_result: int) -> None:
+            persist_runtime_ui_to_config(self, self.config)
+            save_config(self.config)
+
+        dialog.finished.connect(_persist_pulse_dialog_settings)
 
         self._pulse_settings_dialog = dialog
         dialog.show()

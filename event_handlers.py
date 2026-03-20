@@ -183,6 +183,12 @@ def apply_config_to_ui(win):
                 win.tcode_freq_range_slider.setLow(win.config.pulse_freq.tcode_min)
                 win.tcode_freq_range_slider.setHigh(win.config.pulse_freq.tcode_max)
                 win.freq_weight_slider.setValue(win.config.pulse_freq.freq_weight)
+                if hasattr(win, 'pulse_mode_combo'):
+                    win.pulse_mode_combo.setCurrentIndex(max(0, min(1, int(getattr(win.config.pulse_freq, 'mode', 0) or 0))))
+                if hasattr(win, 'pulse_invert_checkbox'):
+                    win.pulse_invert_checkbox.setChecked(bool(getattr(win.config.pulse_freq, 'invert', False)))
+                if hasattr(win, 'pulse_enabled_checkbox'):
+                    win.pulse_enabled_checkbox.setChecked(bool(getattr(win.config.pulse_freq, 'enabled', False)))
 
             # Carrier freq (F0) settings
             if all(hasattr(win, name) for name in ('f0_freq_range_slider', 'f0_tcode_range_slider', 'f0_weight_slider')):
@@ -191,6 +197,12 @@ def apply_config_to_ui(win):
                 win.f0_tcode_range_slider.setLow(win.config.carrier_freq.tcode_min)
                 win.f0_tcode_range_slider.setHigh(win.config.carrier_freq.tcode_max)
                 win.f0_weight_slider.setValue(win.config.carrier_freq.freq_weight)
+                if hasattr(win, 'f0_mode_combo'):
+                    win.f0_mode_combo.setCurrentIndex(max(0, min(1, int(getattr(win.config.carrier_freq, 'mode', 0) or 0))))
+                if hasattr(win, 'f0_invert_checkbox'):
+                    win.f0_invert_checkbox.setChecked(bool(getattr(win.config.carrier_freq, 'invert', False)))
+                if hasattr(win, 'f0_enabled_checkbox'):
+                    win.f0_enabled_checkbox.setChecked(bool(getattr(win.config.carrier_freq, 'enabled', False)))
 
             # Volume (config stores 0-1, slider shows 0-100)
             if hasattr(win, 'volume_slider'):
