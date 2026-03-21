@@ -231,6 +231,15 @@ def get_main_stylesheet() -> str:
             background-color: #727272;
         }
 
+        QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical {
+            height: 0;
+            background: none;
+        }
+
+        QScrollBar::sub-page:vertical, QScrollBar::add-page:vertical {
+            background: none;
+        }
+
         QScrollBar:horizontal {
             background-color: #3d3d3d;
             height: 12px;
@@ -245,6 +254,15 @@ def get_main_stylesheet() -> str:
 
         QScrollBar::handle:horizontal:hover {
             background-color: #727272;
+        }
+
+        QScrollBar::sub-line:horizontal, QScrollBar::add-line:horizontal {
+            width: 0;
+            background: none;
+        }
+
+        QScrollBar::sub-page:horizontal, QScrollBar::add-page:horizontal {
+            background: none;
         }
 
         /* ProgressBar */

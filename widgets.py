@@ -625,6 +625,12 @@ class RangeSliderWithLabel(QWidget):
         self._on_change(self.slider.low(), self.slider.high())
 
 
+class _NoWheelSlider(QSlider):
+    """QSlider that ignores mouse-wheel so parent scroll areas can scroll."""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class SliderWithLabel(QWidget):
     """Slider with label showing current value"""
     
@@ -653,7 +659,7 @@ class SliderWithLabel(QWidget):
         self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.label.setStyleSheet("color: #aaa;")
         
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = _NoWheelSlider(Qt.Orientation.Horizontal)
         self.slider.setMinimum(int(min_val * self.multiplier))
         self.slider.setMaximum(int(max_val * self.multiplier))
         self.slider.setValue(int(default * self.multiplier))
@@ -774,16 +780,16 @@ class CollapsibleGroupBox(QGroupBox):
 
 class NoWheelScrollArea(QScrollArea):
     """
-    Custom QScrollArea that ignores mouse wheel events.
-    Prevents scroll interference when adjusting parameter sliders.
+    Custom QScrollArea whose sliders ignore wheel events, but the
+    scroll area itself scrolls normally on mouse wheel.
+    Sliders block their own wheel via _NoWheelSlider.
     """
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-    
+
     def wheelEvent(self, event):
-        # Ignore wheel events - do not scroll the container
-        event.ignore()
+        super().wheelEvent(event)
 
 
 class WaveformLiveCanvas(pg.PlotWidget):

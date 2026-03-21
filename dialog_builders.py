@@ -161,6 +161,7 @@ def open_developer_controls_window(win, tab_index: int = 0, scroll_to_flux: bool
             if not bool(getattr(win, '_developer_controls_unlocked', False)):
                 dialog.setEnabled(False)
                 win._show_developer_controls_unlock_popup()
+            QTimer.singleShot(0, dialog.activateWindow)
             return
         except RuntimeError:
             win._developer_controls_dialog = None
@@ -234,6 +235,7 @@ def open_developer_controls_window(win, tab_index: int = 0, scroll_to_flux: bool
     dialog.show()
     dialog.raise_()
     dialog.activateWindow()
+    QTimer.singleShot(0, dialog.activateWindow)
 
     if scroll_to_flux and int(tab_index) == 1:
         win._scroll_advanced_controls_to_flux()
@@ -953,6 +955,7 @@ def on_advanced_controls(win, scroll_to_flux: bool = False, as_tab: bool = False
     # Scroll area for future controls
     scroll = NoWheelScrollArea()
     scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
     win._advanced_controls_scroll = scroll
     scroll_content = QWidget()
