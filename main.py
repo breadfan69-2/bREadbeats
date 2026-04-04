@@ -535,7 +535,11 @@ class BREadbeatsWindow(QMainWindow):
             if self._pmv_window is None:
                 from pmv_generator import PMVGeneratorWindow
 
-                self._pmv_window = PMVGeneratorWindow(parent=None)
+                self._pmv_window = PMVGeneratorWindow(
+                    parent=None,
+                    network_engine=getattr(self, 'network_engine', None),
+                    position_canvas=getattr(self, 'position_canvas', None),
+                )
 
                 def _on_destroyed(*_args):
                     self._pmv_window = None

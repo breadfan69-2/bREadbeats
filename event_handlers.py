@@ -658,6 +658,7 @@ def audio_callback(win, event: BeatEvent):
                 )
             win._last_sent_volume_pct = float(cmd.volume) * 100.0
             win.network_engine.send_command(cmd)
+
     elif event.is_beat and not win.is_sending:
         print("[Main] Beat detected but Play not enabled")
 

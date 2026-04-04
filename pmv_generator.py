@@ -53,11 +53,15 @@ def _merge_dict(base: dict, overrides: dict) -> dict:
 class PMVGeneratorWindow(QMainWindow):
     """Step-through PMV generator window (Load -> Analyze -> Beats -> Generate -> Export)."""
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None,
+                 network_engine=None, position_canvas=None):
         super().__init__(parent)
         self.setWindowTitle("PMV Funscript Generator")
         self.resize(1200, 760)
         self.setAcceptDrops(True)
+
+        self._network_engine = network_engine
+        self._position_canvas = position_canvas
 
         self._file_path: str | None = None
         self._samples = None
@@ -789,6 +793,62 @@ class PMVGeneratorWindow(QMainWindow):
         bar = self.statusBar()
         if bar is not None:
             bar.showMessage(f"Playback position {time_ms / 1000.0:.2f}s", 1200)
+
+        self._send_position_at_time(time_ms)
+
+    def _interpolate_axis_at(self, axis_name: str, time_ms: float) -> float | None:
+        """Interpolate a funscript axis value (0-100) at the given time."""
+        if self._multi_axis is None:
+            return None
+        actions = self._multi_axis.axes.get(axis_name, [])
+        if not actions:
+            return None
+        if len(actions) == 1:
+            return float(actions[0].pos)
+
+        # Binary search for surrounding actions
+        if time_ms <= actions[0].at:
+            return float(actions[0].pos)
+        if time_ms >= actions[-1].at:
+            return float(actions[-1].pos)
+
+        lo, hi = 0, len(actions) - 1
+        while lo < hi - 1:
+            mid = (lo + hi) // 2
+            if actions[mid].at <= time_ms:
+                lo = mid
+            else:
+                hi = mid
+
+        a0, a1 = actions[lo], actions[hi]
+        span = float(a1.at - a0.at)
+        if span < 1.0:
+            return float(a0.pos)
+        t = (time_ms - a0.at) / span
+        return float(a0.pos) + t * float(a1.pos - a0.pos)
+
+    def _send_position_at_time(self, time_ms: float) -> None:
+        """Send interpolated alpha/beta position to device or main window canvas."""
+        alpha_pos = self._interpolate_axis_at("alpha", time_ms)
+        beta_pos = self._interpolate_axis_at("beta", time_ms)
+        if alpha_pos is None or beta_pos is None:
+            return
+
+        # Convert funscript 0-100 to tcode -1.0..1.0
+        alpha_tc = (alpha_pos / 50.0) - 1.0
+        beta_tc = (beta_pos / 50.0) - 1.0
+
+        # Try sending via shared network engine (ReStim connected)
+        ne = self._network_engine
+        if ne is not None and getattr(ne, 'connected', False):
+            from network_engine import TCodeCommand
+            vol_pos = self._interpolate_axis_at("volume", time_ms)
+            vol = (vol_pos / 100.0) if vol_pos is not None else 1.0
+            cmd = TCodeCommand(alpha=alpha_tc, beta=beta_tc, duration_ms=33, volume=vol)
+            ne.send_command(cmd)
+        elif self._position_canvas is not None:
+            # Fallback: update main window PositionCanvas
+            self._position_canvas.update_position(alpha_tc, beta_tc)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         mime = event.mimeData()
