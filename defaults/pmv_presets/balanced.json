@@ -1,48 +1,50 @@
 {
-  "pmv_preset_version": 1,
-  "name": "Balanced",
-  "analysis": {
-    "fft_size": 2048,
-    "lowpass_enabled": false,
-    "lowpass_hz": 1000.0,
-    "highpass_enabled": false,
-    "highpass_hz": 400.0
-  },
-  "beat_detection": {
-    "sensitivity": 0.5,
-    "refractory_ms": 170.0,
-    "use_librosa": true,
-    "use_multibus": true,
-    "use_fft_peaks": true,
-    "plp_enabled": true,
-    "peak_seek_ratio": 1.0,
-    "peak_beat_threshold": 0.5
-  },
-  "mapping": {
-    "pitch_range": 100.0,
-    "amplitude_centering": 0.0,
-    "center_offset": 0.0,
-    "overflow_mode": "crop",
-    "energy_multiplier": 10.0,
-    "min_command_delay_ms": 150.0,
-    "points_per_second": 25
-  },
-  "ml": {
-    "enabled": true,
-    "strength": 0.55,
-    "cadence_mode": "auto"
-  },
-  "automap": {
-    "enabled": false,
-    "target_y_position": 20.0,
-    "target_speed": 250.0,
-    "target_speed_pct": 65.0,
-    "optimization_mode": "cmeanv2"
-  },
-  "axis": {
-    "enabled_axes": ["main"]
-  },
-  "output": {
-    "format": "funscript"
-  }
+    "pmv_preset_version": 1,
+    "name": "Balanced",
+    "analysis": {
+        "fft_size": 2048,
+        "lowpass_enabled": false,
+        "lowpass_hz": 1000.0,
+        "highpass_enabled": false,
+        "highpass_hz": 400.0
+    },
+    "beat_detection": {
+        "sensitivity": 0.5,
+        "refractory_ms": 170.0,
+        "use_librosa": true,
+        "use_multibus": true,
+        "use_fft_peaks": true,
+        "plp_enabled": true,
+        "peak_seek_ratio": 1.0,
+        "peak_beat_threshold": 0.5
+    },
+    "mapping": {
+        "pitch_range": 100.0,
+        "amplitude_centering": 0.0,
+        "center_offset": 0.0,
+        "overflow_mode": "crop",
+        "energy_multiplier": 10.0,
+        "min_command_delay_ms": 150.0,
+        "points_per_second": 25
+    },
+    "ml": {
+        "enabled": true,
+        "strength": 0.55,
+        "cadence_mode": "auto"
+    },
+    "automap": {
+        "enabled": false,
+        "target_y_position": 20.0,
+        "target_speed": 250.0,
+        "target_speed_pct": 65.0,
+        "optimization_mode": "cmeanv2"
+    },
+    "axis": {
+        "enabled_axes": [
+            "main"
+        ]
+    },
+    "output": {
+        "format": "funscript"
+    }
 }

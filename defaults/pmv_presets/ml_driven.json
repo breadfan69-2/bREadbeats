@@ -1,26 +1,31 @@
 {
-  "pmv_preset_version": 1,
-  "name": "ML Driven",
-  "beat_detection": {
-    "sensitivity": 0.4,
-    "use_librosa": true,
-    "use_multibus": true,
-    "use_fft_peaks": true
-  },
-  "mapping": {
-    "pitch_range": 90.0,
-    "energy_multiplier": 12.0
-  },
-  "ml": {
-    "enabled": true,
-    "strength": 0.9,
-    "cadence_mode": "auto"
-  },
-  "automap": {
-    "enabled": true,
-    "optimization_mode": "cmeanv2"
-  },
-  "axis": {
-    "enabled_axes": ["main", "alpha", "beta", "e1"]
-  }
+    "pmv_preset_version": 1,
+    "name": "ML Driven",
+    "beat_detection": {
+        "sensitivity": 0.4,
+        "use_librosa": true,
+        "use_multibus": true,
+        "use_fft_peaks": true
+    },
+    "mapping": {
+        "pitch_range": 90.0,
+        "energy_multiplier": 12.0
+    },
+    "ml": {
+        "enabled": true,
+        "strength": 0.9,
+        "cadence_mode": "auto"
+    },
+    "automap": {
+        "enabled": true,
+        "optimization_mode": "cmeanv2"
+    },
+    "axis": {
+        "enabled_axes": [
+            "main",
+            "alpha",
+            "beta",
+            "e1"
+        ]
+    }
 }

@@ -1,21 +1,23 @@
 {
-  "pmv_preset_version": 1,
-  "name": "Beat Focused",
-  "beat_detection": {
-    "sensitivity": 0.6,
-    "use_multibus": true,
-    "use_fft_peaks": true
-  },
-  "mapping": {
-    "pitch_range": 0.0,
-    "energy_multiplier": 14.0
-  },
-  "ml": {
-    "enabled": false,
-    "strength": 0.0,
-    "cadence_mode": "fixed_1"
-  },
-  "axis": {
-    "enabled_axes": ["main"]
-  }
+    "pmv_preset_version": 1,
+    "name": "Beat Focused",
+    "beat_detection": {
+        "sensitivity": 0.6,
+        "use_multibus": true,
+        "use_fft_peaks": true
+    },
+    "mapping": {
+        "pitch_range": 0.0,
+        "energy_multiplier": 14.0
+    },
+    "ml": {
+        "enabled": false,
+        "strength": 0.0,
+        "cadence_mode": "fixed_1"
+    },
+    "axis": {
+        "enabled_axes": [
+            "main"
+        ]
+    }
 }
