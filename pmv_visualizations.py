@@ -870,7 +870,126 @@ class VisualizationArea(QWidget):
         self._sync_nav_from_view()
 
 
+# ---------------------------------------------------------------------------
+# Axis grouping for AuxAxisPanel
+# ---------------------------------------------------------------------------
+
+_AXIS_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("Alpha / Beta", [("alpha", "#4dd0e1"), ("beta", "#ff80ab")]),
+    ("Electrodes", [("e1", "#90caf9"), ("e2", "#a5d6a7"), ("e3", "#ffcc80"), ("e4", "#ce93d8")]),
+    ("Alpha Prostate / Beta Prostate", [("alpha_prostate", "#26a69a"), ("beta_prostate", "#ec407a")]),
+    ("Frequency", [("frequency", "#66bb6a")]),
+    ("Pulse Frequency", [("pulse_frequency", "#42a5f5")]),
+    ("Volume", [("volume", "#ab47bc")]),
+    ("Pulse Rise", [("pulse_rise", "#ffa726")]),
+    ("Pulse Width", [("pulse_width", "#ef5350")]),
+]
+
+# Flat lookup: axis_name -> (group_title, color)
+_AXIS_META: dict[str, tuple[str, str]] = {}
+for _grp_title, _members in _AXIS_GROUPS:
+    for _ax_name, _ax_color in _members:
+        _AXIS_META[_ax_name] = (_grp_title, _ax_color)
+
+
+class AuxAxisPanel(QWidget):
+    """Vertically-stacked mini-plots for auxiliary funscript axes.
+
+    Groups related axes onto the same plot (alpha+beta share one,
+    e1-e4 share another) while other axes get individual rows.
+    Only groups that have data are shown.
+    """
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(2)
+
+        # group_title -> (PlotWidget, {axis_name: PlotDataItem}, InfiniteLine)
+        self._group_plots: dict[str, tuple[pg.PlotWidget, dict[str, pg.PlotDataItem], pg.InfiniteLine]] = {}
+
+        # Reference to main overlay_plot for X-axis linking
+        self._main_plot: pg.PlotWidget | None = None
+
+    def link_x_axis(self, main_plot: pg.PlotWidget) -> None:
+        """Link all mini-plot X-axes to the main visualization plot."""
+        self._main_plot = main_plot
+        for _title, (plot, _curves, _ph) in self._group_plots.items():
+            plot.setXLink(main_plot)
+
+    def set_multi_axis(self, result: MultiAxisResult) -> None:
+        """Update mini-plots from a MultiAxisResult. Creates/removes groups as needed."""
+        # Determine which groups have data
+        active_groups: dict[str, list[tuple[str, str, list]]] = {}
+        for axis_name, actions in result.axes.items():
+            if axis_name == "main":
+                continue
+            meta = _AXIS_META.get(axis_name)
+            if meta is None:
+                continue
+            grp_title, color = meta
+            active_groups.setdefault(grp_title, []).append((axis_name, color, actions))
+
+        # Remove groups no longer present
+        for grp_title in list(self._group_plots.keys()):
+            if grp_title not in active_groups:
+                plot, _curves, _ph = self._group_plots.pop(grp_title)
+                self._layout.removeWidget(plot)
+                plot.deleteLater()
+
+        # Create or update groups in canonical order
+        for grp_title, members in _AXIS_GROUPS:
+            if grp_title not in active_groups:
+                continue
+
+            if grp_title not in self._group_plots:
+                plot = pg.PlotWidget()
+                _style_plot(plot)
+                plot.setFixedHeight(80)
+                plot.setLabel("left", grp_title)
+                plot.hideAxis("bottom")
+                vb = plot.getViewBox()
+                vb.setYRange(0.0, 100.0, padding=0.0)
+                vb.setMouseEnabled(x=True, y=False)
+                vb.setLimits(yMin=0.0, yMax=100.0)
+                playhead = pg.InfiniteLine(pos=0.0, angle=90, movable=False, pen=pg.mkPen("#ffe082", width=1))
+                plot.addItem(playhead)
+                if self._main_plot is not None:
+                    plot.setXLink(self._main_plot)
+                self._layout.addWidget(plot)
+                self._group_plots[grp_title] = (plot, {}, playhead)
+
+            plot, curves, _ph = self._group_plots[grp_title]
+
+            # Track which curves are still active
+            active_in_group = set()
+            for axis_name, color, actions in active_groups[grp_title]:
+                active_in_group.add(axis_name)
+                if axis_name not in curves:
+                    curve = plot.plot([], [], pen=pg.mkPen(color, width=1.2), name=axis_name)
+                    curves[axis_name] = curve
+                if actions:
+                    t = np.array([float(a.at) for a in actions], dtype=np.float64)
+                    y = np.array([float(a.pos) for a in actions], dtype=np.float64)
+                    curves[axis_name].setData(t, np.clip(y, 0.0, 100.0))
+                else:
+                    curves[axis_name].setData([], [])
+
+            # Remove curves no longer in this group
+            for axis_name in list(curves.keys()):
+                if axis_name not in active_in_group:
+                    curve = curves.pop(axis_name)
+                    plot.removeItem(curve)
+
+    def set_playhead(self, time_ms: float) -> None:
+        """Move playhead across all mini-plots."""
+        for _title, (_plot, _curves, playhead) in self._group_plots.items():
+            playhead.setPos(float(time_ms))
+
+
 __all__ = [
+    "AuxAxisPanel",
     "PlaybackPanel",
     "PositionTimelinePanel",
     "SpectralFluxPanel",

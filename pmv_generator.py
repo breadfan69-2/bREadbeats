@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -17,7 +19,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QSplitter,
     QStatusBar,
@@ -29,10 +30,11 @@ from pmv_audio_analysis import analyze_full_file, load_audio
 from pmv_automap import automap_optimize
 from pmv_axis_converter import MultiAxisResult, convert_to_2d
 from pmv_beat_engine import BeatTimeline, detect_beats
+from config_persistence import get_config_dir
 from pmv_controls import PMVControlsPanel
 from pmv_funscript_io import FunscriptMetadata, write_csv, write_funscript
 from pmv_position_mapper import PositionTimeline, generate_positions
-from pmv_visualizations import VisualizationArea
+from pmv_visualizations import AuxAxisPanel, VisualizationArea
 
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".aac", ".wma", ".m4a"}
@@ -127,10 +129,8 @@ class PMVGeneratorWindow(QMainWindow):
         self.visualizations = VisualizationArea(center)
         center_layout.addWidget(self.visualizations, 1)
 
-        center_layout.addWidget(QLabel("Pipeline debug state"))
-        self.debug_panel = QPlainTextEdit()
-        self.debug_panel.setReadOnly(True)
-        center_layout.addWidget(self.debug_panel, 1)
+        self.aux_panel = AuxAxisPanel(center)
+        center_layout.addWidget(self.aux_panel, 1)
 
         splitter.addWidget(center)
         splitter.setSizes([380, 820])
@@ -141,18 +141,91 @@ class PMVGeneratorWindow(QMainWindow):
         self.controls.config_changed.connect(self._on_controls_changed)
         self.controls.step_bar.step_requested.connect(self._on_step_requested)
         self.visualizations.position_changed.connect(self._on_visualization_position_changed)
+        self.aux_panel.link_x_axis(self.visualizations.overlay_plot)
         self.load_preset_btn.clicked.connect(self._on_load_preset_clicked)
         self.save_preset_btn.clicked.connect(self._on_save_preset_clicked)
         self.refresh_preset_btn.clicked.connect(self._reload_preset_catalog)
 
+        self._default_preset_dir, self._user_preset_dir = self._resolve_preset_dirs()
         self._ensure_default_presets()
         self._reload_preset_catalog()
         self._refresh_step_availability()
         self._on_controls_changed()
 
     def _preset_dirs(self) -> tuple[Path, Path]:
-        root = Path(__file__).resolve().parent
-        return root / "defaults" / "pmv_presets", root / "user_pmv_presets"
+        return self._default_preset_dir, self._user_preset_dir
+
+    def _resolve_preset_dirs(self) -> tuple[Path, Path]:
+        module_root = Path(__file__).resolve().parent
+        config_root = get_config_dir()
+        user_dir = config_root / "user_pmv_presets"
+
+        if getattr(sys, "frozen", False):
+            preferred_defaults = Path(sys.executable).resolve().parent / "defaults" / "pmv_presets"
+            defaults_dir = preferred_defaults if self._is_dir_writable(preferred_defaults) else (config_root / "defaults" / "pmv_presets")
+        else:
+            defaults_dir = module_root / "defaults" / "pmv_presets"
+
+        return defaults_dir, user_dir
+
+    def _is_dir_writable(self, folder: Path) -> bool:
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            probe = folder / ".pmv_write_probe.tmp"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return True
+        except Exception:
+            return False
+
+    def _legacy_user_preset_dirs(self) -> list[Path]:
+        candidates: list[Path] = [Path(__file__).resolve().parent / "user_pmv_presets"]
+        if getattr(sys, "frozen", False):
+            candidates.append(Path(sys.executable).resolve().parent / "user_pmv_presets")
+
+        temp_root = Path(tempfile.gettempdir())
+        try:
+            candidates.extend(sorted(temp_root.glob("_MEI*/user_pmv_presets")))
+        except Exception:
+            pass
+
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in candidates:
+            key = str(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(path)
+        return unique
+
+    def _migrate_legacy_user_presets(self, user_dir: Path) -> int:
+        migrated = 0
+        try:
+            user_resolved = user_dir.resolve()
+        except Exception:
+            user_resolved = user_dir
+
+        for legacy_dir in self._legacy_user_preset_dirs():
+            try:
+                legacy_resolved = legacy_dir.resolve()
+            except Exception:
+                legacy_resolved = legacy_dir
+
+            if legacy_resolved == user_resolved or not legacy_dir.exists():
+                continue
+
+            for source in sorted(legacy_dir.glob("*.json")):
+                target = user_dir / source.name
+                if target.exists():
+                    continue
+                try:
+                    shutil.copy2(source, target)
+                    migrated += 1
+                except Exception:
+                    continue
+
+        return migrated
 
     def _build_default_presets(self) -> dict[str, dict]:
         base = self.controls.to_preset()
@@ -204,12 +277,18 @@ class PMVGeneratorWindow(QMainWindow):
         defaults_dir, user_dir = self._preset_dirs()
         defaults_dir.mkdir(parents=True, exist_ok=True)
         user_dir.mkdir(parents=True, exist_ok=True)
+        migrated = self._migrate_legacy_user_presets(user_dir)
 
         for key, payload in self._build_default_presets().items():
             target = defaults_dir / f"{key}.json"
             if target.exists():
                 continue
             target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        if migrated > 0:
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage(f"Migrated {migrated} legacy PMV preset(s)", 5000)
 
     def _reload_preset_catalog(self) -> None:
         defaults_dir, user_dir = self._preset_dirs()
@@ -407,6 +486,7 @@ class PMVGeneratorWindow(QMainWindow):
             self._multi_axis = multi_axis
             self.visualizations.set_positions(positions)
             self.visualizations.set_multi_axis(multi_axis)
+            self.aux_panel.set_multi_axis(multi_axis)
             self._last_live_preview_signature = sig
             self._refresh_step_availability()
 
@@ -491,6 +571,7 @@ class PMVGeneratorWindow(QMainWindow):
                 )
             )
             self.visualizations.set_multi_axis(MultiAxisResult(axes={"main": []}))
+            self.aux_panel.set_multi_axis(MultiAxisResult(axes={"main": []}))
 
         for idx in range(max(2, step), 6):
             self.controls.step_bar.set_step_status(idx, "ready")
@@ -618,6 +699,7 @@ class PMVGeneratorWindow(QMainWindow):
             )
             self.visualizations.set_positions(self._positions)
             self.visualizations.set_multi_axis(self._multi_axis)
+            self.aux_panel.set_multi_axis(self._multi_axis)
             self._last_live_preview_signature = self._live_preview_signature()
             self.controls.step_bar.set_step_status(4, "done")
             self.controls.on_step_completed(4)
@@ -718,54 +800,6 @@ class PMVGeneratorWindow(QMainWindow):
             return False
 
     def _on_controls_changed(self) -> None:
-        analysis_cfg = self.controls.get_analysis_config()
-        beat_cfg = self.controls.get_beat_config()
-        mapping_cfg = self.controls.get_mapping_config()
-        axis_cfg = self.controls.get_axis_config()
-        automap_cfg = self.controls.get_automap_config()
-
-        state = [
-            f"Loaded file: {Path(self._file_path).name if self._file_path else 'None'}",
-            f"Samples loaded: {self._samples is not None}",
-            f"Analyzed: {self._timeline is not None}",
-            f"Beats ready: {self._beats is not None}",
-            f"Positions ready: {self._positions is not None}",
-        ]
-        self.debug_panel.setPlainText(
-            "PMV pipeline state and controls.\n\n"
-            "State:\n"
-            + "\n".join(f"  {line}" for line in state)
-            + "\n\n"
-            "Analysis:\n"
-            f"  sr={analysis_cfg.sample_rate} fft={analysis_cfg.fft_size} hop={analysis_cfg.hop_size} win={analysis_cfg.window_size}\n"
-            f"  lowpass={analysis_cfg.lowpass_enabled}({analysis_cfg.lowpass_hz:.1f}Hz) highpass={analysis_cfg.highpass_enabled}({analysis_cfg.highpass_hz:.1f}Hz)\n"
-            f"  freq_range={analysis_cfg.freq_min_hz:.1f}-{analysis_cfg.freq_max_hz:.1f} gain={analysis_cfg.gain:.2f}\n\n"
-            "Beat Detection:\n"
-            f"Sensitivity: {beat_cfg.sensitivity:.2f}\n"
-            f"Refractory: {beat_cfg.refractory_ms:.1f} ms\n"
-            f"Use librosa: {beat_cfg.use_librosa}\n"
-            f"Use multibus: {beat_cfg.use_multibus}\n"
-            f"Use FFT peaks: {beat_cfg.use_fft_peaks}\n"
-            f"PLP enabled: {beat_cfg.plp_enabled}\n"
-            f"Peak/seek ratio: {beat_cfg.peak_seek_ratio:.2f}\n"
-            f"Peak beat threshold: {beat_cfg.peak_beat_threshold:.2f}\n\n"
-            "Multibus weights:\n"
-            f"  flux={beat_cfg.multibus_config.w_flux:.2f}\n"
-            f"  band={beat_cfg.multibus_config.w_band:.2f}\n"
-            f"  delta={beat_cfg.multibus_config.w_delta:.2f}\n"
-            f"  phase={beat_cfg.multibus_config.w_phase:.2f}\n"
-            f"  arm={beat_cfg.multibus_config.bus_arm_threshold:.2f}\n"
-            f"  release={beat_cfg.multibus_config.bus_release_threshold:.2f}\n"
-            f"  bus refractory={beat_cfg.multibus_config.bus_refractory_ms:.1f} ms\n\n"
-            "Mapping and ML:\n"
-            f"  pitch_range={mapping_cfg.pitch_range:.1f} center={mapping_cfg.center_offset:.1f} energy_mult={mapping_cfg.energy_multiplier:.1f}\n"
-            f"  overflow={mapping_cfg.overflow_mode} min_delay={mapping_cfg.min_command_delay_ms:.1f}ms pps={mapping_cfg.points_per_second}\n"
-            f"  ml_enabled={mapping_cfg.ml_config.enabled} strength={mapping_cfg.ml_config.strength:.2f} cadence={mapping_cfg.ml_config.cadence_mode}\n\n"
-            "Axis and Automap:\n"
-            f"  axis min_distance={axis_cfg.min_distance:.2f} speed_threshold={axis_cfg.speed_threshold_pct:.1f}%\n"
-            f"  enabled_axes={sorted(axis_cfg.enabled_axes)}\n"
-            f"  automap={automap_cfg.enabled} mode={automap_cfg.optimization_mode} target_y={automap_cfg.target_y_position:.1f}\n"
-        )
         bar = self.statusBar()
         if bar is not None:
             bar.showMessage("PMV controls updated", 1800)
@@ -794,6 +828,7 @@ class PMVGeneratorWindow(QMainWindow):
         if bar is not None:
             bar.showMessage(f"Playback position {time_ms / 1000.0:.2f}s", 1200)
 
+        self.aux_panel.set_playhead(time_ms)
         self._send_position_at_time(time_ms)
 
     def _interpolate_axis_at(self, axis_name: str, time_ms: float) -> float | None:
