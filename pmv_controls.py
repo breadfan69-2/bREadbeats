@@ -589,6 +589,11 @@ class PMVControlsPanel(QWidget):
         self.frequency_ratio_slider = SliderWithLabel("Frequency Ramp Ratio", 1.0, 10.0, defaults.frequency_ramp_ratio, decimals=1, step=0.1)
         self.pulse_frequency_ratio_slider = SliderWithLabel("Pulse Frequency Ratio", 1.0, 10.0, defaults.pulse_frequency_ratio, decimals=1, step=0.1)
         self.volume_ratio_slider = SliderWithLabel("Volume Ramp Ratio", 10.0, 40.0, defaults.volume_ramp_ratio, decimals=1, step=0.1)
+        self.ramp_pct_per_hour_spin = QDoubleSpinBox()
+        self.ramp_pct_per_hour_spin.setRange(0.0, 100.0)
+        self.ramp_pct_per_hour_spin.setDecimals(1)
+        self.ramp_pct_per_hour_spin.setSingleStep(1.0)
+        self.ramp_pct_per_hour_spin.setValue(defaults.ramp_percent_per_hour)
         self.pulse_rise_ratio_slider = SliderWithLabel("Pulse Rise Ratio", 1.0, 10.0, defaults.pulse_rise_ratio, decimals=1, step=0.1)
         self.pulse_width_ratio_slider = SliderWithLabel("Pulse Width Ratio", 1.0, 10.0, defaults.pulse_width_ratio, decimals=1, step=0.1)
 
@@ -652,6 +657,7 @@ class PMVControlsPanel(QWidget):
             self.frequency_ratio_slider,
             self.pulse_frequency_ratio_slider,
             self.volume_ratio_slider,
+            self._labeled_widget("Ramp %/Hour", self.ramp_pct_per_hour_spin),
             self.pulse_rise_ratio_slider,
             self.pulse_width_ratio_slider,
             self.rest_level_slider,
@@ -683,6 +689,7 @@ class PMVControlsPanel(QWidget):
             self.frequency_ratio_slider,
             self.pulse_frequency_ratio_slider,
             self.volume_ratio_slider,
+            self.ramp_pct_per_hour_spin,
             self.pulse_rise_ratio_slider,
             self.pulse_width_ratio_slider,
             self.rest_level_slider,
@@ -789,6 +796,7 @@ class PMVControlsPanel(QWidget):
             frequency_ramp_ratio=float(self.frequency_ratio_slider.value()),
             pulse_frequency_ratio=float(self.pulse_frequency_ratio_slider.value()),
             volume_ramp_ratio=float(self.volume_ratio_slider.value()),
+            ramp_percent_per_hour=float(self.ramp_pct_per_hour_spin.value()),
             pulse_rise_ratio=float(self.pulse_rise_ratio_slider.value()),
             pulse_width_ratio=float(self.pulse_width_ratio_slider.value()),
             rest_level=float(self.rest_level_slider.value()),
@@ -936,6 +944,7 @@ class PMVControlsPanel(QWidget):
             self.frequency_ratio_slider.setValue(self._as_float(axis.get("frequency_ramp_ratio"), self.frequency_ratio_slider.value()))
             self.pulse_frequency_ratio_slider.setValue(self._as_float(axis.get("pulse_frequency_ratio"), self.pulse_frequency_ratio_slider.value()))
             self.volume_ratio_slider.setValue(self._as_float(axis.get("volume_ramp_ratio"), self.volume_ratio_slider.value()))
+            self.ramp_pct_per_hour_spin.setValue(self._as_float(axis.get("ramp_percent_per_hour"), self.ramp_pct_per_hour_spin.value()))
             self.pulse_rise_ratio_slider.setValue(self._as_float(axis.get("pulse_rise_ratio"), self.pulse_rise_ratio_slider.value()))
             self.pulse_width_ratio_slider.setValue(self._as_float(axis.get("pulse_width_ratio"), self.pulse_width_ratio_slider.value()))
             self.rest_level_slider.setValue(self._as_float(axis.get("rest_level"), self.rest_level_slider.value()))

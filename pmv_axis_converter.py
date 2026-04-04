@@ -37,6 +37,7 @@ class AxisConfig:
     pulse_width_ratio: float = 3.0
     rest_level: float = 0.4
     ramp_up_duration_sec: float = 1.0
+    ramp_percent_per_hour: float = 15.0
     speed_window_sec: float = 5.0
     points_per_second: int = 25
     enabled_axes: set[str] = field(default_factory=lambda: {"main"})
@@ -266,11 +267,79 @@ def _convert_prostate_tear_shaped(
     return alpha, beta
 
 
+def _make_volume_ramp(t: np.ndarray, duration: float, ramp_percent_per_hour: float) -> np.ndarray:
+    """Build a 4-point volume ramp matching edger's approach:
+    0 → start_value (at 10s) → 1.0 (near end) → 0 (at end)."""
+    if len(t) == 0:
+        return np.array([], dtype=np.float64)
+    file_duration_hours = max(1e-9, duration / 1000.0 / 3600.0)
+    total_increase = (ramp_percent_per_hour / 100.0) * file_duration_hours
+    start_value = max(0.0, 1.0 - total_increase)
+    # Key points in ms
+    t_start = float(t[0])
+    t_10s = t_start + 10000.0
+    t_peak = float(t[-1]) - 1.0 if len(t) >= 2 else float(t[-1])
+    t_end = float(t[-1])
+    # Build piecewise ramp
+    ramp = np.zeros_like(t, dtype=np.float64)
+    for i in range(len(t)):
+        ti = float(t[i])
+        if ti <= t_start:
+            ramp[i] = 0.0
+        elif ti <= t_10s:
+            ramp[i] = start_value * ((ti - t_start) / max(1.0, t_10s - t_start))
+        elif ti <= t_peak:
+            ramp[i] = start_value + (1.0 - start_value) * ((ti - t_10s) / max(1.0, t_peak - t_10s))
+        elif ti <= t_end:
+            ramp[i] = 1.0 - ((ti - t_peak) / max(1.0, t_end - t_peak))
+        else:
+            ramp[i] = 0.0
+    return np.clip(ramp, 0.0, 1.0)
+
+
+def _detect_rest_and_ramp(
+    values: np.ndarray,
+    speed: np.ndarray,
+    t: np.ndarray,
+    rest_level: float,
+    ramp_up_duration_ms: float,
+) -> np.ndarray:
+    """Apply rest-level reduction when speed is near zero, with smooth ramp-up
+    after rest→active transitions (matching edger's combine_funscripts logic)."""
+    is_rest = speed < 0.02
+    result = values.copy()
+    # Apply rest_level immediately to rest points
+    result[is_rest] *= rest_level
+    if ramp_up_duration_ms <= 0:
+        return result
+    # Find rest→active transition indices
+    half_dur = ramp_up_duration_ms / 2.0
+    transitions: list[float] = []
+    for i in range(1, len(is_rest)):
+        if is_rest[i - 1] and not is_rest[i]:
+            transitions.append(float(t[i]))
+    if not transitions:
+        return result
+    # Apply ramp-up around each transition
+    for i in range(len(t)):
+        ti = float(t[i])
+        for tt in transitions:
+            diff = ti - tt
+            if -half_dur <= diff <= half_dur:
+                progress = (diff + half_dur) / ramp_up_duration_ms
+                progress = float(np.clip(progress, 0.0, 1.0))
+                mult = rest_level + (1.0 - rest_level) * progress
+                result[i] = values[i] * mult
+                break
+    return np.clip(result, 0.0, 1.0)
+
+
 def _generate_aux_axes(
     main_actions: list[FunscriptAction],
     speed_norm: np.ndarray,
     config: AxisConfig,
     duration_ms: int,
+    alpha_actions: list[FunscriptAction] | None = None,
 ) -> dict[str, list[FunscriptAction]]:
     n = len(main_actions)
     if n == 0:
@@ -278,14 +347,43 @@ def _generate_aux_axes(
 
     t = np.array([float(a.at) for a in main_actions], dtype=np.float64)
     duration = max(1.0, float(max(duration_ms, int(t[-1]))))
-    ramp = np.clip(t / duration, 0.0, 1.0)
 
-    freq = np.array([_mix(speed_norm[i], ramp[i], config.frequency_ramp_ratio) for i in range(n)], dtype=np.float64)
-    pulse_freq = np.array([_mix(speed_norm[i], 1.0 - speed_norm[i], config.pulse_frequency_ratio) for i in range(n)], dtype=np.float64)
-    volume = np.array([_mix(ramp[i], speed_norm[i], config.volume_ramp_ratio) for i in range(n)], dtype=np.float64)
-    volume = np.clip((config.rest_level + (1.0 - config.rest_level) * volume), 0.0, 1.0)
-    pulse_rise = np.array([_mix(1.0 - speed_norm[i], speed_norm[i], config.pulse_rise_ratio) for i in range(n)], dtype=np.float64)
-    pulse_width = np.array([_mix(speed_norm[i], 1.0 - (main_actions[i].pos / 100.0), config.pulse_width_ratio) for i in range(n)], dtype=np.float64)
+    # Proper volume ramp (edger-style 4-point curve, not linear t/duration)
+    ramp = _make_volume_ramp(t, duration, config.ramp_percent_per_hour)
+    ramp_inv = 1.0 - ramp
+    speed_inv = 1.0 - speed_norm
+
+    # Alpha signal for pulse_frequency (edger & restim both use alpha)
+    if alpha_actions:
+        alpha_norm = np.interp(
+            t,
+            [float(a.at) for a in alpha_actions],
+            [float(a.pos) / 100.0 for a in alpha_actions],
+        )
+    else:
+        # Fallback: use position as proxy when alpha unavailable
+        alpha_norm = np.array([float(a.pos) / 100.0 for a in main_actions], dtype=np.float64)
+
+    # --- frequency: combine(ramp, speed, ratio) ---
+    freq = np.array([_mix(ramp[i], speed_norm[i], config.frequency_ramp_ratio) for i in range(n)], dtype=np.float64)
+
+    # --- pulse_frequency: combine(speed, alpha, ratio) ---
+    pulse_freq = np.array([_mix(speed_norm[i], alpha_norm[i], config.pulse_frequency_ratio) for i in range(n)], dtype=np.float64)
+
+    # --- volume: combine(ramp, speed, ratio) + rest detection + ramp-up ---
+    volume_raw = np.array([_mix(ramp[i], speed_norm[i], config.volume_ramp_ratio) for i in range(n)], dtype=np.float64)
+    volume = _detect_rest_and_ramp(
+        volume_raw, speed_norm, t,
+        config.rest_level,
+        config.ramp_up_duration_sec * 1000.0,
+    )
+
+    # --- pulse_rise: combine(ramp_inverted, speed_inverted, ratio) ---
+    pulse_rise = np.array([_mix(ramp_inv[i], speed_inv[i], config.pulse_rise_ratio) for i in range(n)], dtype=np.float64)
+
+    # --- pulse_width: combine(speed, inverted_position, ratio) ---
+    inv_pos = np.array([1.0 - (main_actions[i].pos / 100.0) for i in range(n)], dtype=np.float64)
+    pulse_width = np.array([_mix(speed_norm[i], inv_pos[i], config.pulse_width_ratio) for i in range(n)], dtype=np.float64)
 
     def to_actions(values: np.ndarray) -> list[FunscriptAction]:
         return [FunscriptAction(at=int(main_actions[i].at), pos=int(np.clip(round(values[i] * 100.0), 0, 100))) for i in range(n)]
@@ -354,7 +452,7 @@ def convert_to_2d(
         )
 
     _report(progress_callback, "Generating auxiliary axes...", 85.0)
-    aux = _generate_aux_axes(actions, speed_norm, config, duration_ms)
+    aux = _generate_aux_axes(actions, speed_norm, config, duration_ms, alpha_actions=alpha if alpha else None)
     for axis_name, axis_actions in aux.items():
         if axis_name in config.enabled_axes:
             result[axis_name] = axis_actions
