@@ -211,6 +211,7 @@ class BREadbeatsWindow(QMainWindow):
         self._developer_controls_tab_widget = None
         self._developer_unlock_dialog = None
         self._developer_controls_unlocked = False
+        self._pmv_window = None
         self._trigger_settings_tab_content = None
         self._auto_fill_tab_content = None
         self.jitter_effect_action = None
@@ -527,6 +528,25 @@ class BREadbeatsWindow(QMainWindow):
     def _on_about(self):
         from dialog_builders import on_about
         return on_about(self)
+
+    def _launch_pmv_generator(self):
+        """Open (or focus) the standalone PMV generator window."""
+        try:
+            if self._pmv_window is None:
+                from pmv_generator import PMVGeneratorWindow
+
+                self._pmv_window = PMVGeneratorWindow(parent=None)
+
+                def _on_destroyed(*_args):
+                    self._pmv_window = None
+
+                self._pmv_window.destroyed.connect(_on_destroyed)
+
+            self._pmv_window.show()
+            self._pmv_window.raise_()
+            self._pmv_window.activateWindow()
+        except Exception as exc:
+            QMessageBox.critical(self, "PMV Launch Error", f"Unable to open PMV Generator: {exc}")
 
     def _on_pulse_settings_popup(self):
         """Show Pulse settings popout."""
@@ -1645,5 +1665,34 @@ def main():
         instance_lock.release()
 
 
+def _run_cli_selftest(argv: list[str]) -> int | None:
+    """Run lightweight CLI checks and return an exit code when a self-test was requested."""
+    if "--selftest-video-load" not in argv:
+        return None
+
+    idx = argv.index("--selftest-video-load")
+    if idx + 1 >= len(argv):
+        print("[SelfTest] Missing video path after --selftest-video-load", flush=True)
+        return 2
+
+    video_path = Path(argv[idx + 1]).expanduser().resolve()
+    if not video_path.exists():
+        print(f"[SelfTest] File not found: {video_path}", flush=True)
+        return 2
+
+    try:
+        from pmv_audio_analysis import AnalysisConfig, load_audio
+
+        samples = load_audio(str(video_path), AnalysisConfig())
+        print(f"[SelfTest] Video load OK: {video_path.name} ({len(samples)} samples)", flush=True)
+        return 0
+    except Exception as exc:
+        print(f"[SelfTest] Video load FAILED: {exc}", flush=True)
+        return 3
+
+
 if __name__ == "__main__":
+    selftest_code = _run_cli_selftest(sys.argv[1:])
+    if selftest_code is not None:
+        sys.exit(selftest_code)
     main()

@@ -60,6 +60,11 @@ def create_menu_bar(win):
     device_limits_action = main_menu.addAction("Device Limits...")
     assert device_limits_action is not None
     device_limits_action.triggered.connect(win._on_device_limits)
+
+    # PMV standalone generator launcher
+    pmv_generator_action = main_menu.addAction("PMV Funscript Generator...")
+    assert pmv_generator_action is not None
+    pmv_generator_action.triggered.connect(win._launch_pmv_generator)
     
     # Nerds menu (advanced perf + diagnostics) - inserted near Help later
     nerds_menu = QMenu("Nerds", menubar)

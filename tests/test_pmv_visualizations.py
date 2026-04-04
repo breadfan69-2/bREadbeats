@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import unittest
+
+import numpy as np
+from PyQt6.QtWidgets import QApplication
+
+from pmv_audio_analysis import AudioTimeline
+from pmv_beat_engine import BeatCandidate, BeatTimeline
+from pmv_funscript_io import FunscriptAction
+from pmv_position_mapper import PositionTimeline
+from pmv_visualizations import VisualizationArea
+
+
+class TestPmvVisualizations(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._app = QApplication.instance() or QApplication([])
+
+    def _build_audio_timeline(self) -> AudioTimeline:
+        sr = 48_000
+        duration_ms = 4_000
+        frame_times = np.arange(0.0, float(duration_ms), 40.0, dtype=np.float64)
+        n = len(frame_times)
+
+        return AudioTimeline(
+            samples=np.sin(2.0 * np.pi * 1.5 * np.linspace(0.0, 4.0, sr * 4, endpoint=False, dtype=np.float64)).astype(np.float32),
+            sample_rate=sr,
+            duration_ms=duration_ms,
+            frame_times_ms=frame_times,
+            feature_frames=[],
+            rms_per_frame=np.full(n, 0.2, dtype=np.float64),
+            spectral_flux_per_frame=np.clip(np.sin(frame_times / 700.0) * 0.5 + 0.5, 0.0, 1.0),
+            spectral_centroid_per_frame=np.full(n, 250.0, dtype=np.float64),
+            spectral_flatness_per_frame=np.full(n, 0.1, dtype=np.float64),
+            band_energies_per_frame={
+                "sub_bass": np.full(n, 0.55, dtype=np.float64),
+                "low_mid": np.full(n, 0.45, dtype=np.float64),
+                "mid": np.full(n, 0.35, dtype=np.float64),
+                "high": np.full(n, 0.25, dtype=np.float64),
+            },
+            rms_mean_10s=np.full(n, 0.2, dtype=np.float64),
+            rms_std_10s=np.full(n, 0.03, dtype=np.float64),
+            flux_mean_10s=np.full(n, 0.35, dtype=np.float64),
+            bass_mean_10s=np.full(n, 0.5, dtype=np.float64),
+            energy_trend_10s=np.zeros(n, dtype=np.float64),
+            pitch_per_frame=np.full(n, 120.0, dtype=np.float64),
+            pitch_confidence=np.full(n, 0.9, dtype=np.float64),
+            p95_flux=0.95,
+            p95_band_energies={"sub_bass": 0.55, "low_mid": 0.45, "mid": 0.35, "high": 0.25},
+        )
+
+    def test_bind_audio_flux_and_cursor(self):
+        area = VisualizationArea()
+        timeline = self._build_audio_timeline()
+
+        area.set_audio_data(timeline.samples, timeline.sample_rate)
+        area.set_features(timeline)
+        area.set_playback_position(1250.0)
+
+        self.assertAlmostEqual(float(area.playhead_line.pos().x()), 1250.0, places=3)
+        x_wave, y_wave = area.wave_curve.getData()
+        x_flux, y_flux = area.flux_curve.getData()
+        self.assertGreater(len(x_wave), 0)
+        self.assertGreater(len(y_wave), 0)
+        self.assertGreater(len(x_flux), 0)
+        self.assertGreater(len(y_flux), 0)
+        self.assertGreater(area.playback_panel._duration_ms, 0.0)
+
+    def test_bind_beats_positions_and_heatmap(self):
+        area = VisualizationArea()
+
+        beat_times = [500, 1000, 1500, 2000]
+        beats = BeatTimeline(
+            beats=[
+                BeatCandidate(time_ms=float(t), confidence=0.8, source="test", beat_type="downbeat" if i == 0 else "beat")
+                for i, t in enumerate(beat_times)
+            ],
+            tempo_bpm=120.0,
+            tempo_confidence=0.9,
+            beat_period_ms=500.0,
+        )
+        actions = [FunscriptAction(at=t, pos=20 + (i * 20)) for i, t in enumerate(beat_times)]
+        positions = PositionTimeline(
+            actions=actions,
+            beat_actions=actions,
+            speed_profile=np.array([0.2, 0.4, 0.6, 0.8], dtype=np.float64),
+            ml_results=None,
+        )
+
+        area.set_beats(beats)
+        area.set_positions(positions)
+
+        x_main, y_main = area.position_curve.getData()
+        x_speed, y_speed = area.speed_curve.getData()
+        self.assertEqual(len(x_main), 4)
+        self.assertEqual(len(y_main), 4)
+        self.assertEqual(len(x_speed), 4)
+        self.assertEqual(len(y_speed), 4)
+        self.assertEqual(len(area.beat_scatter.points()), 4)
+
+    def test_zoom_and_toggle(self):
+        area = VisualizationArea()
+
+        area.zoom_to_range(100.0, 900.0)
+        x_range = area.overlay_plot.viewRange()[0]
+        self.assertAlmostEqual(x_range[0], 100.0, places=2)
+        self.assertAlmostEqual(x_range[1], 900.0, places=2)
+
+        area._set_trace_visible("Flux", False)
+        self.assertFalse(area.flux_curve.isVisible())
+        area._set_trace_visible("Flux", True)
+        self.assertTrue(area.flux_curve.isVisible())
+
+    def test_scroll_slider_reaches_beyond_30s(self):
+        area = VisualizationArea()
+        sr = 48_000
+        samples = np.zeros(sr * 45, dtype=np.float32)
+        area.set_audio_data(samples, sr)
+
+        area.nav_slider.setValue(1000)
+        x_range = area.overlay_plot.viewRange()[0]
+        self.assertGreater(x_range[0], 10000.0)
+        self.assertGreater(x_range[1], 40000.0)
+
+    def test_playback_auto_scrolls_when_playhead_exits_window(self):
+        area = VisualizationArea()
+        sr = 48_000
+        samples = np.zeros(sr * 60, dtype=np.float32)
+        area.set_audio_data(samples, sr)
+        area.zoom_to_range(0.0, 30000.0)
+
+        area._on_playback_position(35000.0)
+        x_range = area.overlay_plot.viewRange()[0]
+        self.assertGreater(x_range[0], 0.0)
+        self.assertGreaterEqual(x_range[1], 35000.0)
+
+    def test_playback_seek_emits_position(self):
+        area = VisualizationArea()
+        captured: list[float] = []
+        area.position_changed.connect(captured.append)
+
+        area.playback_panel.set_duration_ms(2000.0)
+        area.playback_panel.seek(750.0)
+
+        self.assertGreaterEqual(len(captured), 1)
+        self.assertAlmostEqual(float(captured[-1]), 750.0, places=2)
+
+
+if __name__ == "__main__":
+    unittest.main()

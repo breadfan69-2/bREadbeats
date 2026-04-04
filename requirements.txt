@@ -8,6 +8,9 @@ PyQt6>=6.5.0
 numpy>=1.24.0                    # Core DSP/math used across the app
 sounddevice>=0.4.6             # Audio input capture
 scipy>=1.10.0                  # Butterworth bandpass filter for beat detection
+librosa>=0.10.0                # Offline beat/pitch extraction for PMV pipeline
+soundfile>=0.12.0              # Audio file decoding backend used by PMV analysis
+imageio-ffmpeg>=0.5.0          # Bundled ffmpeg binary fallback for video audio extraction
 pyaudiowpatch>=0.2.12; platform_system == "Windows"   # WASAPI loopback capture
 
 # Visualization & Display

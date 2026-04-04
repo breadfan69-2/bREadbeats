@@ -1,0 +1,21 @@
+{
+  "pmv_preset_version": 1,
+  "name": "Chill",
+  "beat_detection": {
+    "sensitivity": 0.3,
+    "refractory_ms": 190.0
+  },
+  "mapping": {
+    "pitch_range": 50.0,
+    "energy_multiplier": 5.0,
+    "overflow_mode": "fold"
+  },
+  "ml": {
+    "enabled": true,
+    "strength": 0.4,
+    "cadence_mode": "fixed_4"
+  },
+  "axis": {
+    "enabled_axes": ["main"]
+  }
+}

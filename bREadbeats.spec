@@ -1,12 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 
 LEARNING_DATA_FILES = [
     (str(path), 'defaults/learning')
     for path in sorted(Path('defaults/learning').glob('*.json'))
 ]
+
+IMAGEIO_FFMPEG_DATA = collect_data_files('imageio_ffmpeg')
 
 
 a = Analysis(
@@ -20,9 +23,11 @@ a = Analysis(
         ('learned_profile_slots.json', '.'),
         *LEARNING_DATA_FILES,
         ('datasets/rule_fit.json', 'datasets'),
+        *IMAGEIO_FFMPEG_DATA,
     ],
     hiddenimports=[
         'config_persistence',
+        'imageio_ffmpeg',
     ],
     hookspath=[],
     hooksconfig={},
@@ -35,7 +40,6 @@ a = Analysis(
         'numba',
         'llvmlite',
         'imageio',
-        'imageio_ffmpeg',
         'PIL',
         'pictex',
         'setuptools',

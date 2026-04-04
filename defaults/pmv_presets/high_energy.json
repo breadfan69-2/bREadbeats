@@ -1,0 +1,20 @@
+{
+  "pmv_preset_version": 1,
+  "name": "High Energy",
+  "beat_detection": {
+    "sensitivity": 0.7,
+    "peak_beat_threshold": 0.45
+  },
+  "mapping": {
+    "pitch_range": 150.0,
+    "energy_multiplier": 20.0
+  },
+  "ml": {
+    "enabled": true,
+    "strength": 0.65,
+    "cadence_mode": "fixed_1"
+  },
+  "axis": {
+    "enabled_axes": ["main", "alpha", "beta"]
+  }
+}
