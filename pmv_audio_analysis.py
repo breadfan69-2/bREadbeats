@@ -313,19 +313,16 @@ def extract_pitch(
     if n_frames <= 0:
         return np.array([], dtype=np.float32), np.array([], dtype=np.float32)
 
-    pitch_values = np.zeros(n_frames, dtype=np.float32)
-    confidence = np.zeros(n_frames, dtype=np.float32)
-
-    for idx in range(n_frames):
-        p = pitches[:, idx]
-        m = magnitudes[:, idx]
-        mag_sum = float(np.sum(m))
-        if mag_sum <= 1e-12:
-            continue
-        weighted_pitch = float(np.sum(p * m) / mag_sum)
-        if weighted_pitch > 0.0:
-            pitch_values[idx] = float(np.log10(weighted_pitch))
-        confidence[idx] = float(mag_sum)
+    # Vectorised weighted-mean pitch per frame (replaces per-frame Python loop)
+    mag_sum = magnitudes.sum(axis=0)  # (n_frames,)
+    safe_mag = np.where(mag_sum > 1e-12, mag_sum, 1.0)
+    weighted_pitch = (pitches * magnitudes).sum(axis=0) / safe_mag
+    pitch_values = np.where(
+        (mag_sum > 1e-12) & (weighted_pitch > 0.0),
+        np.log10(np.maximum(weighted_pitch, 1e-12)),
+        0.0,
+    ).astype(np.float32)
+    confidence = mag_sum.astype(np.float32)
 
     conf_norm, _ = p95_normalize(confidence)
     return pitch_values.astype(np.float32), conf_norm.astype(np.float32)
@@ -366,33 +363,29 @@ def compute_rolling_aggregates(
     half = max(0, window_frames // 2)
 
     bass = np.asarray(band_energies.get("sub_bass", np.zeros(n, dtype=np.float32)), dtype=np.float32)
-    rms_mean = np.zeros(n, dtype=np.float32)
-    rms_std = np.zeros(n, dtype=np.float32)
-    flux_mean = np.zeros(n, dtype=np.float32)
-    bass_mean = np.zeros(n, dtype=np.float32)
-    trend = np.zeros(n, dtype=np.float32)
 
-    for i in range(n):
-        lo = max(0, i - half)
-        hi = min(n, i + half + 1)
+    # Vectorised rolling mean/std via uniform_filter instead of per-element slicing
+    from scipy.ndimage import uniform_filter1d
+    kern = max(1, 2 * half + 1)
+    rms_mean = uniform_filter1d(rms_per_frame.astype(np.float64), size=kern, mode="nearest").astype(np.float32)
+    flux_mean = uniform_filter1d(flux_per_frame.astype(np.float64), size=kern, mode="nearest").astype(np.float32)
+    bass_mean = uniform_filter1d(bass.astype(np.float64), size=kern, mode="nearest").astype(np.float32)
 
-        r_win = rms_per_frame[lo:hi]
-        f_win = flux_per_frame[lo:hi]
-        b_win = bass[lo:hi]
+    # Rolling std via E[x²] - E[x]²
+    rms_sq_mean = uniform_filter1d((rms_per_frame.astype(np.float64)) ** 2, size=kern, mode="nearest")
+    rms_std = np.sqrt(np.maximum(rms_sq_mean - rms_mean.astype(np.float64) ** 2, 0.0)).astype(np.float32)
 
-        rms_mean[i] = float(np.mean(r_win))
-        rms_std[i] = float(np.std(r_win))
-        flux_mean[i] = float(np.mean(f_win))
-        bass_mean[i] = float(np.mean(b_win))
-
-        if len(r_win) >= 2:
-            x = np.arange(len(r_win), dtype=np.float64)
-            x_mean = float(np.mean(x))
-            y = r_win.astype(np.float64)
-            y_mean = float(np.mean(y))
-            denom = float(np.sum((x - x_mean) ** 2))
-            if denom > 1e-12:
-                trend[i] = float(np.sum((x - x_mean) * (y - y_mean)) / denom)
+    # Trend: slope of linear regression in each window — vectorised via rolling covariance
+    rms_f64 = rms_per_frame.astype(np.float64)
+    x_global = np.arange(n, dtype=np.float64)
+    x_mean_local = uniform_filter1d(x_global, size=kern, mode="nearest")
+    y_mean_local = uniform_filter1d(rms_f64, size=kern, mode="nearest")
+    xy_mean = uniform_filter1d(x_global * rms_f64, size=kern, mode="nearest")
+    x2_mean = uniform_filter1d(x_global ** 2, size=kern, mode="nearest")
+    denom = x2_mean - x_mean_local ** 2
+    trend = np.where(denom > 1e-12,
+                     (xy_mean - x_mean_local * y_mean_local) / denom,
+                     0.0).astype(np.float32)
 
     return rms_mean, rms_std, flux_mean, bass_mean, trend
 

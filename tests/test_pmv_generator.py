@@ -133,7 +133,7 @@ class TestPmvGenerator(unittest.TestCase):
             win.controls.center_offset_slider.setValue(120.0)
 
             # Force preview for deterministic test behavior without event-loop timing assumptions.
-            win._run_live_preview()
+            win._run_live_preview(blocking=True)
 
             self.assertIsNotNone(win._positions)
             if win._positions is None:

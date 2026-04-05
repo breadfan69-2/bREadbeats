@@ -115,7 +115,8 @@ class WaveformPanel(QWidget):
         self.plot.setLabel("left", "Amplitude")
         self.plot.setLabel("bottom", "Time (ms)")
 
-        self.wave_curve = self.plot.plot([], [], pen=pg.mkPen("#8ad4ff", width=1.2))
+        self.wave_curve = self.plot.plot([], [], pen=pg.mkPen("#8ad4ff", width=1.2),
+                                          clipToView=True, autoDownsample=True, downsampleMethod="peak")
         self.beat_scatter = pg.ScatterPlotItem(size=6)
         self.plot.addItem(self.beat_scatter)
 
@@ -139,7 +140,7 @@ class WaveformPanel(QWidget):
 
         self._duration_ms = float(arr.size / float(sr) * 1000.0)
         self.wave_curve.setData(x, y)
-        self.plot.getViewBox().setXRange(0.0, max(1000.0, min(self._duration_ms, 30000.0)), padding=0.0)
+        self.plot.getViewBox().setXRange(0.0, max(1000.0, self._duration_ms), padding=0.0)
         self.plot.getViewBox().setYRange(-1.05, 1.05, padding=0.0)
 
     def set_beats(self, beats: list[BeatCandidate]) -> None:
@@ -159,7 +160,7 @@ class WaveformPanel(QWidget):
                 {
                     "pos": (float(beat.time_ms), 0.0),
                     "brush": brush_map.get(str(beat.beat_type), pg.mkBrush("#d0d0d0")),
-                    "size": 5 + int(4 * float(np.clip(beat.confidence, 0.0, 1.0))),
+                    "size": 7,
                 }
             )
         self.beat_scatter.setData(spots)
@@ -180,8 +181,9 @@ class SpectralFluxPanel(QWidget):
         self.plot.setLabel("left", "Flux")
         self.plot.setLabel("bottom", "Time (ms)")
 
-        self.flux_curve = self.plot.plot([], [], pen=pg.mkPen("#74c0fc", width=1.4))
-        self.threshold_curve = self.plot.plot([], [], pen=pg.mkPen("#ffb74d", width=1.0, style=Qt.PenStyle.DashLine))
+        _ds = dict(clipToView=True, autoDownsample=True, downsampleMethod="peak")
+        self.flux_curve = self.plot.plot([], [], pen=pg.mkPen("#74c0fc", width=1.4), **_ds)
+        self.threshold_curve = self.plot.plot([], [], pen=pg.mkPen("#ffb74d", width=1.0, style=Qt.PenStyle.DashLine), **_ds)
         self.peak_scatter = pg.ScatterPlotItem(size=6, brush=pg.mkBrush("#fdd835"))
         self.plot.addItem(self.peak_scatter)
 
@@ -234,7 +236,8 @@ class PositionTimelinePanel(QWidget):
         self.plot.setLabel("bottom", "Time (ms)")
         self.plot.getViewBox().setYRange(0.0, 100.0, padding=0.0)
 
-        self.main_curve = self.plot.plot([], [], pen=pg.mkPen("#fff176", width=1.6))
+        self.main_curve = self.plot.plot([], [], pen=pg.mkPen("#fff176", width=1.6),
+                                          clipToView=True, autoDownsample=True, downsampleMethod="peak")
         self.extra_curves: dict[str, pg.PlotDataItem] = {}
 
         self.playhead_line = pg.InfiniteLine(pos=0.0, angle=90, movable=False, pen=pg.mkPen("#ffe082", width=1))
@@ -535,6 +538,53 @@ class PlaybackPanel(QWidget):
         self._emit_position()
 
 
+# ---------------------------------------------------------------------------
+# LOD helper: stores full-resolution (x, y) numpy arrays and returns a
+# downsampled slice for the current viewport.  Keeps any curve to ~MAX_PTS
+# visible points so pyqtgraph never has to paint more than a few thousand.
+# ---------------------------------------------------------------------------
+_LOD_MAX_PTS = 4000
+
+
+def _lod_slice(
+    x_full: np.ndarray,
+    y_full: np.ndarray,
+    view_lo: float,
+    view_hi: float,
+    max_pts: int = _LOD_MAX_PTS,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (x, y) downsampled to *max_pts* within [view_lo, view_hi]."""
+    if x_full.size == 0:
+        return x_full, y_full
+    i0 = int(np.searchsorted(x_full, view_lo, side="left"))
+    i1 = int(np.searchsorted(x_full, view_hi, side="right"))
+    # Include one extra sample each side so lines connect at viewport edge
+    i0 = max(0, i0 - 1)
+    i1 = min(len(x_full), i1 + 1)
+    xv = x_full[i0:i1]
+    yv = y_full[i0:i1]
+    if len(xv) <= max_pts:
+        return xv, yv
+    # Peak-preserving downsample: keep min & max per bucket
+    step = max(1, len(xv) // (max_pts // 2))
+    n_buckets = len(xv) // step
+    trunc = n_buckets * step
+    yr = yv[:trunc].reshape(n_buckets, step)
+    idx_min = yr.argmin(axis=1)
+    idx_max = yr.argmax(axis=1)
+    bucket_idx = np.arange(n_buckets, dtype=np.intp) * step
+    # Interleave min/max keeping time order (vectorised)
+    i_min = bucket_idx + idx_min
+    i_max = bucket_idx + idx_max
+    # Ensure earlier index comes first in each pair
+    first = np.minimum(i_min, i_max)
+    second = np.maximum(i_min, i_max)
+    indices = np.empty(2 * n_buckets, dtype=np.intp)
+    indices[0::2] = first
+    indices[1::2] = second
+    return xv[indices], yv[indices]
+
+
 class VisualizationArea(QWidget):
     """Container for a single overlaid PMV timeline plot with trace toggles."""
 
@@ -543,9 +593,15 @@ class VisualizationArea(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._duration_ms = 0.0
-        self._view_span_ms = 30000.0
+        self._view_span_ms = 0.0
         self._nav_syncing = False
         self._auto_follow_playhead = True
+        self._lod_refreshing = False  # re-entrancy guard
+
+        # Full-resolution data stores for LOD rendering
+        self._lod_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        # Beat stores: {beat_type: x_array}
+        self._beat_data: dict[str, np.ndarray] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -564,14 +620,21 @@ class VisualizationArea(QWidget):
         vb.setYRange(0.0, 100.0, padding=0.0)
         vb.setMouseEnabled(x=True, y=False)
         vb.setLimits(yMin=0.0, yMax=100.0)
+        vb.disableAutoRange()  # LOD manages the X range; prevent setData from auto-ranging
 
         self.wave_curve = self.overlay_plot.plot([], [], pen=pg.mkPen("#8ad4ff", width=1.0), name="Waveform")
         self.flux_curve = self.overlay_plot.plot([], [], pen=pg.mkPen("#74c0fc", width=1.4), name="Flux")
         self.position_curve = self.overlay_plot.plot([], [], pen=pg.mkPen("#fff176", width=1.7), name="Main Position")
         self.speed_curve = self.overlay_plot.plot([], [], pen=pg.mkPen("#ffb74d", width=1.2), name="Speed")
 
-        self.beat_scatter = pg.ScatterPlotItem(size=7)
-        self.overlay_plot.addItem(self.beat_scatter)
+        # Per-type beat marker curves (no symbols — we use plain curves with LOD)
+        self._beat_curves: dict[str, pg.PlotDataItem] = {}
+        for btype, color in [("downbeat", "#ff6e6e"), ("beat", "#6ec6ff"), ("syncopation", "#8df58d")]:
+            c = self.overlay_plot.plot([], [], pen=None,
+                                       symbol="o", symbolSize=7, symbolBrush=pg.mkBrush(color),
+                                       symbolPen=None)
+            self._beat_curves[btype] = c
+        self.beat_scatter = None
 
         self.extra_curves: dict[str, pg.PlotDataItem] = {}
         self._extra_curves_visible = True
@@ -628,7 +691,7 @@ class VisualizationArea(QWidget):
         layout.addWidget(self.playback_panel, 0)
 
         self.playback_panel.position_changed.connect(self._on_playback_position)
-        self.overlay_plot.getViewBox().sigXRangeChanged.connect(lambda _vb, _rng: self._sync_nav_from_view())
+        self.overlay_plot.getViewBox().sigXRangeChanged.connect(self._on_x_range_changed)
 
     def _set_trace_visible(self, trace_name: str, visible: bool) -> None:
         if trace_name == "Aux":
@@ -645,7 +708,8 @@ class VisualizationArea(QWidget):
         elif trace_name == "Speed":
             self.speed_curve.setVisible(bool(visible))
         elif trace_name == "Beats":
-            self.beat_scatter.setVisible(bool(visible))
+            for c in self._beat_curves.values():
+                c.setVisible(bool(visible))
 
     def _on_playback_position(self, time_ms: float) -> None:
         self.set_playback_position(time_ms)
@@ -730,6 +794,71 @@ class VisualizationArea(QWidget):
         start = (float(value) / 1000.0) * max_start
         self._apply_view_range(start, start + span)
 
+    def _on_x_range_changed(self, _vb: object, _rng: object) -> None:
+        self._sync_nav_from_view()
+        self._refresh_lod()
+
+    def _refresh_lod(self) -> None:
+        """Downsample all stored data to the current viewport and push to curves."""
+        if self._lod_refreshing:
+            return
+        self._lod_refreshing = True
+        try:
+            self._do_refresh_lod()
+        finally:
+            self._lod_refreshing = False
+
+    def _do_refresh_lod(self) -> None:
+        x_range = self.overlay_plot.viewRange()[0]
+        lo, hi = float(x_range[0]), float(x_range[1])
+
+        _curve_map: dict[str, pg.PlotDataItem] = {
+            "wave": self.wave_curve,
+            "flux": self.flux_curve,
+            "position": self.position_curve,
+            "speed": self.speed_curve,
+        }
+
+        for key, curve in _curve_map.items():
+            if not curve.isVisible():
+                continue
+            full = self._lod_data.get(key)
+            if full is None:
+                continue
+            x_full, y_full = full
+            if x_full.size == 0:
+                continue
+            xs, ys = _lod_slice(x_full, y_full, lo, hi)
+            curve.setData(xs, ys)
+
+        # Extra axis curves
+        for axis_name, curve in self.extra_curves.items():
+            if not curve.isVisible():
+                continue
+            full = self._lod_data.get(f"extra_{axis_name}")
+            if full is None:
+                continue
+            x_full, y_full = full
+            if x_full.size == 0:
+                continue
+            xs, ys = _lod_slice(x_full, y_full, lo, hi)
+            curve.setData(xs, ys)
+
+        # Beat marker curves — simple viewport clip (beats are sparse enough)
+        for btype, curve in self._beat_curves.items():
+            if not curve.isVisible():
+                continue
+            x_full = self._beat_data.get(btype)
+            if x_full is None or x_full.size == 0:
+                continue
+            i0 = max(0, int(np.searchsorted(x_full, lo, side="left")) - 1)
+            i1 = min(len(x_full), int(np.searchsorted(x_full, hi, side="right")) + 1)
+            xv = x_full[i0:i1]
+            if xv.size == 0:
+                curve.setData([], [])
+            else:
+                curve.setData(xv, np.full(len(xv), 98.0, dtype=np.float64))
+
     def _zoom(self, factor: float) -> None:
         x_range = self.overlay_plot.viewRange()[0]
         center = float(x_range[0] + x_range[1]) * 0.5
@@ -754,23 +883,24 @@ class VisualizationArea(QWidget):
     def set_audio_data(self, samples: np.ndarray, sr: int) -> None:
         arr = np.asarray(samples, dtype=np.float32)
         if arr.size == 0 or sr <= 0:
+            self._lod_data.pop("wave", None)
             self.wave_curve.setData([], [])
             self._duration_ms = 0.0
             self.playback_panel.set_duration_ms(0.0)
             self._sync_nav_from_view()
             return
 
-        max_points = 3000
+        max_points = 50000  # store denser; LOD will downsample on render
         step = max(1, int(np.ceil(arr.size / max_points)))
         y = arr[::step]
         x = (np.arange(y.size, dtype=np.float64) * step / float(sr)) * 1000.0
         y_norm = np.clip(50.0 + (45.0 * y.astype(np.float64)), 0.0, 100.0)
-        self.wave_curve.setData(x, y_norm)
+        self._lod_data["wave"] = (x, y_norm)
 
         self.playback_panel.set_audio_buffer(arr, int(sr))
         duration_ms = (len(arr) / float(max(1, sr))) * 1000.0 if len(arr) else 0.0
         self._duration_ms = max(0.0, float(duration_ms))
-        self._view_span_ms = max(1000.0, min(self._duration_ms, 30000.0)) if self._duration_ms > 0.0 else 1000.0
+        self._view_span_ms = max(1000.0, self._duration_ms) if self._duration_ms > 0.0 else 1000.0
         self._apply_view_range(0.0, self._view_span_ms)
         self._sync_nav_from_view()
 
@@ -779,54 +909,56 @@ class VisualizationArea(QWidget):
         flux = np.asarray(timeline.spectral_flux_per_frame, dtype=np.float64)
         n = min(len(t), len(flux))
         if n == 0:
+            self._lod_data.pop("flux", None)
             self.flux_curve.setData([], [])
             return
         t = t[:n]
         flux = flux[:n]
         max_flux = float(np.max(flux)) if np.max(flux) > 1e-9 else 1.0
-        flux_norm = (flux / max_flux) * 100.0
-        self.flux_curve.setData(t, np.clip(flux_norm, 0.0, 100.0))
+        flux_norm = np.clip((flux / max_flux) * 100.0, 0.0, 100.0)
+        self._lod_data["flux"] = (t, flux_norm)
+        self._refresh_lod()
 
     def set_beats(self, beats: BeatTimeline) -> None:
         if not beats.beats:
-            self.beat_scatter.setData([], [])
+            self._beat_data.clear()
+            for c in self._beat_curves.values():
+                c.setData([], [])
             return
 
-        brush_map = {
-            "downbeat": pg.mkBrush("#ff6e6e"),
-            "beat": pg.mkBrush("#6ec6ff"),
-            "syncopation": pg.mkBrush("#8df58d"),
-        }
-        spots = []
-        for beat in beats.beats:
-            spots.append(
-                {
-                    "pos": (float(beat.time_ms), 98.0),
-                    "brush": brush_map.get(str(beat.beat_type), pg.mkBrush("#d0d0d0")),
-                    "size": 5 + int(4 * float(np.clip(beat.confidence, 0.0, 1.0))),
-                }
-            )
-        self.beat_scatter.setData(spots)
+        groups: dict[str, list[float]] = {"downbeat": [], "beat": [], "syncopation": []}
+        for b in beats.beats:
+            groups.setdefault(str(b.beat_type), []).append(float(b.time_ms))
+        for btype in list(self._beat_curves.keys()):
+            times = groups.get(btype, [])
+            if times:
+                self._beat_data[btype] = np.array(sorted(times), dtype=np.float64)
+            else:
+                self._beat_data.pop(btype, None)
+        self._refresh_lod()
 
     def set_positions(self, positions: PositionTimeline) -> None:
         if not positions.actions:
+            self._lod_data.pop("position", None)
+            self._lod_data.pop("speed", None)
             self.position_curve.setData([], [])
             self.speed_curve.setData([], [])
             return
 
         times = np.array([float(a.at) for a in positions.actions], dtype=np.float64)
         pos = np.array([float(a.pos) for a in positions.actions], dtype=np.float64)
-        self.position_curve.setData(times, np.clip(pos, 0.0, 100.0))
+        self._lod_data["position"] = (times, np.clip(pos, 0.0, 100.0))
 
         speed = np.asarray(positions.speed_profile, dtype=np.float64)
         n = min(len(speed), len(times))
         if n > 0:
             speed = speed[:n]
             speed_max = float(np.max(speed)) if np.max(speed) > 1e-9 else 1.0
-            speed_norm = (speed / speed_max) * 100.0
-            self.speed_curve.setData(times[:n], np.clip(speed_norm, 0.0, 100.0))
+            speed_norm = np.clip((speed / speed_max) * 100.0, 0.0, 100.0)
+            self._lod_data["speed"] = (times[:n], speed_norm)
         else:
-            self.speed_curve.setData([], [])
+            self._lod_data.pop("speed", None)
+        self._refresh_lod()
 
     def set_multi_axis(self, result: MultiAxisResult) -> None:
         palette = {
@@ -852,15 +984,18 @@ class VisualizationArea(QWidget):
             if actions:
                 t = np.array([float(a.at) for a in actions], dtype=np.float64)
                 y = np.array([float(a.pos) for a in actions], dtype=np.float64)
-                self.extra_curves[axis_name].setData(t, np.clip(y, 0.0, 100.0))
+                self._lod_data[f"extra_{axis_name}"] = (t, np.clip(y, 0.0, 100.0))
             else:
-                self.extra_curves[axis_name].setData([], [])
+                self._lod_data.pop(f"extra_{axis_name}", None)
 
         for axis_name in list(self.extra_curves.keys()):
             if axis_name in keep:
                 continue
             curve = self.extra_curves.pop(axis_name)
             self.overlay_plot.removeItem(curve)
+            self._lod_data.pop(f"extra_{axis_name}", None)
+
+        self._refresh_lod()
 
     def set_playback_position(self, time_ms: float) -> None:
         self.playhead_line.setPos(float(time_ms))
@@ -909,6 +1044,9 @@ class AuxAxisPanel(QWidget):
         # group_title -> (PlotWidget, {axis_name: PlotDataItem}, InfiniteLine)
         self._group_plots: dict[str, tuple[pg.PlotWidget, dict[str, pg.PlotDataItem], pg.InfiniteLine]] = {}
 
+        # Full-resolution data for LOD: axis_name -> (x, y)
+        self._lod_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+
         # Reference to main overlay_plot for X-axis linking
         self._main_plot: pg.PlotWidget | None = None
 
@@ -917,6 +1055,8 @@ class AuxAxisPanel(QWidget):
         self._main_plot = main_plot
         for _title, (plot, _curves, _ph) in self._group_plots.items():
             plot.setXLink(main_plot)
+        # Refresh LOD when main view range changes
+        main_plot.getViewBox().sigXRangeChanged.connect(lambda _vb, _rng: self._refresh_lod())
 
     def set_multi_axis(self, result: MultiAxisResult) -> None:
         """Update mini-plots from a MultiAxisResult. Creates/removes groups as needed."""
@@ -972,15 +1112,36 @@ class AuxAxisPanel(QWidget):
                 if actions:
                     t = np.array([float(a.at) for a in actions], dtype=np.float64)
                     y = np.array([float(a.pos) for a in actions], dtype=np.float64)
-                    curves[axis_name].setData(t, np.clip(y, 0.0, 100.0))
+                    self._lod_data[axis_name] = (t, np.clip(y, 0.0, 100.0))
                 else:
-                    curves[axis_name].setData([], [])
+                    self._lod_data.pop(axis_name, None)
 
             # Remove curves no longer in this group
             for axis_name in list(curves.keys()):
                 if axis_name not in active_in_group:
                     curve = curves.pop(axis_name)
                     plot.removeItem(curve)
+                    self._lod_data.pop(axis_name, None)
+
+        self._refresh_lod()
+
+    def _refresh_lod(self) -> None:
+        """Downsample all aux axis data to the current viewport."""
+        if self._main_plot is None:
+            return
+        x_range = self._main_plot.viewRange()[0]
+        lo, hi = float(x_range[0]), float(x_range[1])
+
+        for _title, (_plot, curves, _ph) in self._group_plots.items():
+            for axis_name, curve in curves.items():
+                full = self._lod_data.get(axis_name)
+                if full is None:
+                    continue
+                x_full, y_full = full
+                if x_full.size == 0:
+                    continue
+                xs, ys = _lod_slice(x_full, y_full, lo, hi)
+                curve.setData(xs, ys)
 
     def set_playhead(self, time_ms: float) -> None:
         """Move playhead across all mini-plots."""

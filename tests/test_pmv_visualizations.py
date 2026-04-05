@@ -91,13 +91,18 @@ class TestPmvVisualizations(unittest.TestCase):
         area.set_beats(beats)
         area.set_positions(positions)
 
+        # LOD system requires a view range to populate curves
+        area.zoom_to_range(0.0, 2500.0)
+
         x_main, y_main = area.position_curve.getData()
         x_speed, y_speed = area.speed_curve.getData()
         self.assertEqual(len(x_main), 4)
         self.assertEqual(len(y_main), 4)
         self.assertEqual(len(x_speed), 4)
         self.assertEqual(len(y_speed), 4)
-        self.assertEqual(len(area.beat_scatter.points()), 4)
+        # Beats are stored in _beat_data; beat_scatter is deprecated
+        total_beats = sum(len(v) for v in area._beat_data.values())
+        self.assertEqual(total_beats, 4)
 
     def test_zoom_and_toggle(self):
         area = VisualizationArea()
@@ -118,6 +123,8 @@ class TestPmvVisualizations(unittest.TestCase):
         samples = np.zeros(sr * 45, dtype=np.float32)
         area.set_audio_data(samples, sr)
 
+        # Default view is full duration; zoom to a 10s window first so scrolling is meaningful
+        area.zoom_to_range(0.0, 10000.0)
         area.nav_slider.setValue(1000)
         x_range = area.overlay_plot.viewRange()[0]
         self.assertGreater(x_range[0], 10000.0)

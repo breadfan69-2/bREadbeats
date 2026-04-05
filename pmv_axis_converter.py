@@ -78,14 +78,17 @@ def _compute_speed(actions: list[FunscriptAction], window_sec: float = 5.0) -> n
     pos = np.array([float(a.pos) for a in actions], dtype=np.float64)
     window_ms = max(1.0, float(window_sec) * 1000.0)
 
+    # O(n log n) via cumulative sum instead of O(n²) inner diff loop
+    cumsum = np.concatenate(([0.0], np.cumsum(np.abs(np.diff(pos)))))
+
     speed = np.zeros(n, dtype=np.float64)
-    for i in range(n):
+    for i in range(1, n):
         t_start = at[i] - window_ms
         j = int(np.searchsorted(at, t_start, side="left"))
         if i <= j:
             continue
         dt = max(1.0, at[i] - at[j])
-        dp = float(np.sum(np.abs(np.diff(pos[j : i + 1]))))
+        dp = cumsum[i] - cumsum[j]
         speed[i] = dp / dt
 
     speed[-1] = speed[-2] if n >= 2 else speed[-1]
@@ -280,20 +283,24 @@ def _make_volume_ramp(t: np.ndarray, duration: float, ramp_percent_per_hour: flo
     t_10s = t_start + 10000.0
     t_peak = float(t[-1]) - 1.0 if len(t) >= 2 else float(t[-1])
     t_end = float(t[-1])
-    # Build piecewise ramp
-    ramp = np.zeros_like(t, dtype=np.float64)
-    for i in range(len(t)):
-        ti = float(t[i])
-        if ti <= t_start:
-            ramp[i] = 0.0
-        elif ti <= t_10s:
-            ramp[i] = start_value * ((ti - t_start) / max(1.0, t_10s - t_start))
-        elif ti <= t_peak:
-            ramp[i] = start_value + (1.0 - start_value) * ((ti - t_10s) / max(1.0, t_peak - t_10s))
-        elif ti <= t_end:
-            ramp[i] = 1.0 - ((ti - t_peak) / max(1.0, t_end - t_peak))
-        else:
-            ramp[i] = 0.0
+    # Build piecewise ramp (vectorised)
+    ramp = np.piecewise(
+        t,
+        [
+            t <= t_start,
+            (t > t_start) & (t <= t_10s),
+            (t > t_10s) & (t <= t_peak),
+            (t > t_peak) & (t <= t_end),
+            t > t_end,
+        ],
+        [
+            0.0,
+            lambda _t: start_value * ((_t - t_start) / max(1.0, t_10s - t_start)),
+            lambda _t: start_value + (1.0 - start_value) * ((_t - t_10s) / max(1.0, t_peak - t_10s)),
+            lambda _t: 1.0 - ((_t - t_peak) / max(1.0, t_end - t_peak)),
+            0.0,
+        ],
+    )
     return np.clip(ramp, 0.0, 1.0)
 
 
@@ -320,17 +327,20 @@ def _detect_rest_and_ramp(
             transitions.append(float(t[i]))
     if not transitions:
         return result
-    # Apply ramp-up around each transition
-    for i in range(len(t)):
-        ti = float(t[i])
-        for tt in transitions:
-            diff = ti - tt
-            if -half_dur <= diff <= half_dur:
-                progress = (diff + half_dur) / ramp_up_duration_ms
-                progress = float(np.clip(progress, 0.0, 1.0))
-                mult = rest_level + (1.0 - rest_level) * progress
-                result[i] = values[i] * mult
-                break
+    # Apply ramp-up around each transition (vectorised via searchsorted)
+    trans = np.asarray(transitions, dtype=np.float64)
+    # For each time point, find the nearest preceding transition within range
+    idx = np.searchsorted(trans, t, side='right')  # first transition > t[i]
+    for k in range(len(trans)):
+        lo = trans[k] - half_dur
+        hi = trans[k] + half_dur
+        mask = (t >= lo) & (t <= hi)
+        if not np.any(mask):
+            continue
+        diff = t[mask] - trans[k]
+        progress = np.clip((diff + half_dur) / ramp_up_duration_ms, 0.0, 1.0)
+        mult = rest_level + (1.0 - rest_level) * progress
+        result[mask] = values[mask] * mult
     return np.clip(result, 0.0, 1.0)
 
 
@@ -364,14 +374,18 @@ def _generate_aux_axes(
         # Fallback: use position as proxy when alpha unavailable
         alpha_norm = np.array([float(a.pos) / 100.0 for a in main_actions], dtype=np.float64)
 
+    def _mix_vec(a: np.ndarray, b: np.ndarray, ratio: float) -> np.ndarray:
+        r = max(1.0, float(ratio))
+        return (a * (r - 1.0) + b) / r
+
     # --- frequency: combine(ramp, speed, ratio) ---
-    freq = np.array([_mix(ramp[i], speed_norm[i], config.frequency_ramp_ratio) for i in range(n)], dtype=np.float64)
+    freq = _mix_vec(ramp, speed_norm, config.frequency_ramp_ratio)
 
     # --- pulse_frequency: combine(speed, alpha, ratio) ---
-    pulse_freq = np.array([_mix(speed_norm[i], alpha_norm[i], config.pulse_frequency_ratio) for i in range(n)], dtype=np.float64)
+    pulse_freq = _mix_vec(speed_norm, alpha_norm, config.pulse_frequency_ratio)
 
     # --- volume: combine(ramp, speed, ratio) + rest detection + ramp-up ---
-    volume_raw = np.array([_mix(ramp[i], speed_norm[i], config.volume_ramp_ratio) for i in range(n)], dtype=np.float64)
+    volume_raw = _mix_vec(ramp, speed_norm, config.volume_ramp_ratio)
     volume = _detect_rest_and_ramp(
         volume_raw, speed_norm, t,
         config.rest_level,
@@ -379,11 +393,11 @@ def _generate_aux_axes(
     )
 
     # --- pulse_rise: combine(ramp_inverted, speed_inverted, ratio) ---
-    pulse_rise = np.array([_mix(ramp_inv[i], speed_inv[i], config.pulse_rise_ratio) for i in range(n)], dtype=np.float64)
+    pulse_rise = _mix_vec(ramp_inv, speed_inv, config.pulse_rise_ratio)
 
     # --- pulse_width: combine(speed, inverted_position, ratio) ---
-    inv_pos = np.array([1.0 - (main_actions[i].pos / 100.0) for i in range(n)], dtype=np.float64)
-    pulse_width = np.array([_mix(speed_norm[i], inv_pos[i], config.pulse_width_ratio) for i in range(n)], dtype=np.float64)
+    inv_pos = 1.0 - np.array([a.pos for a in main_actions], dtype=np.float64) / 100.0
+    pulse_width = _mix_vec(speed_norm, inv_pos, config.pulse_width_ratio)
 
     def to_actions(values: np.ndarray) -> list[FunscriptAction]:
         return [FunscriptAction(at=int(main_actions[i].at), pos=int(np.clip(round(values[i] * 100.0), 0, 100))) for i in range(n)]

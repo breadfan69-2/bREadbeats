@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QEventLoop, QTimer, Qt
+from PyQt6.QtCore import QEventLoop, QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QStatusBar,
@@ -52,6 +53,95 @@ def _merge_dict(base: dict, overrides: dict) -> dict:
     return out
 
 
+class _PipelineWorker(QObject):
+    """Runs a single callable off the main thread and reports progress."""
+
+    progress = pyqtSignal(str, str, float)  # step_name, message, percent
+    finished = pyqtSignal(object)  # result or None
+    error = pyqtSignal(str)  # error message
+
+    def __init__(self, func, step_name: str):
+        super().__init__()
+        self._func = func
+        self._step_name = step_name
+
+    def run(self):
+        def progress_cb(msg, pct):
+            self.progress.emit(self._step_name, str(msg), float(pct))
+        try:
+            result = self._func(progress_cb)
+            self.finished.emit(result)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class _PreviewWorker(QObject):
+    """Lightweight background worker for live previews (no progress reporting)."""
+
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, func):
+        super().__init__()
+        self._func = func
+
+    def run(self):
+        try:
+            result = self._func()
+            self.finished.emit(result)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class _BusyOverlay(QWidget):
+    """Translucent overlay with an animated progress bar shown during background work."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setStyleSheet("background-color: rgba(30, 30, 30, 160);")
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._label = QLabel("Processing\u2026")
+        self._label.setStyleSheet("color: #e0e0e0; font-size: 13px; font-weight: bold; background: transparent;")
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._label)
+
+        self._bar = QProgressBar()
+        self._bar.setFixedWidth(260)
+        self._bar.setFixedHeight(18)
+        self._bar.setRange(0, 0)  # indeterminate / busy animation
+        self._bar.setTextVisible(False)
+        self._bar.setStyleSheet(
+            "QProgressBar { background: #4d4d4d; border: 1px solid #5d5d5d; border-radius: 4px; }"
+            "QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 #008b8b, stop:1 #00bfbf); border-radius: 3px; }"
+        )
+        layout.addWidget(self._bar, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        self.hide()
+
+    # -- public helpers --
+
+    def show_busy(self, message: str = "Processing\u2026") -> None:
+        self._label.setText(message)
+        if self.parent() is not None:
+            self.setGeometry(self.parent().rect())
+        self.raise_()
+        self.show()
+
+    def hide_busy(self) -> None:
+        self.hide()
+
+    # keep overlay sized to parent
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        if self.parent() is not None:
+            self.setGeometry(self.parent().rect())
+        super().resizeEvent(event)
+
+
 class PMVGeneratorWindow(QMainWindow):
     """Step-through PMV generator window (Load -> Analyze -> Beats -> Generate -> Export)."""
 
@@ -76,6 +166,13 @@ class PMVGeneratorWindow(QMainWindow):
         self._pipeline_busy = False
         self._busy_cursor_set = False
         self._last_progress_pump = 0.0
+        self._worker_thread: QThread | None = None
+        self._worker: _PipelineWorker | None = None
+
+        self._beat_preview_thread: QThread | None = None
+        self._beat_preview_worker: _PreviewWorker | None = None
+        self._live_preview_thread: QThread | None = None
+        self._live_preview_worker: _PreviewWorker | None = None
 
         self._live_preview_timer = QTimer(self)
         self._live_preview_timer.setSingleShot(True)
@@ -136,7 +233,19 @@ class PMVGeneratorWindow(QMainWindow):
         splitter.setSizes([380, 820])
 
         self.setCentralWidget(root)
-        self.setStatusBar(QStatusBar(self))
+
+        self._busy_overlay = _BusyOverlay(root)
+
+        status_bar = QStatusBar(self)
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setFixedWidth(200)
+        self._progress_bar.setFixedHeight(16)
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.hide()
+        status_bar.addPermanentWidget(self._progress_bar)
+        self.setStatusBar(status_bar)
 
         self.controls.config_changed.connect(self._on_controls_changed)
         self.controls.step_bar.step_requested.connect(self._on_step_requested)
@@ -365,9 +474,14 @@ class PMVGeneratorWindow(QMainWindow):
             QMessageBox.critical(self, title, message)
 
     def _progress(self, step_name: str, message: str, percent: float) -> None:
+        import sys
+        print(f"[PMV] {step_name}: {message} ({percent:.0f}%)", file=sys.stderr, flush=True)
         bar = self.statusBar()
         if bar is not None:
             bar.showMessage(f"{step_name}: {message} ({percent:.0f}%)")
+        self._progress_bar.setValue(int(max(0, min(100, percent))))
+        if not self._progress_bar.isVisible():
+            self._progress_bar.show()
 
         # Keep the window repainting during long synchronous work (Automap/Generate).
         if self._pipeline_busy:
@@ -403,6 +517,149 @@ class PMVGeneratorWindow(QMainWindow):
         elif (not target) and self._busy_cursor_set:
             QApplication.restoreOverrideCursor()
             self._busy_cursor_set = False
+
+    def _run_step_async(
+        self,
+        step_num: int,
+        step_name: str,
+        work_fn,
+        on_success,
+        error_label: str,
+    ) -> None:
+        """Run *work_fn(progress_cb)* on a background thread with progress bar."""
+        if self._worker_thread is not None:
+            return  # already running
+
+        self.controls.step_bar.set_step_status(step_num, "running")
+        self._set_pipeline_busy(True, f"{step_name}: starting...")
+        self._progress_bar.setValue(0)
+        self._progress_bar.show()
+        self._busy_overlay.show_busy(f"{step_name}\u2026")
+
+        worker = _PipelineWorker(work_fn, step_name)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+
+        def handle_progress(sn: str, msg: str, pct: float) -> None:
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage(f"{sn}: {msg} ({pct:.0f}%)")
+            self._progress_bar.setValue(int(max(0, min(100, pct))))
+            self._busy_overlay.show_busy(f"{sn}: {msg} ({pct:.0f}%)")
+
+        def handle_finished(result: object) -> None:
+            thread.quit()
+            thread.wait()
+            self._worker_thread = None
+            self._worker = None
+            try:
+                on_success(result)
+                self.controls.step_bar.set_step_status(step_num, "done")
+                self.controls.on_step_completed(step_num)
+                self._refresh_step_availability()
+            except Exception as exc:
+                self.controls.step_bar.set_step_status(step_num, "error")
+                self._show_error(f"{step_name} failed", str(exc))
+            finally:
+                self._set_pipeline_busy(False)
+                self._progress_bar.hide()
+                self._hide_busy_if_idle()
+                self._on_controls_changed()
+
+        def handle_error(msg: str) -> None:
+            thread.quit()
+            thread.wait()
+            self._worker_thread = None
+            self._worker = None
+            self.controls.step_bar.set_step_status(step_num, "error")
+            self._show_error(f"{step_name} failed", f"{error_label}: {msg}")
+            self._set_pipeline_busy(False)
+            self._progress_bar.hide()
+            self._hide_busy_if_idle()
+
+        worker.progress.connect(handle_progress, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(handle_finished, Qt.ConnectionType.QueuedConnection)
+        worker.error.connect(handle_error, Qt.ConnectionType.QueuedConnection)
+        thread.started.connect(worker.run)
+
+        self._worker_thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _start_preview_thread(
+        self,
+        tag: str,
+        work_fn,
+        apply_fn,
+        fail_label: str,
+    ) -> bool:
+        """Launch *work_fn()* on a background thread; call *apply_fn(result)* on the main thread.
+
+        *tag* is ``"beat_preview"`` or ``"live_preview"``; the corresponding
+        ``_<tag>_thread``, ``_<tag>_worker`` and ``_<tag>_busy`` attributes are
+        managed automatically.  Returns ``True`` if the thread was started.
+        """
+        thread_attr = f"_{tag}_thread"
+        worker_attr = f"_{tag}_worker"
+        busy_attr = f"_{tag}_busy"
+
+        if getattr(self, thread_attr, None) is not None:
+            return False
+        if self._worker_thread is not None:
+            return False
+
+        worker = _PreviewWorker(work_fn)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+
+        def _on_finished(result: object) -> None:
+            thread.quit()
+            thread.wait()
+            setattr(self, thread_attr, None)
+            setattr(self, worker_attr, None)
+            try:
+                apply_fn(result)
+            except Exception as exc:
+                bar = self.statusBar()
+                if bar is not None:
+                    bar.showMessage(f"{fail_label}: {exc}", 2800)
+            finally:
+                setattr(self, busy_attr, False)
+                self._hide_busy_if_idle()
+                # Re-check for queued config changes that arrived while busy
+                self._on_controls_changed()
+
+        def _on_error(msg: str) -> None:
+            thread.quit()
+            thread.wait()
+            setattr(self, thread_attr, None)
+            setattr(self, worker_attr, None)
+            setattr(self, busy_attr, False)
+            self._hide_busy_if_idle()
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage(f"{fail_label}: {msg}", 2800)
+            # Re-check for queued config changes that arrived while busy
+            self._on_controls_changed()
+
+        worker.finished.connect(_on_finished, Qt.ConnectionType.QueuedConnection)
+        worker.error.connect(_on_error, Qt.ConnectionType.QueuedConnection)
+        thread.started.connect(worker.run)
+
+        setattr(self, thread_attr, thread)
+        setattr(self, worker_attr, worker)
+        self._busy_overlay.show_busy(f"{fail_label.replace(' failed', '')}\u2026")
+        thread.start()
+        return True
+
+    def _hide_busy_if_idle(self) -> None:
+        """Hide the busy overlay when no background thread is active."""
+        if (
+            self._worker_thread is None
+            and self._beat_preview_thread is None
+            and self._live_preview_thread is None
+        ):
+            self._busy_overlay.hide_busy()
 
     def _select_input_file(self) -> str | None:
         filter_str = (
@@ -443,7 +700,7 @@ class PMVGeneratorWindow(QMainWindow):
             return
         self._live_preview_timer.start()
 
-    def _run_live_preview(self) -> None:
+    def _run_live_preview(self, *, blocking: bool = False) -> None:
         if self._live_preview_busy:
             return
         if self._positions is None:
@@ -455,33 +712,39 @@ class PMVGeneratorWindow(QMainWindow):
         if sig == self._last_live_preview_signature:
             return
 
+        mapping_cfg = self.controls.get_mapping_config()
+        axis_cfg = self.controls.get_axis_config()
+        automap_cfg = self.controls.get_automap_config()
+
+        if mapping_cfg.overflow_mode == "bounce" and mapping_cfg.pos_min == mapping_cfg.pos_max:
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage("Live preview blocked: Bounce overflow requires Position Min != Position Max", 2800)
+            return
+
+        # Keep slider interaction responsive; live preview skips expensive automap optimization.
+        if automap_cfg.enabled:
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage("Live preview paused while Automap is enabled (click Generate to apply)", 2400)
+            return
+
         self._live_preview_busy = True
-        try:
-            mapping_cfg = self.controls.get_mapping_config()
-            axis_cfg = self.controls.get_axis_config()
-            automap_cfg = self.controls.get_automap_config()
+        timeline = self._timeline
+        beats = self._beats
 
-            if mapping_cfg.overflow_mode == "bounce" and mapping_cfg.pos_min == mapping_cfg.pos_max:
-                bar = self.statusBar()
-                if bar is not None:
-                    bar.showMessage("Live preview blocked: Bounce overflow requires Position Min != Position Max", 2800)
-                return
-
-            # Keep slider interaction responsive; live preview skips expensive automap optimization.
-            if automap_cfg.enabled:
-                bar = self.statusBar()
-                if bar is not None:
-                    bar.showMessage("Live preview paused while Automap is enabled (click Generate to apply)", 2400)
-                return
-
-            positions = generate_positions(self._timeline, self._beats, mapping_cfg)
+        def work():
+            positions = generate_positions(timeline, beats, mapping_cfg)
             axis_source_actions = positions.beat_actions if len(positions.beat_actions) >= 2 else positions.actions
             multi_axis = convert_to_2d(
                 axis_source_actions,
                 axis_cfg,
-                duration_ms=int(self._timeline.duration_ms),
+                duration_ms=int(timeline.duration_ms),
             )
+            return positions, multi_axis
 
+        def apply(result):
+            positions, multi_axis = result
             self._positions = positions
             self._multi_axis = multi_axis
             self.visualizations.set_positions(positions)
@@ -489,15 +752,27 @@ class PMVGeneratorWindow(QMainWindow):
             self.aux_panel.set_multi_axis(multi_axis)
             self._last_live_preview_signature = sig
             self._refresh_step_availability()
-
             bar = self.statusBar()
             if bar is not None:
                 bar.showMessage("Live preview updated", 1200)
-        except Exception as exc:
-            bar = self.statusBar()
-            if bar is not None:
-                bar.showMessage(f"Live preview failed: {exc}", 2800)
-        finally:
+
+        if blocking:
+            try:
+                apply(work())
+            except Exception as exc:
+                bar = self.statusBar()
+                if bar is not None:
+                    bar.showMessage(f"Live preview failed: {exc}", 2800)
+            finally:
+                self._live_preview_busy = False
+            return
+
+        if not self._start_preview_thread(
+            "live_preview",
+            work,
+            apply,
+            "Live preview failed",
+        ):
             self._live_preview_busy = False
 
     def _beat_preview_signature(self) -> str:
@@ -524,26 +799,28 @@ class PMVGeneratorWindow(QMainWindow):
             return
 
         self._beat_preview_busy = True
-        try:
-            beat_cfg = self.controls.get_beat_config()
-            beats = detect_beats(self._timeline, beat_cfg)
+        beat_cfg = self.controls.get_beat_config()
+        timeline = self._timeline
+
+        def apply(beats):
             self._beats = beats
             self._reset_from_step(4)
             self.visualizations.set_beats(beats)
             self._last_beat_preview_signature = sig
             self._refresh_step_availability()
-
             bar = self.statusBar()
             if bar is not None:
                 bar.showMessage(
                     f"Beat preview: {len(beats.beats)} beats @ {beats.tempo_bpm:.1f} BPM",
                     1500,
                 )
-        except Exception as exc:
-            bar = self.statusBar()
-            if bar is not None:
-                bar.showMessage(f"Beat preview failed: {exc}", 2800)
-        finally:
+
+        if not self._start_preview_thread(
+            "beat_preview",
+            lambda: detect_beats(timeline, beat_cfg),
+            apply,
+            "Beat preview failed",
+        ):
             self._beat_preview_busy = False
 
     def _reset_from_step(self, step: int) -> None:
@@ -577,7 +854,7 @@ class PMVGeneratorWindow(QMainWindow):
             self.controls.step_bar.set_step_status(idx, "ready")
         self._refresh_step_availability()
 
-    def step_1_load_audio(self, file_path: str | None = None, show_errors: bool = True) -> bool:
+    def step_1_load_audio(self, file_path: str | None = None, show_errors: bool = True, *, blocking: bool = True) -> bool:
         path = file_path or self._select_input_file()
         if not path:
             return False
@@ -585,10 +862,12 @@ class PMVGeneratorWindow(QMainWindow):
             self._show_error("Unsupported file", "Selected file type is not supported.", show_errors)
             return False
 
-        self.controls.step_bar.set_step_status(1, "running")
-        try:
-            analysis_cfg = self.controls.get_analysis_config()
-            samples = load_audio(path, analysis_cfg, lambda msg, pct: self._progress("Load", msg, pct))
+        analysis_cfg = self.controls.get_analysis_config()
+
+        def compute(progress_cb):
+            return load_audio(path, analysis_cfg, progress_cb)
+
+        def apply(samples):
             self._file_path = str(path)
             self._samples = samples
             self._reset_from_step(2)
@@ -603,30 +882,60 @@ class PMVGeneratorWindow(QMainWindow):
                     ml_results=None,
                 )
             )
-            self.controls.step_bar.set_step_status(1, "done")
-            self.controls.on_step_completed(1)
-            self._refresh_step_availability()
             bar = self.statusBar()
             if bar is not None:
                 bar.showMessage(f"Loaded {Path(path).name}", 2500)
+
+        if not blocking:
+            self._run_step_async(1, "Load", compute, apply, "Unable to load media")
+            return True
+
+        self.controls.step_bar.set_step_status(1, "running")
+        self._set_pipeline_busy(True, "Load: starting...")
+        self._progress_bar.setValue(0)
+        self._progress_bar.show()
+        try:
+            result = compute(lambda msg, pct: self._progress("Load", msg, pct))
+            apply(result)
+            self.controls.step_bar.set_step_status(1, "done")
+            self.controls.on_step_completed(1)
+            self._refresh_step_availability()
             return True
         except Exception as exc:
             self.controls.step_bar.set_step_status(1, "error")
             self._show_error("Load failed", f"Unable to load media: {exc}", show_errors)
             return False
+        finally:
+            self._set_pipeline_busy(False)
+            self._progress_bar.hide()
 
-    def step_2_analyze(self, show_errors: bool = True) -> bool:
+    def step_2_analyze(self, show_errors: bool = True, *, blocking: bool = True) -> bool:
         if self._samples is None:
             self._show_error("Analyze blocked", "Load audio before analysis.", show_errors)
             return False
 
-        self.controls.step_bar.set_step_status(2, "running")
-        try:
-            analysis_cfg = self.controls.get_analysis_config()
-            self._timeline = analyze_full_file(self._samples, analysis_cfg, lambda msg, pct: self._progress("Analyze", msg, pct))
+        analysis_cfg = self.controls.get_analysis_config()
+        samples = self._samples
+
+        def compute(progress_cb):
+            return analyze_full_file(samples, analysis_cfg, progress_cb)
+
+        def apply(timeline):
+            self._timeline = timeline
             self._reset_from_step(3)
-            self.visualizations.set_features(self._timeline)
-            self.visualizations.zoom_to_range(0.0, float(min(self._timeline.duration_ms, 30000)))
+            self.visualizations.set_features(timeline)
+
+        if not blocking:
+            self._run_step_async(2, "Analyze", compute, apply, "Audio analysis failed")
+            return True
+
+        self.controls.step_bar.set_step_status(2, "running")
+        self._set_pipeline_busy(True, "Analyze: starting...")
+        self._progress_bar.setValue(0)
+        self._progress_bar.show()
+        try:
+            result = compute(lambda msg, pct: self._progress("Analyze", msg, pct))
+            apply(result)
             self.controls.step_bar.set_step_status(2, "done")
             self.controls.on_step_completed(2)
             self._refresh_step_availability()
@@ -635,78 +944,114 @@ class PMVGeneratorWindow(QMainWindow):
             self.controls.step_bar.set_step_status(2, "error")
             self._show_error("Analyze failed", f"Audio analysis failed: {exc}", show_errors)
             return False
+        finally:
+            self._set_pipeline_busy(False)
+            self._progress_bar.hide()
 
-    def step_3_detect_beats(self, show_errors: bool = True) -> bool:
+    def step_3_detect_beats(self, show_errors: bool = True, *, blocking: bool = True) -> bool:
         if self._timeline is None:
             self._show_error("Beat detection blocked", "Run analysis before beat detection.", show_errors)
             return False
 
-        self.controls.step_bar.set_step_status(3, "running")
-        try:
-            beat_cfg = self.controls.get_beat_config()
-            self._beats = detect_beats(self._timeline, beat_cfg, lambda msg, pct: self._progress("Beats", msg, pct))
+        beat_cfg = self.controls.get_beat_config()
+        timeline = self._timeline
+
+        def compute(progress_cb):
+            return detect_beats(timeline, beat_cfg, progress_cb)
+
+        def apply(beats):
+            self._beats = beats
             self._reset_from_step(4)
             self._last_beat_preview_signature = self._beat_preview_signature()
-            self.visualizations.set_beats(self._beats)
+            self.visualizations.set_beats(beats)
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage(f"Detected {len(beats.beats)} beats @ {beats.tempo_bpm:.1f} BPM", 3000)
+
+        if not blocking:
+            self._run_step_async(3, "Beats", compute, apply, "Beat detection failed")
+            return True
+
+        self.controls.step_bar.set_step_status(3, "running")
+        self._set_pipeline_busy(True, "Beats: starting...")
+        self._progress_bar.setValue(0)
+        self._progress_bar.show()
+        try:
+            result = compute(lambda msg, pct: self._progress("Beats", msg, pct))
+            apply(result)
             self.controls.step_bar.set_step_status(3, "done")
             self.controls.on_step_completed(3)
             self._refresh_step_availability()
-            bar = self.statusBar()
-            if bar is not None:
-                bar.showMessage(f"Detected {len(self._beats.beats)} beats @ {self._beats.tempo_bpm:.1f} BPM", 3000)
             return True
         except Exception as exc:
             self.controls.step_bar.set_step_status(3, "error")
             self._show_error("Beat detection failed", f"Beat detection failed: {exc}", show_errors)
             return False
+        finally:
+            self._set_pipeline_busy(False)
+            self._progress_bar.hide()
 
-    def step_4_generate(self, show_errors: bool = True) -> bool:
+    def step_4_generate(self, show_errors: bool = True, *, blocking: bool = True) -> bool:
         if self._timeline is None or self._beats is None:
             self._show_error("Generate blocked", "Analyze audio and detect beats before generation.", show_errors)
             return False
 
-        self.controls.step_bar.set_step_status(4, "running")
-        self._set_pipeline_busy(True, "Generate: running...")
-        try:
-            mapping_cfg = self.controls.get_mapping_config()
-            axis_cfg = self.controls.get_axis_config()
-            automap_cfg = self.controls.get_automap_config()
+        mapping_cfg = self.controls.get_mapping_config()
+        axis_cfg = self.controls.get_axis_config()
+        automap_cfg = self.controls.get_automap_config()
 
-            if mapping_cfg.overflow_mode == "bounce" and mapping_cfg.pos_min == mapping_cfg.pos_max:
-                raise ValueError("Bounce overflow requires Position Min and Position Max to be different.")
+        if mapping_cfg.overflow_mode == "bounce" and mapping_cfg.pos_min == mapping_cfg.pos_max:
+            self._show_error("Generate blocked", "Bounce overflow requires Position Min and Position Max to be different.", show_errors)
+            return False
 
+        timeline = self._timeline
+        beats = self._beats
+
+        def compute(progress_cb):
+            nonlocal mapping_cfg
             if automap_cfg.enabled:
                 mapping_cfg = automap_optimize(
-                    self._timeline,
-                    self._beats,
-                    mapping_cfg,
-                    automap_cfg,
-                    lambda msg, pct: self._progress("Automap", msg, pct),
+                    timeline, beats, mapping_cfg, automap_cfg,
+                    lambda msg, pct: progress_cb(f"Automap: {msg}", pct * 0.4),
                 )
+            positions = generate_positions(
+                timeline, beats, mapping_cfg,
+                lambda msg, pct: progress_cb(f"Generate: {msg}", 40 + pct * 0.4),
+            )
+            axis_source_actions = positions.beat_actions if len(positions.beat_actions) >= 2 else positions.actions
+            multi_axis = convert_to_2d(
+                axis_source_actions, axis_cfg,
+                duration_ms=int(timeline.duration_ms),
+                progress_callback=lambda msg, pct: progress_cb(f"Axis: {msg}", 80 + pct * 0.2),
+            )
+            return positions, multi_axis
 
-            self._positions = generate_positions(
-                self._timeline,
-                self._beats,
-                mapping_cfg,
-                lambda msg, pct: self._progress("Generate", msg, pct),
-            )
-            axis_source_actions = self._positions.beat_actions if len(self._positions.beat_actions) >= 2 else self._positions.actions
-            self._multi_axis = convert_to_2d(
-                axis_source_actions,
-                axis_cfg,
-                duration_ms=int(self._timeline.duration_ms),
-                progress_callback=lambda msg, pct: self._progress("Axis", msg, pct),
-            )
-            self.visualizations.set_positions(self._positions)
-            self.visualizations.set_multi_axis(self._multi_axis)
-            self.aux_panel.set_multi_axis(self._multi_axis)
+        def apply(result):
+            positions, multi_axis = result
+            self._positions = positions
+            self._multi_axis = multi_axis
+            self.visualizations.set_positions(positions)
+            self.visualizations.set_multi_axis(multi_axis)
+            self.aux_panel.set_multi_axis(multi_axis)
             self._last_live_preview_signature = self._live_preview_signature()
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage(f"Generated {len(positions.actions)} actions", 3000)
+
+        if not blocking:
+            self._run_step_async(4, "Generate", compute, apply, "Script generation failed")
+            return True
+
+        self.controls.step_bar.set_step_status(4, "running")
+        self._set_pipeline_busy(True, "Generate: running...")
+        self._progress_bar.setValue(0)
+        self._progress_bar.show()
+        try:
+            result = compute(lambda msg, pct: self._progress("Generate", msg, pct))
+            apply(result)
             self.controls.step_bar.set_step_status(4, "done")
             self.controls.on_step_completed(4)
             self._refresh_step_availability()
-            bar = self.statusBar()
-            if bar is not None:
-                bar.showMessage(f"Generated {len(self._positions.actions)} actions", 3000)
             return True
         except Exception as exc:
             self.controls.step_bar.set_step_status(4, "error")
@@ -714,6 +1059,7 @@ class PMVGeneratorWindow(QMainWindow):
             return False
         finally:
             self._set_pipeline_busy(False)
+            self._progress_bar.hide()
 
     def step_5_export(
         self,
@@ -808,20 +1154,18 @@ class PMVGeneratorWindow(QMainWindow):
         self._schedule_live_preview()
 
     def _on_step_requested(self, step: int) -> None:
-        ok = False
+        if self._worker_thread is not None:
+            return
         if step == 1:
-            ok = self.step_1_load_audio()
+            self.step_1_load_audio(blocking=False)
         elif step == 2:
-            ok = self.step_2_analyze()
+            self.step_2_analyze(blocking=False)
         elif step == 3:
-            ok = self.step_3_detect_beats()
+            self.step_3_detect_beats(blocking=False)
         elif step == 4:
-            ok = self.step_4_generate()
+            self.step_4_generate(blocking=False)
         elif step == 5:
-            ok = self.step_5_export()
-
-        if ok:
-            self._on_controls_changed()
+            self.step_5_export()
 
     def _on_visualization_position_changed(self, time_ms: float) -> None:
         bar = self.statusBar()
@@ -885,6 +1229,14 @@ class PMVGeneratorWindow(QMainWindow):
             # Fallback: update main window PositionCanvas
             self._position_canvas.update_position(alpha_tc, beta_tc)
 
+    def closeEvent(self, event) -> None:
+        if self._worker_thread is not None:
+            self._worker_thread.quit()
+            self._worker_thread.wait(5000)
+            self._worker_thread = None
+            self._worker = None
+        super().closeEvent(event)
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         mime = event.mimeData()
         if mime is not None and mime.hasUrls():
@@ -904,7 +1256,7 @@ class PMVGeneratorWindow(QMainWindow):
         for url in mime.urls():
             path = Path(url.toLocalFile())
             if path.suffix.lower() in SUPPORTED_EXTENSIONS:
-                self.step_1_load_audio(str(path))
+                self.step_1_load_audio(str(path), blocking=False)
                 event.acceptProposedAction()
                 return
         event.ignore()
