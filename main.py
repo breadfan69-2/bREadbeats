@@ -154,29 +154,6 @@ class BREadbeatsWindow(QMainWindow):
         self.setMinimumSize(400, 300)
         self.resize(825, 475)
         self.setStyleSheet(get_main_stylesheet())
-        # Set window icon (appears in taskbar and title bar)
-        try:
-            from pathlib import Path
-            from PyQt6.QtGui import QIcon
-            
-            # Handle both development and packaged (PyInstaller) modes
-            if getattr(sys, 'frozen', False):
-                # Running as packaged exe
-                meipass = getattr(sys, '_MEIPASS', None)
-                if meipass:
-                    icon_path = Path(meipass) / 'bREadbeats.ico'
-                else:
-                    icon_path = Path(__file__).parent / 'bREadbeats.ico'
-            else:
-                # Running from source
-                icon_path = Path(__file__).parent / 'bREadbeats.ico'
-            
-            if icon_path.exists():
-                self.setWindowIcon(QIcon(str(icon_path)))
-            else:
-                print(f"[UI] Icon not found at: {icon_path}")
-        except Exception as e:
-            print(f"[UI] Could not load icon: {e}")
         
         # Initialize config from saved file (or defaults)
         self.config = load_config()
@@ -1633,12 +1610,16 @@ def main():
 
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    
-    # Show splash screen while loading (fallback for direct main.py execution)
+
+    # Set app-wide icon so all windows / dialogs inherit it
     if getattr(sys, 'frozen', False):
         resource_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
     else:
         resource_dir = Path(__file__).parent
+    _icon_path = resource_dir / 'bREadbeats.ico'
+    if _icon_path.exists():
+        from PyQt6.QtGui import QIcon
+        app.setWindowIcon(QIcon(str(_icon_path)))
     
     splash_path = resource_dir / 'splash_screen.png'
     if splash_path.exists():

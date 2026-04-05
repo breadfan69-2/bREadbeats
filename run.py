@@ -15,7 +15,7 @@ from pathlib import Path
 # Import ONLY PyQt6 essentials first for splash screen (fast)
 t_pyqt = time.perf_counter()
 from PyQt6.QtWidgets import QApplication, QSplashScreen
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtCore import Qt
 
 print(
@@ -29,13 +29,16 @@ def run_app(app_argv: list[str]) -> int:
     app = QApplication(app_argv)
     app.setStyle("Fusion")
 
-    print("[Startup] Displaying splash screen...", flush=True)
-
-    # Show splash screen immediately before any heavy imports
+    # Set app-wide icon so all windows / dialogs inherit it
     if getattr(sys, "frozen", False):
         resource_dir = Path(sys._MEIPASS)  # type: ignore[attr-defined]
     else:
         resource_dir = Path(__file__).parent
+    _icon_path = resource_dir / "bREadbeats.ico"
+    if _icon_path.exists():
+        app.setWindowIcon(QIcon(str(_icon_path)))
+
+    print("[Startup] Displaying splash screen...", flush=True)
 
     splash_path = resource_dir / "splash_screen.png"
     splash = None

@@ -98,16 +98,25 @@ class _BusyOverlay(QWidget):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-        self.setStyleSheet("background-color: rgba(30, 30, 30, 160);")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setStyleSheet("background: transparent;")
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        container = QWidget(self)
+        container.setFixedWidth(300)
+        container.setStyleSheet(
+            "background-color: rgba(30, 30, 30, 220); border: 1px solid #5d5d5d; border-radius: 8px;"
+        )
+        inner = QVBoxLayout(container)
+        inner.setContentsMargins(16, 12, 16, 12)
+        inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self._label = QLabel("Processing\u2026")
-        self._label.setStyleSheet("color: #e0e0e0; font-size: 13px; font-weight: bold; background: transparent;")
+        self._label.setStyleSheet("color: #e0e0e0; font-size: 13px; font-weight: bold; background: transparent; border: none;")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self._label)
+        inner.addWidget(self._label)
 
         self._bar = QProgressBar()
         self._bar.setFixedWidth(260)
@@ -119,7 +128,8 @@ class _BusyOverlay(QWidget):
             "QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
             "stop:0 #008b8b, stop:1 #00bfbf); border-radius: 3px; }"
         )
-        layout.addWidget(self._bar, alignment=Qt.AlignmentFlag.AlignCenter)
+        inner.addWidget(self._bar, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(container)
 
         self.hide()
 
@@ -176,12 +186,12 @@ class PMVGeneratorWindow(QMainWindow):
 
         self._live_preview_timer = QTimer(self)
         self._live_preview_timer.setSingleShot(True)
-        self._live_preview_timer.setInterval(140)
+        self._live_preview_timer.setInterval(500)
         self._live_preview_timer.timeout.connect(self._run_live_preview)
 
         self._beat_preview_timer = QTimer(self)
         self._beat_preview_timer.setSingleShot(True)
-        self._beat_preview_timer.setInterval(300)
+        self._beat_preview_timer.setInterval(1200)
         self._beat_preview_timer.timeout.connect(self._run_beat_preview)
         self._beat_preview_busy = False
         self._last_beat_preview_signature: str | None = None
@@ -698,6 +708,8 @@ class PMVGeneratorWindow(QMainWindow):
         sig = self._live_preview_signature()
         if sig == self._last_live_preview_signature:
             return
+        # Invalidate any in-flight preview so its stale result is discarded
+        self._last_live_preview_signature = None
         self._live_preview_timer.start()
 
     def _run_live_preview(self, *, blocking: bool = False) -> None:
@@ -732,6 +744,7 @@ class PMVGeneratorWindow(QMainWindow):
         self._live_preview_busy = True
         timeline = self._timeline
         beats = self._beats
+        preview_sig = sig  # capture for staleness check
 
         def work():
             positions = generate_positions(timeline, beats, mapping_cfg)
@@ -744,13 +757,16 @@ class PMVGeneratorWindow(QMainWindow):
             return positions, multi_axis
 
         def apply(result):
+            # Discard if config changed while we were computing
+            if self._live_preview_signature() != preview_sig:
+                return
             positions, multi_axis = result
             self._positions = positions
             self._multi_axis = multi_axis
             self.visualizations.set_positions(positions)
             self.visualizations.set_multi_axis(multi_axis)
             self.aux_panel.set_multi_axis(multi_axis)
-            self._last_live_preview_signature = sig
+            self._last_live_preview_signature = preview_sig
             self._refresh_step_availability()
             bar = self.statusBar()
             if bar is not None:
@@ -786,6 +802,8 @@ class PMVGeneratorWindow(QMainWindow):
         sig = self._beat_preview_signature()
         if sig == self._last_beat_preview_signature:
             return
+        # Invalidate any in-flight preview so its stale result is discarded
+        self._last_beat_preview_signature = None
         self._beat_preview_timer.start()
 
     def _run_beat_preview(self) -> None:
@@ -801,12 +819,16 @@ class PMVGeneratorWindow(QMainWindow):
         self._beat_preview_busy = True
         beat_cfg = self.controls.get_beat_config()
         timeline = self._timeline
+        preview_sig = sig  # capture for staleness check
 
         def apply(beats):
+            # Discard if config changed while we were computing
+            if self._beat_preview_signature() != preview_sig:
+                return
             self._beats = beats
             self._reset_from_step(4)
             self.visualizations.set_beats(beats)
-            self._last_beat_preview_signature = sig
+            self._last_beat_preview_signature = preview_sig
             self._refresh_step_availability()
             bar = self.statusBar()
             if bar is not None:
@@ -1264,6 +1286,14 @@ class PMVGeneratorWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    try:
+        from pathlib import Path as _Path
+        from PyQt6.QtGui import QIcon as _QIcon
+        _icon = _Path(__file__).parent / "bREadbeats.ico"
+        if _icon.exists():
+            app.setWindowIcon(_QIcon(str(_icon)))
+    except Exception:
+        pass
     try:
         from stylesheet import get_main_stylesheet
 

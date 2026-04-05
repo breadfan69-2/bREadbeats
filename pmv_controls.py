@@ -24,7 +24,8 @@ from PyQt6.QtWidgets import (
 from audio_modules.event_detector import EventDetectorConfig
 from pmv_audio_analysis import AnalysisConfig
 from pmv_automap import AutomapConfig
-from pmv_axis_converter import AxisConfig
+from curve_editor import CurveEditorDialog
+from pmv_axis_converter import PRESET_CURVES, AxisConfig
 from pmv_beat_engine import BeatDetectionConfig
 from pmv_position_mapper import MLConfig, MappingConfig
 from widgets import CollapsibleGroupBox, SliderWithLabel
@@ -132,6 +133,19 @@ class PMVControlsPanel(QWidget):
         next_step = step + 1
         for group in self._step_sections.get(next_step, []):
             group.setCollapsed(False)
+
+    @staticmethod
+    def _curve_row(text: str, combo: QComboBox, edit_btn: QPushButton) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        label = QLabel(text)
+        label.setMinimumWidth(150)
+        layout.addWidget(label)
+        layout.addWidget(combo, 1)
+        layout.addWidget(edit_btn)
+        return row
 
     @staticmethod
     def _labeled_widget(text: str, widget: QWidget) -> QWidget:
@@ -562,6 +576,11 @@ class PMVControlsPanel(QWidget):
 
         self.axis_prostate_volume_slider = SliderWithLabel("Prostate Volume Mult", 1.0, 3.0, defaults.prostate_volume_mult, decimals=2, step=0.01)
 
+        self._e_custom_points: dict[str, list[tuple[float, float]] | None] = {
+            "e1": None, "e2": None, "e3": None, "e4": None,
+        }
+        _curve_items = list(PRESET_CURVES.keys()) + ["custom"]
+
         self.e1_curve_combo = QComboBox()
         self.e2_curve_combo = QComboBox()
         self.e3_curve_combo = QComboBox()
@@ -572,8 +591,16 @@ class PMVControlsPanel(QWidget):
             (self.e3_curve_combo, defaults.e3_curve),
             (self.e4_curve_combo, defaults.e4_curve),
         ):
-            combo.addItems(["linear", "ease_in", "ease_out", "bell"])
+            combo.addItems(_curve_items)
             self._set_combo_text(combo, value)
+
+        self._e_edit_buttons: dict[str, QPushButton] = {}
+        for ename, combo in (("e1", self.e1_curve_combo), ("e2", self.e2_curve_combo),
+                             ("e3", self.e3_curve_combo), ("e4", self.e4_curve_combo)):
+            btn = QPushButton("Edit")
+            btn.setFixedWidth(48)
+            btn.clicked.connect(lambda _=False, e=ename, c=combo: self._open_curve_editor(e, c))
+            self._e_edit_buttons[ename] = btn
 
         self.e1_phase_slider = SliderWithLabel("E1 Phase Shift", 0.0, 100.0, defaults.e_phase_shift.get("e1", 0.0), decimals=1, step=1.0)
         self.e2_phase_slider = SliderWithLabel("E2 Phase Shift", 0.0, 100.0, defaults.e_phase_shift.get("e2", 0.0), decimals=1, step=1.0)
@@ -616,6 +643,7 @@ class PMVControlsPanel(QWidget):
         self.axis_points_per_second_spin.setValue(defaults.points_per_second)
 
         self.axis_checkboxes: dict[str, QCheckBox] = {}
+        # Individual checkboxes kept in dict for preset round-trip, but hidden
         for axis_name in (
             "main",
             "alpha",
@@ -636,6 +664,19 @@ class PMVControlsPanel(QWidget):
             chk.setChecked(axis_name in defaults.enabled_axes)
             self.axis_checkboxes[axis_name] = chk
 
+        # -- Group toggles that drive multiple individual checkboxes --
+        self._alpha_beta_toggle = QCheckBox("Enable Alpha/Beta")
+        self._alpha_beta_toggle.setChecked(
+            self.axis_checkboxes["alpha"].isChecked() or self.axis_checkboxes["beta"].isChecked()
+        )
+        self._alpha_beta_toggle.toggled.connect(self._on_alpha_beta_toggled)
+
+        self._e1234_toggle = QCheckBox("Enable E1\u2013E4")
+        self._e1234_toggle.setChecked(
+            any(self.axis_checkboxes[k].isChecked() for k in ("e1", "e2", "e3", "e4"))
+        )
+        self._e1234_toggle.toggled.connect(self._on_e1234_toggled)
+
         self.output_format_combo = QComboBox()
         self.output_format_combo.addItems(["funscript", "csv"])
 
@@ -645,10 +686,10 @@ class PMVControlsPanel(QWidget):
             self.axis_speed_threshold_slider,
             self._labeled_widget("Prostate Algorithm", self.axis_prostate_algo_combo),
             self.axis_prostate_volume_slider,
-            self._labeled_widget("E1 Curve", self.e1_curve_combo),
-            self._labeled_widget("E2 Curve", self.e2_curve_combo),
-            self._labeled_widget("E3 Curve", self.e3_curve_combo),
-            self._labeled_widget("E4 Curve", self.e4_curve_combo),
+            self._curve_row("E1 Curve", self.e1_curve_combo, self._e_edit_buttons["e1"]),
+            self._curve_row("E2 Curve", self.e2_curve_combo, self._e_edit_buttons["e2"]),
+            self._curve_row("E3 Curve", self.e3_curve_combo, self._e_edit_buttons["e3"]),
+            self._curve_row("E4 Curve", self.e4_curve_combo, self._e_edit_buttons["e4"]),
             self.e1_phase_slider,
             self.e2_phase_slider,
             self.e3_phase_slider,
@@ -669,7 +710,11 @@ class PMVControlsPanel(QWidget):
             form.addWidget(widget)
 
         for axis_name in self.axis_checkboxes:
+            if axis_name in ("alpha", "beta", "e1", "e2", "e3", "e4"):
+                continue  # driven by group toggles
             form.addWidget(self.axis_checkboxes[axis_name])
+        form.addWidget(self._alpha_beta_toggle)
+        form.addWidget(self._e1234_toggle)
 
         self._wire(
             self.axis_direction_flip_slider,
@@ -698,6 +743,8 @@ class PMVControlsPanel(QWidget):
             self.axis_points_per_second_spin,
             self.output_format_combo,
             *tuple(self.axis_checkboxes.values()),
+            self._alpha_beta_toggle,
+            self._e1234_toggle,
         )
         self._layout.addWidget(group)
 
@@ -785,7 +832,9 @@ class PMVControlsPanel(QWidget):
             e2_curve=str(self.e2_curve_combo.currentText()),
             e3_curve=str(self.e3_curve_combo.currentText()),
             e4_curve=str(self.e4_curve_combo.currentText()),
-            e_custom_points={},
+            e_custom_points={
+                k: list(v) for k, v in self._e_custom_points.items() if v is not None
+            },
             e_phase_shift={
                 "e1": float(self.e1_phase_slider.value()),
                 "e2": float(self.e2_phase_slider.value()),
@@ -805,6 +854,16 @@ class PMVControlsPanel(QWidget):
             points_per_second=int(self.axis_points_per_second_spin.value()),
             enabled_axes=enabled_axes,
         )
+
+    # -- group toggle handlers -------------------------------------------------
+
+    def _on_alpha_beta_toggled(self, checked: bool) -> None:
+        for k in ("alpha", "beta"):
+            self.axis_checkboxes[k].setChecked(checked)
+
+    def _on_e1234_toggled(self, checked: bool) -> None:
+        for k in ("e1", "e2", "e3", "e4"):
+            self.axis_checkboxes[k].setChecked(checked)
 
     def get_automap_config(self) -> AutomapConfig:
         return AutomapConfig(
@@ -957,6 +1016,12 @@ class PMVControlsPanel(QWidget):
                 enabled_set = {str(v) for v in enabled_axes}
                 for axis_name, chk in self.axis_checkboxes.items():
                     chk.setChecked(axis_name in enabled_set)
+                self._alpha_beta_toggle.setChecked(
+                    self.axis_checkboxes["alpha"].isChecked() or self.axis_checkboxes["beta"].isChecked()
+                )
+                self._e1234_toggle.setChecked(
+                    any(self.axis_checkboxes[k].isChecked() for k in ("e1", "e2", "e3", "e4"))
+                )
 
         output = preset.get("output", {})
         if isinstance(output, dict):

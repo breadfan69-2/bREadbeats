@@ -366,6 +366,7 @@ class PlaybackPanel(QWidget):
         self.seek_slider = QSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 1000)
         self.seek_slider.setValue(0)
+        self._slider_held = False
 
         layout.addWidget(self.play_btn)
         layout.addWidget(self.pause_btn)
@@ -380,6 +381,8 @@ class PlaybackPanel(QWidget):
         self.play_btn.clicked.connect(self.play)
         self.pause_btn.clicked.connect(self.pause)
         self.stop_btn.clicked.connect(self.stop)
+        self.seek_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.seek_slider.sliderReleased.connect(self._on_slider_released)
         self.seek_slider.valueChanged.connect(self._on_seek_slider)
 
     @staticmethod
@@ -431,7 +434,16 @@ class PlaybackPanel(QWidget):
             self._playing = False
             self._timer.stop()
 
+    def _on_slider_pressed(self) -> None:
+        self._slider_held = True
+
+    def _on_slider_released(self) -> None:
+        self._slider_held = False
+        self._on_seek_slider(self.seek_slider.value())
+
     def _sync_slider_from_position(self) -> None:
+        if self._slider_held:
+            return
         if self._duration_ms <= 0:
             self.seek_slider.blockSignals(True)
             self.seek_slider.setValue(0)

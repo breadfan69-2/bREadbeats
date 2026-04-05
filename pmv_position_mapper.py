@@ -52,7 +52,7 @@ class BeatIntelligenceResult:
 
 @dataclass(slots=True)
 class MappingConfig:
-    pitch_range: float = 100.0
+    pitch_range: float = 0.0
     amplitude_centering: float = 0.0
     center_offset: float = 0.0
     overflow_mode: str = "crop"
