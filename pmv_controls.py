@@ -9,6 +9,7 @@ from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
@@ -857,6 +858,18 @@ class PMVControlsPanel(QWidget):
 
     # -- group toggle handlers -------------------------------------------------
 
+    def _open_curve_editor(self, electrode: str, combo: QComboBox) -> None:
+        current = combo.currentText()
+        custom = self._e_custom_points.get(electrode)
+        dlg = CurveEditorDialog(electrode, current, custom, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            curve = dlg.result_curve()
+            points = dlg.result_points()
+            if curve is not None:
+                self._e_custom_points[electrode] = points
+                self._set_combo_text(combo, curve)
+                self._emit_changed()
+
     def _on_alpha_beta_toggled(self, checked: bool) -> None:
         for k in ("alpha", "beta"):
             self.axis_checkboxes[k].setChecked(checked)
@@ -991,6 +1004,15 @@ class PMVControlsPanel(QWidget):
             self._set_combo_text(self.e2_curve_combo, str(axis.get("e2_curve", self.e2_curve_combo.currentText())))
             self._set_combo_text(self.e3_curve_combo, str(axis.get("e3_curve", self.e3_curve_combo.currentText())))
             self._set_combo_text(self.e4_curve_combo, str(axis.get("e4_curve", self.e4_curve_combo.currentText())))
+
+            saved_cp = axis.get("e_custom_points", {})
+            if isinstance(saved_cp, dict):
+                for ename in ("e1", "e2", "e3", "e4"):
+                    pts = saved_cp.get(ename)
+                    if isinstance(pts, list) and len(pts) >= 2:
+                        self._e_custom_points[ename] = [(float(p[0]), float(p[1])) for p in pts]
+                    else:
+                        self._e_custom_points[ename] = None
 
             phase = axis.get("e_phase_shift", {})
             if isinstance(phase, dict):
