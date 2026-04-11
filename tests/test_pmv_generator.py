@@ -9,7 +9,9 @@ from pathlib import Path
 import numpy as np
 from PyQt6.QtWidgets import QApplication
 
+from funscript_edit_state import LockedRegion
 from pmv_generator import PMVGeneratorWindow
+from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
 from pmv_position_mapper import PositionTimeline
 
 
@@ -176,6 +178,97 @@ class TestPmvGenerator(unittest.TestCase):
             self.assertTrue(win.step_5_export(str(export_dir), show_errors=False, show_success=False))
             exported = list(export_dir.glob("*.funscript"))
             self.assertGreaterEqual(len(exported), 1)
+
+    def test_export_uses_authoritative_edit_state_actions(self):
+        sr = 48_000
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_wav = root / "clip.wav"
+            export_dir = root / "out"
+
+            samples = self._make_click_track(sr, duration_s=8.0, bpm=120.0)
+            self._write_wav(input_wav, samples, sr)
+
+            win = PMVGeneratorWindow()
+            win.controls.use_librosa_chk.setChecked(False)
+
+            self.assertTrue(win.step_1_load_audio(str(input_wav), show_errors=False))
+            self.assertTrue(win.step_2_analyze(show_errors=False))
+            self.assertTrue(win.step_3_detect_beats(show_errors=False))
+            self.assertTrue(win.step_4_generate(show_errors=False))
+
+            edited_actions = [
+                FunscriptAction(0, 7),
+                FunscriptAction(500, 91),
+                FunscriptAction(1000, 13),
+            ]
+            win._edit_state.load_actions(edited_actions)
+
+            self.assertTrue(win.step_5_export(str(export_dir), show_errors=False, show_success=False))
+
+            script_path = export_dir / f"{input_wav.stem}.funscript"
+            exported_actions, _ = read_funscript(script_path)
+            self.assertEqual(
+                [(action.at, action.pos) for action in exported_actions],
+                [(action.at, action.pos) for action in edited_actions],
+            )
+
+    def test_merge_generated_actions_preserves_locked_regions(self):
+        generated = [
+            FunscriptAction(0, 10),
+            FunscriptAction(500, 20),
+            FunscriptAction(1000, 30),
+        ]
+        locked = [
+            FunscriptAction(450, 88),
+            FunscriptAction(550, 92),
+        ]
+        merged = PMVGeneratorWindow._merge_generated_actions_with_locked_regions(
+            generated,
+            locked,
+            [LockedRegion(400, 600)],
+        )
+
+        self.assertEqual(
+            [(action.at, action.pos) for action in merged],
+            [(0, 10), (450, 88), (550, 92), (1000, 30)],
+        )
+
+    def test_open_existing_funscript_without_media(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script_path = root / "existing.funscript"
+            export_dir = root / "out"
+
+            actions = [
+                FunscriptAction(0, 25),
+                FunscriptAction(600, 80),
+                FunscriptAction(1200, 35),
+            ]
+            metadata = FunscriptMetadata(
+                title="existing",
+                duration=1500,
+                parameters={
+                    "preset": {
+                        "mapping": {"center_offset": 12.0},
+                        "axis": {"enabled_axes": ["main"]},
+                    }
+                },
+            )
+            write_funscript(script_path, actions, metadata)
+
+            win = PMVGeneratorWindow()
+            self.assertTrue(win.open_funscript(str(script_path), show_errors=False))
+
+            self.assertIsNone(win._media_path)
+            self.assertEqual(win._file_path, str(script_path))
+            self.assertEqual([(a.at, a.pos) for a in win._edit_state.actions], [(0, 25), (600, 80), (1200, 35)])
+            self.assertAlmostEqual(win.visualizations.playback_panel._duration_ms, 1500.0, places=2)
+            self.assertAlmostEqual(win.controls.center_offset_slider.value(), 12.0, places=2)
+
+            self.assertTrue(win.step_5_export(str(export_dir), show_errors=False, show_success=False))
+            exported_actions, _ = read_funscript(export_dir / "existing.funscript")
+            self.assertEqual([(a.at, a.pos) for a in exported_actions], [(0, 25), (600, 80), (1200, 35)])
 
 
 if __name__ == "__main__":

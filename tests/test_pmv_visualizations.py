@@ -3,8 +3,12 @@ from __future__ import annotations
 import unittest
 
 import numpy as np
+import pyqtgraph as pg
+from PyQt6.QtCore import QEvent, QPointF, Qt
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import QApplication
 
+from funscript_edit_state import FunscriptEditState
 from pmv_audio_analysis import AudioTimeline
 from pmv_beat_engine import BeatCandidate, BeatTimeline
 from pmv_funscript_io import FunscriptAction
@@ -152,6 +156,48 @@ class TestPmvVisualizations(unittest.TestCase):
 
         self.assertGreaterEqual(len(captured), 1)
         self.assertAlmostEqual(float(captured[-1]), 750.0, places=2)
+
+    def test_edit_mode_viewport_click_selects_point(self):
+        area = VisualizationArea()
+        state = FunscriptEditState()
+        actions = [
+            FunscriptAction(at=500, pos=20),
+            FunscriptAction(at=1000, pos=55),
+            FunscriptAction(at=1500, pos=80),
+        ]
+        positions = PositionTimeline(
+            actions=actions,
+            beat_actions=actions,
+            speed_profile=np.array([0.1, 0.2, 0.3], dtype=np.float64),
+            ml_results=None,
+        )
+
+        state.load_actions(actions)
+        area.set_edit_state(state)
+        area.set_positions(positions)
+        area.zoom_to_range(0.0, 2000.0)
+        area.resize(900, 500)
+        area.show()
+        QApplication.processEvents()
+
+        area._edit_mode_btn.setChecked(True)
+        QApplication.processEvents()
+
+        view_box = area.overlay_plot.getViewBox()
+        scene_point = view_box.mapViewToScene(pg.Point(1000.0, 55.0))
+        widget_point = area.overlay_plot.mapFromScene(scene_point)
+        click_event = QMouseEvent(
+            QEvent.Type.MouseButtonPress,
+            QPointF(widget_point),
+            QPointF(widget_point),
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        handled = area.eventFilter(area.overlay_plot.viewport(), click_event)
+
+        self.assertTrue(handled)
+        self.assertEqual(state.selection_indices, {1})
 
 
 if __name__ == "__main__":

@@ -33,14 +33,17 @@ from pmv_axis_converter import MultiAxisResult, convert_to_2d
 from pmv_beat_engine import BeatTimeline, detect_beats
 from config_persistence import get_config_dir
 from pmv_controls import PMVControlsPanel
-from pmv_funscript_io import FunscriptMetadata, write_csv, write_funscript
+from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_csv, write_funscript
 from pmv_position_mapper import PositionTimeline, generate_positions
 from pmv_visualizations import AuxAxisPanel, VisualizationArea
+from funscript_edit_state import FunscriptEditState, LockedRegion
 
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".aac", ".wma", ".m4a"}
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".webm", ".wmv", ".mov", ".flv"}
+FUNSCRIPT_EXTENSIONS = {".funscript"}
 SUPPORTED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+IMPORTABLE_EXTENSIONS = SUPPORTED_EXTENSIONS | FUNSCRIPT_EXTENSIONS
 
 
 def _merge_dict(base: dict, overrides: dict) -> dict:
@@ -166,11 +169,13 @@ class PMVGeneratorWindow(QMainWindow):
         self._position_canvas = position_canvas
 
         self._file_path: str | None = None
+        self._media_path: str | None = None
         self._samples = None
         self._timeline = None
         self._beats: BeatTimeline | None = None
         self._positions: PositionTimeline | None = None
         self._multi_axis: MultiAxisResult | None = None
+        self._edit_state = FunscriptEditState(self)
         self._live_preview_busy = False
         self._last_live_preview_signature: str | None = None
         self._pipeline_busy = False
@@ -212,9 +217,11 @@ class PMVGeneratorWindow(QMainWindow):
         self.load_preset_btn = QPushButton("Load", self)
         self.save_preset_btn = QPushButton("Save As", self)
         self.refresh_preset_btn = QPushButton("Refresh", self)
+        self.open_script_btn = QPushButton("Open Script", self)
         preset_row.addWidget(self.load_preset_btn)
         preset_row.addWidget(self.save_preset_btn)
         preset_row.addWidget(self.refresh_preset_btn)
+        preset_row.addWidget(self.open_script_btn)
 
         root_layout.addLayout(preset_row)
 
@@ -239,6 +246,9 @@ class PMVGeneratorWindow(QMainWindow):
         self.aux_panel = AuxAxisPanel(center)
         center_layout.addWidget(self.aux_panel, 1)
 
+        # Bind edit state to visualization
+        self.visualizations.set_edit_state(self._edit_state)
+
         splitter.addWidget(center)
         splitter.setSizes([380, 820])
 
@@ -260,10 +270,12 @@ class PMVGeneratorWindow(QMainWindow):
         self.controls.config_changed.connect(self._on_controls_changed)
         self.controls.step_bar.step_requested.connect(self._on_step_requested)
         self.visualizations.position_changed.connect(self._on_visualization_position_changed)
+        self._edit_state.changed.connect(self._on_edit_state_changed)
         self.aux_panel.link_x_axis(self.visualizations.overlay_plot)
         self.load_preset_btn.clicked.connect(self._on_load_preset_clicked)
         self.save_preset_btn.clicked.connect(self._on_save_preset_clicked)
         self.refresh_preset_btn.clicked.connect(self._reload_preset_catalog)
+        self.open_script_btn.clicked.connect(self._on_open_script_clicked)
 
         self._default_preset_dir, self._user_preset_dir = self._resolve_preset_dirs()
         self._ensure_default_presets()
@@ -679,16 +691,214 @@ class PMVGeneratorWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Select Audio or Video", "", filter_str)
         return path or None
 
+    def _select_funscript_file(self) -> str | None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Existing Funscript",
+            "",
+            "Funscript Files (*.funscript);;All Files (*.*)",
+        )
+        return path or None
+
+    def _discover_matching_media(self, script_path: Path, metadata: FunscriptMetadata) -> Path | None:
+        candidates: list[Path] = []
+        for ext in SUPPORTED_EXTENSIONS:
+            candidates.append(script_path.with_suffix(ext))
+
+        title = str(metadata.title).strip()
+        if title:
+            title_path = script_path.with_name(title)
+            if title_path.suffix.lower() in SUPPORTED_EXTENSIONS:
+                candidates.append(title_path)
+            else:
+                candidates.extend(title_path.with_suffix(ext) for ext in SUPPORTED_EXTENSIONS)
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    def _on_open_script_clicked(self) -> None:
+        self.open_funscript(blocking=False)
+
+    def _apply_opened_funscript(
+        self,
+        script_path: Path,
+        metadata: FunscriptMetadata,
+        actions: list[FunscriptAction],
+        matching_media: Path | None,
+        samples,
+        analysis_sample_rate: int,
+    ) -> None:
+        copied_actions = [FunscriptAction(a.at, a.pos) for a in actions]
+        duration_ms = int(max(metadata.duration, copied_actions[-1].at if copied_actions else 0))
+
+        self._file_path = str(script_path)
+        self._media_path = str(matching_media) if matching_media is not None else None
+        self._samples = samples
+        self._timeline = None
+        self._beats = None
+        self._reset_from_step(2)
+
+        if samples is not None:
+            self.visualizations.set_audio_data(samples, analysis_sample_rate)
+            self.controls.step_bar.set_step_status(1, "done")
+        else:
+            self.visualizations.set_audio_data(np.array([], dtype=np.float32), 0)
+            self.visualizations.set_duration_hint(duration_ms)
+            self.controls.step_bar.set_step_status(1, "ready")
+
+        speed_profile = np.zeros(len(copied_actions), dtype=np.float64)
+        self._positions = PositionTimeline(
+            actions=[FunscriptAction(a.at, a.pos) for a in copied_actions],
+            beat_actions=[FunscriptAction(a.at, a.pos) for a in copied_actions],
+            speed_profile=speed_profile,
+            ml_results=None,
+        )
+        axis_duration_ms = max(duration_ms, 1)
+        self._multi_axis = convert_to_2d(self._positions.actions, self.controls.get_axis_config(), axis_duration_ms)
+        self._edit_state.load_actions(self._positions.actions)
+        self.visualizations.set_positions(self._positions)
+        self.visualizations.set_multi_axis(self._multi_axis)
+        self.aux_panel.set_multi_axis(self._multi_axis)
+        self.visualizations.set_playback_position(0.0)
+        if duration_ms > 0:
+            self.visualizations.zoom_to_range(0.0, max(1000.0, float(duration_ms)))
+
+        label = script_path.name
+        if matching_media is not None:
+            label = f"{script_path.name} | {matching_media.name}"
+        self.file_label.setText(label)
+        tooltip = str(script_path)
+        if matching_media is not None:
+            tooltip = f"Script: {script_path}\nMedia: {matching_media}"
+        self.file_label.setToolTip(tooltip)
+
+        for step in (2, 3, 5):
+            self.controls.step_bar.set_step_status(step, "ready")
+        self.controls.step_bar.set_step_status(4, "done")
+        self._last_live_preview_signature = self._live_preview_signature()
+        self._refresh_step_availability()
+
+        bar = self.statusBar()
+        if bar is not None:
+            suffix = f" with media {matching_media.name}" if matching_media is not None else " (no matching media found)"
+            bar.showMessage(f"Opened {script_path.name}{suffix}", 4000)
+
+    def open_funscript(
+        self,
+        file_path: str | None = None,
+        show_errors: bool = True,
+        *,
+        blocking: bool = True,
+    ) -> bool:
+        path = file_path or self._select_funscript_file()
+        if not path:
+            return False
+
+        script_path = Path(path)
+        if script_path.suffix.lower() not in FUNSCRIPT_EXTENSIONS:
+            self._show_error("Unsupported file", "Selected file is not a funscript.", show_errors)
+            return False
+
+        try:
+            actions, metadata = read_funscript(script_path)
+        except Exception as exc:
+            self._show_error("Open failed", f"Unable to read funscript: {exc}", show_errors)
+            return False
+
+        preset = metadata.parameters.get("preset") if isinstance(metadata.parameters, dict) else None
+        self._reset_from_step(2)
+        if isinstance(preset, dict):
+            self.controls.set_from_preset(preset)
+
+        analysis_cfg = self.controls.get_analysis_config()
+        matching_media = self._discover_matching_media(script_path, metadata)
+
+        def compute(progress_cb):
+            if matching_media is None:
+                return None
+            progress_cb("Loading matching media", 5.0)
+            return load_audio(str(matching_media), analysis_cfg, progress_cb)
+
+        def apply(samples):
+            self._apply_opened_funscript(
+                script_path,
+                metadata,
+                actions,
+                matching_media,
+                samples,
+                int(analysis_cfg.sample_rate),
+            )
+
+        if not blocking:
+            if matching_media is None:
+                apply(None)
+                return True
+            self._run_step_async(1, "Open Script", compute, apply, "Unable to open script")
+            return True
+
+        self.controls.step_bar.set_step_status(1, "running")
+        self._set_pipeline_busy(True, "Open Script: starting...")
+        self._progress_bar.setValue(0)
+        self._progress_bar.show()
+        try:
+            samples = compute(lambda msg, pct: self._progress("Open Script", msg, pct))
+            apply(samples)
+            return True
+        except Exception as exc:
+            self.controls.step_bar.set_step_status(1, "error")
+            self._show_error("Open failed", f"Unable to open script: {exc}", show_errors)
+            return False
+        finally:
+            self._set_pipeline_busy(False)
+            self._progress_bar.hide()
+
     def _refresh_step_availability(self) -> None:
         self.controls.step_bar.set_step_enabled(1, True)
         self.controls.step_bar.set_step_enabled(2, self._samples is not None)
         self.controls.step_bar.set_step_enabled(3, self._timeline is not None)
         self.controls.step_bar.set_step_enabled(4, self._beats is not None and len(self._beats.beats) > 0)
+        current_actions = self._current_main_actions()
         has_exportable = (
-            self._positions is not None
-            and (len(self._positions.actions) > 0 or len(self._positions.beat_actions) > 0)
+            len(current_actions) > 0
+            or (self._positions is not None and len(self._positions.beat_actions) > 0)
         )
         self.controls.step_bar.set_step_enabled(5, has_exportable)
+
+    def _on_edit_state_changed(self) -> None:
+        self._refresh_step_availability()
+
+    def _current_main_actions(self) -> list[FunscriptAction]:
+        if self._edit_state.version > 0:
+            return [FunscriptAction(a.at, a.pos) for a in self._edit_state.actions]
+        if self._positions is None:
+            return []
+        return [FunscriptAction(a.at, a.pos) for a in self._positions.actions]
+
+    @staticmethod
+    def _merge_generated_actions_with_locked_regions(
+        generated_actions: list[FunscriptAction],
+        locked_actions: list[FunscriptAction],
+        locked_regions: list[LockedRegion],
+    ) -> list[FunscriptAction]:
+        if not locked_regions:
+            return [FunscriptAction(a.at, a.pos) for a in generated_actions]
+
+        def is_locked(time_ms: int) -> bool:
+            return any(region.start_ms <= time_ms <= region.end_ms for region in locked_regions)
+
+        merged = [
+            FunscriptAction(a.at, a.pos) for a in generated_actions if not is_locked(int(a.at))
+        ]
+        merged.extend(FunscriptAction(a.at, a.pos) for a in locked_actions if is_locked(int(a.at)))
+        merged.sort(key=lambda action: action.at)
+        return merged
 
     def _live_preview_signature(self) -> str:
         payload = self.controls.to_preset()
@@ -760,6 +970,9 @@ class PMVGeneratorWindow(QMainWindow):
             # Discard if config changed while we were computing
             if self._live_preview_signature() != preview_sig:
                 return
+            # Guard: never overwrite dirty edits with a preview result
+            if self._edit_state.dirty:
+                return
             positions, multi_axis = result
             self._positions = positions
             self._multi_axis = multi_axis
@@ -825,6 +1038,8 @@ class PMVGeneratorWindow(QMainWindow):
             # Discard if config changed while we were computing
             if self._beat_preview_signature() != preview_sig:
                 return
+            if self._edit_state.dirty:
+                return
             self._beats = beats
             self._reset_from_step(4)
             self.visualizations.set_beats(beats)
@@ -861,6 +1076,7 @@ class PMVGeneratorWindow(QMainWindow):
         if step <= 4:
             self._positions = None
             self._multi_axis = None
+            self._edit_state.load_actions([])
             self.visualizations.set_positions(
                 PositionTimeline(
                     actions=[],
@@ -891,6 +1107,7 @@ class PMVGeneratorWindow(QMainWindow):
 
         def apply(samples):
             self._file_path = str(path)
+            self._media_path = str(path)
             self._samples = samples
             self._reset_from_step(2)
             self.file_label.setText(Path(path).name)
@@ -1028,6 +1245,9 @@ class PMVGeneratorWindow(QMainWindow):
 
         timeline = self._timeline
         beats = self._beats
+        locked_regions = [LockedRegion(r.start_ms, r.end_ms) for r in self._edit_state.locked_regions]
+        locked_actions = [FunscriptAction(a.at, a.pos) for a in self._edit_state.get_locked_actions()]
+        use_undoable_accept = self._edit_state.version > 0
 
         def compute(progress_cb):
             nonlocal mapping_cfg
@@ -1040,18 +1260,36 @@ class PMVGeneratorWindow(QMainWindow):
                 timeline, beats, mapping_cfg,
                 lambda msg, pct: progress_cb(f"Generate: {msg}", 40 + pct * 0.4),
             )
-            axis_source_actions = positions.beat_actions if len(positions.beat_actions) >= 2 else positions.actions
+            final_actions = self._merge_generated_actions_with_locked_regions(
+                positions.actions,
+                locked_actions,
+                locked_regions,
+            )
+            axis_source_actions = final_actions
+            if not axis_source_actions:
+                axis_source_actions = positions.beat_actions if len(positions.beat_actions) >= 2 else positions.actions
             multi_axis = convert_to_2d(
                 axis_source_actions, axis_cfg,
                 duration_ms=int(timeline.duration_ms),
                 progress_callback=lambda msg, pct: progress_cb(f"Axis: {msg}", 80 + pct * 0.2),
             )
+            if final_actions != positions.actions:
+                positions = PositionTimeline(
+                    actions=final_actions,
+                    beat_actions=[FunscriptAction(a.at, a.pos) for a in positions.beat_actions],
+                    speed_profile=positions.speed_profile,
+                    ml_results=positions.ml_results,
+                )
             return positions, multi_axis
 
         def apply(result):
             positions, multi_axis = result
             self._positions = positions
             self._multi_axis = multi_axis
+            if use_undoable_accept:
+                self._edit_state.accept_generation(positions.actions)
+            else:
+                self._edit_state.load_actions(positions.actions)
             self.visualizations.set_positions(positions)
             self.visualizations.set_multi_axis(multi_axis)
             self.aux_panel.set_multi_axis(multi_axis)
@@ -1116,18 +1354,21 @@ class PMVGeneratorWindow(QMainWindow):
                 },
             )
 
+            main_actions = self._current_main_actions()
+            if not main_actions and self._positions is not None:
+                main_actions = [FunscriptAction(a.at, a.pos) for a in self._positions.beat_actions]
+            if not main_actions:
+                raise RuntimeError("No main-axis actions are available for export.")
+
+            export_multi_axis = convert_to_2d(main_actions, axis_cfg, duration_ms)
+
             exported = 0
             exported_paths: list[Path] = []
             for axis_name in enabled_axes:
                 if axis_name == "main":
-                    axis_actions = self._positions.actions
-                    if not axis_actions:
-                        # Fallback to beat-level actions when dense interpolation is unavailable.
-                        axis_actions = self._positions.beat_actions
-                elif self._multi_axis is not None:
-                    axis_actions = self._multi_axis.axes.get(axis_name, [])
+                    axis_actions = main_actions
                 else:
-                    axis_actions = []
+                    axis_actions = export_multi_axis.axes.get(axis_name, [])
 
                 if not axis_actions:
                     continue
@@ -1171,6 +1412,15 @@ class PMVGeneratorWindow(QMainWindow):
         bar = self.statusBar()
         if bar is not None:
             bar.showMessage("PMV controls updated", 1800)
+
+        # Don't auto-preview while user has unsaved edits
+        if self._edit_state.dirty:
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage(
+                    "Manual edits active \u2014 click Generate to update unlocked regions", 3000
+                )
+            return
 
         self._schedule_beat_preview()
         self._schedule_live_preview()
@@ -1264,7 +1514,7 @@ class PMVGeneratorWindow(QMainWindow):
         if mime is not None and mime.hasUrls():
             for url in mime.urls():
                 path = Path(url.toLocalFile())
-                if path.suffix.lower() in SUPPORTED_EXTENSIONS:
+                if path.suffix.lower() in IMPORTABLE_EXTENSIONS:
                     event.acceptProposedAction()
                     return
         event.ignore()
@@ -1277,6 +1527,10 @@ class PMVGeneratorWindow(QMainWindow):
 
         for url in mime.urls():
             path = Path(url.toLocalFile())
+            if path.suffix.lower() in FUNSCRIPT_EXTENSIONS:
+                self.open_funscript(str(path), blocking=False)
+                event.acceptProposedAction()
+                return
             if path.suffix.lower() in SUPPORTED_EXTENSIONS:
                 self.step_1_load_audio(str(path), blocking=False)
                 event.acceptProposedAction()

@@ -1,21 +1,27 @@
 from __future__ import annotations
 
+import bisect
 import importlib
 import importlib.util
 import time
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
+
+if TYPE_CHECKING:
+    from funscript_edit_state import FunscriptEditState
 
 from pmv_audio_analysis import AudioTimeline
 from pmv_axis_converter import MultiAxisResult
@@ -601,6 +607,7 @@ class VisualizationArea(QWidget):
     """Container for a single overlaid PMV timeline plot with trace toggles."""
 
     position_changed = pyqtSignal(float)
+    edit_mode_changed = pyqtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -609,6 +616,15 @@ class VisualizationArea(QWidget):
         self._nav_syncing = False
         self._auto_follow_playhead = True
         self._lod_refreshing = False  # re-entrancy guard
+
+        # Edit-mode state
+        self._edit_mode = False
+        self._edit_state: FunscriptEditState | None = None
+        self._drag_idx: int | None = None
+        self._drag_active = False
+        self._rect_selecting = False
+        self._rect_start_pos = None  # (time_ms, pos) of rect select start
+        self._lock_overlays: list[pg.LinearRegionItem] = []
 
         # Full-resolution data stores for LOD rendering
         self._lod_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -626,6 +642,9 @@ class VisualizationArea(QWidget):
 
         self.overlay_plot = pg.PlotWidget(self)
         _style_plot(self.overlay_plot)
+        self.overlay_plot.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.overlay_plot.installEventFilter(self)
+        self.overlay_plot.viewport().installEventFilter(self)
         self.overlay_plot.setLabel("left", "Normalized / Position")
         self.overlay_plot.setLabel("bottom", "Time (ms)")
         vb = self.overlay_plot.getViewBox()
@@ -654,6 +673,39 @@ class VisualizationArea(QWidget):
         self.playhead_line = pg.InfiniteLine(pos=0.0, angle=90, movable=False, pen=pg.mkPen("#ffe082", width=1))
         self.overlay_plot.addItem(self.playhead_line)
 
+        # Edit-mode scatter overlays (all points + selected points)
+        self._edit_scatter = pg.ScatterPlotItem(
+            size=8,
+            pen=pg.mkPen("#fff176", width=1),
+            brush=pg.mkBrush("#fff176"),
+            hoverable=True,
+            hoverSize=12,
+            hoverBrush=pg.mkBrush("#ffffff"),
+        )
+        self._edit_scatter.setVisible(False)
+        self._edit_scatter.setZValue(10)
+        self.overlay_plot.addItem(self._edit_scatter)
+
+        self._selection_scatter = pg.ScatterPlotItem(
+            size=10,
+            pen=pg.mkPen("#42a5f5", width=2),
+            brush=pg.mkBrush("#42a5f580"),
+        )
+        self._selection_scatter.setVisible(False)
+        self._selection_scatter.setZValue(11)
+        self.overlay_plot.addItem(self._selection_scatter)
+
+        # Rectangle-selection overlay
+        self._rect_roi = pg.LinearRegionItem(
+            values=(0, 0), orientation="vertical",
+            brush=pg.mkBrush(66, 165, 245, 30),
+            pen=pg.mkPen("#42a5f5", width=1, style=Qt.PenStyle.DashLine),
+            movable=False,
+        )
+        self._rect_roi.setVisible(False)
+        self._rect_roi.setZValue(5)
+        self.overlay_plot.addItem(self._rect_roi)
+
         self.playback_panel = PlaybackPanel(self)
 
         self._trace_names = ("Waveform", "Flux", "Main", "Speed", "Beats", "Aux")
@@ -681,6 +733,13 @@ class VisualizationArea(QWidget):
         toolbar.addWidget(self.zoom_out_btn)
         toolbar.addWidget(self.fit_btn)
         toolbar.addWidget(self.follow_btn)
+
+        # ── Edit mode toggle ──
+        self._edit_mode_btn = QPushButton("Edit")
+        self._edit_mode_btn.setCheckable(True)
+        self._edit_mode_btn.setToolTip("Toggle interactive point editing (select, move, add, delete)")
+        self._edit_mode_btn.toggled.connect(self._on_edit_mode_toggled)
+        toolbar.addWidget(self._edit_mode_btn)
 
         toolbar.addStretch(1)
 
@@ -916,6 +975,15 @@ class VisualizationArea(QWidget):
         self._apply_view_range(0.0, self._view_span_ms)
         self._sync_nav_from_view()
 
+    def set_duration_hint(self, duration_ms: float) -> None:
+        duration = max(0.0, float(duration_ms))
+        self._duration_ms = duration
+        self._view_span_ms = max(1000.0, duration) if duration > 0.0 else 1000.0
+        self.playback_panel.set_duration_ms(duration)
+        if duration > 0.0:
+            self._apply_view_range(0.0, self._view_span_ms)
+        self._sync_nav_from_view()
+
     def set_features(self, timeline: AudioTimeline) -> None:
         t = np.asarray(timeline.frame_times_ms, dtype=np.float64)
         flux = np.asarray(timeline.spectral_flux_per_frame, dtype=np.float64)
@@ -1015,6 +1083,674 @@ class VisualizationArea(QWidget):
     def zoom_to_range(self, start_ms: float, end_ms: float) -> None:
         self._apply_view_range(start_ms, end_ms)
         self._sync_nav_from_view()
+
+    # ── Edit mode ───────────────────────────────────────────
+
+    def set_edit_state(self, state: FunscriptEditState | None) -> None:
+        """Bind an edit state. When set, edit mode can be toggled."""
+        if self._edit_state is not None:
+            try:
+                self._edit_state.changed.disconnect(self._on_edit_state_changed)
+            except (TypeError, RuntimeError):
+                pass
+        self._edit_state = state
+        if state is not None:
+            state.changed.connect(self._on_edit_state_changed)
+        self._edit_mode_btn.setEnabled(state is not None)
+        if state is None and self._edit_mode:
+            self._edit_mode_btn.setChecked(False)
+
+    def _on_edit_mode_toggled(self, active: bool) -> None:
+        self._edit_mode = active
+        self._edit_scatter.setVisible(active)
+        self._selection_scatter.setVisible(active)
+        if active:
+            self.overlay_plot.getViewBox().setMouseEnabled(x=True, y=False)
+            self.overlay_plot.setFocus()
+            self._refresh_edit_overlay()
+            self._rebuild_lock_overlays()
+        else:
+            if self._edit_state:
+                self._edit_state.clear_selection()
+            self._edit_scatter.setData([], [])
+            self._selection_scatter.setData([], [])
+            self._clear_lock_overlays()
+        self.edit_mode_changed.emit(active)
+
+    def _on_edit_state_changed(self) -> None:
+        if self._edit_mode:
+            self._refresh_edit_overlay()
+            self._rebuild_lock_overlays()
+
+    def _refresh_edit_overlay(self) -> None:
+        """Refresh the scatter points from the edit state."""
+        if not self._edit_mode or self._edit_state is None:
+            return
+        actions = self._edit_state.actions
+        if not actions:
+            self._edit_scatter.setData([], [])
+            self._selection_scatter.setData([], [])
+            return
+
+        # Apply LOD for rendering scatter
+        x_range = self.overlay_plot.viewRange()[0]
+        lo, hi = float(x_range[0]), float(x_range[1])
+
+        x_all = np.array([float(a.at) for a in actions], dtype=np.float64)
+        y_all = np.array([float(a.pos) for a in actions], dtype=np.float64)
+
+        # Viewport clip for scatter
+        i0 = max(0, int(np.searchsorted(x_all, lo, side="left")) - 1)
+        i1 = min(len(x_all), int(np.searchsorted(x_all, hi, side="right")) + 1)
+        xv = x_all[i0:i1]
+        yv = y_all[i0:i1]
+
+        # LOD downsample if too many visible
+        if len(xv) > 2000:
+            step = max(1, len(xv) // 2000)
+            indices = np.arange(0, len(xv), step)
+            xv = xv[indices]
+            yv = yv[indices]
+            vis_global_indices = np.arange(i0, i1, step)
+        else:
+            vis_global_indices = np.arange(i0, i1)
+
+        self._edit_scatter.setData(x=xv, y=yv)
+
+        # Selection scatter
+        sel = self._edit_state.selection_indices
+        if sel and len(vis_global_indices) > 0:
+            sel_mask = np.isin(vis_global_indices, list(sel))
+            if np.any(sel_mask):
+                self._selection_scatter.setData(x=xv[sel_mask], y=yv[sel_mask])
+            else:
+                self._selection_scatter.setData([], [])
+        else:
+            self._selection_scatter.setData([], [])
+
+        # Also update the position line curve from edit state
+        self._lod_data["position"] = (x_all, np.clip(y_all, 0.0, 100.0))
+        self._refresh_lod()
+
+    def _rebuild_lock_overlays(self) -> None:
+        self._clear_lock_overlays()
+        if self._edit_state is None:
+            return
+        for region in self._edit_state.locked_regions:
+            lr = pg.LinearRegionItem(
+                values=(region.start_ms, region.end_ms),
+                orientation="vertical",
+                brush=pg.mkBrush(100, 100, 255, 40),
+                pen=pg.mkPen("#6666ff", width=1, style=Qt.PenStyle.DashLine),
+                movable=False,
+            )
+            lr.setZValue(-10)
+            self.overlay_plot.addItem(lr)
+            self._lock_overlays.append(lr)
+
+    def _clear_lock_overlays(self) -> None:
+        for item in self._lock_overlays:
+            self.overlay_plot.removeItem(item)
+        self._lock_overlays.clear()
+
+    # ── Hit-testing (full action list, not LOD) ─────────────
+
+    def _find_nearest_action(self, time_ms: float, pos: float, max_dist_ms: float = 0) -> int | None:
+        """Search full action list (binary search by time) for nearest point to click."""
+        if self._edit_state is None:
+            return None
+        actions = self._edit_state.actions
+        if not actions:
+            return None
+
+        # Scale max_dist_ms based on viewport width for usability
+        if max_dist_ms <= 0:
+            x_range = self.overlay_plot.viewRange()[0]
+            max_dist_ms = max(200, (x_range[1] - x_range[0]) * 0.02)
+
+        lo = bisect.bisect_left(actions, time_ms - max_dist_ms, key=lambda a: a.at)
+        hi = bisect.bisect_right(actions, time_ms + max_dist_ms, key=lambda a: a.at)
+        best_idx, best_dist = None, float('inf')
+        for i in range(lo, min(hi, len(actions))):
+            a = actions[i]
+            dt = abs(a.at - time_ms) / max(1, max_dist_ms)
+            dp = abs(a.pos - pos) / 100.0
+            dist = (dt ** 2 + dp ** 2) ** 0.5
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+        return best_idx if best_dist < 1.0 else None
+
+    # ── Mouse & keyboard event handling ─────────────────────
+
+    def _scene_to_data(self, scene_pos) -> tuple[float, float]:
+        """Convert a scene position to data coordinates (time_ms, pos)."""
+        vb = self.overlay_plot.getViewBox()
+        point = vb.mapSceneToView(scene_pos)
+        return float(point.x()), float(point.y())
+
+    def _plot_event_to_data(self, ev) -> tuple[float, float]:
+        scene_pos = self.overlay_plot.mapToScene(ev.position().toPoint())
+        return self._scene_to_data(scene_pos)
+
+    def _handle_plot_viewport_mouse_press(self, ev) -> bool:
+        if not self._edit_mode or self._edit_state is None:
+            return False
+
+        time_ms, pos = self._plot_event_to_data(ev)
+
+        if ev.button() == Qt.MouseButton.LeftButton:
+            idx = self._find_nearest_action(time_ms, pos)
+            if idx is not None:
+                ctrl = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                if ctrl:
+                    self._edit_state.select_index(idx, toggle=True)
+                else:
+                    if idx not in self._edit_state.selection_indices:
+                        self._edit_state.clear_selection()
+                        self._edit_state.select_index(idx)
+                self._drag_idx = idx
+                self._drag_active = False
+                self._edit_state.begin_drag()
+                ev.accept()
+                return True
+
+            shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            if shift:
+                self._rect_selecting = True
+                self._rect_start_pos = (time_ms, pos)
+                self._rect_roi.setRegion((time_ms, time_ms))
+                self._rect_roi.setVisible(True)
+                ev.accept()
+                return True
+
+            self._edit_state.clear_selection()
+            ev.accept()
+            return True
+
+        if ev.button() == Qt.MouseButton.RightButton:
+            self._show_context_menu(ev.globalPosition().toPoint(), time_ms, pos)
+            ev.accept()
+            return True
+
+        return False
+
+    def _handle_plot_viewport_mouse_move(self, ev) -> bool:
+        if not self._edit_mode or self._edit_state is None:
+            return False
+
+        time_ms, pos = self._plot_event_to_data(ev)
+
+        if self._drag_idx is not None:
+            self._drag_active = True
+            new_at = int(time_ms)
+            new_pos = int(max(0, min(100, pos)))
+            if self._drag_idx < len(self._edit_state.actions):
+                current_action = self._edit_state.actions[self._drag_idx]
+                if not self._edit_state.is_locked(current_action.at):
+                    self._edit_state.move_action(self._drag_idx, new_at, new_pos)
+                    for i, action in enumerate(self._edit_state.actions):
+                        if action.at == new_at and action.pos == new_pos:
+                            self._drag_idx = i
+                            break
+            ev.accept()
+            return True
+
+        if self._rect_selecting and self._rect_start_pos is not None:
+            t_start, _ = self._rect_start_pos
+            self._rect_roi.setRegion((min(t_start, time_ms), max(t_start, time_ms)))
+            ev.accept()
+            return True
+
+        return False
+
+    def _handle_plot_viewport_mouse_release(self, ev) -> bool:
+        if not self._edit_mode or self._edit_state is None:
+            return False
+
+        time_ms, pos = self._plot_event_to_data(ev)
+
+        if self._rect_selecting and self._rect_start_pos is not None:
+            t_start, p_start = self._rect_start_pos
+            ctrl = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            if not ctrl:
+                self._edit_state.clear_selection()
+            self._edit_state.select_rect(
+                int(t_start),
+                int(time_ms),
+                min(p_start, pos),
+                max(p_start, pos),
+            )
+            self._rect_roi.setVisible(False)
+            self._rect_selecting = False
+            self._rect_start_pos = None
+            ev.accept()
+            return True
+
+        if self._drag_idx is not None:
+            self._drag_idx = None
+            self._drag_active = False
+            ev.accept()
+            return True
+
+        return False
+
+    def _handle_plot_viewport_mouse_double_click(self, ev) -> bool:
+        if not self._edit_mode or self._edit_state is None:
+            return False
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return False
+
+        time_ms, pos = self._plot_event_to_data(ev)
+        from pmv_funscript_io import FunscriptAction
+
+        self._edit_state.add_action(FunscriptAction(int(time_ms), int(max(0, min(100, pos)))))
+        ev.accept()
+        return True
+
+    def _handle_plot_key_press(self, ev: QKeyEvent) -> bool:
+        if not self._edit_mode or self._edit_state is None:
+            return False
+
+        key = ev.key()
+        mod = ev.modifiers()
+
+        if key == Qt.Key.Key_Delete:
+            self._edit_state.remove_selected()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_Z and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.undo()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_Y and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.redo()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_A and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.select_all()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_D and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.clear_selection()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_C and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.copy_selection()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_X and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.cut_selection()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_V and mod & Qt.KeyboardModifier.ControlModifier:
+            playhead_ms = int(self.playhead_line.value())
+            if mod & Qt.KeyboardModifier.ShiftModifier:
+                self._edit_state.paste_exact()
+            else:
+                self._edit_state.paste_at(playhead_ms)
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_I and not mod:
+            self._edit_state.invert_selection()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_E and not mod:
+            self._edit_state.equalize_selection()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_L and not mod:
+            self._edit_state.lock_selection_region()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_L and mod & Qt.KeyboardModifier.ControlModifier and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.lock_all_except_selection()
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_L and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.unlock_at(int(self.playhead_line.value()))
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_Up and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.move_selection_position(5)
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_Down and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.move_selection_position(-5)
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_Left and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.move_selection_time(-100)
+            ev.accept()
+            return True
+
+        if key == Qt.Key.Key_Right and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.move_selection_time(100)
+            ev.accept()
+            return True
+
+        return False
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.overlay_plot.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress and self._handle_plot_viewport_mouse_press(event):
+                return True
+            if event.type() == QEvent.Type.MouseMove and self._handle_plot_viewport_mouse_move(event):
+                return True
+            if event.type() == QEvent.Type.MouseButtonRelease and self._handle_plot_viewport_mouse_release(event):
+                return True
+            if event.type() == QEvent.Type.MouseButtonDblClick and self._handle_plot_viewport_mouse_double_click(event):
+                return True
+        if watched is self.overlay_plot and event.type() == QEvent.Type.KeyPress and self._handle_plot_key_press(event):
+            return True
+        return super().eventFilter(watched, event)
+
+    def mousePressEvent(self, ev) -> None:
+        if not self._edit_mode or self._edit_state is None:
+            super().mousePressEvent(ev)
+            return
+
+        # Map from widget coords to scene coords through the plot
+        scene_pos = self.overlay_plot.plotItem.vb.mapViewToScene(
+            self.overlay_plot.plotItem.vb.mapToView(ev.pos())
+        )
+        # Actually use the ViewBox mapping
+        vb = self.overlay_plot.getViewBox()
+        view_pos = vb.mapToView(ev.pos())
+        time_ms = float(view_pos.x())
+        pos = float(view_pos.y())
+
+        if ev.button() == Qt.MouseButton.LeftButton:
+            idx = self._find_nearest_action(time_ms, pos)
+            if idx is not None:
+                # Start potential drag
+                ctrl = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                if ctrl:
+                    self._edit_state.select_index(idx, toggle=True)
+                else:
+                    if idx not in self._edit_state.selection_indices:
+                        self._edit_state.clear_selection()
+                        self._edit_state.select_index(idx)
+                self._drag_idx = idx
+                self._drag_active = False
+                self._edit_state.begin_drag()
+                ev.accept()
+                return
+            else:
+                # Start rectangle selection or clear selection
+                shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                if shift:
+                    self._rect_selecting = True
+                    self._rect_start_pos = (time_ms, pos)
+                    self._rect_roi.setRegion((time_ms, time_ms))
+                    self._rect_roi.setVisible(True)
+                    ev.accept()
+                    return
+                else:
+                    self._edit_state.clear_selection()
+
+        elif ev.button() == Qt.MouseButton.RightButton:
+            self._show_context_menu(ev.globalPosition().toPoint(), time_ms, pos)
+            ev.accept()
+            return
+
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev) -> None:
+        if not self._edit_mode or self._edit_state is None:
+            super().mouseMoveEvent(ev)
+            return
+
+        vb = self.overlay_plot.getViewBox()
+        view_pos = vb.mapToView(ev.pos())
+        time_ms = float(view_pos.x())
+        pos = float(view_pos.y())
+
+        if self._drag_idx is not None:
+            self._drag_active = True
+            new_at = int(time_ms)
+            new_pos = int(max(0, min(100, pos)))
+            if not self._edit_state.is_locked(self._edit_state.actions[self._drag_idx].at):
+                self._edit_state.move_action(self._drag_idx, new_at, new_pos)
+                # Find the new index after re-sort
+                actions = self._edit_state.actions
+                for i, a in enumerate(actions):
+                    if a.at == new_at and a.pos == new_pos:
+                        self._drag_idx = i
+                        break
+            ev.accept()
+            return
+
+        if self._rect_selecting and self._rect_start_pos is not None:
+            t_start, _ = self._rect_start_pos
+            self._rect_roi.setRegion((min(t_start, time_ms), max(t_start, time_ms)))
+            ev.accept()
+            return
+
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev) -> None:
+        if not self._edit_mode or self._edit_state is None:
+            super().mouseReleaseEvent(ev)
+            return
+
+        vb = self.overlay_plot.getViewBox()
+        view_pos = vb.mapToView(ev.pos())
+        time_ms = float(view_pos.x())
+        pos = float(view_pos.y())
+
+        if self._rect_selecting and self._rect_start_pos is not None:
+            t_start, p_start = self._rect_start_pos
+            ctrl = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
+            if not ctrl:
+                self._edit_state.clear_selection()
+            self._edit_state.select_rect(
+                int(t_start), int(time_ms),
+                min(p_start, pos), max(p_start, pos),
+            )
+            self._rect_roi.setVisible(False)
+            self._rect_selecting = False
+            self._rect_start_pos = None
+            ev.accept()
+            return
+
+        self._drag_idx = None
+        self._drag_active = False
+        ev.accept()
+
+    def mouseDoubleClickEvent(self, ev) -> None:
+        if not self._edit_mode or self._edit_state is None:
+            super().mouseDoubleClickEvent(ev)
+            return
+
+        if ev.button() == Qt.MouseButton.LeftButton:
+            vb = self.overlay_plot.getViewBox()
+            view_pos = vb.mapToView(ev.pos())
+            time_ms = float(view_pos.x())
+            pos = float(view_pos.y())
+            from pmv_funscript_io import FunscriptAction
+            new_action = FunscriptAction(int(time_ms), int(max(0, min(100, pos))))
+            self._edit_state.add_action(new_action)
+            ev.accept()
+            return
+
+        super().mouseDoubleClickEvent(ev)
+
+    def keyPressEvent(self, ev: QKeyEvent) -> None:
+        if not self._edit_mode or self._edit_state is None:
+            super().keyPressEvent(ev)
+            return
+
+        key = ev.key()
+        mod = ev.modifiers()
+
+        if key == Qt.Key.Key_Delete:
+            self._edit_state.remove_selected()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_Z and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.undo()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_Y and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.redo()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_A and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.select_all()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_D and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.clear_selection()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_C and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.copy_selection()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_X and mod & Qt.KeyboardModifier.ControlModifier:
+            self._edit_state.cut_selection()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_V and mod & Qt.KeyboardModifier.ControlModifier:
+            playhead_ms = int(self.playhead_line.value())
+            if mod & Qt.KeyboardModifier.ShiftModifier:
+                self._edit_state.paste_exact()
+            else:
+                self._edit_state.paste_at(playhead_ms)
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_I and not mod:
+            self._edit_state.invert_selection()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_E and not mod:
+            self._edit_state.equalize_selection()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_L and not mod:
+            self._edit_state.lock_selection_region()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_L and mod & Qt.KeyboardModifier.ControlModifier and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.lock_all_except_selection()
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_L and mod & Qt.KeyboardModifier.ControlModifier:
+            playhead_ms = int(self.playhead_line.value())
+            self._edit_state.unlock_at(playhead_ms)
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_Up and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.move_selection_position(5)
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_Down and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.move_selection_position(-5)
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_Left and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.move_selection_time(-100)
+            ev.accept()
+            return
+
+        if key == Qt.Key.Key_Right and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.move_selection_time(100)
+            ev.accept()
+            return
+
+        super().keyPressEvent(ev)
+
+    def _show_context_menu(self, global_pos, time_ms: float, pos: float) -> None:
+        if self._edit_state is None:
+            return
+        menu = QMenu(self)
+
+        add_act = menu.addAction("Add Point Here")
+        add_act.triggered.connect(lambda: self._ctx_add_point(time_ms, pos))
+
+        menu.addSeparator()
+
+        lock_act = menu.addAction("Lock Selection Region")
+        lock_act.setEnabled(self._edit_state.has_selection)
+        lock_act.triggered.connect(self._edit_state.lock_selection_region)
+
+        unlock_act = menu.addAction("Unlock This Region")
+        unlock_act.setEnabled(self._edit_state.is_locked(int(time_ms)))
+        unlock_act.triggered.connect(lambda: self._edit_state.unlock_at(int(time_ms)))
+
+        clear_locks_act = menu.addAction("Clear All Locks")
+        clear_locks_act.setEnabled(len(self._edit_state.locked_regions) > 0)
+        clear_locks_act.triggered.connect(self._edit_state.clear_all_locks)
+
+        menu.addSeparator()
+
+        cut_act = menu.addAction("Cut\tCtrl+X")
+        cut_act.setEnabled(self._edit_state.has_selection)
+        cut_act.triggered.connect(self._edit_state.cut_selection)
+
+        copy_act = menu.addAction("Copy\tCtrl+C")
+        copy_act.setEnabled(self._edit_state.has_selection)
+        copy_act.triggered.connect(self._edit_state.copy_selection)
+
+        paste_act = menu.addAction("Paste Here\tCtrl+V")
+        paste_act.setEnabled(not self._edit_state.clipboard_empty)
+        paste_act.triggered.connect(lambda: self._edit_state.paste_at(int(time_ms)))
+
+        menu.addSeparator()
+
+        invert_act = menu.addAction("Invert\tI")
+        invert_act.setEnabled(self._edit_state.has_selection)
+        invert_act.triggered.connect(self._edit_state.invert_selection)
+
+        eq_act = menu.addAction("Equalize\tE")
+        eq_act.setEnabled(len(self._edit_state.selection_indices) >= 3)
+        eq_act.triggered.connect(self._edit_state.equalize_selection)
+
+        sa_act = menu.addAction("Select All\tCtrl+A")
+        sa_act.triggered.connect(self._edit_state.select_all)
+
+        menu.addSeparator()
+
+        del_act = menu.addAction("Delete\tDel")
+        del_act.setEnabled(self._edit_state.has_selection)
+        del_act.triggered.connect(self._edit_state.remove_selected)
+
+        menu.exec(global_pos)
+
+    def _ctx_add_point(self, time_ms: float, pos: float) -> None:
+        from pmv_funscript_io import FunscriptAction
+        self._edit_state.add_action(FunscriptAction(int(time_ms), int(max(0, min(100, pos)))))
 
 
 # ---------------------------------------------------------------------------

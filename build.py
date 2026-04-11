@@ -13,10 +13,10 @@ def run_command(cmd, description):
     print(f"[BUILD] {description}...")
     try:
         result = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
-        print(f"[BUILD] ✓ {description} completed")
+        print(f"[BUILD] [OK] {description} completed")
         return result
     except subprocess.CalledProcessError as e:
-        print(f"[BUILD] ✗ {description} failed:")
+        print(f"[BUILD] [FAIL] {description} failed:")
         print(f"  Command: {e.cmd}")
         print(f"  Exit code: {e.returncode}")
         if e.stdout:
@@ -56,12 +56,12 @@ def main():
     exe_path = Path('dist/bREadbeats.exe')
     if exe_path.exists():
         exe_size = exe_path.stat().st_size / 1024 / 1024  # MB
-        print(f"[BUILD] ✓ Build successful!")
+        print(f"[BUILD] [OK] Build successful!")
         print(f"[BUILD] Executable: {exe_path}")
         print(f"[BUILD] Size: {exe_size:.1f} MB")
         print(f"[BUILD] Version: {version_info['version']}")
     else:
-        print("[BUILD] ✗ Build failed - executable not found")
+        print("[BUILD] [FAIL] Build failed - executable not found")
         sys.exit(1)
 
 
