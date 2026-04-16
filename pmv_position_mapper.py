@@ -62,6 +62,7 @@ class MappingConfig:
     points_per_second: int = 25
     pos_min: int = 0
     pos_max: int = 100
+    range_normalization: float = 0.75
 
 
 @dataclass(slots=True)
@@ -307,7 +308,7 @@ def _compute_raw_position(
     offset = pitch_component + centering_component + float(config.center_offset)
 
     if ml_result is not None and config.ml_config.enabled:
-        ml_factor = 0.5 + 0.5 * float(ml_result.speed_mult) * float(np.clip(config.ml_config.strength, 0.0, 1.0))
+        ml_factor = 0.75 + 0.25 * float(ml_result.speed_mult) * float(np.clip(config.ml_config.strength, 0.0, 1.0))
         energy_component *= float(np.clip(ml_factor, 0.0, 1.0))
 
     if is_upstroke:
@@ -417,6 +418,52 @@ def _apply_overflow(
     return out
 
 
+def _normalize_range(
+    actions: list[FunscriptAction],
+    pos_min: int,
+    pos_max: int,
+    strength: float,
+) -> list[FunscriptAction]:
+    """Stretch action positions to fill [pos_min, pos_max].
+
+    strength 0.0 = no change, 1.0 = fully stretched to fill the target range.
+    """
+    if not actions or strength <= 0.0:
+        return actions
+
+    lo_target = float(min(pos_min, pos_max))
+    hi_target = float(max(pos_min, pos_max))
+    target_span = hi_target - lo_target
+    if target_span <= 0.0:
+        return actions
+
+    positions = np.array([float(a.pos) for a in actions], dtype=np.float64)
+    lo_actual = float(np.min(positions))
+    hi_actual = float(np.max(positions))
+    actual_span = hi_actual - lo_actual
+
+    if actual_span < 1.0:
+        return actions
+
+    # Linear map from [lo_actual, hi_actual] -> [lo_target, hi_target]
+    s = float(np.clip(strength, 0.0, 1.0))
+    # Blend between original and fully-stretched
+    # stretched_pos = lo_target + (pos - lo_actual) / actual_span * target_span
+    # result = lerp(original, stretched, strength)
+    scale = 1.0 + s * (target_span / actual_span - 1.0)
+    # Center of the actual range maps to center of target range (blended)
+    center_actual = (lo_actual + hi_actual) / 2.0
+    center_target = (lo_target + hi_target) / 2.0
+    center_blend = center_actual + s * (center_target - center_actual)
+
+    out: list[FunscriptAction] = []
+    for a in actions:
+        new_pos = center_blend + (float(a.pos) - center_actual) * scale
+        new_pos = int(round(np.clip(new_pos, lo_target, hi_target)))
+        out.append(FunscriptAction(at=int(a.at), pos=new_pos))
+    return out
+
+
 def _interpolate_actions(
     actions: list[FunscriptAction],
     points_per_second: int,
@@ -511,7 +558,11 @@ def generate_positions(
 
     _report(progress_callback, "Applying overflow...", 60.0)
     beat_actions = _apply_overflow(raw_actions, config.overflow_mode, config.pos_min, config.pos_max)
-    _report(progress_callback, "Applying overflow...", 75.0)
+    _report(progress_callback, "Applying overflow...", 68.0)
+
+    _report(progress_callback, "Normalizing range...", 68.0)
+    beat_actions = _normalize_range(beat_actions, config.pos_min, config.pos_max, config.range_normalization)
+    _report(progress_callback, "Normalizing range...", 75.0)
 
     _report(progress_callback, "Interpolating...", 75.0)
     actions = _interpolate_actions(beat_actions, config.points_per_second, config.min_command_delay_ms)

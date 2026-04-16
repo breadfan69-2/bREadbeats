@@ -163,11 +163,21 @@ class FunscriptEditState(QObject):
         if not self._actions:
             self._selection.clear()
             return
-        # Track selected actions by identity before sort
-        selected_actions = {id(self._actions[i]) for i in self._selection if i < len(self._actions)}
+        # Track selected actions by (at, pos) value pairs before sort
+        selected_values = [
+            (self._actions[i].at, self._actions[i].pos)
+            for i in self._selection if i < len(self._actions)
+        ]
         self._actions.sort(key=lambda a: a.at)
-        # Rebuild selection based on object identity
-        self._selection = {i for i, a in enumerate(self._actions) if id(a) in selected_actions}
+        # Rebuild selection by matching values (greedy, handles duplicates)
+        remaining = list(selected_values)
+        new_sel: set[int] = set()
+        for i, a in enumerate(self._actions):
+            key = (a.at, a.pos)
+            if key in remaining:
+                new_sel.add(i)
+                remaining.remove(key)
+        self._selection = new_sel
 
     # ── Bulk load (from generation or file import) ──────────
 
@@ -253,11 +263,12 @@ class FunscriptEditState(QObject):
         if self.is_locked(action.at):
             return
         self._snapshot("Add point")
-        new_action = FunscriptAction(action.at, max(0, min(100, action.pos)))
+        new_at = action.at
+        new_pos = max(0, min(100, action.pos))
+        new_action = FunscriptAction(new_at, new_pos)
         bisect.insort(self._actions, new_action, key=lambda a: a.at)
-        # Select the new point
-        idx = next(i for i, a in enumerate(self._actions) if a is new_action)
-        self._selection = {idx}
+        idx = self._find_action_index(new_at, new_pos)
+        self._selection = {idx} if idx is not None else set()
         self._mark_dirty()
 
     def remove_selected(self) -> None:
@@ -273,18 +284,34 @@ class FunscriptEditState(QObject):
         self._selection.clear()
         self._mark_dirty()
 
-    def move_action(self, idx: int, new_at: int, new_pos: int) -> None:
-        """Move a single action to a new time/position. No snapshot — caller must snapshot on drag start."""
+    def move_action(self, idx: int, new_at: int, new_pos: int) -> int:
+        """Move a single action to a new time/position. No snapshot — caller must snapshot on drag start.
+        Returns the new index of the moved action after re-sort, or -1 if not moved."""
         if idx < 0 or idx >= len(self._actions):
-            return
+            return -1
         if self.is_locked(self._actions[idx].at):
-            return
-        self._actions[idx] = FunscriptAction(new_at, max(0, min(100, new_pos)))
+            return idx
+        new_pos = max(0, min(100, new_pos))
+        self._actions[idx] = FunscriptAction(new_at, new_pos)
         self._sort_actions()
+        # Find the new index after sort
+        new_idx = self._find_action_index(new_at, new_pos)
         self._dirty = True
         self._multi_axis_stale = True
         self._version += 1
         self.changed.emit()
+        return new_idx if new_idx is not None else -1
+
+    def _find_action_index(self, at: int, pos: int) -> int | None:
+        """Find the index of the action at (at, pos) using binary search on time."""
+        lo = bisect.bisect_left(self._actions, at, key=lambda a: a.at)
+        for i in range(lo, len(self._actions)):
+            a = self._actions[i]
+            if a.at != at:
+                break
+            if a.pos == pos:
+                return i
+        return None
 
     def begin_drag(self) -> None:
         """Take a snapshot at the start of a drag operation."""
@@ -398,8 +425,9 @@ class FunscriptEditState(QObject):
                 continue
             new_action = FunscriptAction(new_at, ca.pos)
             bisect.insort(self._actions, new_action, key=lambda a: a.at)
-            idx = next(i for i, a in enumerate(self._actions) if a is new_action)
-            new_selection.add(idx)
+            idx = self._find_action_index(new_at, ca.pos)
+            if idx is not None:
+                new_selection.add(idx)
         self._selection = new_selection
         self._mark_dirty()
 
@@ -414,8 +442,9 @@ class FunscriptEditState(QObject):
                 continue
             new_action = FunscriptAction(ca.at, ca.pos)
             bisect.insort(self._actions, new_action, key=lambda a: a.at)
-            idx = next(i for i, a in enumerate(self._actions) if a is new_action)
-            new_selection.add(idx)
+            idx = self._find_action_index(ca.at, ca.pos)
+            if idx is not None:
+                new_selection.add(idx)
         self._selection = new_selection
         self._mark_dirty()
 

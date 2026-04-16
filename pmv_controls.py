@@ -415,6 +415,8 @@ class PMVControlsPanel(QWidget):
         self.pos_max_spin.setRange(0, 100)
         self.pos_max_spin.setValue(defaults.pos_max)
 
+        self.range_normalization_slider = SliderWithLabel("Range Normalization", 0.0, 1.0, defaults.range_normalization, decimals=2, step=0.05)
+
         for widget in (
             self.pitch_range_slider,
             self.amplitude_centering_slider,
@@ -425,6 +427,7 @@ class PMVControlsPanel(QWidget):
             self._labeled_widget("Points per Second", self.mapping_points_per_second_spin),
             self._labeled_widget("Position Min", self.pos_min_spin),
             self._labeled_widget("Position Max", self.pos_max_spin),
+            self.range_normalization_slider,
         ):
             form.addWidget(widget)
 
@@ -438,6 +441,7 @@ class PMVControlsPanel(QWidget):
             self.mapping_points_per_second_spin,
             self.pos_min_spin,
             self.pos_max_spin,
+            self.range_normalization_slider,
         )
         self._layout.addWidget(group)
 
@@ -816,6 +820,7 @@ class PMVControlsPanel(QWidget):
             points_per_second=int(self.mapping_points_per_second_spin.value()),
             pos_min=pos_min,
             pos_max=pos_max,
+            range_normalization=float(self.range_normalization_slider.value()),
         )
 
     def get_axis_config(self) -> AxisConfig:
@@ -971,6 +976,7 @@ class PMVControlsPanel(QWidget):
             self.mapping_points_per_second_spin.setValue(self._as_int(mapping.get("points_per_second"), self.mapping_points_per_second_spin.value()))
             self.pos_min_spin.setValue(self._as_int(mapping.get("pos_min"), self.pos_min_spin.value()))
             self.pos_max_spin.setValue(self._as_int(mapping.get("pos_max"), self.pos_max_spin.value()))
+            self.range_normalization_slider.setValue(self._as_float(mapping.get("range_normalization"), self.range_normalization_slider.value()))
 
         ml = preset.get("ml", {})
         if isinstance(ml, dict):

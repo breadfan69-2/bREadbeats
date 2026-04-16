@@ -1024,6 +1024,8 @@ class PMVGeneratorWindow(QMainWindow):
             return
         if self._timeline is None:
             return
+        if self._edit_state.dirty:
+            return
 
         sig = self._beat_preview_signature()
         if sig == self._last_beat_preview_signature:
