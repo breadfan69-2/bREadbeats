@@ -1,0 +1,119 @@
+{
+  "analysis": {
+    "sample_rate": 48000,
+    "fft_size": 2048,
+    "hop_size": 960,
+    "window_size": 2208,
+    "lowpass_enabled": false,
+    "lowpass_hz": 1000.0,
+    "highpass_enabled": false,
+    "highpass_hz": 400.0,
+    "freq_min_hz": 100.0,
+    "freq_max_hz": 8000.0,
+    "gain": 6.2
+  },
+  "beat_detection": {
+    "sensitivity": 0.5,
+    "refractory_ms": 170.0,
+    "use_librosa": true,
+    "use_multibus": true,
+    "use_fft_peaks": true,
+    "plp_enabled": true,
+    "peak_seek_ratio": 1.0,
+    "peak_beat_threshold": 0.5,
+    "multibus_config": {
+      "enabled": true,
+      "w_flux": 0.28,
+      "w_band": 0.3,
+      "w_delta": 0.17,
+      "w_phase": 0.2,
+      "w_sidecar": 0.05,
+      "arm_threshold": 0.62,
+      "release_threshold": 0.45,
+      "refractory_ms": 170.0,
+      "bus_arm_threshold": 0.3,
+      "bus_release_threshold": 0.25,
+      "bus_refractory_ms": 170.0,
+      "bus_sustain_frames": 2,
+      "bus_hist_size": 48,
+      "bus_mask_floor": 0.25,
+      "w_bus_sub": 0.36,
+      "w_bus_low": 0.3,
+      "w_bus_mid": 0.2,
+      "w_bus_high": 0.14,
+      "bass_dominance_weighting_enabled": false,
+      "transient_classification_enabled": false
+    }
+  },
+  "mapping": {
+    "pitch_range": 0.0,
+    "amplitude_centering": 0.0,
+    "center_offset": 0.0,
+    "overflow_mode": "crop",
+    "energy_multiplier": 10.0,
+    "min_command_delay_ms": 150.0,
+    "points_per_second": 25,
+    "pos_min": 0,
+    "pos_max": 100,
+    "range_normalization": 0.75
+  },
+  "ml": {
+    "enabled": true,
+    "strength": 0.55,
+    "cadence_mode": "auto",
+    "rule_fit_path": "",
+    "teaching_rule_fit_path": "",
+    "min_confidence": 0.12,
+    "bidirectional_smooth": true,
+    "smooth_alpha": 0.15
+  },
+  "automap": {
+    "enabled": false,
+    "target_y_position": 20.0,
+    "target_speed": 250.0,
+    "target_speed_pct": 65.0,
+    "optimization_mode": "cmeanv2",
+    "optimize_ml_strength": true,
+    "max_iter": 120
+  },
+  "axis": {
+    "direction_flip_probability": 0.0,
+    "min_distance": 0.1,
+    "speed_threshold_pct": 50.0,
+    "prostate_algorithm": "standard",
+    "prostate_volume_mult": 1.5,
+    "e1_curve": "linear",
+    "e2_curve": "ease_in",
+    "e3_curve": "ease_out",
+    "e4_curve": "bell",
+    "e_custom_points": {},
+    "e_phase_shift": {
+      "e1": 0.0,
+      "e2": 0.0,
+      "e3": 0.0,
+      "e4": 0.0
+    },
+    "e_min_segment_sec": 0.5,
+    "frequency_ramp_ratio": 2.0,
+    "pulse_frequency_ratio": 3.0,
+    "volume_ramp_ratio": 20.0,
+    "pulse_rise_ratio": 2.0,
+    "pulse_width_ratio": 3.0,
+    "rest_level": 0.4,
+    "ramp_up_duration_sec": 1.0,
+    "ramp_percent_per_hour": 15.0,
+    "speed_window_sec": 5.0,
+    "points_per_second": 25,
+    "enabled_axes": [
+      "main"
+    ]
+  },
+  "output": {
+    "enabled_axes": [
+      "main"
+    ],
+    "format": "funscript"
+  },
+  "pmv_preset_version": 1,
+  "name": "Balanced"
+}

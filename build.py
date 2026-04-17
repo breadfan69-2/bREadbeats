@@ -26,10 +26,30 @@ def run_command(cmd, description):
         sys.exit(1)
 
 
+def ensure_project_venv():
+    """Fail fast if build.py is not executed with the project virtualenv interpreter."""
+    expected_python = (Path('.venv') / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')).resolve()
+    active_python = Path(sys.executable).resolve()
+
+    if active_python != expected_python:
+        print("[BUILD] [FAIL] Wrong Python interpreter for build")
+        print(f"[BUILD] Expected: {expected_python}")
+        print(f"[BUILD] Active:   {active_python}")
+        print("[BUILD] Activate the project venv and rerun:")
+        if os.name == 'nt':
+            print("[BUILD]   .venv\\Scripts\\Activate.ps1")
+        else:
+            print("[BUILD]   source .venv/bin/activate")
+        print("[BUILD] Then run: python build.py")
+        sys.exit(1)
+
+
 def main():
     """Main build function"""
     print("bREadbeats Build Script")
     print("=" * 50)
+
+    ensure_project_venv()
     
     # Show version info
     version_info = get_version_info()

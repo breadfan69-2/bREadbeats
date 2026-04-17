@@ -1267,9 +1267,9 @@ class PMVGeneratorWindow(QMainWindow):
                 locked_actions,
                 locked_regions,
             )
-            axis_source_actions = final_actions
-            if not axis_source_actions:
-                axis_source_actions = positions.beat_actions if len(positions.beat_actions) >= 2 else positions.actions
+            # Use sparse beat-level actions for 2D conversion (restim
+            # semicircle arcs need large deltas between consecutive points).
+            axis_source_actions = positions.beat_actions if len(positions.beat_actions) >= 2 else final_actions
             multi_axis = convert_to_2d(
                 axis_source_actions, axis_cfg,
                 duration_ms=int(timeline.duration_ms),
@@ -1362,7 +1362,14 @@ class PMVGeneratorWindow(QMainWindow):
             if not main_actions:
                 raise RuntimeError("No main-axis actions are available for export.")
 
-            export_multi_axis = convert_to_2d(main_actions, axis_cfg, duration_ms)
+            # Use sparse beat-level actions for 2D conversion (restim
+            # semicircle arcs need large deltas between consecutive points).
+            beat_level = (
+                [FunscriptAction(a.at, a.pos) for a in self._positions.beat_actions]
+                if self._positions is not None and len(self._positions.beat_actions) >= 2
+                else main_actions
+            )
+            export_multi_axis = convert_to_2d(beat_level, axis_cfg, duration_ms)
 
             exported = 0
             exported_paths: list[Path] = []
@@ -1498,7 +1505,7 @@ class PMVGeneratorWindow(QMainWindow):
             vol_pos = self._interpolate_axis_at("volume", time_ms)
             vol = (vol_pos / 100.0) if vol_pos is not None else 1.0
             cmd = TCodeCommand(alpha=alpha_tc, beta=beta_tc, duration_ms=33, volume=vol)
-            ne.send_command(cmd)
+            ne.send_immediate(cmd)
         elif self._position_canvas is not None:
             # Fallback: update main window PositionCanvas
             self._position_canvas.update_position(alpha_tc, beta_tc)

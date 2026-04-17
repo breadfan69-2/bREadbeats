@@ -1,0 +1,114 @@
+FOURPHASE TCODE WIRING GUIDE
+=============================
+
+Goal: Send e1-e4 electrode intensities from bREadbeats funscript 
+preview to Restim via TCode, so fourphase playback works over TCP.
+
+Currently: Restim only accepts e1-e4 via funscript files, NOT via TCode.
+The TCode router skips any axis with tcode_axis_name shorter than 2 chars,
+and e1-e4 default to empty string.
+
+Two repos need changes:
+  1. Restim  (accept fourphase TCode)
+  2. bREadbeats (send fourphase TCode)
+
+
+═══════════════════════════════════════════════════════════════════
+STEP 1 — RESTIM: Assign TCode tags to e1-e4
+═══════════════════════════════════════════════════════════════════
+
+File: qt_ui/models/funscript_kit.py  (line ~34)
+
+BEFORE:
+    AxisEnum.INTENSITY_A: ('e1', '', 0, 1, True, True),
+    AxisEnum.INTENSITY_B: ('e2', '', 0, 1, True, True),
+    AxisEnum.INTENSITY_C: ('e3', '', 0, 1, True, True),
+    AxisEnum.INTENSITY_D: ('e4', '', 0, 1, True, True),
+
+AFTER:
+    AxisEnum.INTENSITY_A: ('e1', 'E0', 0, 1, True, True),
+    AxisEnum.INTENSITY_B: ('e2', 'E1', 0, 1, True, True),
+    AxisEnum.INTENSITY_C: ('e3', 'E2', 0, 1, True, True),
+    AxisEnum.INTENSITY_D: ('e4', 'E3', 0, 1, True, True),
+
+Tag scheme: E0=e1, E1=e2, E2=e3, E3=e4
+(follows TCode convention: letter + digit, 2 chars exactly)
+
+NOTE: If Restim has previously saved settings, the old empty values
+may be cached. Either reset funscript kit to defaults in the UI,
+or delete the relevant QSettings entries so it picks up the new defaults.
+
+That's it for Restim. The TCode router will now see 2-char tags and
+create Route objects for INTENSITY_A-D. Incoming E0/E1/E2/E3 commands
+will be routed to intensity_a/b/c/d axes.
+
+
+═══════════════════════════════════════════════════════════════════
+STEP 2 — BREADBEATS: Send e1-e4 in TCodeCommand
+═══════════════════════════════════════════════════════════════════
+
+File: pmv_generator.py → _send_position_at_time()  (line ~1483)
+
+Current code sends alpha (L0), beta (L1), volume (V0) only.
+Need to also interpolate e1-e4 and pack them into tcode_tags.
+
+The interpolation already works for any axis name via:
+    self._interpolate_axis_at("e1", time_ms)
+
+e1-e4 funscript values are 0-100 → need to map to 0-9999 for TCode.
+
+Add after the TCodeCommand creation:
+
+    tags = {}
+    e_map = {'e1': 'E0', 'e2': 'E1', 'e3': 'E2', 'e4': 'E3'}
+    for axis_name, tcode_tag in e_map.items():
+        val = self._interpolate_axis_at(axis_name, time_ms)
+        if val is not None:
+            tags[tcode_tag] = val * 99.99  # 0-100 → 0-9999
+    if tags:
+        cmd.tcode_tags = tags
+
+The TCodeCommand.to_tcode() already handles tcode_tags dict,
+formatting each as: {tag}{val:04d}I{duration}
+
+network_engine.py does NOT need changes — tcode_tags loop already works.
+
+
+═══════════════════════════════════════════════════════════════════
+STEP 3 — VERIFY
+═══════════════════════════════════════════════════════════════════
+
+Expected TCode output when playing a funscript with e1-e4 axes:
+  L05000I33 L15000I33 V09999I33 E07500I33 E12500I33 E25000I33 E31000I33\n
+
+What to check:
+  - Load a funscript that has .e1/.e2/.e3/.e4 companion files
+  - Play in bREadbeats funscript preview
+  - Restim should show electrode intensities updating
+  - The Restim "monitoring" tab shows live axis values
+
+Troubleshooting:
+  - If e1-e4 don't appear: check Restim funscript kit settings,
+    verify E0/E1/E2/E3 tags are shown in the T-Code axis column
+  - If values seem wrong: check the 0-100 → 0-9999 scaling
+  - Restim range for INTENSITY is 0-1, TCode 0000-9999 maps to 0.0-1.0
+    So funscript 0-100 should map to 0-9999 (multiply by 99.99)
+
+
+═══════════════════════════════════════════════════════════════════
+REFERENCE
+═══════════════════════════════════════════════════════════════════
+
+Restim TCode parsing (net/tcode.py):
+  - Format: {2-char-tag}{digits}[I{interval_ms}]
+  - Example: E05000I33 → axis E0, value 0.5, over 33ms
+  - Value = digits / 10^len(digits), e.g. 5000 → 0.5000
+
+Restim axis routing (qt_ui/tcode_command_router.py):
+  - Loads FunscriptKitModel, builds mapping from 2-char tags to axes
+  - route_command() looks up tag in mapping, calls axis.add(value, interval)
+
+bREadbeats TCode sending (network_engine.py):
+  - TCodeCommand.to_tcode() builds L0/L1/V0 string
+  - tcode_tags dict appended as: " {tag}{val:04d}I{dur}"
+  - Sent over TCP with trailing \n

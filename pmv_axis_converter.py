@@ -139,16 +139,9 @@ def _convert_restim_style(
         t0 = int(main_actions[0].at)
         return [_to_action(t0, 0.5)], [_to_action(t0, 0.5)]
 
-    # Normalize positions to 0.0-1.0 so the circle math is relative to the
-    # actual stroke range rather than absolute position.  This keeps alpha/beta
-    # proportional when automap / centering compress the main axis.
-    raw = np.array([float(a.pos) for a in main_actions], dtype=np.float64)
-    lo, hi = float(np.min(raw)), float(np.max(raw))
-    span = hi - lo
-    if span < 1.0:
-        norm_pos = np.full_like(raw, 0.5)
-    else:
-        norm_pos = (raw - lo) / span  # 0.0 to 1.0
+    # Use positions directly as 0.0-1.0 (pos / 100) — matches restim's
+    # transform where beta amplitude is proportional to actual stroke size.
+    pos_01 = np.array([float(a.pos) / 100.0 for a in main_actions], dtype=np.float64)
 
     rng = np.random.default_rng(1337)
     direction = 1.0
@@ -161,8 +154,8 @@ def _convert_restim_style(
         end_t = float(main_actions[i + 1].at)
         duration = max(1.0, end_t - start_t)
 
-        start_p = float(norm_pos[i])
-        end_p = float(norm_pos[i + 1])
+        start_p = float(pos_01[i])
+        end_p = float(pos_01[i + 1])
 
         center = (end_p + start_p) / 2.0
         radius = (start_p - end_p) / 2.0
@@ -170,21 +163,15 @@ def _convert_restim_style(
         if rng.random() < flip_prob:
             direction *= -1.0
 
-        # Dense sampling: at least ~25 pts/sec, minimum from ReStim logic
-        n_restim = _restim_segment_points(duration, start_p, end_p)
-        n_rate = max(2, int(round(duration / 40.0)))
-        n = max(n_restim, n_rate) + 1  # +1 for endpoint-inclusive count
+        n = _restim_segment_points(duration, start_p, end_p)
 
-        t = np.linspace(0.0, duration, n, endpoint=True)
-        theta = np.linspace(0.0, np.pi, n, endpoint=True)
+        t = np.linspace(0.0, duration, n, endpoint=False)
+        theta = np.linspace(0.0, np.pi, n, endpoint=False)
 
         x = center + (radius * np.cos(theta))
         y = (radius * direction * np.sin(theta)) + 0.5
 
-        # Skip first point of non-first segments (duplicate of previous endpoint)
-        k_start = 1 if i > 0 else 0
-
-        for k in range(k_start, n):
+        for k in range(n):
             time_ms = int(round(start_t + float(t[k])))
             alpha.append(_to_action(time_ms, float(np.clip(x[k], 0.0, 1.0))))
             beta.append(_to_action(time_ms, float(np.clip(y[k], 0.0, 1.0))))
@@ -430,18 +417,15 @@ def convert_to_2d(
     _report(progress_callback, "Computing speed timeline...", 10.0)
     speed_norm = _compute_speed(actions, config.speed_window_sec)
 
-    need_2d = bool(config.enabled_axes.intersection({"alpha", "beta", "alpha_prostate", "beta_prostate"}))
     alpha: list[FunscriptAction] = []
     beta: list[FunscriptAction] = []
 
-    if need_2d:
-        _report(progress_callback, "Converting main axis to 2D...", 35.0)
-        alpha, beta = _convert_restim_style(actions, config.direction_flip_probability)
-
-        if "alpha" in config.enabled_axes:
-            result["alpha"] = alpha
-        if "beta" in config.enabled_axes:
-            result["beta"] = beta
+    # Always compute alpha/beta so TCode preview can send L0/L1 regardless of
+    # which axis checkboxes are enabled in the UI.
+    _report(progress_callback, "Converting main axis to 2D...", 35.0)
+    alpha, beta = _convert_restim_style(actions, config.direction_flip_probability)
+    result["alpha"] = alpha
+    result["beta"] = beta
 
     if bool(config.enabled_axes.intersection({"alpha_prostate", "beta_prostate"})):
         _report(progress_callback, "Generating prostate axes...", 55.0)
