@@ -1508,7 +1508,8 @@ class PMVGeneratorWindow(QMainWindow):
             ne.send_immediate(cmd)
         elif self._position_canvas is not None:
             # Fallback: update main window PositionCanvas
-            self._position_canvas.update_position(alpha_tc, beta_tc)
+            # Swap: funscript alpha=vertical(L0) → bREadbeats beta, funscript beta=horizontal(L1) → bREadbeats alpha
+            self._position_canvas.update_position(beta_tc, alpha_tc)
 
     def closeEvent(self, event) -> None:
         if self._worker_thread is not None:
