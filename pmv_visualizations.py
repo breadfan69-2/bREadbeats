@@ -465,6 +465,13 @@ class PlaybackPanel(QWidget):
         if self._duration_ms <= 0:
             return
         self._position_ms = float(value) / 1000.0 * self._duration_ms
+        if self._playing:
+            if self._start_audio_from_position():
+                self._playback_ref_pos_ms = self._position_ms
+                self._playback_t0 = time.perf_counter()
+            else:
+                self._playing = False
+                self._timer.stop()
         self._update_label()
         self._emit_position()
 
@@ -797,16 +804,13 @@ class VisualizationArea(QWidget):
         start = float(x_range[0])
         end = float(x_range[1])
         span = max(1.0, end - start)
-        lead_margin = span * 0.10
 
-        if time_ms > (end - lead_margin):
-            new_start = time_ms - (span * 0.80)
-            self._apply_view_range(new_start, new_start + span)
-            self._sync_nav_from_view()
-            return
-
-        if time_ms < (start + lead_margin):
-            new_start = time_ms - (span * 0.20)
+        # Keep playhead centered in the view
+        center = (start + end) * 0.5
+        drift = time_ms - center
+        dead_zone = span * 0.02  # small dead zone to avoid micro-jitter
+        if abs(drift) > dead_zone:
+            new_start = time_ms - (span * 0.5)
             self._apply_view_range(new_start, new_start + span)
             self._sync_nav_from_view()
 
