@@ -332,6 +332,7 @@ class PMVGeneratorWindow(QMainWindow):
         self._default_preset_dir, self._user_preset_dir = self._resolve_preset_dirs()
         self._ensure_default_presets()
         self._reload_preset_catalog()
+        self._load_last_used_settings()
         self._refresh_step_availability()
         self._on_controls_changed()
 
@@ -522,6 +523,25 @@ class PMVGeneratorWindow(QMainWindow):
         except Exception as exc:
             self._show_error("Preset save failed", f"Unable to save preset: {exc}", show_errors)
             return False
+
+    def _last_used_path(self) -> Path:
+        return self._user_preset_dir / "_last_used.json"
+
+    def _save_last_used_settings(self) -> None:
+        try:
+            payload = self.controls.to_preset()
+            payload["pmv_preset_version"] = 1
+            payload["name"] = "_last_used"
+            target = self._last_used_path()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_last_used_settings(self) -> None:
+        p = self._last_used_path()
+        if p.is_file():
+            self._load_preset_from_path(str(p), show_errors=False)
 
     def _on_load_preset_clicked(self) -> None:
         idx = self.preset_combo.currentIndex()
@@ -1724,6 +1744,7 @@ class PMVGeneratorWindow(QMainWindow):
         super().changeEvent(event)
 
     def closeEvent(self, event) -> None:
+        self._save_last_used_settings()
         self.video_preview.close()
         if self._worker_thread is not None:
             self._worker_thread.quit()

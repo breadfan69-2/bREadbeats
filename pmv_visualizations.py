@@ -9,7 +9,7 @@ from typing import Callable, TYPE_CHECKING
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QKeyEvent
+from PyQt6.QtGui import QFont, QKeyEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -382,7 +382,7 @@ class PlaybackPanel(QWidget):
         layout.addWidget(self.time_label)
 
         self._timer = QTimer(self)
-        self._timer.setInterval(33)
+        self._timer.setInterval(16)  # ~60fps for smooth playback
         self._timer.timeout.connect(self._tick)
 
         self.play_btn.clicked.connect(self.play)
@@ -638,6 +638,11 @@ class VisualizationArea(QWidget):
         self._rect_start_pos = None  # (time_ms, pos) of rect select start
         self._lock_overlays: list[pg.LinearRegionItem] = []
 
+        # Non-edit-mode navigation drag state
+        self._nav_dragging = False
+        self._nav_press_time_ms: float | None = None
+        self._nav_last_x: float | None = None
+
         # Full-resolution data stores for LOD rendering
         self._lod_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         # Beat stores: {beat_type: x_array}
@@ -658,7 +663,9 @@ class VisualizationArea(QWidget):
         self.overlay_plot.installEventFilter(self)
         self.overlay_plot.viewport().installEventFilter(self)
         self.overlay_plot.setLabel("left", "Normalized / Position")
-        self.overlay_plot.setLabel("bottom", "Time (ms)")
+        self.overlay_plot.getAxis("bottom").setTicks([])
+        self.overlay_plot.getAxis("bottom").setStyle(showValues=False)
+        self.overlay_plot.setLabel("bottom", "")
         vb = self.overlay_plot.getViewBox()
         vb.setYRange(0.0, 100.0, padding=0.0)
         vb.setMouseEnabled(x=True, y=False)
@@ -684,6 +691,12 @@ class VisualizationArea(QWidget):
 
         self.playhead_line = pg.InfiniteLine(pos=0.0, angle=90, movable=False, pen=pg.mkPen("#ffe082", width=1))
         self.overlay_plot.addItem(self.playhead_line)
+
+        self._playhead_label = pg.TextItem(text="0.00s", color="#ffe082", anchor=(0.5, 1.0))
+        self._playhead_label.setFont(QFont("Consolas", 9))
+        self._playhead_label.setZValue(20)
+        self.overlay_plot.addItem(self._playhead_label)
+        self._playhead_label.setPos(0.0, 0.0)
 
         # Edit-mode scatter overlays (all points + selected points)
         self._edit_scatter = pg.ScatterPlotItem(
@@ -806,18 +819,12 @@ class VisualizationArea(QWidget):
         if not self._auto_follow_playhead:
             return
         x_range = self.overlay_plot.viewRange()[0]
-        start = float(x_range[0])
-        end = float(x_range[1])
-        span = max(1.0, end - start)
+        span = max(1.0, float(x_range[1]) - float(x_range[0]))
 
-        # Keep playhead centered in the view
-        center = (start + end) * 0.5
-        drift = time_ms - center
-        dead_zone = span * 0.02  # small dead zone to avoid micro-jitter
-        if abs(drift) > dead_zone:
-            new_start = time_ms - (span * 0.5)
-            self._apply_view_range(new_start, new_start + span)
-            self._sync_nav_from_view()
+        # Keep playhead locked to center — scroll every frame
+        new_start = time_ms - span * 0.5
+        self._apply_view_range(new_start, new_start + span)
+        self._sync_nav_from_view()
 
     @staticmethod
     def _fmt_ms(ms: float) -> str:
@@ -1088,6 +1095,9 @@ class VisualizationArea(QWidget):
 
     def set_playback_position(self, time_ms: float) -> None:
         self.playhead_line.setPos(float(time_ms))
+        secs = max(0.0, time_ms / 1000.0)
+        self._playhead_label.setText(f"{secs:.2f}s")
+        self._playhead_label.setPos(float(time_ms), 0.0)
 
     def zoom_to_range(self, start_ms: float, end_ms: float) -> None:
         self._apply_view_range(start_ms, end_ms)
@@ -1251,6 +1261,14 @@ class VisualizationArea(QWidget):
 
     def _handle_plot_viewport_mouse_press(self, ev) -> bool:
         if not self._edit_mode or self._edit_state is None:
+            # Non-edit mode: left-click starts potential seek or drag-to-pan
+            if ev.button() == Qt.MouseButton.LeftButton:
+                time_ms, _pos = self._plot_event_to_data(ev)
+                self._nav_press_time_ms = time_ms
+                self._nav_last_x = ev.position().x()
+                self._nav_dragging = False
+                ev.accept()
+                return True
             return False
 
         time_ms, pos = self._plot_event_to_data(ev)
@@ -1295,6 +1313,32 @@ class VisualizationArea(QWidget):
 
     def _handle_plot_viewport_mouse_move(self, ev) -> bool:
         if not self._edit_mode or self._edit_state is None:
+            # Non-edit mode: drag to pan the view horizontally
+            if self._nav_last_x is not None:
+                dx_pixels = ev.position().x() - self._nav_last_x
+                if not self._nav_dragging and abs(dx_pixels) > 4:
+                    self._nav_dragging = True
+                    # User is panning — suspend auto-follow so it doesn't fight
+                    if self._auto_follow_playhead:
+                        self._auto_follow_playhead = False
+                        self.follow_btn.setChecked(False)
+                if self._nav_dragging:
+                    vb = self.overlay_plot.getViewBox()
+                    # Convert pixel delta to data-coordinate delta
+                    view_rect = vb.viewRect()
+                    pixel_width = vb.width()
+                    if pixel_width > 0:
+                        data_dx = (dx_pixels / pixel_width) * view_rect.width()
+                        new_start = view_rect.left() - data_dx
+                        new_end = new_start + view_rect.width()
+                        self._apply_view_range(new_start, new_end)
+                        # Keep playhead visually fixed — seek by the same delta
+                        cur = self.playhead_line.value()
+                        new_pos_ms = max(0.0, cur - data_dx)
+                        self.playback_panel.seek(new_pos_ms)
+                    self._nav_last_x = ev.position().x()
+                ev.accept()
+                return True
             return False
 
         time_ms, pos = self._plot_event_to_data(ev)
@@ -1322,6 +1366,15 @@ class VisualizationArea(QWidget):
 
     def _handle_plot_viewport_mouse_release(self, ev) -> bool:
         if not self._edit_mode or self._edit_state is None:
+            if self._nav_press_time_ms is not None:
+                if not self._nav_dragging:
+                    # No drag — treat as click-to-seek
+                    self.playback_panel.seek(max(0.0, self._nav_press_time_ms))
+                self._nav_press_time_ms = None
+                self._nav_last_x = None
+                self._nav_dragging = False
+                ev.accept()
+                return True
             return False
 
         time_ms, pos = self._plot_event_to_data(ev)
