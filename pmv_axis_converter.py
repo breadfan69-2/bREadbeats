@@ -45,6 +45,7 @@ class AxisConfig:
     speed_window_sec: float = 5.0
     points_per_second: int = 25
     enabled_axes: set[str] = field(default_factory=lambda: {"main"})
+    alpha_beta_mode: str = "restim"  # "restim" or "orbital"
 
 
 @dataclass(slots=True)

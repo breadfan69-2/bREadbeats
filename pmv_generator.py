@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from pmv_audio_analysis import analyze_full_file, load_audio
+from pmv_audio_analysis import analyze_full_file, load_audio, AnalysisConfig as _AnalysisConfig
 from pmv_automap import automap_optimize
 from pmv_axis_converter import MultiAxisResult, convert_to_2d
 from pmv_beat_engine import BeatTimeline, detect_beats
@@ -153,6 +153,29 @@ class _BusyOverlay(QWidget):
         if self.parent() is not None:
             self.setGeometry(self.parent().rect())
         super().resizeEvent(event)
+
+
+def _apply_orbital_overlay(
+    multi_axis: MultiAxisResult,
+    timeline,
+    beats: BeatTimeline,
+    analysis_cfg: _AnalysisConfig,
+    progress_callback=None,
+) -> MultiAxisResult:
+    """Replace alpha/beta in *multi_axis* with orbital replay output."""
+    from config_facade import load_config
+    from orbital_replay import replay_orbital
+
+    result = replay_orbital(
+        timeline=timeline,
+        beat_timeline=beats,
+        config=load_config(),
+        analysis_cfg=analysis_cfg,
+        progress_callback=progress_callback,
+    )
+    multi_axis.axes["alpha"] = result.alpha_actions
+    multi_axis.axes["beta"] = result.beta_actions
+    return multi_axis
 
 
 class PMVGeneratorWindow(QMainWindow):
@@ -964,6 +987,9 @@ class PMVGeneratorWindow(QMainWindow):
                 axis_cfg,
                 duration_ms=int(timeline.duration_ms),
             )
+            if axis_cfg.alpha_beta_mode == "orbital" and timeline is not None and beats is not None:
+                analysis_cfg = self.controls.get_analysis_config()
+                multi_axis = _apply_orbital_overlay(multi_axis, timeline, beats, analysis_cfg)
             return positions, multi_axis
 
         def apply(result):
@@ -1251,6 +1277,15 @@ class PMVGeneratorWindow(QMainWindow):
         locked_actions = [FunscriptAction(a.at, a.pos) for a in self._edit_state.get_locked_actions()]
         use_undoable_accept = self._edit_state.version > 0
 
+        # Snapshot locked multi-axis actions so they survive regeneration
+        locked_multi_axis: dict[str, list[FunscriptAction]] = {}
+        if locked_regions and self._multi_axis is not None:
+            for ax_name, ax_actions in self._multi_axis.axes.items():
+                la = [FunscriptAction(a.at, a.pos) for a in ax_actions
+                      if any(r.start_ms <= int(a.at) <= r.end_ms for r in locked_regions)]
+                if la:
+                    locked_multi_axis[ax_name] = la
+
         def compute(progress_cb):
             nonlocal mapping_cfg
             if automap_cfg.enabled:
@@ -1273,8 +1308,21 @@ class PMVGeneratorWindow(QMainWindow):
             multi_axis = convert_to_2d(
                 axis_source_actions, axis_cfg,
                 duration_ms=int(timeline.duration_ms),
-                progress_callback=lambda msg, pct: progress_cb(f"Axis: {msg}", 80 + pct * 0.2),
+                progress_callback=lambda msg, pct: progress_cb(f"Axis: {msg}", 80 + pct * 0.15),
             )
+            if axis_cfg.alpha_beta_mode == "orbital" and timeline is not None and beats is not None:
+                analysis_cfg = self.controls.get_analysis_config()
+                multi_axis = _apply_orbital_overlay(
+                    multi_axis, timeline, beats, analysis_cfg,
+                    progress_callback=lambda msg, pct: progress_cb(f"Orbital: {msg}", 95 + pct * 0.05),
+                )
+            # Merge locked multi-axis actions back into freshly generated axes
+            if locked_multi_axis:
+                for ax_name, prev_locked in locked_multi_axis.items():
+                    new_actions = multi_axis.axes.get(ax_name, [])
+                    multi_axis.axes[ax_name] = self._merge_generated_actions_with_locked_regions(
+                        new_actions, prev_locked, locked_regions,
+                    )
             if final_actions != positions.actions:
                 positions = PositionTimeline(
                     actions=final_actions,
@@ -1370,6 +1418,23 @@ class PMVGeneratorWindow(QMainWindow):
                 else main_actions
             )
             export_multi_axis = convert_to_2d(beat_level, axis_cfg, duration_ms)
+            if axis_cfg.alpha_beta_mode == "orbital" and self._timeline is not None and self._beats is not None:
+                analysis_cfg = self.controls.get_analysis_config()
+                export_multi_axis = _apply_orbital_overlay(
+                    export_multi_axis, self._timeline, self._beats, analysis_cfg,
+                )
+
+            # Merge locked multi-axis actions into export
+            locked_regions = [LockedRegion(r.start_ms, r.end_ms) for r in self._edit_state.locked_regions]
+            if locked_regions and self._multi_axis is not None:
+                for ax_name, ax_actions in self._multi_axis.axes.items():
+                    prev_locked = [FunscriptAction(a.at, a.pos) for a in ax_actions
+                                   if any(r.start_ms <= int(a.at) <= r.end_ms for r in locked_regions)]
+                    if prev_locked:
+                        new_actions = export_multi_axis.axes.get(ax_name, [])
+                        export_multi_axis.axes[ax_name] = self._merge_generated_actions_with_locked_regions(
+                            new_actions, prev_locked, locked_regions,
+                        )
 
             exported = 0
             exported_paths: list[Path] = []
@@ -1507,9 +1572,15 @@ class PMVGeneratorWindow(QMainWindow):
             cmd = TCodeCommand(alpha=alpha_tc, beta=beta_tc, duration_ms=33, volume=vol)
             ne.send_immediate(cmd)
         elif self._position_canvas is not None:
-            # Fallback: update main window PositionCanvas
-            # Swap: funscript alpha=vertical(L0) → bREadbeats beta, funscript beta=horizontal(L1) → bREadbeats alpha
-            self._position_canvas.update_position(beta_tc, alpha_tc)
+            # Restim axes use funscript convention (alpha=vertical, beta=horizontal)
+            # which is swapped vs PositionCanvas (arg1=horizontal, arg2=vertical).
+            # Orbital replay already outputs device-convention alpha/beta
+            # (matching the live StrokeMapper), so no swap needed.
+            axis_cfg = self.controls.get_axis_config()
+            if axis_cfg.alpha_beta_mode == "orbital":
+                self._position_canvas.update_position(alpha_tc, beta_tc)
+            else:
+                self._position_canvas.update_position(beta_tc, alpha_tc)
 
     def closeEvent(self, event) -> None:
         if self._worker_thread is not None:

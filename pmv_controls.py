@@ -676,6 +676,13 @@ class PMVControlsPanel(QWidget):
         )
         self._alpha_beta_toggle.toggled.connect(self._on_alpha_beta_toggled)
 
+        self._alpha_beta_mode_combo = QComboBox()
+        self._alpha_beta_mode_combo.addItems(["restim", "orbital"])
+        self._alpha_beta_mode_combo.setToolTip(
+            "restim: semicircle arcs from main axis (fast)\n"
+            "orbital: replay live StrokeMapper engine offline (slower, matches live motion)"
+        )
+
         self._e1234_toggle = QCheckBox("Enable E1\u2013E4")
         self._e1234_toggle.setChecked(
             any(self.axis_checkboxes[k].isChecked() for k in ("e1", "e2", "e3", "e4"))
@@ -719,6 +726,7 @@ class PMVControlsPanel(QWidget):
                 continue  # driven by group toggles
             form.addWidget(self.axis_checkboxes[axis_name])
         form.addWidget(self._alpha_beta_toggle)
+        form.addWidget(self._labeled_widget("Alpha/Beta Mode", self._alpha_beta_mode_combo))
         form.addWidget(self._e1234_toggle)
 
         self._wire(
@@ -749,6 +757,7 @@ class PMVControlsPanel(QWidget):
             self.output_format_combo,
             *tuple(self.axis_checkboxes.values()),
             self._alpha_beta_toggle,
+            self._alpha_beta_mode_combo,
             self._e1234_toggle,
         )
         self._layout.addWidget(group)
@@ -859,6 +868,7 @@ class PMVControlsPanel(QWidget):
             speed_window_sec=float(self.axis_speed_window_spin.value()),
             points_per_second=int(self.axis_points_per_second_spin.value()),
             enabled_axes=enabled_axes,
+            alpha_beta_mode=str(self._alpha_beta_mode_combo.currentText()),
         )
 
     # -- group toggle handlers -------------------------------------------------
@@ -1038,6 +1048,9 @@ class PMVControlsPanel(QWidget):
             self.ramp_up_spin.setValue(self._as_float(axis.get("ramp_up_duration_sec"), self.ramp_up_spin.value()))
             self.axis_speed_window_spin.setValue(self._as_float(axis.get("speed_window_sec"), self.axis_speed_window_spin.value()))
             self.axis_points_per_second_spin.setValue(self._as_int(axis.get("points_per_second"), self.axis_points_per_second_spin.value()))
+
+            ab_mode = axis.get("alpha_beta_mode", self._alpha_beta_mode_combo.currentText())
+            self._set_combo_text(self._alpha_beta_mode_combo, str(ab_mode))
 
             enabled_axes = axis.get("enabled_axes", [])
             if isinstance(enabled_axes, (list, tuple, set)):

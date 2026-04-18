@@ -28,6 +28,7 @@ a = Analysis(
     hiddenimports=[
         'config_persistence',
         'imageio_ffmpeg',
+        'orbital_replay',
     ],
     hookspath=[],
     hooksconfig={},
