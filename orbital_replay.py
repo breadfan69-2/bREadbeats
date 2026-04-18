@@ -126,11 +126,14 @@ class _AudioEngineStub:
 
 # ── Pre-computation of offline signals ──
 
+# Use the same band boundaries as the PMV offline analysis pipeline
+# (pmv_audio_analysis._BANDS) so that both offline generators — restim
+# stroke-based and orbital replay — share a consistent spectral view.
 _ZSCORE_BANDS: list[tuple[str, int, int]] = [
-    ('sub_bass', 30, 100),
-    ('low_mid', 100, 500),
-    ('mid', 500, 2000),
-    ('high', 2000, 16000),
+    ('sub_bass', 40, 200),
+    ('low_mid', 200, 1000),
+    ('mid', 1000, 3000),
+    ('high', 3000, 8000),
 ]
 
 
@@ -158,10 +161,17 @@ class _FFTParams:
     win_size: int
     fft_size: int
     sample_rate: int
+    freq_bins: np.ndarray        # frequency axis for masking
+    freq_mask: np.ndarray        # bool mask: True = keep bin
 
 
 def _compute_spectrum_on_demand(fft_params: _FFTParams, frame: _FrameIndex) -> np.ndarray:
-    """Compute FFT magnitude spectrum from raw samples for one frame."""
+    """Compute FFT magnitude spectrum from raw samples for one frame.
+
+    Applies the same frequency focus masking (lowpass / highpass /
+    freq_min / freq_max) that the PMV analysis pipeline uses so that
+    the orbital replay sees a consistent spectral picture.
+    """
     p = fft_params
     start = frame.sample_start
     segment = p.samples[start:start + p.win_size]
@@ -169,7 +179,9 @@ def _compute_spectrum_on_demand(fft_params: _FFTParams, frame: _FrameIndex) -> n
         padded = np.zeros(p.win_size, dtype=np.float32)
         padded[:len(segment)] = segment
         segment = padded
-    return np.abs(np.fft.rfft(segment * p.window, n=p.fft_size)).astype(np.float32)
+    spec = np.abs(np.fft.rfft(segment * p.window, n=p.fft_size)).astype(np.float32)
+    spec[~p.freq_mask] = 0.0
+    return spec
 
 
 def _precompute_frame_index(
@@ -179,8 +191,9 @@ def _precompute_frame_index(
 ) -> tuple[list[_FrameIndex], _FFTParams]:
     """Build compact per-frame index with z-score signals and dominant freqs.
 
-    Re-computes band energies with the LIVE engine's band boundaries
-    (30/100/500/2000/16000) rather than the PMV ones (40/200/1000/3000/8000).
+    Uses the same band boundaries as the PMV offline analysis pipeline
+    (40/200/1000/3000/8000) so both offline generators share a consistent
+    spectral view.
 
     **Memory-efficient**: does NOT store spectrum arrays.  The simulation
     computes FFT on-demand only for frames it actually visits.
@@ -262,12 +275,23 @@ def _precompute_frame_index(
         if progress_callback and i % report_every == 0:
             progress_callback("Building frame index...", 2.0 + 6.0 * (i / max(1, n_frames)))
 
+    freq_bins = np.fft.rfftfreq(fft_size, d=1.0 / sr).astype(np.float32)
+    freq_mask = np.ones(len(freq_bins), dtype=bool)
+    freq_mask[freq_bins < float(analysis_cfg.freq_min_hz)] = False
+    freq_mask[freq_bins > float(analysis_cfg.freq_max_hz)] = False
+    if analysis_cfg.lowpass_enabled:
+        freq_mask[freq_bins > float(analysis_cfg.lowpass_hz)] = False
+    if analysis_cfg.highpass_enabled:
+        freq_mask[freq_bins < float(analysis_cfg.highpass_hz)] = False
+
     fft_params = _FFTParams(
         samples=samples,
         window=window,
         win_size=win,
         fft_size=fft_size,
         sample_rate=sr,
+        freq_bins=freq_bins,
+        freq_mask=freq_mask,
     )
     return frames, fft_params
 

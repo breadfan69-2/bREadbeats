@@ -7,6 +7,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+build_test/
+dist_test/
+.pytest_cache/
 
 # Virtual environments
 venv/

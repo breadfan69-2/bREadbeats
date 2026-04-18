@@ -176,27 +176,113 @@ class _BusyOverlay(QWidget):
         super().resizeEvent(event)
 
 
+def _resample_actions(actions: list[FunscriptAction], step_ms: float,
+                      duration_ms: int) -> np.ndarray:
+    """Resample sparse funscript actions to a uniform grid via linear interp."""
+    import numpy as np
+    if not actions:
+        n = max(1, int(duration_ms / step_ms) + 1)
+        return np.full(n, 50.0)
+    times = np.array([float(a.at) for a in actions])
+    values = np.array([float(a.pos) for a in actions])
+    grid = np.arange(0.0, float(duration_ms) + step_ms * 0.5, step_ms)
+    return np.interp(grid, times, values)
+
+
+def _grid_to_actions(grid: np.ndarray, step_ms: float,
+                     tolerance: float = 0.8) -> list[FunscriptAction]:
+    """Convert uniform grid back to sparse funscript actions (simplified)."""
+    if len(grid) == 0:
+        return []
+    actions = [FunscriptAction(int(round(i * step_ms)), int(round(float(v))))
+               for i, v in enumerate(grid)]
+    # Inline simplification — keep points where linear interp deviates
+    if len(actions) <= 2:
+        return actions
+    keep = [True] * len(actions)
+    i = 0
+    while i < len(actions) - 2:
+        j = i + 1
+        while j < len(actions) - 1:
+            a_i, a_next = actions[i], actions[j + 1]
+            dt_total = a_next.at - a_i.at
+            if dt_total <= 0:
+                j += 1
+                continue
+            can_remove = True
+            for k in range(i + 1, j + 1):
+                a_k = actions[k]
+                t = (a_k.at - a_i.at) / dt_total
+                interp = a_i.pos + t * (a_next.pos - a_i.pos)
+                if abs(a_k.pos - interp) > tolerance:
+                    can_remove = False
+                    break
+            if can_remove:
+                keep[j] = False
+                j += 1
+            else:
+                break
+        i = j
+    return [a for a, k in zip(actions, keep) if k]
+
+
 def _apply_orbital_overlay(
     multi_axis: MultiAxisResult,
     timeline,
     beats: BeatTimeline,
     analysis_cfg: _AnalysisConfig,
+    blend: float = 1.0,
     progress_callback=None,
-) -> MultiAxisResult:
-    """Replace alpha/beta in *multi_axis* with orbital replay output."""
+    cached_orbital=None,
+) -> tuple[MultiAxisResult, 'OrbitalReplayResult']:
+    """Blend restim alpha/beta with orbital replay output.
+
+    blend=0.0 → pure restim, blend=1.0 → pure orbital.
+    Partial blend uses additive modulation: restim + (orbital - center) * blend.
+    Returns (multi_axis, orbital_result) so caller can cache the orbital run.
+    """
+    import numpy as np
     from config_facade import load_config
     from orbital_replay import replay_orbital
 
-    result = replay_orbital(
-        timeline=timeline,
-        beat_timeline=beats,
-        config=load_config(),
-        analysis_cfg=analysis_cfg,
-        progress_callback=progress_callback,
-    )
-    multi_axis.axes["alpha"] = result.alpha_actions
-    multi_axis.axes["beta"] = result.beta_actions
-    return multi_axis
+    if cached_orbital is not None:
+        result = cached_orbital
+    else:
+        result = replay_orbital(
+            timeline=timeline,
+            beat_timeline=beats,
+            config=load_config(),
+            analysis_cfg=analysis_cfg,
+            progress_callback=progress_callback,
+        )
+
+    blend = float(np.clip(blend, 0.0, 1.0))
+    if blend >= 1.0:
+        # Pure orbital — direct replacement (original behaviour)
+        multi_axis.axes["alpha"] = result.alpha_actions
+        multi_axis.axes["beta"] = result.beta_actions
+        return multi_axis, result
+
+    duration_ms = int(timeline.duration_ms)
+    step = 10.0  # 10ms grid = 100 Hz
+    # Orbital alpha/beta may be in a different axis convention from restim.
+    # Swap orbital axes to align with restim before blending.
+    orbital_for_blend = {
+        "alpha": result.beta_actions,   # orbital Y → restim alpha (vertical)
+        "beta": result.alpha_actions,   # orbital X → restim beta (horizontal)
+    }
+    for axis_name in ("alpha", "beta"):
+        restim_grid = _resample_actions(multi_axis.axes.get(axis_name, []),
+                                        step, duration_ms)
+        orbital_grid = _resample_actions(orbital_for_blend[axis_name], step, duration_ms)
+        # Additive modulation: use restim as base, layer orbital deviation on top.
+        # orbital_grid is 0-100; deviation = orbital_grid - 50.0
+        # This preserves restim's stroke shape while adding orbital texture.
+        blended = restim_grid + (orbital_grid - 50.0) * blend
+        blended = np.clip(blended, 0.0, 100.0)
+        multi_axis.axes[axis_name] = _grid_to_actions(blended, step)
+
+    return multi_axis, result
 
 
 class PMVGeneratorWindow(QMainWindow):
@@ -219,7 +305,10 @@ class PMVGeneratorWindow(QMainWindow):
         self._beats: BeatTimeline | None = None
         self._positions: PositionTimeline | None = None
         self._multi_axis: MultiAxisResult | None = None
+        self._cached_orbital_result = None  # cache expensive orbital replay
         self._edit_state = FunscriptEditState(self)
+        self._aux_edit_states: dict[str, FunscriptEditState] = {}  # axis_name -> edit state
+        self._current_edit_axis: str = "main"
         self._live_preview_busy = False
         self._last_live_preview_signature: str | None = None
         self._pipeline_busy = False
@@ -265,11 +354,18 @@ class PMVGeneratorWindow(QMainWindow):
         self.regen_axes_btn = QPushButton("Regen Axes", self)
         self.regen_axes_btn.setToolTip("Regenerate alpha/beta and auxiliary axes from the current edited main script")
         self.regen_axes_btn.setEnabled(False)
+        self.fill_blanks_btn = QPushButton("Fill Blanks", self)
+        self.fill_blanks_btn.setToolTip(
+            "Detect blank/flat regions in the loaded funscript and fill them with beat-driven motion.\n"
+            "Existing motion is preserved; only gaps are filled."
+        )
+        self.fill_blanks_btn.setEnabled(False)
         preset_row.addWidget(self.load_preset_btn)
         preset_row.addWidget(self.save_preset_btn)
         preset_row.addWidget(self.refresh_preset_btn)
         preset_row.addWidget(self.open_script_btn)
         preset_row.addWidget(self.regen_axes_btn)
+        preset_row.addWidget(self.fill_blanks_btn)
 
         root_layout.addLayout(preset_row)
 
@@ -298,6 +394,7 @@ class PMVGeneratorWindow(QMainWindow):
 
         # Bind edit state to visualization
         self.visualizations.set_edit_state(self._edit_state)
+        self.aux_panel.edit_axis_changed.connect(self._on_edit_axis_switched)
 
         splitter.addWidget(center)
         splitter.setSizes([380, 820])
@@ -328,6 +425,7 @@ class PMVGeneratorWindow(QMainWindow):
         self.refresh_preset_btn.clicked.connect(self._reload_preset_catalog)
         self.open_script_btn.clicked.connect(self._on_open_script_clicked)
         self.regen_axes_btn.clicked.connect(self._on_regen_axes_clicked)
+        self.fill_blanks_btn.clicked.connect(self._on_fill_blanks_clicked)
 
         self._default_preset_dir, self._user_preset_dir = self._resolve_preset_dirs()
         self._ensure_default_presets()
@@ -838,13 +936,142 @@ class PMVGeneratorWindow(QMainWindow):
             return
         axis_cfg = self.controls.get_axis_config()
         duration_ms = int(main_actions[-1].at) if main_actions else 1
-        self._multi_axis = convert_to_2d(main_actions, axis_cfg, max(duration_ms, 1))
+        self._multi_axis = convert_to_2d(main_actions, axis_cfg, max(duration_ms, 1), audio_timeline=self._timeline)
         self.visualizations.set_multi_axis(self._multi_axis)
         self.aux_panel.set_multi_axis(self._multi_axis)
         axis_count = sum(1 for k, v in self._multi_axis.axes.items() if k != "main" and v)
         bar = self.statusBar()
         if bar is not None:
             bar.showMessage(f"Regenerated {axis_count} axes from {len(main_actions)} main actions", 3000)
+        self._refresh_edit_axis_combo()
+
+    # ------------------------------------------------------------------
+    # Fill Blanks
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_blank_regions(
+        actions: list[FunscriptAction],
+        duration_ms: int,
+        window_ms: int = 500,
+        motion_threshold: int = 5,
+    ) -> list[tuple[int, int]]:
+        """Return ``(start_ms, end_ms)`` ranges where the funscript has no meaningful motion.
+
+        A time window is considered *blank* when the peak-to-peak position range
+        within it is less than *motion_threshold* (0-100 scale).  Consecutive
+        blank windows are merged, and large timestamp gaps between actions are
+        also reported as blank.
+        """
+        if not actions or duration_ms <= 0:
+            return [(0, max(duration_ms, 0))]
+
+        # Build per-window position range --------------------------------
+        n_windows = max(1, (duration_ms + window_ms - 1) // window_ms)
+        win_min = [101] * n_windows
+        win_max = [-1] * n_windows
+
+        for a in actions:
+            idx = min(int(a.at) // window_ms, n_windows - 1)
+            if a.pos < win_min[idx]:
+                win_min[idx] = a.pos
+            if a.pos > win_max[idx]:
+                win_max[idx] = a.pos
+
+        # Mark blank windows (no actions → min stays 101, also blank) ----
+        blank = [False] * n_windows
+        for i in range(n_windows):
+            if win_max[i] < 0:
+                # No action fell into this window at all
+                blank[i] = True
+            elif (win_max[i] - win_min[i]) < motion_threshold:
+                blank[i] = True
+
+        # Merge consecutive blank windows into ranges --------------------
+        regions: list[tuple[int, int]] = []
+        i = 0
+        while i < n_windows:
+            if blank[i]:
+                start = i * window_ms
+                while i < n_windows and blank[i]:
+                    i += 1
+                end = min(i * window_ms, duration_ms)
+                regions.append((start, end))
+            else:
+                i += 1
+        return regions
+
+    def _on_fill_blanks_clicked(self) -> None:
+        actions = self._current_main_actions()
+        if len(actions) < 2 or self._beats is None or self._timeline is None:
+            return
+
+        duration_ms = int(actions[-1].at) if actions else 0
+        if duration_ms <= 0:
+            return
+
+        threshold = self.controls.blank_threshold_spin.value()
+        blank_regions = self._detect_blank_regions(actions, duration_ms, motion_threshold=int(threshold))
+        if not blank_regions:
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage("No blank regions detected — nothing to fill.", 3000)
+            return
+
+        # Invert: blank regions → motion regions (which we lock) ---------
+        motion_regions: list[tuple[int, int]] = []
+        cursor = 0
+        for bstart, bend in sorted(blank_regions):
+            if bstart > cursor:
+                motion_regions.append((cursor, bstart))
+            cursor = max(cursor, bend)
+        if cursor < duration_ms:
+            motion_regions.append((cursor, duration_ms))
+
+        # Lock motion regions so generate() preserves them ---------------
+        self._edit_state.clear_all_locks()
+        for mstart, mend in motion_regions:
+            self._edit_state.lock_region(int(mstart), int(mend))
+
+        # Run the normal generation pipeline — merge logic fills the gaps
+        total_blank_ms = sum(b - a for a, b in blank_regions)
+        ok = self.step_4_generate(show_errors=True, blocking=True)
+
+        bar = self.statusBar()
+        if bar is not None:
+            if ok:
+                bar.showMessage(
+                    f"Filled {len(blank_regions)} blank region(s) "
+                    f"({total_blank_ms / 1000:.1f}s) with beat-driven motion",
+                    5000,
+                )
+            else:
+                bar.showMessage("Fill blanks failed — see error above.", 3000)
+
+    def _refresh_edit_axis_combo(self) -> None:
+        """Update the axis selector combo with axes that have data."""
+        names = ["main"]
+        if self._multi_axis is not None:
+            for k, v in self._multi_axis.axes.items():
+                if k != "main" and v:
+                    names.append(k)
+        self.aux_panel.update_edit_axis_list(names)
+
+    def _on_edit_axis_switched(self, axis_name: str) -> None:
+        """Switch the edit state to a different axis."""
+        if axis_name == self._current_edit_axis:
+            return
+        self._current_edit_axis = axis_name
+        if axis_name == "main":
+            self.aux_panel.set_edit_state(None)
+            self.visualizations.set_edit_state(self._edit_state)
+        else:
+            if axis_name not in self._aux_edit_states:
+                state = FunscriptEditState(self)
+                if self._multi_axis and axis_name in self._multi_axis.axes:
+                    state.load_actions(list(self._multi_axis.axes[axis_name]))
+                self._aux_edit_states[axis_name] = state
+            self.aux_panel.set_edit_state(self._aux_edit_states[axis_name])
 
     @staticmethod
     def _discover_sibling_axes(script_path: Path) -> dict[str, list[FunscriptAction]]:
@@ -902,6 +1129,7 @@ class PMVGeneratorWindow(QMainWindow):
         self._samples = samples
         self._timeline = None
         self._beats = None
+        self._cached_orbital_result = None
         self._reset_from_step(2)
 
         if samples is not None:
@@ -923,14 +1151,17 @@ class PMVGeneratorWindow(QMainWindow):
         # Build multi-axis: start with generated axes, then overlay any
         # sibling axis files that were found on disk.
         axis_duration_ms = max(duration_ms, 1)
-        self._multi_axis = convert_to_2d(self._positions.actions, self.controls.get_axis_config(), axis_duration_ms)
+        self._multi_axis = convert_to_2d(self._positions.actions, self.controls.get_axis_config(), axis_duration_ms, audio_timeline=self._timeline)
         for axis_name, axis_actions in sibling_axes.items():
             self._multi_axis.axes[axis_name] = [FunscriptAction(a.at, a.pos) for a in axis_actions]
 
         self._edit_state.load_actions(self._positions.actions)
+        self._aux_edit_states.clear()
+        self._current_edit_axis = "main"
         self.visualizations.set_positions(self._positions)
         self.visualizations.set_multi_axis(self._multi_axis)
         self.aux_panel.set_multi_axis(self._multi_axis)
+        self._refresh_edit_axis_combo()
         self.visualizations.set_playback_position(0.0)
         if duration_ms > 0:
             self.visualizations.zoom_to_range(0.0, max(1000.0, float(duration_ms)))
@@ -1046,6 +1277,11 @@ class PMVGeneratorWindow(QMainWindow):
         )
         self.controls.step_bar.set_step_enabled(5, has_exportable)
         self.regen_axes_btn.setEnabled(len(current_actions) >= 2)
+        self.fill_blanks_btn.setEnabled(
+            len(current_actions) >= 2
+            and self._beats is not None
+            and len(self._beats.beats) > 0
+        )
 
     def _on_edit_state_changed(self) -> None:
         self._refresh_step_availability()
@@ -1139,11 +1375,17 @@ class PMVGeneratorWindow(QMainWindow):
                 axis_source_actions,
                 axis_cfg,
                 duration_ms=int(timeline.duration_ms),
+                audio_timeline=timeline,
             )
-            if axis_cfg.alpha_beta_mode == "orbital" and timeline is not None and beats is not None:
+            orbital_result = None
+            blend = 1.0 if axis_cfg.alpha_beta_mode == "orbital" else axis_cfg.orbital_blend
+            if blend > 0.0 and timeline is not None and beats is not None:
                 analysis_cfg = self.controls.get_analysis_config()
-                multi_axis = _apply_orbital_overlay(multi_axis, timeline, beats, analysis_cfg)
-            return positions, multi_axis
+                multi_axis, orbital_result = _apply_orbital_overlay(
+                    multi_axis, timeline, beats, analysis_cfg, blend=blend,
+                    cached_orbital=self._cached_orbital_result,
+                )
+            return positions, multi_axis, orbital_result
 
         def apply(result):
             # Discard if config changed while we were computing
@@ -1152,12 +1394,15 @@ class PMVGeneratorWindow(QMainWindow):
             # Guard: never overwrite dirty edits with a preview result
             if self._edit_state.dirty:
                 return
-            positions, multi_axis = result
+            positions, multi_axis, orbital_result = result
+            if orbital_result is not None:
+                self._cached_orbital_result = orbital_result
             self._positions = positions
             self._multi_axis = multi_axis
             self.visualizations.set_positions(positions)
             self.visualizations.set_multi_axis(multi_axis)
             self.aux_panel.set_multi_axis(multi_axis)
+            self._refresh_edit_axis_combo()
             self._last_live_preview_signature = preview_sig
             self._refresh_step_availability()
             bar = self.statusBar()
@@ -1463,13 +1708,16 @@ class PMVGeneratorWindow(QMainWindow):
                 axis_source_actions, axis_cfg,
                 duration_ms=int(timeline.duration_ms),
                 progress_callback=lambda msg, pct: progress_cb(f"Axis: {msg}", 80 + pct * 0.15),
+                audio_timeline=timeline,
             )
-            if axis_cfg.alpha_beta_mode == "orbital" and timeline is not None and beats is not None:
+            blend = 1.0 if axis_cfg.alpha_beta_mode == "orbital" else axis_cfg.orbital_blend
+            if blend > 0.0 and timeline is not None and beats is not None:
                 analysis_cfg = self.controls.get_analysis_config()
-                multi_axis = _apply_orbital_overlay(
-                    multi_axis, timeline, beats, analysis_cfg,
+                multi_axis, orbital_result = _apply_orbital_overlay(
+                    multi_axis, timeline, beats, analysis_cfg, blend=blend,
                     progress_callback=lambda msg, pct: progress_cb(f"Orbital: {msg}", 95 + pct * 0.05),
                 )
+                self._cached_orbital_result = orbital_result
             # Merge locked multi-axis actions back into freshly generated axes
             if locked_multi_axis:
                 for ax_name, prev_locked in locked_multi_axis.items():
@@ -1497,6 +1745,7 @@ class PMVGeneratorWindow(QMainWindow):
             self.visualizations.set_positions(positions)
             self.visualizations.set_multi_axis(multi_axis)
             self.aux_panel.set_multi_axis(multi_axis)
+            self._refresh_edit_axis_combo()
             self._last_live_preview_signature = self._live_preview_signature()
             bar = self.statusBar()
             if bar is not None:
@@ -1571,11 +1820,13 @@ class PMVGeneratorWindow(QMainWindow):
                 if self._positions is not None and len(self._positions.beat_actions) >= 2
                 else main_actions
             )
-            export_multi_axis = convert_to_2d(beat_level, axis_cfg, duration_ms)
-            if axis_cfg.alpha_beta_mode == "orbital" and self._timeline is not None and self._beats is not None:
+            export_multi_axis = convert_to_2d(beat_level, axis_cfg, duration_ms, audio_timeline=self._timeline)
+            blend = 1.0 if axis_cfg.alpha_beta_mode == "orbital" else axis_cfg.orbital_blend
+            if blend > 0.0 and self._timeline is not None and self._beats is not None:
                 analysis_cfg = self.controls.get_analysis_config()
-                export_multi_axis = _apply_orbital_overlay(
-                    export_multi_axis, self._timeline, self._beats, analysis_cfg,
+                export_multi_axis, _ = _apply_orbital_overlay(
+                    export_multi_axis, self._timeline, self._beats, analysis_cfg, blend=blend,
+                    cached_orbital=self._cached_orbital_result,
                 )
 
             # Merge locked multi-axis actions into export
@@ -1595,6 +1846,8 @@ class PMVGeneratorWindow(QMainWindow):
             for axis_name in enabled_axes:
                 if axis_name == "main":
                     axis_actions = main_actions
+                elif axis_name in self._aux_edit_states and self._aux_edit_states[axis_name].actions:
+                    axis_actions = list(self._aux_edit_states[axis_name].actions)
                 else:
                     axis_actions = export_multi_axis.axes.get(axis_name, [])
 

@@ -417,6 +417,14 @@ class PMVControlsPanel(QWidget):
 
         self.range_normalization_slider = SliderWithLabel("Range Normalization", 0.0, 1.0, defaults.range_normalization, decimals=2, step=0.05)
 
+        self.blank_threshold_spin = QSpinBox()
+        self.blank_threshold_spin.setRange(1, 30)
+        self.blank_threshold_spin.setValue(5)
+        self.blank_threshold_spin.setToolTip(
+            "Position range (0-100) below which a region is considered 'blank' / no motion.\n"
+            "Used by the Fill Blanks button."
+        )
+
         for widget in (
             self.pitch_range_slider,
             self.amplitude_centering_slider,
@@ -428,6 +436,7 @@ class PMVControlsPanel(QWidget):
             self._labeled_widget("Position Min", self.pos_min_spin),
             self._labeled_widget("Position Max", self.pos_max_spin),
             self.range_normalization_slider,
+            self._labeled_widget("Blank Threshold", self.blank_threshold_spin),
         ):
             form.addWidget(widget)
 
@@ -620,6 +629,54 @@ class PMVControlsPanel(QWidget):
 
         self.frequency_ratio_slider = SliderWithLabel("Frequency Ramp Ratio", 1.0, 10.0, defaults.frequency_ramp_ratio, decimals=1, step=0.1)
         self.pulse_frequency_ratio_slider = SliderWithLabel("Pulse Frequency Ratio", 1.0, 10.0, defaults.pulse_frequency_ratio, decimals=1, step=0.1)
+
+        _FREQ_MODES = ["Ratio", "Hz (Spectral)", "Speed", "Band Energy", "Hybrid"]
+        _BAND_NAMES = ["sub_bass", "low_mid", "mid", "high"]
+
+        self._pulse_freq_mode_combo = QComboBox()
+        self._pulse_freq_mode_combo.addItems(_FREQ_MODES)
+        self._pulse_freq_mode_combo.setCurrentIndex(defaults.pulse_freq_mode)
+        self._pulse_freq_mode_combo.setToolTip(
+            "Ratio: legacy speed+alpha mix\n"
+            "Hz: spectral centroid (audio-reactive)\n"
+            "Speed: position derivative\n"
+            "Band Energy: selected frequency band envelope\n"
+            "Hybrid: ratio mix modulated by spectral centroid"
+        )
+        self._pulse_freq_band_combo = QComboBox()
+        self._pulse_freq_band_combo.addItems(_BAND_NAMES)
+        self._pulse_freq_band_combo.setCurrentText(defaults.pulse_freq_band)
+        self._pulse_freq_weight_slider = SliderWithLabel("Pulse Freq Weight", 0.0, 1.0, defaults.pulse_freq_weight, decimals=2, step=0.01)
+
+        self._carrier_freq_ratio_slider = SliderWithLabel("Carrier Frequency Ratio", 1.0, 10.0, defaults.carrier_frequency_ratio, decimals=1, step=0.1)
+        self._carrier_freq_mode_combo = QComboBox()
+        self._carrier_freq_mode_combo.addItems(_FREQ_MODES)
+        self._carrier_freq_mode_combo.setCurrentIndex(defaults.carrier_freq_mode)
+        self._carrier_freq_mode_combo.setToolTip(
+            "Ratio: speed+alpha mix\n"
+            "Hz: spectral centroid (audio-reactive)\n"
+            "Speed: position derivative\n"
+            "Band Energy: selected frequency band envelope\n"
+            "Hybrid: ratio mix modulated by spectral centroid"
+        )
+        self._carrier_freq_band_combo = QComboBox()
+        self._carrier_freq_band_combo.addItems(_BAND_NAMES)
+        self._carrier_freq_band_combo.setCurrentText(defaults.carrier_freq_band)
+        self._carrier_freq_weight_slider = SliderWithLabel("Carrier Freq Weight", 0.0, 1.0, defaults.carrier_freq_weight, decimals=2, step=0.01)
+
+        # Visibility toggling: band combo visible only in BandEnergy mode
+        def _update_pulse_freq_visibility(idx: int) -> None:
+            self._pulse_freq_band_combo.setVisible(idx == 3)
+            self.pulse_frequency_ratio_slider.setVisible(idx in (0, 4))
+        _update_pulse_freq_visibility(defaults.pulse_freq_mode)
+        self._pulse_freq_mode_combo.currentIndexChanged.connect(_update_pulse_freq_visibility)
+
+        def _update_carrier_freq_visibility(idx: int) -> None:
+            self._carrier_freq_band_combo.setVisible(idx == 3)
+            self._carrier_freq_ratio_slider.setVisible(idx in (0, 4))
+        _update_carrier_freq_visibility(defaults.carrier_freq_mode)
+        self._carrier_freq_mode_combo.currentIndexChanged.connect(_update_carrier_freq_visibility)
+
         self.volume_ratio_slider = SliderWithLabel("Volume Ramp Ratio", 10.0, 40.0, defaults.volume_ramp_ratio, decimals=1, step=0.1)
         self.ramp_pct_per_hour_spin = QDoubleSpinBox()
         self.ramp_pct_per_hour_spin.setRange(0.0, 100.0)
@@ -661,6 +718,7 @@ class PMVControlsPanel(QWidget):
             "e4",
             "frequency",
             "pulse_frequency",
+            "carrier_frequency",
             "volume",
             "pulse_rise",
             "pulse_width",
@@ -681,6 +739,14 @@ class PMVControlsPanel(QWidget):
         self._alpha_beta_mode_combo.setToolTip(
             "restim: semicircle arcs from main axis (fast)\n"
             "orbital: replay live StrokeMapper engine offline (slower, matches live motion)"
+        )
+
+        self._orbital_blend_slider = SliderWithLabel(
+            "Orbital Blend", 0.0, 1.0, defaults.orbital_blend,
+            decimals=2, step=0.01,
+        )
+        self._orbital_blend_slider.setToolTip(
+            "0 = pure restim arcs, 1 = pure orbital motion, 0.5 = 50/50 blend"
         )
 
         self._e1234_toggle = QCheckBox("Enable E1\u2013E4")
@@ -708,7 +774,14 @@ class PMVControlsPanel(QWidget):
             self.e4_phase_slider,
             self._labeled_widget("E Min Segment (s)", self.e_min_segment_spin),
             self.frequency_ratio_slider,
+            self._labeled_widget("Pulse Freq Mode", self._pulse_freq_mode_combo),
             self.pulse_frequency_ratio_slider,
+            self._labeled_widget("Pulse Freq Band", self._pulse_freq_band_combo),
+            self._pulse_freq_weight_slider,
+            self._labeled_widget("Carrier Freq Mode", self._carrier_freq_mode_combo),
+            self._carrier_freq_ratio_slider,
+            self._labeled_widget("Carrier Freq Band", self._carrier_freq_band_combo),
+            self._carrier_freq_weight_slider,
             self.volume_ratio_slider,
             self._labeled_widget("Ramp %/Hour", self.ramp_pct_per_hour_spin),
             self.pulse_rise_ratio_slider,
@@ -727,6 +800,7 @@ class PMVControlsPanel(QWidget):
             form.addWidget(self.axis_checkboxes[axis_name])
         form.addWidget(self._alpha_beta_toggle)
         form.addWidget(self._labeled_widget("Alpha/Beta Mode", self._alpha_beta_mode_combo))
+        form.addWidget(self._orbital_blend_slider)
         form.addWidget(self._e1234_toggle)
 
         self._wire(
@@ -746,6 +820,13 @@ class PMVControlsPanel(QWidget):
             self.e_min_segment_spin,
             self.frequency_ratio_slider,
             self.pulse_frequency_ratio_slider,
+            self._pulse_freq_mode_combo,
+            self._pulse_freq_band_combo,
+            self._pulse_freq_weight_slider,
+            self._carrier_freq_ratio_slider,
+            self._carrier_freq_mode_combo,
+            self._carrier_freq_band_combo,
+            self._carrier_freq_weight_slider,
             self.volume_ratio_slider,
             self.ramp_pct_per_hour_spin,
             self.pulse_rise_ratio_slider,
@@ -758,6 +839,7 @@ class PMVControlsPanel(QWidget):
             *tuple(self.axis_checkboxes.values()),
             self._alpha_beta_toggle,
             self._alpha_beta_mode_combo,
+            self._orbital_blend_slider,
             self._e1234_toggle,
         )
         self._layout.addWidget(group)
@@ -859,6 +941,13 @@ class PMVControlsPanel(QWidget):
             e_min_segment_sec=float(self.e_min_segment_spin.value()),
             frequency_ramp_ratio=float(self.frequency_ratio_slider.value()),
             pulse_frequency_ratio=float(self.pulse_frequency_ratio_slider.value()),
+            pulse_freq_mode=int(self._pulse_freq_mode_combo.currentIndex()),
+            pulse_freq_band=str(self._pulse_freq_band_combo.currentText()),
+            pulse_freq_weight=float(self._pulse_freq_weight_slider.value()),
+            carrier_frequency_ratio=float(self._carrier_freq_ratio_slider.value()),
+            carrier_freq_mode=int(self._carrier_freq_mode_combo.currentIndex()),
+            carrier_freq_band=str(self._carrier_freq_band_combo.currentText()),
+            carrier_freq_weight=float(self._carrier_freq_weight_slider.value()),
             volume_ramp_ratio=float(self.volume_ratio_slider.value()),
             ramp_percent_per_hour=float(self.ramp_pct_per_hour_spin.value()),
             pulse_rise_ratio=float(self.pulse_rise_ratio_slider.value()),
@@ -869,6 +958,7 @@ class PMVControlsPanel(QWidget):
             points_per_second=int(self.axis_points_per_second_spin.value()),
             enabled_axes=enabled_axes,
             alpha_beta_mode=str(self._alpha_beta_mode_combo.currentText()),
+            orbital_blend=float(self._orbital_blend_slider.value()),
         )
 
     # -- group toggle handlers -------------------------------------------------
@@ -1040,6 +1130,13 @@ class PMVControlsPanel(QWidget):
             self.e_min_segment_spin.setValue(self._as_float(axis.get("e_min_segment_sec"), self.e_min_segment_spin.value()))
             self.frequency_ratio_slider.setValue(self._as_float(axis.get("frequency_ramp_ratio"), self.frequency_ratio_slider.value()))
             self.pulse_frequency_ratio_slider.setValue(self._as_float(axis.get("pulse_frequency_ratio"), self.pulse_frequency_ratio_slider.value()))
+            self._pulse_freq_mode_combo.setCurrentIndex(self._as_int(axis.get("pulse_freq_mode"), self._pulse_freq_mode_combo.currentIndex()))
+            self._set_combo_text(self._pulse_freq_band_combo, str(axis.get("pulse_freq_band", self._pulse_freq_band_combo.currentText())))
+            self._pulse_freq_weight_slider.setValue(self._as_float(axis.get("pulse_freq_weight"), self._pulse_freq_weight_slider.value()))
+            self._carrier_freq_ratio_slider.setValue(self._as_float(axis.get("carrier_frequency_ratio"), self._carrier_freq_ratio_slider.value()))
+            self._carrier_freq_mode_combo.setCurrentIndex(self._as_int(axis.get("carrier_freq_mode"), self._carrier_freq_mode_combo.currentIndex()))
+            self._set_combo_text(self._carrier_freq_band_combo, str(axis.get("carrier_freq_band", self._carrier_freq_band_combo.currentText())))
+            self._carrier_freq_weight_slider.setValue(self._as_float(axis.get("carrier_freq_weight"), self._carrier_freq_weight_slider.value()))
             self.volume_ratio_slider.setValue(self._as_float(axis.get("volume_ramp_ratio"), self.volume_ratio_slider.value()))
             self.ramp_pct_per_hour_spin.setValue(self._as_float(axis.get("ramp_percent_per_hour"), self.ramp_pct_per_hour_spin.value()))
             self.pulse_rise_ratio_slider.setValue(self._as_float(axis.get("pulse_rise_ratio"), self.pulse_rise_ratio_slider.value()))
@@ -1051,6 +1148,7 @@ class PMVControlsPanel(QWidget):
 
             ab_mode = axis.get("alpha_beta_mode", self._alpha_beta_mode_combo.currentText())
             self._set_combo_text(self._alpha_beta_mode_combo, str(ab_mode))
+            self._orbital_blend_slider.setValue(self._as_float(axis.get("orbital_blend"), self._orbital_blend_slider.value()))
 
             enabled_axes = axis.get("enabled_axes", [])
             if isinstance(enabled_axes, (list, tuple, set)):

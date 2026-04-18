@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 
@@ -36,6 +36,13 @@ class AxisConfig:
     e_min_segment_sec: float = 0.5
     frequency_ramp_ratio: float = 2.0
     pulse_frequency_ratio: float = 3.0
+    pulse_freq_mode: int = 0  # 0=Ratio 1=Hz 2=Speed 3=BandEnergy 4=Hybrid
+    pulse_freq_band: str = "sub_bass"
+    pulse_freq_weight: float = 1.0
+    carrier_frequency_ratio: float = 3.0
+    carrier_freq_mode: int = 1  # 0=Ratio 1=Hz 2=Speed 3=BandEnergy 4=Hybrid
+    carrier_freq_band: str = "mid"
+    carrier_freq_weight: float = 1.0
     volume_ramp_ratio: float = 20.0
     pulse_rise_ratio: float = 2.0
     pulse_width_ratio: float = 3.0
@@ -46,6 +53,7 @@ class AxisConfig:
     points_per_second: int = 25
     enabled_axes: set[str] = field(default_factory=lambda: {"main"})
     alpha_beta_mode: str = "restim"  # "restim" or "orbital"
+    orbital_blend: float = 0.0  # 0.0 = pure restim, 1.0 = pure orbital
 
 
 @dataclass(slots=True)
@@ -342,6 +350,7 @@ def _generate_aux_axes(
     config: AxisConfig,
     duration_ms: int,
     alpha_actions: list[FunscriptAction] | None = None,
+    audio_timeline: Any | None = None,
 ) -> dict[str, list[FunscriptAction]]:
     n = len(main_actions)
     if n == 0:
@@ -366,15 +375,61 @@ def _generate_aux_axes(
         # Fallback: use position as proxy when alpha unavailable
         alpha_norm = np.array([float(a.pos) / 100.0 for a in main_actions], dtype=np.float64)
 
+    # ── Audio-derived signals (interpolated to action timestamps) ──
+    centroid_norm: np.ndarray | None = None
+    band_cache: dict[str, np.ndarray] = {}
+    if audio_timeline is not None:
+        frame_t = np.asarray(audio_timeline.frame_times_ms, dtype=np.float64)
+        # Spectral centroid normalised to 0-1 (centroid up to ~8000 Hz)
+        raw_centroid = np.asarray(audio_timeline.spectral_centroid_per_frame, dtype=np.float64)
+        c_max = max(float(np.max(raw_centroid)), 1.0) if len(raw_centroid) > 0 else 1.0
+        centroid_interp = np.interp(t, frame_t, raw_centroid / c_max)
+        centroid_norm = np.clip(centroid_interp, 0.0, 1.0)
+        # Band energies — lazily interpolated per band on first use
+        be = getattr(audio_timeline, "band_energies_per_frame", None)
+        if isinstance(be, dict):
+            for band_name, band_arr in be.items():
+                raw = np.asarray(band_arr, dtype=np.float64)
+                b_max = max(float(np.max(raw)), 1e-12) if len(raw) > 0 else 1e-12
+                band_cache[band_name] = np.clip(np.interp(t, frame_t, raw / b_max), 0.0, 1.0)
+
     def _mix_vec(a: np.ndarray, b: np.ndarray, ratio: float) -> np.ndarray:
         r = max(1.0, float(ratio))
         return (a * (r - 1.0) + b) / r
 
+    def _apply_weight(signal: np.ndarray, weight: float) -> np.ndarray:
+        """Centre-weighted scaling: 0.5 + (signal - 0.5) * weight."""
+        w = max(0.0, min(1.0, float(weight)))
+        return np.clip(0.5 + (signal - 0.5) * w, 0.0, 1.0)
+
+    def _mode_dispatch(mode: int, ratio: float, band: str, weight: float) -> np.ndarray:
+        """Compute a normalised 0-1 signal based on the selected mode."""
+        if mode == 1 and centroid_norm is not None:  # Hz
+            return _apply_weight(centroid_norm, weight)
+        if mode == 2:  # Speed
+            return _apply_weight(speed_norm, weight)
+        if mode == 3 and band in band_cache:  # Band Energy
+            return _apply_weight(band_cache[band], weight)
+        if mode == 4 and centroid_norm is not None:  # Hybrid
+            base = _mix_vec(speed_norm, alpha_norm, ratio)
+            return np.clip(base * (0.5 + centroid_norm * 0.5), 0.0, 1.0)
+        # Mode 0 (Ratio) or fallback when audio unavailable
+        return _mix_vec(speed_norm, alpha_norm, ratio)
+
     # --- frequency: combine(ramp, speed, ratio) ---
     freq = _mix_vec(ramp, speed_norm, config.frequency_ramp_ratio)
 
-    # --- pulse_frequency: combine(speed, alpha, ratio) ---
-    pulse_freq = _mix_vec(speed_norm, alpha_norm, config.pulse_frequency_ratio)
+    # --- pulse_frequency: mode-selectable ---
+    pulse_freq = _mode_dispatch(
+        config.pulse_freq_mode, config.pulse_frequency_ratio,
+        config.pulse_freq_band, config.pulse_freq_weight,
+    )
+
+    # --- carrier_frequency: mode-selectable (new axis) ---
+    carrier_freq = _mode_dispatch(
+        config.carrier_freq_mode, config.carrier_frequency_ratio,
+        config.carrier_freq_band, config.carrier_freq_weight,
+    )
 
     # --- volume: combine(ramp, speed, ratio) + rest detection + ramp-up ---
     volume_raw = _mix_vec(ramp, speed_norm, config.volume_ramp_ratio)
@@ -397,6 +452,7 @@ def _generate_aux_axes(
     return {
         "frequency": to_actions(np.clip(freq, 0.0, 1.0)),
         "pulse_frequency": to_actions(np.clip(pulse_freq, 0.0, 1.0)),
+        "carrier_frequency": to_actions(np.clip(carrier_freq, 0.0, 1.0)),
         "volume": to_actions(np.clip(volume, 0.0, 1.0)),
         "pulse_rise": to_actions(np.clip(pulse_rise, 0.0, 1.0)),
         "pulse_width": to_actions(np.clip(pulse_width, 0.0, 1.0)),
@@ -408,6 +464,7 @@ def convert_to_2d(
     config: AxisConfig,
     duration_ms: int,
     progress_callback: Callable[[str, float], None] | None = None,
+    audio_timeline: Any | None = None,
 ) -> MultiAxisResult:
     actions = _sorted_actions(main_actions)
     result: dict[str, list[FunscriptAction]] = {"main": actions}
@@ -455,7 +512,7 @@ def convert_to_2d(
         )
 
     _report(progress_callback, "Generating auxiliary axes...", 85.0)
-    aux = _generate_aux_axes(actions, speed_norm, config, duration_ms, alpha_actions=alpha if alpha else None)
+    aux = _generate_aux_axes(actions, speed_norm, config, duration_ms, alpha_actions=alpha if alpha else None, audio_timeline=audio_timeline)
     for axis_name, axis_actions in aux.items():
         if axis_name in config.enabled_axes:
             result[axis_name] = axis_actions
