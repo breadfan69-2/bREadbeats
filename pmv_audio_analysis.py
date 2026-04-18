@@ -55,7 +55,7 @@ class AnalysisConfig:
     lowpass_hz: float = 1000.0
     highpass_enabled: bool = False
     highpass_hz: float = 400.0
-    freq_min_hz: float = 100.0
+    freq_min_hz: float = 40.0
     freq_max_hz: float = 8000.0
     gain: float = 6.2
 
@@ -283,11 +283,16 @@ def apply_frequency_filters(
 ) -> np.ndarray:
     """Apply optional lowpass/highpass filtering to magnitude spectrum."""
     out = np.asarray(spectrum, dtype=np.float32).copy()
+    f = np.asarray(freqs)
 
     if config.lowpass_enabled:
-        out[np.asarray(freqs) > float(config.lowpass_hz)] = 0.0
+        out[f > float(config.lowpass_hz)] = 0.0
     if config.highpass_enabled:
-        out[np.asarray(freqs) < float(config.highpass_hz)] = 0.0
+        out[f < float(config.highpass_hz)] = 0.0
+
+    # Always-on frequency focus range — zero bins outside [freq_min, freq_max]
+    out[f < float(config.freq_min_hz)] = 0.0
+    out[f > float(config.freq_max_hz)] = 0.0
     return out
 
 

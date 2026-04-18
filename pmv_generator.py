@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import QEventLoop, QObject, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QEventLoop, QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -44,6 +44,27 @@ VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".webm", ".wmv", ".mov", ".flv"}
 FUNSCRIPT_EXTENSIONS = {".funscript"}
 SUPPORTED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 IMPORTABLE_EXTENSIONS = SUPPORTED_EXTENSIONS | FUNSCRIPT_EXTENSIONS
+
+# Known axis suffixes used when exporting multi-axis funscripts.
+# File name pattern: {base_stem}.{axis_name}.funscript
+AXIS_SUFFIXES = {
+    "main", "alpha", "beta", "alpha_prostate", "beta_prostate",
+    "e1", "e2", "e3", "e4",
+    "frequency", "pulse_frequency", "volume", "pulse_rise", "pulse_width",
+}
+
+
+def _strip_axis_suffix(name: str) -> tuple[str, str | None]:
+    """Return (base_stem, axis_name) by stripping a known axis suffix.
+
+    ``'video.alpha'`` → ``('video', 'alpha')``
+    ``'video'``       → ``('video', None)``
+    """
+    for suffix in sorted(AXIS_SUFFIXES, key=len, reverse=True):
+        tail = f".{suffix}"
+        if name.lower().endswith(tail):
+            return name[: len(name) - len(tail)], suffix
+    return name, None
 
 
 def _merge_dict(base: dict, overrides: dict) -> dict:
@@ -263,7 +284,7 @@ class PMVGeneratorWindow(QMainWindow):
         self.file_label.setStyleSheet("color: #b0bec5; font-size: 11px;")
         center_layout.addWidget(self.file_label)
 
-        self.video_preview = VideoPreviewWidget(self)
+        self.video_preview = VideoPreviewWidget()  # parentless — independent top-level window
 
         self.visualizations = VisualizationArea(center)
         center_layout.addWidget(self.visualizations, 1)
@@ -739,8 +760,17 @@ class PMVGeneratorWindow(QMainWindow):
 
     def _discover_matching_media(self, script_path: Path, metadata: FunscriptMetadata) -> Path | None:
         candidates: list[Path] = []
+
+        # Try the script's own stem first (works for main files like video.funscript)
         for ext in SUPPORTED_EXTENSIONS:
             candidates.append(script_path.with_suffix(ext))
+
+        # If the stem contains an axis suffix (e.g. video.alpha.funscript),
+        # also try the base stem (video.mp4, etc.)
+        base_stem, _axis = _strip_axis_suffix(script_path.stem)
+        if _axis is not None:
+            for ext in SUPPORTED_EXTENSIONS:
+                candidates.append(script_path.parent / f"{base_stem}{ext}")
 
         title = str(metadata.title).strip()
         if title:
@@ -1597,6 +1627,12 @@ class PMVGeneratorWindow(QMainWindow):
                 self._position_canvas.update_position(alpha_tc, beta_tc)
             else:
                 self._position_canvas.update_position(beta_tc, alpha_tc)
+
+    def changeEvent(self, event) -> None:
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            if self.video_preview.isVisible():
+                self.video_preview.raise_()
+        super().changeEvent(event)
 
     def closeEvent(self, event) -> None:
         self.video_preview.close()
