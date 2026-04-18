@@ -262,10 +262,14 @@ class PMVGeneratorWindow(QMainWindow):
         self.save_preset_btn = QPushButton("Save As", self)
         self.refresh_preset_btn = QPushButton("Refresh", self)
         self.open_script_btn = QPushButton("Open Script", self)
+        self.regen_axes_btn = QPushButton("Regen Axes", self)
+        self.regen_axes_btn.setToolTip("Regenerate alpha/beta and auxiliary axes from the current edited main script")
+        self.regen_axes_btn.setEnabled(False)
         preset_row.addWidget(self.load_preset_btn)
         preset_row.addWidget(self.save_preset_btn)
         preset_row.addWidget(self.refresh_preset_btn)
         preset_row.addWidget(self.open_script_btn)
+        preset_row.addWidget(self.regen_axes_btn)
 
         root_layout.addLayout(preset_row)
 
@@ -323,6 +327,7 @@ class PMVGeneratorWindow(QMainWindow):
         self.save_preset_btn.clicked.connect(self._on_save_preset_clicked)
         self.refresh_preset_btn.clicked.connect(self._reload_preset_catalog)
         self.open_script_btn.clicked.connect(self._on_open_script_clicked)
+        self.regen_axes_btn.clicked.connect(self._on_regen_axes_clicked)
 
         self._default_preset_dir, self._user_preset_dir = self._resolve_preset_dirs()
         self._ensure_default_presets()
@@ -806,6 +811,21 @@ class PMVGeneratorWindow(QMainWindow):
     def _on_open_script_clicked(self) -> None:
         self.open_funscript(blocking=False)
 
+    def _on_regen_axes_clicked(self) -> None:
+        """Regenerate all auxiliary axes from the current edited main actions."""
+        main_actions = self._current_main_actions()
+        if len(main_actions) < 2:
+            return
+        axis_cfg = self.controls.get_axis_config()
+        duration_ms = int(main_actions[-1].at) if main_actions else 1
+        self._multi_axis = convert_to_2d(main_actions, axis_cfg, max(duration_ms, 1))
+        self.visualizations.set_multi_axis(self._multi_axis)
+        self.aux_panel.set_multi_axis(self._multi_axis)
+        axis_count = sum(1 for k, v in self._multi_axis.axes.items() if k != "main" and v)
+        bar = self.statusBar()
+        if bar is not None:
+            bar.showMessage(f"Regenerated {axis_count} axes from {len(main_actions)} main actions", 3000)
+
     @staticmethod
     def _discover_sibling_axes(script_path: Path) -> dict[str, list[FunscriptAction]]:
         """Find sibling axis funscript files and return {axis_name: actions}."""
@@ -1005,6 +1025,7 @@ class PMVGeneratorWindow(QMainWindow):
             or (self._positions is not None and len(self._positions.beat_actions) > 0)
         )
         self.controls.step_bar.set_step_enabled(5, has_exportable)
+        self.regen_axes_btn.setEnabled(len(current_actions) >= 2)
 
     def _on_edit_state_changed(self) -> None:
         self._refresh_step_availability()

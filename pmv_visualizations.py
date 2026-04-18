@@ -1222,7 +1222,7 @@ class VisualizationArea(QWidget):
         # Scale max_dist_ms based on viewport width for usability
         if max_dist_ms <= 0:
             x_range = self.overlay_plot.viewRange()[0]
-            max_dist_ms = max(200, (x_range[1] - x_range[0]) * 0.02)
+            max_dist_ms = max(100, (x_range[1] - x_range[0]) * 0.005)
 
         lo = bisect.bisect_left(actions, time_ms - max_dist_ms, key=lambda a: a.at)
         hi = bisect.bisect_right(actions, time_ms + max_dist_ms, key=lambda a: a.at)
@@ -1256,6 +1256,17 @@ class VisualizationArea(QWidget):
         time_ms, pos = self._plot_event_to_data(ev)
 
         if ev.button() == Qt.MouseButton.LeftButton:
+            shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+
+            # Shift+click always starts rectangle selection, even on a point
+            if shift:
+                self._rect_selecting = True
+                self._rect_start_pos = (time_ms, pos)
+                self._rect_roi.setRegion((time_ms, time_ms))
+                self._rect_roi.setVisible(True)
+                ev.accept()
+                return True
+
             idx = self._find_nearest_action(time_ms, pos)
             if idx is not None:
                 ctrl = bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier)
@@ -1268,15 +1279,6 @@ class VisualizationArea(QWidget):
                 self._drag_idx = idx
                 self._drag_active = False
                 self._edit_state.begin_drag()
-                ev.accept()
-                return True
-
-            shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-            if shift:
-                self._rect_selecting = True
-                self._rect_start_pos = (time_ms, pos)
-                self._rect_roi.setRegion((time_ms, time_ms))
-                self._rect_roi.setVisible(True)
                 ev.accept()
                 return True
 
