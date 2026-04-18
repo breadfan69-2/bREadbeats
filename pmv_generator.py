@@ -1703,13 +1703,14 @@ class PMVGeneratorWindow(QMainWindow):
             from network_engine import TCodeCommand
             vol_pos = self._interpolate_axis_at("volume", time_ms)
             vol = (vol_pos / 100.0) if vol_pos is not None else 1.0
-            cmd = TCodeCommand(alpha=alpha_tc, beta=beta_tc, duration_ms=33, volume=vol)
+            # TCode: swap alpha/beta to match restim's L0/L1 convention
+            # (only the bREadbeats canvas display needs the un-swapped order)
+            cmd = TCodeCommand(alpha=beta_tc, beta=alpha_tc, duration_ms=33, volume=vol)
             ne.send_immediate(cmd)
         elif self._position_canvas is not None:
-            # Restim axes use funscript convention (alpha=vertical, beta=horizontal)
-            # which is swapped vs PositionCanvas (arg1=horizontal, arg2=vertical).
-            # Orbital replay already outputs device-convention alpha/beta
-            # (matching the live StrokeMapper), so no swap needed.
+            # bREadbeats PositionCanvas: arg1=horizontal, arg2=vertical.
+            # Restim-style alpha=vertical, beta=horizontal → swap for display.
+            # Orbital replay already outputs device-convention → no swap.
             axis_cfg = self.controls.get_axis_config()
             if axis_cfg.alpha_beta_mode == "orbital":
                 self._position_canvas.update_position(alpha_tc, beta_tc)
