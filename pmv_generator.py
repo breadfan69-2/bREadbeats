@@ -35,7 +35,7 @@ from config_persistence import get_config_dir
 from pmv_controls import PMVControlsPanel
 from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_csv, write_funscript
 from pmv_position_mapper import PositionTimeline, generate_positions
-from pmv_visualizations import AuxAxisPanel, VisualizationArea
+from pmv_visualizations import AuxAxisPanel, VideoPreviewWidget, VisualizationArea
 from funscript_edit_state import FunscriptEditState, LockedRegion
 
 
@@ -263,6 +263,8 @@ class PMVGeneratorWindow(QMainWindow):
         self.file_label.setStyleSheet("color: #b0bec5; font-size: 11px;")
         center_layout.addWidget(self.file_label)
 
+        self.video_preview = VideoPreviewWidget(self)
+
         self.visualizations = VisualizationArea(center)
         center_layout.addWidget(self.visualizations, 1)
 
@@ -293,6 +295,7 @@ class PMVGeneratorWindow(QMainWindow):
         self.controls.config_changed.connect(self._on_controls_changed)
         self.controls.step_bar.step_requested.connect(self._on_step_requested)
         self.visualizations.position_changed.connect(self._on_visualization_position_changed)
+        self.visualizations.playback_panel.transport_changed.connect(self.video_preview.on_transport)
         self._edit_state.changed.connect(self._on_edit_state_changed)
         self.aux_panel.link_x_axis(self.visualizations.overlay_plot)
         self.load_preset_btn.clicked.connect(self._on_load_preset_clicked)
@@ -517,6 +520,17 @@ class PMVGeneratorWindow(QMainWindow):
             bar.showMessage(message, 3000)
         if show_errors:
             QMessageBox.critical(self, title, message)
+
+    def _load_video_preview(self) -> None:
+        """Show/hide the video preview popout based on current _media_path."""
+        media = self._media_path
+        if media is not None and Path(media).suffix.lower() in VIDEO_EXTENSIONS:
+            self.video_preview.load_media(media)
+            self.video_preview.show()
+            self.video_preview.raise_()
+        else:
+            self.video_preview.load_media(None)
+            self.video_preview.hide()
 
     def _progress(self, step_name: str, message: str, percent: float) -> None:
         import sys
@@ -763,6 +777,7 @@ class PMVGeneratorWindow(QMainWindow):
 
         self._file_path = str(script_path)
         self._media_path = str(matching_media) if matching_media is not None else None
+        self._load_video_preview()
         self._samples = samples
         self._timeline = None
         self._beats = None
@@ -1136,6 +1151,7 @@ class PMVGeneratorWindow(QMainWindow):
         def apply(samples):
             self._file_path = str(path)
             self._media_path = str(path)
+            self._load_video_preview()
             self._samples = samples
             self._reset_from_step(2)
             self.file_label.setText(Path(path).name)
@@ -1583,6 +1599,7 @@ class PMVGeneratorWindow(QMainWindow):
                 self._position_canvas.update_position(beta_tc, alpha_tc)
 
     def closeEvent(self, event) -> None:
+        self.video_preview.close()
         if self._worker_thread is not None:
             self._worker_thread.quit()
             self._worker_thread.wait(5000)

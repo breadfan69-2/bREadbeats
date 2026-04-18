@@ -349,6 +349,7 @@ class PlaybackPanel(QWidget):
     """Lightweight transport scaffold that drives cursor sync in visualization panels."""
 
     position_changed = pyqtSignal(float)
+    transport_changed = pyqtSignal(str, float)  # ("play"|"pause"|"stop"|"seek", position_ms)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -474,6 +475,7 @@ class PlaybackPanel(QWidget):
                 self._timer.stop()
         self._update_label()
         self._emit_position()
+        self.transport_changed.emit("seek", self._position_ms)
 
     def set_duration_ms(self, duration_ms: float) -> None:
         if self._playing:
@@ -522,6 +524,7 @@ class PlaybackPanel(QWidget):
         self._playback_t0 = time.perf_counter()
         if not self._timer.isActive():
             self._timer.start()
+        self.transport_changed.emit("play", self._position_ms)
 
     def pause(self) -> None:
         self._refresh_position_from_clock()
@@ -535,6 +538,7 @@ class PlaybackPanel(QWidget):
         self._update_label()
         self._emit_position()
         self._timer.stop()
+        self.transport_changed.emit("pause", self._position_ms)
 
     def stop(self) -> None:
         self._playing = False
@@ -548,6 +552,7 @@ class PlaybackPanel(QWidget):
         self._update_label()
         self._emit_position()
         self._timer.stop()
+        self.transport_changed.emit("stop", 0.0)
 
     def seek(self, time_ms: float) -> None:
         self._position_ms = float(np.clip(time_ms, 0.0, max(0.0, self._duration_ms)))
@@ -1675,6 +1680,99 @@ class AuxAxisPanel(QWidget):
             playhead.setPos(float(time_ms))
 
 
+# ---------------------------------------------------------------------------
+# Video preview widget — syncs to PlaybackPanel transport signals
+# ---------------------------------------------------------------------------
+_qt_multimedia_available = False
+try:
+    from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput as _QAudioOutput
+    from PyQt6.QtMultimediaWidgets import QVideoWidget as _QVideoWidget
+    _qt_multimedia_available = True
+except ImportError:
+    pass
+
+
+class VideoPreviewWidget(QWidget):
+    """Popout video player window that stays in sync with PlaybackPanel transport.
+
+    Uses QMediaPlayer + QVideoWidget from PyQt6.QtMultimedia.  Falls back to
+    a plain "no video" label if the Qt Multimedia module is not installed.
+    """
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent, Qt.WindowType.Window)  # separate top-level window
+        self.setWindowTitle("Video Preview")
+        self.resize(640, 480)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._media_path: str | None = None
+        self._player: QMediaPlayer | None = None
+        self._video_widget = None
+        self._audio_output = None
+        self._syncing = False  # guard against recursive position updates
+        self._was_playing = False
+
+        if _qt_multimedia_available:
+            self._video_widget = _QVideoWidget(self)
+            self._audio_output = _QAudioOutput(self)
+            self._audio_output.setVolume(0.0)  # muted — audio comes from sounddevice
+
+            self._player = QMediaPlayer(self)
+            self._player.setVideoOutput(self._video_widget)
+            self._player.setAudioOutput(self._audio_output)
+
+            layout.addWidget(self._video_widget, 1)
+        else:
+            lbl = QLabel("Video preview unavailable\n(install PyQt6-Qt6 multimedia)")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("color: #888; font-size: 11px;")
+            layout.addWidget(lbl, 1)
+
+    # ── public API ──
+
+    def load_media(self, file_path: str | None) -> None:
+        """Load a video file for preview.  Pass None to clear."""
+        self._media_path = file_path
+        if self._player is None:
+            return
+        if file_path is None:
+            self._player.stop()
+            self._player.setSource(QUrl())
+            return
+        from PyQt6.QtCore import QUrl
+        url = QUrl.fromLocalFile(file_path)
+        self._player.setSource(url)
+        # Seek to beginning and pause so a frame is visible
+        self._player.pause()
+
+    def on_transport(self, action: str, position_ms: float) -> None:
+        """Slot for PlaybackPanel.transport_changed(str, float)."""
+        if self._player is None:
+            return
+        pos_int = max(0, int(round(position_ms)))
+        if action == "play":
+            self._player.setPosition(pos_int)
+            self._player.play()
+            self._was_playing = True
+        elif action == "pause":
+            self._player.pause()
+            self._player.setPosition(pos_int)
+            self._was_playing = False
+        elif action == "stop":
+            self._player.stop()
+            self._player.setPosition(0)
+            self._was_playing = False
+        elif action == "seek":
+            self._player.setPosition(pos_int)
+
+    def set_muted(self, muted: bool) -> None:
+        """Mute / un-mute the video audio track."""
+        if self._audio_output is not None:
+            self._audio_output.setVolume(0.0 if muted else 1.0)
+
+
 __all__ = [
     "AuxAxisPanel",
     "PlaybackPanel",
@@ -1682,6 +1780,7 @@ __all__ = [
     "SpectralFluxPanel",
     "SpeedHeatmapPanel",
     "TimeAxisSync",
+    "VideoPreviewWidget",
     "VisualizationArea",
     "WaveformPanel",
 ]
