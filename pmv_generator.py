@@ -780,6 +780,19 @@ class PMVGeneratorWindow(QMainWindow):
             else:
                 candidates.extend(title_path.with_suffix(ext) for ext in SUPPORTED_EXTENSIONS)
 
+        # Also search up to 3 parent folders for matching media
+        stems_to_try = {script_path.stem}
+        if _axis is not None:
+            stems_to_try.add(base_stem)
+        parent = script_path.parent.parent
+        for _ in range(3):
+            if parent == parent.parent:
+                break  # hit filesystem root
+            for stem in stems_to_try:
+                for ext in SUPPORTED_EXTENSIONS:
+                    candidates.append(parent / f"{stem}{ext}")
+            parent = parent.parent
+
         seen: set[str] = set()
         for candidate in candidates:
             key = str(candidate).lower()
@@ -793,6 +806,29 @@ class PMVGeneratorWindow(QMainWindow):
     def _on_open_script_clicked(self) -> None:
         self.open_funscript(blocking=False)
 
+    @staticmethod
+    def _discover_sibling_axes(script_path: Path) -> dict[str, list[FunscriptAction]]:
+        """Find sibling axis funscript files and return {axis_name: actions}."""
+        base_stem, selected_axis = _strip_axis_suffix(script_path.stem)
+        folder = script_path.parent
+        axes: dict[str, list[FunscriptAction]] = {}
+        for suffix in AXIS_SUFFIXES:
+            if suffix == "main":
+                candidate = folder / f"{base_stem}.funscript"
+            else:
+                candidate = folder / f"{base_stem}.{suffix}.funscript"
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            if candidate == script_path:
+                continue  # already loaded as primary
+            try:
+                sibling_actions, _ = read_funscript(candidate)
+                if sibling_actions:
+                    axes[suffix] = sibling_actions
+            except Exception:
+                pass  # skip unreadable siblings
+        return axes
+
     def _apply_opened_funscript(
         self,
         script_path: Path,
@@ -802,6 +838,21 @@ class PMVGeneratorWindow(QMainWindow):
         samples,
         analysis_sample_rate: int,
     ) -> None:
+        # Determine which axis was selected and resolve main actions
+        base_stem, selected_axis = _strip_axis_suffix(script_path.stem)
+        sibling_axes = self._discover_sibling_axes(script_path)
+
+        # If user opened an axis file (not main), try to use the main file's
+        # actions as the primary position timeline; fall back to the selected
+        # axis file's actions if the main file isn't available.
+        if selected_axis is not None and selected_axis != "main":
+            main_actions_from_file = sibling_axes.pop("main", None)
+            if main_actions_from_file:
+                # Put the selected file's actions into the sibling dict
+                sibling_axes[selected_axis] = [FunscriptAction(a.at, a.pos) for a in actions]
+                actions = main_actions_from_file
+            # Else: opened an axis file with no main sibling → use its actions as primary
+
         copied_actions = [FunscriptAction(a.at, a.pos) for a in actions]
         duration_ms = int(max(metadata.duration, copied_actions[-1].at if copied_actions else 0))
 
@@ -828,8 +879,14 @@ class PMVGeneratorWindow(QMainWindow):
             speed_profile=speed_profile,
             ml_results=None,
         )
+
+        # Build multi-axis: start with generated axes, then overlay any
+        # sibling axis files that were found on disk.
         axis_duration_ms = max(duration_ms, 1)
         self._multi_axis = convert_to_2d(self._positions.actions, self.controls.get_axis_config(), axis_duration_ms)
+        for axis_name, axis_actions in sibling_axes.items():
+            self._multi_axis.axes[axis_name] = [FunscriptAction(a.at, a.pos) for a in axis_actions]
+
         self._edit_state.load_actions(self._positions.actions)
         self.visualizations.set_positions(self._positions)
         self.visualizations.set_multi_axis(self._multi_axis)
@@ -838,9 +895,12 @@ class PMVGeneratorWindow(QMainWindow):
         if duration_ms > 0:
             self.visualizations.zoom_to_range(0.0, max(1000.0, float(duration_ms)))
 
-        label = script_path.name
+        # Build file label showing loaded axes
+        axis_count = sum(1 for k, v in self._multi_axis.axes.items() if k != "main" and v)
+        axis_info = f" (+{axis_count} axes)" if axis_count > 0 else ""
+        label = f"{script_path.name}{axis_info}"
         if matching_media is not None:
-            label = f"{script_path.name} | {matching_media.name}"
+            label = f"{script_path.name}{axis_info} | {matching_media.name}"
         self.file_label.setText(label)
         tooltip = str(script_path)
         if matching_media is not None:
@@ -855,8 +915,15 @@ class PMVGeneratorWindow(QMainWindow):
 
         bar = self.statusBar()
         if bar is not None:
-            suffix = f" with media {matching_media.name}" if matching_media is not None else " (no matching media found)"
-            bar.showMessage(f"Opened {script_path.name}{suffix}", 4000)
+            parts = [f"Opened {script_path.name} ({len(copied_actions)} points)"]
+            if axis_count > 0:
+                axis_names = sorted(k for k, v in self._multi_axis.axes.items() if k != "main" and v)
+                parts.append(f"+ {axis_count} axes: {', '.join(axis_names)}")
+            if matching_media is not None:
+                parts.append(f"media: {matching_media.name}")
+            else:
+                parts.append("(no matching media found)")
+            bar.showMessage(" | ".join(parts), 6000)
 
     def open_funscript(
         self,
