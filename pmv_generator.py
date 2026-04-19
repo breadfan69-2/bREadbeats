@@ -351,6 +351,7 @@ class PMVGeneratorWindow(QMainWindow):
         self.save_preset_btn = QPushButton("Save As", self)
         self.refresh_preset_btn = QPushButton("Refresh", self)
         self.open_script_btn = QPushButton("Open Script", self)
+        self.load_folder_btn = QPushButton("Load Folder", self)
         self.regen_axes_btn = QPushButton("Regen Axes", self)
         self.regen_axes_btn.setToolTip("Regenerate alpha/beta and auxiliary axes from the current edited main script")
         self.regen_axes_btn.setEnabled(False)
@@ -364,6 +365,7 @@ class PMVGeneratorWindow(QMainWindow):
         preset_row.addWidget(self.save_preset_btn)
         preset_row.addWidget(self.refresh_preset_btn)
         preset_row.addWidget(self.open_script_btn)
+        preset_row.addWidget(self.load_folder_btn)
         preset_row.addWidget(self.regen_axes_btn)
         preset_row.addWidget(self.fill_blanks_btn)
 
@@ -424,6 +426,7 @@ class PMVGeneratorWindow(QMainWindow):
         self.save_preset_btn.clicked.connect(self._on_save_preset_clicked)
         self.refresh_preset_btn.clicked.connect(self._reload_preset_catalog)
         self.open_script_btn.clicked.connect(self._on_open_script_clicked)
+        self.load_folder_btn.clicked.connect(self._on_load_folder_clicked)
         self.regen_axes_btn.clicked.connect(self._on_regen_axes_clicked)
         self.fill_blanks_btn.clicked.connect(self._on_fill_blanks_clicked)
 
@@ -881,6 +884,19 @@ class PMVGeneratorWindow(QMainWindow):
         )
         return path or None
 
+    def _select_funscript_files(self) -> list[str]:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Open Existing Funscripts",
+            "",
+            "Funscript Files (*.funscript);;All Files (*.*)",
+        )
+        return [p for p in paths if p]
+
+    def _select_funscript_folder(self) -> str | None:
+        path = QFileDialog.getExistingDirectory(self, "Open Funscript Folder", "")
+        return path or None
+
     def _discover_matching_media(self, script_path: Path, metadata: FunscriptMetadata) -> Path | None:
         candidates: list[Path] = []
 
@@ -927,7 +943,10 @@ class PMVGeneratorWindow(QMainWindow):
         return None
 
     def _on_open_script_clicked(self) -> None:
-        self.open_funscript(blocking=False)
+        self.open_funscripts(blocking=False)
+
+    def _on_load_folder_clicked(self) -> None:
+        self.open_funscript_folder(blocking=False)
 
     def _on_regen_axes_clicked(self) -> None:
         """Regenerate all auxiliary axes from the current edited main actions."""
@@ -1095,6 +1114,20 @@ class PMVGeneratorWindow(QMainWindow):
             except Exception:
                 pass  # skip unreadable siblings
         return axes
+
+    @staticmethod
+    def _axis_name_from_file(path: Path) -> str | None:
+        """Infer axis name from filename; returns None for plain non-axis stems."""
+        stem = path.stem
+        lowered = stem.lower()
+        if lowered == "main":
+            return "main"
+        _base_stem, suffix = _strip_axis_suffix(stem)
+        if suffix is not None:
+            return suffix
+        if lowered in AXIS_SUFFIXES:
+            return lowered
+        return None
 
     def _apply_opened_funscript(
         self,
@@ -1292,6 +1325,318 @@ class PMVGeneratorWindow(QMainWindow):
         except Exception as exc:
             self.controls.step_bar.set_step_status(1, "error")
             self._show_error("Open failed", f"Unable to open script: {exc}", show_errors)
+            return False
+        finally:
+            self._set_pipeline_busy(False)
+            self._progress_bar.hide()
+
+    def open_funscripts(
+        self,
+        file_paths: list[str] | None = None,
+        show_errors: bool = True,
+        *,
+        blocking: bool = True,
+    ) -> bool:
+        paths = [p for p in (file_paths or self._select_funscript_files()) if p]
+        if not paths:
+            return False
+
+        if len(paths) == 1:
+            return self.open_funscript(paths[0], show_errors=show_errors, blocking=blocking)
+
+        script_paths = sorted(
+            [Path(p) for p in paths if Path(p).suffix.lower() in FUNSCRIPT_EXTENSIONS],
+            key=lambda p: p.name.lower(),
+        )
+        if not script_paths:
+            self._show_error("Unsupported file", "No selected files are funscripts.", show_errors)
+            return False
+
+        loaded_entries: list[tuple[Path, list[FunscriptAction], FunscriptMetadata, str | None]] = []
+        read_failures = 0
+        for script in script_paths:
+            try:
+                actions, metadata = read_funscript(script)
+            except Exception:
+                read_failures += 1
+                continue
+            loaded_entries.append((script, actions, metadata, self._axis_name_from_file(script)))
+
+        if not loaded_entries:
+            self._show_error("Open failed", "Unable to read any selected funscript files.", show_errors)
+            return False
+
+        # Prefer a true main/non-axis script, otherwise fall back to the
+        # longest readable script as the primary timeline.
+        main_candidates = [e for e in loaded_entries if e[3] in (None, "main")]
+        primary_pool = main_candidates if main_candidates else loaded_entries
+        primary_script, primary_actions, primary_meta, primary_axis = max(
+            primary_pool,
+            key=lambda e: (len(e[1]), -len(e[0].name), e[0].name.lower()),
+        )
+
+        if isinstance(primary_meta.parameters, dict):
+            preset = primary_meta.parameters.get("preset")
+            if isinstance(preset, dict):
+                self.controls.set_from_preset(preset)
+
+        overlays: dict[str, list[FunscriptAction]] = {}
+        for script, actions, _meta, axis_name in loaded_entries:
+            if not actions:
+                continue
+            if script == primary_script:
+                continue
+            if axis_name in (None, "main"):
+                continue
+            copied = [FunscriptAction(a.at, a.pos) for a in actions]
+            existing = overlays.get(axis_name)
+            if existing is None or len(copied) > len(existing):
+                overlays[axis_name] = copied
+
+        copied_primary = [FunscriptAction(a.at, a.pos) for a in primary_actions]
+        if not copied_primary:
+            if overlays:
+                fallback_axis = max(overlays, key=lambda k: len(overlays[k]))
+                copied_primary = [FunscriptAction(a.at, a.pos) for a in overlays.pop(fallback_axis)]
+                primary_axis = fallback_axis
+            else:
+                self._show_error("Open failed", "No action data found in selected scripts.", show_errors)
+                return False
+
+        analysis_cfg = self.controls.get_analysis_config()
+        matching_media = self._discover_matching_media(primary_script, primary_meta)
+
+        if matching_media is None and self._media_path is not None:
+            existing = Path(self._media_path)
+            if existing.exists() and existing.is_file():
+                matching_media = existing
+
+        def compute(progress_cb):
+            if matching_media is None:
+                return None
+            if self._samples is not None and self._media_path is not None and Path(self._media_path) == matching_media:
+                return self._samples
+            progress_cb("Loading matching media", 5.0)
+            return load_audio(str(matching_media), analysis_cfg, progress_cb)
+
+        def apply(samples):
+            self._apply_opened_funscript(
+                primary_script,
+                primary_meta,
+                copied_primary,
+                matching_media,
+                samples,
+                int(analysis_cfg.sample_rate),
+            )
+            for axis_name, axis_actions in overlays.items():
+                self._multi_axis.axes[axis_name] = [FunscriptAction(a.at, a.pos) for a in axis_actions]
+            self.visualizations.set_multi_axis(self._multi_axis)
+            self.aux_panel.set_multi_axis(self._multi_axis)
+            self._refresh_edit_axis_combo()
+
+            axis_count = sum(1 for k, v in self._multi_axis.axes.items() if k != "main" and v)
+            axis_info = f" (+{axis_count} axes)" if axis_count > 0 else ""
+            source_label = f"selected: {len(script_paths)} files"
+            if primary_axis not in (None, "main"):
+                source_label += f" | main from {primary_axis}"
+            label = f"{source_label}{axis_info}"
+            if matching_media is not None:
+                label = f"{label} | {matching_media.name}"
+            self.file_label.setText(label)
+            tooltip = f"Selection ({len(script_paths)} files)\nPrimary: {primary_script}"
+            if matching_media is not None:
+                tooltip += f"\nMedia: {matching_media}"
+            self.file_label.setToolTip(tooltip)
+
+            bar = self.statusBar()
+            if bar is not None:
+                parts = [
+                    f"Loaded selected scripts: {len(script_paths)}",
+                    f"readable: {len(loaded_entries)}",
+                    f"main points: {len(copied_primary)}",
+                ]
+                if axis_count > 0:
+                    axis_names = sorted(k for k, v in self._multi_axis.axes.items() if k != "main" and v)
+                    parts.append(f"axes: {', '.join(axis_names)}")
+                if read_failures > 0:
+                    parts.append(f"skipped unreadable: {read_failures}")
+                bar.showMessage(" | ".join(parts), 7000)
+
+        if not blocking:
+            if matching_media is None:
+                apply(None)
+                return True
+            self._run_step_async(1, "Open Script Selection", compute, apply, "Unable to open selected scripts")
+            return True
+
+        self.controls.step_bar.set_step_status(1, "running")
+        self._set_pipeline_busy(True, "Open Script Selection: starting...")
+        self._progress_bar.setValue(0)
+        self._progress_bar.show()
+        try:
+            samples = compute(lambda msg, pct: self._progress("Open Script Selection", msg, pct))
+            apply(samples)
+            return True
+        except Exception as exc:
+            self.controls.step_bar.set_step_status(1, "error")
+            self._show_error("Open failed", f"Unable to open selected scripts: {exc}", show_errors)
+            return False
+        finally:
+            self._set_pipeline_busy(False)
+            self._progress_bar.hide()
+
+    def open_funscript_folder(
+        self,
+        folder_path: str | None = None,
+        show_errors: bool = True,
+        *,
+        blocking: bool = True,
+    ) -> bool:
+        path = folder_path or self._select_funscript_folder()
+        if not path:
+            return False
+
+        folder = Path(path)
+        if not folder.exists() or not folder.is_dir():
+            self._show_error("Invalid folder", "Selected path is not a folder.", show_errors)
+            return False
+
+        script_paths = sorted(
+            [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in FUNSCRIPT_EXTENSIONS],
+            key=lambda p: p.name.lower(),
+        )
+        if not script_paths:
+            self._show_error("No scripts found", "Folder contains no .funscript files.", show_errors)
+            return False
+
+        loaded_entries: list[tuple[Path, list[FunscriptAction], FunscriptMetadata, str | None]] = []
+        read_failures = 0
+        for script in script_paths:
+            try:
+                actions, metadata = read_funscript(script)
+            except Exception:
+                read_failures += 1
+                continue
+            loaded_entries.append((script, actions, metadata, self._axis_name_from_file(script)))
+
+        if not loaded_entries:
+            self._show_error("Open failed", "Unable to read any funscript files in folder.", show_errors)
+            return False
+
+        # Prefer a true main/non-axis script, otherwise fall back to the
+        # longest readable script as the primary timeline.
+        main_candidates = [e for e in loaded_entries if e[3] in (None, "main")]
+        primary_pool = main_candidates if main_candidates else loaded_entries
+        primary_script, primary_actions, primary_meta, primary_axis = max(
+            primary_pool,
+            key=lambda e: (len(e[1]), -len(e[0].name), e[0].name.lower()),
+        )
+
+        if isinstance(primary_meta.parameters, dict):
+            preset = primary_meta.parameters.get("preset")
+            if isinstance(preset, dict):
+                self.controls.set_from_preset(preset)
+
+        overlays: dict[str, list[FunscriptAction]] = {}
+        for script, actions, _meta, axis_name in loaded_entries:
+            if not actions:
+                continue
+            if script == primary_script:
+                continue
+            if axis_name in (None, "main"):
+                continue
+            copied = [FunscriptAction(a.at, a.pos) for a in actions]
+            existing = overlays.get(axis_name)
+            if existing is None or len(copied) > len(existing):
+                overlays[axis_name] = copied
+
+        copied_primary = [FunscriptAction(a.at, a.pos) for a in primary_actions]
+        if not copied_primary:
+            if overlays:
+                fallback_axis = max(overlays, key=lambda k: len(overlays[k]))
+                copied_primary = [FunscriptAction(a.at, a.pos) for a in overlays.pop(fallback_axis)]
+                primary_axis = fallback_axis
+            else:
+                self._show_error("Open failed", "No action data found in folder scripts.", show_errors)
+                return False
+
+        analysis_cfg = self.controls.get_analysis_config()
+        matching_media = self._discover_matching_media(primary_script, primary_meta)
+
+        if matching_media is None and self._media_path is not None:
+            existing = Path(self._media_path)
+            if existing.exists() and existing.is_file():
+                matching_media = existing
+
+        def compute(progress_cb):
+            if matching_media is None:
+                return None
+            if self._samples is not None and self._media_path is not None and Path(self._media_path) == matching_media:
+                return self._samples
+            progress_cb("Loading matching media", 5.0)
+            return load_audio(str(matching_media), analysis_cfg, progress_cb)
+
+        def apply(samples):
+            self._apply_opened_funscript(
+                primary_script,
+                primary_meta,
+                copied_primary,
+                matching_media,
+                samples,
+                int(analysis_cfg.sample_rate),
+            )
+            for axis_name, axis_actions in overlays.items():
+                self._multi_axis.axes[axis_name] = [FunscriptAction(a.at, a.pos) for a in axis_actions]
+            self.visualizations.set_multi_axis(self._multi_axis)
+            self.aux_panel.set_multi_axis(self._multi_axis)
+            self._refresh_edit_axis_combo()
+
+            axis_count = sum(1 for k, v in self._multi_axis.axes.items() if k != "main" and v)
+            axis_info = f" (+{axis_count} axes)" if axis_count > 0 else ""
+            source_label = f"folder: {folder.name}"
+            if primary_axis not in (None, "main"):
+                source_label += f" | main from {primary_axis}"
+            label = f"{source_label}{axis_info}"
+            if matching_media is not None:
+                label = f"{label} | {matching_media.name}"
+            self.file_label.setText(label)
+            tooltip = f"Folder: {folder}\nPrimary: {primary_script}"
+            if matching_media is not None:
+                tooltip += f"\nMedia: {matching_media}"
+            self.file_label.setToolTip(tooltip)
+
+            bar = self.statusBar()
+            if bar is not None:
+                parts = [
+                    f"Loaded folder {folder.name}",
+                    f"scripts: {len(loaded_entries)}",
+                    f"main points: {len(copied_primary)}",
+                ]
+                if axis_count > 0:
+                    axis_names = sorted(k for k, v in self._multi_axis.axes.items() if k != "main" and v)
+                    parts.append(f"axes: {', '.join(axis_names)}")
+                if read_failures > 0:
+                    parts.append(f"skipped unreadable: {read_failures}")
+                bar.showMessage(" | ".join(parts), 7000)
+
+        if not blocking:
+            if matching_media is None:
+                apply(None)
+                return True
+            self._run_step_async(1, "Open Script Folder", compute, apply, "Unable to open script folder")
+            return True
+
+        self.controls.step_bar.set_step_status(1, "running")
+        self._set_pipeline_busy(True, "Open Script Folder: starting...")
+        self._progress_bar.setValue(0)
+        self._progress_bar.show()
+        try:
+            samples = compute(lambda msg, pct: self._progress("Open Script Folder", msg, pct))
+            apply(samples)
+            return True
+        except Exception as exc:
+            self.controls.step_bar.set_step_status(1, "error")
+            self._show_error("Open failed", f"Unable to open script folder: {exc}", show_errors)
             return False
         finally:
             self._set_pipeline_busy(False)

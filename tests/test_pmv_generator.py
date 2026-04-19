@@ -270,6 +270,38 @@ class TestPmvGenerator(unittest.TestCase):
             exported_actions, _ = read_funscript(export_dir / "existing.funscript")
             self.assertEqual([(a.at, a.pos) for a in exported_actions], [(0, 25), (600, 80), (1200, 35)])
 
+    def test_open_selected_funscripts_merges_aux_axis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_path = root / "main.funscript"
+            alpha_path = root / "alpha.funscript"
+
+            main_actions = [
+                FunscriptAction(0, 20),
+                FunscriptAction(500, 70),
+                FunscriptAction(1000, 30),
+            ]
+            alpha_actions = [
+                FunscriptAction(0, 45),
+                FunscriptAction(500, 60),
+                FunscriptAction(1000, 40),
+            ]
+            write_funscript(main_path, main_actions, FunscriptMetadata(title="main", duration=1000))
+            write_funscript(alpha_path, alpha_actions, FunscriptMetadata(title="alpha", duration=1000))
+
+            win = PMVGeneratorWindow()
+            self.assertTrue(win.open_funscripts([str(main_path), str(alpha_path)], show_errors=False))
+
+            self.assertEqual([(a.at, a.pos) for a in win._edit_state.actions], [(0, 20), (500, 70), (1000, 30)])
+            self.assertIsNotNone(win._multi_axis)
+            if win._multi_axis is None:
+                self.fail("Multi-axis data should be loaded")
+            self.assertIn("alpha", win._multi_axis.axes)
+            self.assertEqual(
+                [(a.at, a.pos) for a in win._multi_axis.axes["alpha"]],
+                [(0, 45), (500, 60), (1000, 40)],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMenu,
     QPushButton,
@@ -1468,6 +1469,11 @@ class VisualizationArea(QWidget):
             ev.accept()
             return True
 
+        if key == Qt.Key.Key_I and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.invert_all()
+            ev.accept()
+            return True
+
         if key == Qt.Key.Key_I and not mod:
             self._edit_state.invert_selection()
             ev.accept()
@@ -1567,13 +1573,25 @@ class VisualizationArea(QWidget):
 
         menu.addSeparator()
 
-        invert_act = menu.addAction("Invert\tI")
+        invert_act = menu.addAction("Invert Selected\tI")
         invert_act.setEnabled(self._edit_state.has_selection)
         invert_act.triggered.connect(self._edit_state.invert_selection)
+
+        invert_all_act = menu.addAction("Invert All\tShift+I")
+        invert_all_act.setEnabled(len(self._edit_state.actions) > 0)
+        invert_all_act.triggered.connect(self._edit_state.invert_all)
 
         eq_act = menu.addAction("Equalize\tE")
         eq_act.setEnabled(len(self._edit_state.selection_indices) >= 3)
         eq_act.triggered.connect(self._edit_state.equalize_selection)
+
+        center_sel_act = menu.addAction("Center Selected At...")
+        center_sel_act.setEnabled(self._edit_state.has_selection)
+        center_sel_act.triggered.connect(lambda: self._prompt_center(selected_only=True))
+
+        center_all_act = menu.addAction("Center All At...")
+        center_all_act.setEnabled(len(self._edit_state.actions) > 0)
+        center_all_act.triggered.connect(lambda: self._prompt_center(selected_only=False))
 
         sa_act = menu.addAction("Select All\tCtrl+A")
         sa_act.triggered.connect(self._edit_state.select_all)
@@ -1585,6 +1603,17 @@ class VisualizationArea(QWidget):
         del_act.triggered.connect(self._edit_state.remove_selected)
 
         menu.exec(global_pos)
+
+    def _prompt_center(self, selected_only: bool) -> None:
+        if self._edit_state is None:
+            return
+        val, ok = QInputDialog.getInt(
+            self, "Center At Position",
+            "Target mean position (0–100):",
+            value=50, min=0, max=100,
+        )
+        if ok:
+            self._edit_state.center_at(float(val), selected_only=selected_only)
 
     def _ctx_add_point(self, time_ms: float, pos: float) -> None:
         from pmv_funscript_io import FunscriptAction
@@ -2181,6 +2210,9 @@ class AuxAxisPanel(QWidget):
         if key == Qt.Key.Key_V and mod & Qt.KeyboardModifier.ControlModifier:
             self._edit_state.paste_at(0)
             return True
+        if key == Qt.Key.Key_I and mod & Qt.KeyboardModifier.ShiftModifier:
+            self._edit_state.invert_all()
+            return True
         if key == Qt.Key.Key_I and not mod:
             self._edit_state.invert_selection()
             return True
@@ -2216,7 +2248,47 @@ class AuxAxisPanel(QWidget):
                 int(time_ms), int(max(0, min(100, pos))))))
 
         menu.addSeparator()
-        del_act = menu.addAction("Delete Selected\tDel")
+
+        cut_act = menu.addAction("Cut\tCtrl+X")
+        cut_act.setEnabled(self._edit_state.has_selection)
+        cut_act.triggered.connect(self._edit_state.cut_selection)
+
+        copy_act = menu.addAction("Copy\tCtrl+C")
+        copy_act.setEnabled(self._edit_state.has_selection)
+        copy_act.triggered.connect(self._edit_state.copy_selection)
+
+        paste_act = menu.addAction("Paste Here\tCtrl+V")
+        paste_act.setEnabled(not self._edit_state.clipboard_empty)
+        paste_act.triggered.connect(lambda: self._edit_state.paste_at(int(time_ms)))
+
+        menu.addSeparator()
+
+        invert_act = menu.addAction("Invert Selected\tI")
+        invert_act.setEnabled(self._edit_state.has_selection)
+        invert_act.triggered.connect(self._edit_state.invert_selection)
+
+        invert_all_act = menu.addAction("Invert All\tShift+I")
+        invert_all_act.setEnabled(len(self._edit_state.actions) > 0)
+        invert_all_act.triggered.connect(self._edit_state.invert_all)
+
+        eq_act = menu.addAction("Equalize\tE")
+        eq_act.setEnabled(len(self._edit_state.selection_indices) >= 3)
+        eq_act.triggered.connect(self._edit_state.equalize_selection)
+
+        center_sel_act = menu.addAction("Center Selected At...")
+        center_sel_act.setEnabled(self._edit_state.has_selection)
+        center_sel_act.triggered.connect(lambda: self._prompt_center(selected_only=True))
+
+        center_all_act = menu.addAction("Center All At...")
+        center_all_act.setEnabled(len(self._edit_state.actions) > 0)
+        center_all_act.triggered.connect(lambda: self._prompt_center(selected_only=False))
+
+        sa_act = menu.addAction("Select All\tCtrl+A")
+        sa_act.triggered.connect(self._edit_state.select_all)
+
+        menu.addSeparator()
+
+        del_act = menu.addAction("Delete\tDel")
         del_act.setEnabled(self._edit_state.has_selection)
         del_act.triggered.connect(self._edit_state.remove_selected)
 
@@ -2234,6 +2306,17 @@ class AuxAxisPanel(QWidget):
         clear_locks_act.triggered.connect(self._edit_state.clear_all_locks)
 
         menu.exec(global_pos)
+
+    def _prompt_center(self, selected_only: bool) -> None:
+        if self._edit_state is None:
+            return
+        val, ok = QInputDialog.getInt(
+            self, "Center At Position",
+            "Target mean position (0\u2013100):",
+            value=50, min=0, max=100,
+        )
+        if ok:
+            self._edit_state.center_at(float(val), selected_only=selected_only)
 
 
 # ---------------------------------------------------------------------------

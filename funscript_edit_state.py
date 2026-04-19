@@ -356,6 +356,39 @@ class FunscriptEditState(QObject):
                 )
         self._mark_dirty()
 
+    def invert_all(self) -> None:
+        if not self._actions:
+            return
+        self._snapshot("Invert all")
+        for i in range(len(self._actions)):
+            if not self.is_locked(self._actions[i].at):
+                self._actions[i] = FunscriptAction(
+                    self._actions[i].at,
+                    100 - self._actions[i].pos,
+                )
+        self._mark_dirty()
+
+    def center_at(self, target_mean: float, selected_only: bool = False) -> None:
+        """Shift points vertically so their mean equals *target_mean* (0-100).
+
+        If *selected_only* is True and there is a selection, only those points
+        are shifted; otherwise all unlocked points are shifted.
+        """
+        indices = sorted(self._selection) if (selected_only and self._selection) else list(range(len(self._actions)))
+        unlocked = [i for i in indices if not self.is_locked(self._actions[i].at)]
+        if not unlocked:
+            return
+        current_mean = sum(self._actions[i].pos for i in unlocked) / len(unlocked)
+        offset = round(target_mean - current_mean)
+        if offset == 0:
+            return
+        label = "selected" if (selected_only and self._selection) else "all"
+        self._snapshot(f"Center {label} at {target_mean:.0f}")
+        for i in unlocked:
+            new_pos = max(0, min(100, self._actions[i].pos + offset))
+            self._actions[i] = FunscriptAction(self._actions[i].at, new_pos)
+        self._mark_dirty()
+
     def equalize_selection(self) -> None:
         """Redistribute selected actions evenly in time."""
         indices = sorted(self._selection)
