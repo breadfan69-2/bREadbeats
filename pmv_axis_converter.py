@@ -47,10 +47,18 @@ class AxisConfig:
     pulse_rise_ratio: float = 2.0
     pulse_width_ratio: float = 3.0
     rest_level: float = 0.4
-    ramp_up_duration_sec: float = 1.0
+    ramp_up_duration_sec: float = 1.5
     ramp_percent_per_hour: float = 15.0
     speed_window_sec: float = 5.0
     points_per_second: int = 25
+    pulse_freq_range_start: float = 30.0
+    pulse_freq_range_end: float = 70.0
+    smooth_frequency_sec: float = 2.0
+    smooth_pulse_frequency_sec: float = 3.0
+    smooth_carrier_frequency_sec: float = 3.0
+    smooth_volume_sec: float = 3.0
+    smooth_pulse_rise_sec: float = 3.0
+    smooth_pulse_width_sec: float = 3.0
     enabled_axes: set[str] = field(default_factory=lambda: {"main"})
     alpha_beta_mode: str = "restim"  # "restim" or "orbital"
     orbital_blend: float = 0.0  # 0.0 = pure restim, 1.0 = pure orbital
@@ -311,8 +319,12 @@ def _detect_rest_and_ramp(
     rest_level: float,
     ramp_up_duration_ms: float,
 ) -> np.ndarray:
-    """Apply rest-level reduction when speed is near zero, with smooth ramp-up
-    after rest→active transitions (matching edger's combine_funscripts logic)."""
+    """Apply rest-level reduction when speed is near zero, with two-phase
+    ramp-up after rest→active transitions:
+      Phase 1 (fast):  0 → 90% of recovery in first 1/3 of duration
+      Phase 2 (slow): 90 → 100% of recovery in remaining 2/3
+    This gives a sharp initial return followed by a gentle final approach,
+    matching the feel of hand-scripted funscripts."""
     is_rest = speed < 0.02
     result = values.copy()
     # Apply rest_level immediately to rest points
@@ -320,26 +332,35 @@ def _detect_rest_and_ramp(
     if ramp_up_duration_ms <= 0:
         return result
     # Find rest→active transition indices
-    half_dur = ramp_up_duration_ms / 2.0
     transitions: list[float] = []
     for i in range(1, len(is_rest)):
         if is_rest[i - 1] and not is_rest[i]:
             transitions.append(float(t[i]))
     if not transitions:
         return result
-    # Apply ramp-up around each transition (vectorised via searchsorted)
-    trans = np.asarray(transitions, dtype=np.float64)
-    # For each time point, find the nearest preceding transition within range
-    idx = np.searchsorted(trans, t, side='right')  # first transition > t[i]
-    for k in range(len(trans)):
-        lo = trans[k] - half_dur
-        hi = trans[k] + half_dur
-        mask = (t >= lo) & (t <= hi)
+    # Two-phase ramp: fast phase = first 1/3, slow phase = remaining 2/3
+    fast_dur = ramp_up_duration_ms / 3.0    # e.g. 500ms when total=1500
+    total_dur = ramp_up_duration_ms          # e.g. 1500ms
+    knee_frac = 0.9  # reach 90% of recovery at end of fast phase
+    recovery = 1.0 - rest_level
+    for k in range(len(transitions)):
+        t0 = transitions[k]
+        hi = t0 + total_dur
+        mask = (t >= t0) & (t <= hi)
         if not np.any(mask):
             continue
-        diff = t[mask] - trans[k]
-        progress = np.clip((diff + half_dur) / ramp_up_duration_ms, 0.0, 1.0)
-        mult = rest_level + (1.0 - rest_level) * progress
+        elapsed = t[mask] - t0
+        # Piecewise: fast phase then slow phase
+        in_fast = elapsed <= fast_dur
+        progress = np.empty_like(elapsed)
+        # Fast phase: linear 0 → knee_frac over [0, fast_dur]
+        progress[in_fast] = knee_frac * elapsed[in_fast] / max(1.0, fast_dur)
+        # Slow phase: linear knee_frac → 1.0 over [fast_dur, total_dur]
+        slow_elapsed = elapsed[~in_fast] - fast_dur
+        slow_dur = max(1.0, total_dur - fast_dur)
+        progress[~in_fast] = knee_frac + (1.0 - knee_frac) * slow_elapsed / slow_dur
+        progress = np.clip(progress, 0.0, 1.0)
+        mult = rest_level + recovery * progress
         result[mask] = values[mask] * mult
     return np.clip(result, 0.0, 1.0)
 
@@ -427,6 +448,18 @@ def _generate_aux_axes(
         config.pulse_freq_band, config.pulse_freq_weight,
     )
 
+    # Apply time-based ramp to pulse_frequency: rescale so the average
+    # trends from pulse_freq_range_start → pulse_freq_range_end (pos units)
+    # over the duration.  The mode_dispatch 0-1 signal modulates within
+    # a time-varying window centred on the ramp.
+    pf_lo = config.pulse_freq_range_start / 100.0
+    pf_hi = config.pulse_freq_range_end / 100.0
+    progress_t = np.clip((t - t[0]) / max(1.0, t[-1] - t[0]), 0.0, 1.0)
+    pf_centre = pf_lo + (pf_hi - pf_lo) * progress_t
+    # Scale the 0-1 reactive signal as deviation around the centre
+    pf_half_range = np.minimum(pf_centre, 1.0 - pf_centre)
+    pulse_freq = pf_centre + (pulse_freq - 0.5) * 2.0 * pf_half_range
+
     # --- carrier_frequency: mode-selectable (new axis) ---
     carrier_freq = _mode_dispatch(
         config.carrier_freq_mode, config.carrier_frequency_ratio,
@@ -452,6 +485,34 @@ def _generate_aux_axes(
     # and enforce physical constraint: rise can never exceed width.
     pulse_width = np.clip(pulse_width, 0.0, 1.0) * (20.0 / 100.0)
     pulse_rise = np.clip(pulse_rise, 0.0, 1.0) * (18.0 / 100.0)
+    pulse_rise = np.minimum(pulse_rise, pulse_width)
+
+    # --- Per-axis envelope smoothing ---
+    # Compute median sample interval for kernel sizing
+    if len(t) > 1:
+        median_dt_sec = float(np.median(np.diff(t))) / 1000.0
+    else:
+        median_dt_sec = 1.0 / max(1, config.points_per_second)
+
+    def _smooth(signal: np.ndarray, window_sec: float) -> np.ndarray:
+        if window_sec <= 0 or len(signal) < 3:
+            return signal
+        kernel_n = max(1, int(round(window_sec / median_dt_sec)))
+        if kernel_n < 2:
+            return signal
+        # Use a simple uniform moving-average (fast, no scipy needed)
+        kernel = np.ones(kernel_n) / kernel_n
+        padded = np.pad(signal, kernel_n // 2, mode='edge')
+        smoothed = np.convolve(padded, kernel, mode='same')[kernel_n // 2 : kernel_n // 2 + len(signal)]
+        return smoothed
+
+    freq = _smooth(freq, config.smooth_frequency_sec)
+    pulse_freq = _smooth(pulse_freq, config.smooth_pulse_frequency_sec)
+    carrier_freq = _smooth(carrier_freq, config.smooth_carrier_frequency_sec)
+    volume = _smooth(volume, config.smooth_volume_sec)
+    pulse_rise = _smooth(pulse_rise, config.smooth_pulse_rise_sec)
+    pulse_width = _smooth(pulse_width, config.smooth_pulse_width_sec)
+    # Re-enforce constraint after smoothing
     pulse_rise = np.minimum(pulse_rise, pulse_width)
 
     def to_actions(values: np.ndarray) -> list[FunscriptAction]:

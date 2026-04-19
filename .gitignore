@@ -121,3 +121,4 @@ _tmp_dead_scan_main_v3.out.txt
 BEAT_INTELLIGENCE_REFACTOR_HANDOFF_2026-02-27.md
 pmv_generator.py
 GAMEPAD_RECORD_BEAT_SNAP_PLAN.md
+scripts/analyze_favorites.py

@@ -29,7 +29,7 @@ from curve_editor import CurveEditorDialog
 from pmv_axis_converter import PRESET_CURVES, AxisConfig
 from pmv_beat_engine import BeatDetectionConfig
 from pmv_position_mapper import MLConfig, MappingConfig
-from widgets import CollapsibleGroupBox, SliderWithLabel
+from widgets import CollapsibleGroupBox, RangeSliderWithLabel, SliderWithLabel
 
 
 class StepButtonBar(QWidget):
@@ -164,6 +164,7 @@ class PMVControlsPanel(QWidget):
         for control in controls:
             for sig_name in (
                 "valueChanged",
+                "rangeChanged",
                 "toggled",
                 "currentTextChanged",
                 "currentIndexChanged",
@@ -649,6 +650,12 @@ class PMVControlsPanel(QWidget):
         self._pulse_freq_band_combo.setCurrentText(defaults.pulse_freq_band)
         self._pulse_freq_weight_slider = SliderWithLabel("Pulse Freq Weight", 0.0, 1.0, defaults.pulse_freq_weight, decimals=2, step=0.01)
 
+        self._pulse_freq_range_slider = RangeSliderWithLabel(
+            "PFreq Time Ramp", 0.0, 100.0,
+            defaults.pulse_freq_range_start, defaults.pulse_freq_range_end,
+            decimals=0,
+        )
+
         self._carrier_freq_ratio_slider = SliderWithLabel("Carrier Frequency Ratio", 1.0, 10.0, defaults.carrier_frequency_ratio, decimals=1, step=0.1)
         self._carrier_freq_mode_combo = QComboBox()
         self._carrier_freq_mode_combo.addItems(_FREQ_MODES)
@@ -705,6 +712,14 @@ class PMVControlsPanel(QWidget):
         self.axis_points_per_second_spin = QSpinBox()
         self.axis_points_per_second_spin.setRange(1, 100)
         self.axis_points_per_second_spin.setValue(defaults.points_per_second)
+
+        # Per-axis envelope smoothing sliders (seconds)
+        self._smooth_frequency_slider = SliderWithLabel("Smooth Frequency", 0.0, 10.0, defaults.smooth_frequency_sec, decimals=1, step=0.1)
+        self._smooth_pulse_freq_slider = SliderWithLabel("Smooth Pulse Freq", 0.0, 10.0, defaults.smooth_pulse_frequency_sec, decimals=1, step=0.1)
+        self._smooth_carrier_freq_slider = SliderWithLabel("Smooth Carrier Freq", 0.0, 10.0, defaults.smooth_carrier_frequency_sec, decimals=1, step=0.1)
+        self._smooth_volume_slider = SliderWithLabel("Smooth Volume", 0.0, 10.0, defaults.smooth_volume_sec, decimals=1, step=0.1)
+        self._smooth_pulse_rise_slider = SliderWithLabel("Smooth Pulse Rise", 0.0, 10.0, defaults.smooth_pulse_rise_sec, decimals=1, step=0.1)
+        self._smooth_pulse_width_slider = SliderWithLabel("Smooth Pulse Width", 0.0, 10.0, defaults.smooth_pulse_width_sec, decimals=1, step=0.1)
 
         self.axis_checkboxes: dict[str, QCheckBox] = {}
         # Individual checkboxes kept in dict for preset round-trip, but hidden
@@ -780,6 +795,7 @@ class PMVControlsPanel(QWidget):
             self.pulse_frequency_ratio_slider,
             self._labeled_widget("Pulse Freq Band", self._pulse_freq_band_combo),
             self._pulse_freq_weight_slider,
+            self._pulse_freq_range_slider,
             self._labeled_widget("Carrier Freq Mode", self._carrier_freq_mode_combo),
             self._carrier_freq_ratio_slider,
             self._labeled_widget("Carrier Freq Band", self._carrier_freq_band_combo),
@@ -792,6 +808,12 @@ class PMVControlsPanel(QWidget):
             self._labeled_widget("Ramp Up Duration (s)", self.ramp_up_spin),
             self._labeled_widget("Speed Window (s)", self.axis_speed_window_spin),
             self._labeled_widget("Axis Points per Second", self.axis_points_per_second_spin),
+            self._smooth_frequency_slider,
+            self._smooth_pulse_freq_slider,
+            self._smooth_carrier_freq_slider,
+            self._smooth_volume_slider,
+            self._smooth_pulse_rise_slider,
+            self._smooth_pulse_width_slider,
             self._labeled_widget("Output Format", self.output_format_combo),
         ):
             form.addWidget(widget)
@@ -825,6 +847,7 @@ class PMVControlsPanel(QWidget):
             self._pulse_freq_mode_combo,
             self._pulse_freq_band_combo,
             self._pulse_freq_weight_slider,
+            self._pulse_freq_range_slider,
             self._carrier_freq_ratio_slider,
             self._carrier_freq_mode_combo,
             self._carrier_freq_band_combo,
@@ -837,6 +860,12 @@ class PMVControlsPanel(QWidget):
             self.ramp_up_spin,
             self.axis_speed_window_spin,
             self.axis_points_per_second_spin,
+            self._smooth_frequency_slider,
+            self._smooth_pulse_freq_slider,
+            self._smooth_carrier_freq_slider,
+            self._smooth_volume_slider,
+            self._smooth_pulse_rise_slider,
+            self._smooth_pulse_width_slider,
             self.output_format_combo,
             *tuple(self.axis_checkboxes.values()),
             self._alpha_beta_toggle,
@@ -946,6 +975,8 @@ class PMVControlsPanel(QWidget):
             pulse_freq_mode=int(self._pulse_freq_mode_combo.currentIndex()),
             pulse_freq_band=str(self._pulse_freq_band_combo.currentText()),
             pulse_freq_weight=float(self._pulse_freq_weight_slider.value()),
+            pulse_freq_range_start=float(self._pulse_freq_range_slider.low()),
+            pulse_freq_range_end=float(self._pulse_freq_range_slider.high()),
             carrier_frequency_ratio=float(self._carrier_freq_ratio_slider.value()),
             carrier_freq_mode=int(self._carrier_freq_mode_combo.currentIndex()),
             carrier_freq_band=str(self._carrier_freq_band_combo.currentText()),
@@ -958,6 +989,12 @@ class PMVControlsPanel(QWidget):
             ramp_up_duration_sec=float(self.ramp_up_spin.value()),
             speed_window_sec=float(self.axis_speed_window_spin.value()),
             points_per_second=int(self.axis_points_per_second_spin.value()),
+            smooth_frequency_sec=float(self._smooth_frequency_slider.value()),
+            smooth_pulse_frequency_sec=float(self._smooth_pulse_freq_slider.value()),
+            smooth_carrier_frequency_sec=float(self._smooth_carrier_freq_slider.value()),
+            smooth_volume_sec=float(self._smooth_volume_slider.value()),
+            smooth_pulse_rise_sec=float(self._smooth_pulse_rise_slider.value()),
+            smooth_pulse_width_sec=float(self._smooth_pulse_width_slider.value()),
             enabled_axes=enabled_axes,
             alpha_beta_mode=str(self._alpha_beta_mode_combo.currentText()),
             orbital_blend=float(self._orbital_blend_slider.value()),
@@ -1135,6 +1172,10 @@ class PMVControlsPanel(QWidget):
             self._pulse_freq_mode_combo.setCurrentIndex(self._as_int(axis.get("pulse_freq_mode"), self._pulse_freq_mode_combo.currentIndex()))
             self._set_combo_text(self._pulse_freq_band_combo, str(axis.get("pulse_freq_band", self._pulse_freq_band_combo.currentText())))
             self._pulse_freq_weight_slider.setValue(self._as_float(axis.get("pulse_freq_weight"), self._pulse_freq_weight_slider.value()))
+            pf_start = self._as_float(axis.get("pulse_freq_range_start"), self._pulse_freq_range_slider.low())
+            pf_end = self._as_float(axis.get("pulse_freq_range_end"), self._pulse_freq_range_slider.high())
+            self._pulse_freq_range_slider.setLow(pf_start)
+            self._pulse_freq_range_slider.setHigh(pf_end)
             self._carrier_freq_ratio_slider.setValue(self._as_float(axis.get("carrier_frequency_ratio"), self._carrier_freq_ratio_slider.value()))
             self._carrier_freq_mode_combo.setCurrentIndex(self._as_int(axis.get("carrier_freq_mode"), self._carrier_freq_mode_combo.currentIndex()))
             self._set_combo_text(self._carrier_freq_band_combo, str(axis.get("carrier_freq_band", self._carrier_freq_band_combo.currentText())))
@@ -1147,6 +1188,12 @@ class PMVControlsPanel(QWidget):
             self.ramp_up_spin.setValue(self._as_float(axis.get("ramp_up_duration_sec"), self.ramp_up_spin.value()))
             self.axis_speed_window_spin.setValue(self._as_float(axis.get("speed_window_sec"), self.axis_speed_window_spin.value()))
             self.axis_points_per_second_spin.setValue(self._as_int(axis.get("points_per_second"), self.axis_points_per_second_spin.value()))
+            self._smooth_frequency_slider.setValue(self._as_float(axis.get("smooth_frequency_sec"), self._smooth_frequency_slider.value()))
+            self._smooth_pulse_freq_slider.setValue(self._as_float(axis.get("smooth_pulse_frequency_sec"), self._smooth_pulse_freq_slider.value()))
+            self._smooth_carrier_freq_slider.setValue(self._as_float(axis.get("smooth_carrier_frequency_sec"), self._smooth_carrier_freq_slider.value()))
+            self._smooth_volume_slider.setValue(self._as_float(axis.get("smooth_volume_sec"), self._smooth_volume_slider.value()))
+            self._smooth_pulse_rise_slider.setValue(self._as_float(axis.get("smooth_pulse_rise_sec"), self._smooth_pulse_rise_slider.value()))
+            self._smooth_pulse_width_slider.setValue(self._as_float(axis.get("smooth_pulse_width_sec"), self._smooth_pulse_width_slider.value()))
 
             ab_mode = axis.get("alpha_beta_mode", self._alpha_beta_mode_combo.currentText())
             self._set_combo_text(self._alpha_beta_mode_combo, str(ab_mode))
