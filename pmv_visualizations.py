@@ -631,6 +631,7 @@ class VisualizationArea(QWidget):
         self._nav_syncing = False
         self._auto_follow_playhead = True
         self._lod_refreshing = False  # re-entrancy guard
+        self._last_follow_scroll_t = 0.0
 
         # Edit-mode state
         self._edit_mode = False
@@ -822,10 +823,21 @@ class VisualizationArea(QWidget):
         if not self._auto_follow_playhead:
             return
         x_range = self.overlay_plot.viewRange()[0]
+        lo, hi = float(x_range[0]), float(x_range[1])
+        force_scroll = (time_ms < lo) or (time_ms > hi)
+
+        now = time.perf_counter()
+        if (not force_scroll) and ((now - self._last_follow_scroll_t) < 0.05):  # ~20 FPS follow updates
+            return
+        self._last_follow_scroll_t = now
+
         span = max(1.0, float(x_range[1]) - float(x_range[0]))
 
-        # Keep playhead locked to center — scroll every frame
+        # Keep playhead near center while avoiding costly per-frame relayout.
         new_start = time_ms - span * 0.5
+        current_start = float(x_range[0])
+        if abs(new_start - current_start) < 1.0:
+            return
         self._apply_view_range(new_start, new_start + span)
         self._sync_nav_from_view()
 

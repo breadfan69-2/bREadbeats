@@ -314,6 +314,8 @@ class PMVGeneratorWindow(QMainWindow):
         self._pipeline_busy = False
         self._busy_cursor_set = False
         self._last_progress_pump = 0.0
+        self._last_playback_status_update = 0.0
+        self._last_preview_send_update = 0.0
         self._worker_thread: QThread | None = None
         self._worker: _PipelineWorker | None = None
 
@@ -2312,12 +2314,21 @@ class PMVGeneratorWindow(QMainWindow):
             self.step_5_export()
 
     def _on_visualization_position_changed(self, time_ms: float) -> None:
-        bar = self.statusBar()
-        if bar is not None:
-            bar.showMessage(f"Playback position {time_ms / 1000.0:.2f}s", 1200)
+        now = time.perf_counter()
+
+        # Throttle transient status updates so playback doesn't flood the UI thread.
+        if (now - self._last_playback_status_update) >= 0.25:
+            bar = self.statusBar()
+            if bar is not None:
+                bar.showMessage(f"Playback position {time_ms / 1000.0:.2f}s", 1200)
+            self._last_playback_status_update = now
 
         self.aux_panel.set_playhead(time_ms)
-        self._send_position_at_time(time_ms)
+
+        # Commands use ~33ms durations, so >30 Hz sends are redundant work.
+        if (now - self._last_preview_send_update) >= (1.0 / 30.0):
+            self._send_position_at_time(time_ms)
+            self._last_preview_send_update = now
 
     def _interpolate_axis_at(self, axis_name: str, time_ms: float) -> float | None:
         """Interpolate a funscript axis value (0-100) at the given time."""
