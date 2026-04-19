@@ -1123,14 +1123,34 @@ class PMVGeneratorWindow(QMainWindow):
         copied_actions = [FunscriptAction(a.at, a.pos) for a in actions]
         duration_ms = int(max(metadata.duration, copied_actions[-1].at if copied_actions else 0))
 
+        # Preserve existing analysis / beat state so the user doesn't have to
+        # re-run those steps after opening a script on top of already-analysed
+        # audio.
+        prev_timeline = self._timeline
+        prev_beats = self._beats
+        prev_samples = self._samples if samples is None else samples
+
         self._file_path = str(script_path)
         self._media_path = str(matching_media) if matching_media is not None else None
         self._load_video_preview()
-        self._samples = samples
-        self._timeline = None
-        self._beats = None
+        self._samples = prev_samples
         self._cached_orbital_result = None
-        self._reset_from_step(2)
+
+        # Only clear positions/multi-axis; keep timeline & beats intact.
+        self._live_preview_timer.stop()
+        self._last_live_preview_signature = None
+        self._positions = None
+        self._multi_axis = None
+        self._edit_state.load_actions([])
+        self.visualizations.set_positions(
+            PositionTimeline(actions=[], beat_actions=[], speed_profile=np.array([], dtype=np.float64), ml_results=None)
+        )
+        self.visualizations.set_multi_axis(MultiAxisResult(axes={"main": []}))
+        self.aux_panel.set_multi_axis(MultiAxisResult(axes={"main": []}))
+
+        # Restore preserved state
+        self._timeline = prev_timeline
+        self._beats = prev_beats
 
         if samples is not None:
             self.visualizations.set_audio_data(samples, analysis_sample_rate)
@@ -1178,9 +1198,12 @@ class PMVGeneratorWindow(QMainWindow):
             tooltip = f"Script: {script_path}\nMedia: {matching_media}"
         self.file_label.setToolTip(tooltip)
 
-        for step in (2, 3, 5):
+        for step in (5,):
             self.controls.step_bar.set_step_status(step, "ready")
         self.controls.step_bar.set_step_status(4, "done")
+        # Reflect preserved analysis/beat state in the step bar
+        self.controls.step_bar.set_step_status(2, "done" if self._timeline is not None else "ready")
+        self.controls.step_bar.set_step_status(3, "done" if self._beats is not None else "ready")
         self._last_live_preview_signature = self._live_preview_signature()
         self._refresh_step_availability()
 
@@ -1219,16 +1242,25 @@ class PMVGeneratorWindow(QMainWindow):
             return False
 
         preset = metadata.parameters.get("preset") if isinstance(metadata.parameters, dict) else None
-        self._reset_from_step(2)
         if isinstance(preset, dict):
             self.controls.set_from_preset(preset)
 
         analysis_cfg = self.controls.get_analysis_config()
         matching_media = self._discover_matching_media(script_path, metadata)
 
+        # Fall back to the currently-loaded media when the funscript lives in a
+        # different folder (e.g. Downloads) and no sibling media was found.
+        if matching_media is None and self._media_path is not None:
+            existing = Path(self._media_path)
+            if existing.exists() and existing.is_file():
+                matching_media = existing
+
         def compute(progress_cb):
             if matching_media is None:
                 return None
+            # Re-use already-loaded samples when the media path hasn't changed.
+            if self._samples is not None and self._media_path is not None and Path(self._media_path) == matching_media:
+                return self._samples
             progress_cb("Loading matching media", 5.0)
             return load_audio(str(matching_media), analysis_cfg, progress_cb)
 
@@ -1627,7 +1659,21 @@ class PMVGeneratorWindow(QMainWindow):
 
         def apply(beats):
             self._beats = beats
-            self._reset_from_step(4)
+            # Only reset the live-preview timer; preserve any loaded positions
+            # so that opening a script + detecting beats can happen in any order.
+            self._live_preview_timer.stop()
+            self._last_live_preview_signature = None
+            if self._positions is None:
+                self._positions = None
+                self._multi_axis = None
+                self._edit_state.load_actions([])
+                self.visualizations.set_positions(
+                    PositionTimeline(actions=[], beat_actions=[], speed_profile=np.array([], dtype=np.float64), ml_results=None)
+                )
+                self.visualizations.set_multi_axis(MultiAxisResult(axes={"main": []}))
+                self.aux_panel.set_multi_axis(MultiAxisResult(axes={"main": []}))
+                for idx in range(4, 6):
+                    self.controls.step_bar.set_step_status(idx, "ready")
             self._last_beat_preview_signature = self._beat_preview_signature()
             self.visualizations.set_beats(beats)
             bar = self.statusBar()

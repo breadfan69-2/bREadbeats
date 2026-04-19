@@ -2264,11 +2264,11 @@ class VideoPreviewWidget(QWidget):
         self._media_path = file_path
         if self._player is None:
             return
+        from PyQt6.QtCore import QUrl
         if file_path is None:
             self._player.stop()
             self._player.setSource(QUrl())
             return
-        from PyQt6.QtCore import QUrl
         url = QUrl.fromLocalFile(file_path)
         self._player.setSource(url)
         # Seek to beginning and pause so a frame is visible
