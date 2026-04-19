@@ -36,11 +36,11 @@ class AxisConfig:
     e_min_segment_sec: float = 0.5
     frequency_ramp_ratio: float = 2.0
     pulse_frequency_ratio: float = 3.0
-    pulse_freq_mode: int = 0  # 0=Ratio 1=Hz 2=Speed 3=BandEnergy 4=Hybrid
+    pulse_freq_mode: int = 0  # 0=Ratio 1=Hz 2=Speed 3=BandEnergy 4=Hybrid 5=MotionEnvelope
     pulse_freq_band: str = "sub_bass"
     pulse_freq_weight: float = 1.0
     carrier_frequency_ratio: float = 3.0
-    carrier_freq_mode: int = 1  # 0=Ratio 1=Hz 2=Speed 3=BandEnergy 4=Hybrid
+    carrier_freq_mode: int = 1  # 0=Ratio 1=Hz 2=Speed 3=BandEnergy 4=Hybrid 5=MotionEnvelope
     carrier_freq_band: str = "mid"
     carrier_freq_weight: float = 1.0
     volume_ramp_ratio: float = 20.0
@@ -413,6 +413,8 @@ def _generate_aux_axes(
         if mode == 4 and centroid_norm is not None:  # Hybrid
             base = _mix_vec(speed_norm, alpha_norm, ratio)
             return np.clip(base * (0.5 + centroid_norm * 0.5), 0.0, 1.0)
+        if mode == 5:  # Motion Envelope (legacy frequency behavior)
+            return _mix_vec(ramp, speed_norm, ratio)
         # Mode 0 (Ratio) or fallback when audio unavailable
         return _mix_vec(speed_norm, alpha_norm, ratio)
 

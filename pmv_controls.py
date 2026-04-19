@@ -630,7 +630,7 @@ class PMVControlsPanel(QWidget):
         self.frequency_ratio_slider = SliderWithLabel("Frequency Ramp Ratio", 1.0, 10.0, defaults.frequency_ramp_ratio, decimals=1, step=0.1)
         self.pulse_frequency_ratio_slider = SliderWithLabel("Pulse Frequency Ratio", 1.0, 10.0, defaults.pulse_frequency_ratio, decimals=1, step=0.1)
 
-        _FREQ_MODES = ["Ratio", "Hz (Spectral)", "Speed", "Band Energy", "Hybrid"]
+        _FREQ_MODES = ["Ratio", "Hz (Spectral)", "Speed", "Band Energy", "Hybrid", "Motion Envelope"]
         _BAND_NAMES = ["sub_bass", "low_mid", "mid", "high"]
 
         self._pulse_freq_mode_combo = QComboBox()
@@ -641,7 +641,8 @@ class PMVControlsPanel(QWidget):
             "Hz: spectral centroid (audio-reactive)\n"
             "Speed: position derivative\n"
             "Band Energy: selected frequency band envelope\n"
-            "Hybrid: ratio mix modulated by spectral centroid"
+            "Hybrid: ratio mix modulated by spectral centroid\n"
+            "Motion Envelope: legacy frequency logic (ramp+speed blend)"
         )
         self._pulse_freq_band_combo = QComboBox()
         self._pulse_freq_band_combo.addItems(_BAND_NAMES)
@@ -657,7 +658,8 @@ class PMVControlsPanel(QWidget):
             "Hz: spectral centroid (audio-reactive)\n"
             "Speed: position derivative\n"
             "Band Energy: selected frequency band envelope\n"
-            "Hybrid: ratio mix modulated by spectral centroid"
+            "Hybrid: ratio mix modulated by spectral centroid\n"
+            "Motion Envelope: legacy frequency logic (ramp+speed blend)"
         )
         self._carrier_freq_band_combo = QComboBox()
         self._carrier_freq_band_combo.addItems(_BAND_NAMES)
@@ -667,13 +669,13 @@ class PMVControlsPanel(QWidget):
         # Visibility toggling: band combo visible only in BandEnergy mode
         def _update_pulse_freq_visibility(idx: int) -> None:
             self._pulse_freq_band_combo.setVisible(idx == 3)
-            self.pulse_frequency_ratio_slider.setVisible(idx in (0, 4))
+            self.pulse_frequency_ratio_slider.setVisible(idx in (0, 4, 5))
         _update_pulse_freq_visibility(defaults.pulse_freq_mode)
         self._pulse_freq_mode_combo.currentIndexChanged.connect(_update_pulse_freq_visibility)
 
         def _update_carrier_freq_visibility(idx: int) -> None:
             self._carrier_freq_band_combo.setVisible(idx == 3)
-            self._carrier_freq_ratio_slider.setVisible(idx in (0, 4))
+            self._carrier_freq_ratio_slider.setVisible(idx in (0, 4, 5))
         _update_carrier_freq_visibility(defaults.carrier_freq_mode)
         self._carrier_freq_mode_combo.currentIndexChanged.connect(_update_carrier_freq_visibility)
 

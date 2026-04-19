@@ -2025,6 +2025,30 @@ class PMVGeneratorWindow(QMainWindow):
             # TCode: swap alpha/beta to match restim's L0/L1 convention
             # (only the bREadbeats canvas display needs the un-swapped order)
             cmd = TCodeCommand(alpha=beta_tc, beta=alpha_tc, duration_ms=33, volume=vol)
+
+            # Aux axes enabled by send-toggle checkboxes
+            send_axes = self.aux_panel.get_send_axes()
+            _AUX_TCODE_MAP = {
+                "pulse_frequency": "P0",
+                "carrier_frequency": "C0",
+                "pulse_width": "P1",
+                "pulse_rise": "P3",
+            }
+            for axis_name, tag in _AUX_TCODE_MAP.items():
+                if axis_name not in send_axes:
+                    continue
+                val = self._interpolate_axis_at(axis_name, time_ms)
+                if val is None:
+                    continue
+                tcode_val = int(val / 100.0 * 9999)
+                tcode_val = max(0, min(9999, tcode_val))
+                if tag == "P0":
+                    cmd.pulse_freq = tcode_val
+                    cmd.pulse_freq_duration = 33
+                else:
+                    cmd.tcode_tags[tag] = tcode_val
+                    cmd.tcode_tags[f"{tag}_duration"] = 33
+
             ne.send_immediate(cmd)
         elif self._position_canvas is not None:
             # bREadbeats PositionCanvas: arg1=horizontal, arg2=vertical.

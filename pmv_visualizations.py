@@ -11,6 +11,7 @@ import pyqtgraph as pg
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QKeyEvent
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -1650,6 +1651,9 @@ class AuxAxisPanel(QWidget):
         # group_title -> (PlotWidget, {axis_name: PlotDataItem}, InfiniteLine)
         self._group_plots: dict[str, tuple[pg.PlotWidget, dict[str, pg.PlotDataItem], pg.InfiniteLine]] = {}
 
+        # Per-group TCode send toggles: group_title -> QCheckBox
+        self._send_toggles: dict[str, QCheckBox] = {}
+
         # Full-resolution data for LOD: axis_name -> (x, y)
         self._lod_data: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
@@ -1719,6 +1723,9 @@ class AuxAxisPanel(QWidget):
                 plot, _curves, _ph = self._group_plots.pop(grp_title)
                 self._layout.removeWidget(plot)
                 plot.deleteLater()
+                cb = self._send_toggles.pop(grp_title, None)
+                if cb is not None:
+                    cb.deleteLater()
 
         # Create or update groups in canonical order
         for grp_title, members in _AXIS_GROUPS:
@@ -1726,6 +1733,17 @@ class AuxAxisPanel(QWidget):
                 continue
 
             if grp_title not in self._group_plots:
+                row = QHBoxLayout()
+                row.setContentsMargins(0, 0, 0, 0)
+                row.setSpacing(4)
+
+                cb = QCheckBox()
+                cb.setChecked(True)
+                cb.setToolTip(f"Send {grp_title} via TCode during preview")
+                cb.setFixedWidth(18)
+                row.addWidget(cb)
+                self._send_toggles[grp_title] = cb
+
                 plot = pg.PlotWidget()
                 _style_plot(plot)
                 plot.setFixedHeight(80)
@@ -1739,7 +1757,8 @@ class AuxAxisPanel(QWidget):
                 plot.addItem(playhead)
                 if self._main_plot is not None:
                     plot.setXLink(self._main_plot)
-                self._layout.addWidget(plot)
+                row.addWidget(plot, 1)
+                self._layout.addLayout(row)
                 self._group_plots[grp_title] = (plot, {}, playhead)
 
             plot, curves, _ph = self._group_plots[grp_title]
@@ -1789,6 +1808,16 @@ class AuxAxisPanel(QWidget):
         """Move playhead across all mini-plots."""
         for _title, (_plot, _curves, playhead) in self._group_plots.items():
             playhead.setPos(float(time_ms))
+
+    def get_send_axes(self) -> set[str]:
+        """Return axis names whose group has the send-toggle checked."""
+        result: set[str] = set()
+        for grp_title, cb in self._send_toggles.items():
+            if cb.isChecked():
+                plot_info = self._group_plots.get(grp_title)
+                if plot_info is not None:
+                    result.update(plot_info[1].keys())
+        return result
 
     # ------------------------------------------------------------------
     # Axis editing
