@@ -448,6 +448,12 @@ def _generate_aux_axes(
     inv_pos = 1.0 - np.array([a.pos for a in main_actions], dtype=np.float64) / 100.0
     pulse_width = _mix_vec(speed_norm, inv_pos, config.pulse_width_ratio)
 
+    # Cap to practical carrier-cycle ranges (pos 0-20 for width, 0-18 for rise)
+    # and enforce physical constraint: rise can never exceed width.
+    pulse_width = np.clip(pulse_width, 0.0, 1.0) * (20.0 / 100.0)
+    pulse_rise = np.clip(pulse_rise, 0.0, 1.0) * (18.0 / 100.0)
+    pulse_rise = np.minimum(pulse_rise, pulse_width)
+
     def to_actions(values: np.ndarray) -> list[FunscriptAction]:
         return [FunscriptAction(at=int(main_actions[i].at), pos=int(np.clip(round(values[i] * 100.0), 0, 100))) for i in range(n)]
 
@@ -456,8 +462,8 @@ def _generate_aux_axes(
         "pulse_frequency": to_actions(np.clip(pulse_freq, 0.0, 1.0)),
         "carrier_frequency": to_actions(np.clip(carrier_freq, 0.0, 1.0)),
         "volume": to_actions(np.clip(volume, 0.0, 1.0)),
-        "pulse_rise": to_actions(np.clip(pulse_rise, 0.0, 1.0)),
-        "pulse_width": to_actions(np.clip(pulse_width, 0.0, 1.0)),
+        "pulse_rise": to_actions(pulse_rise),
+        "pulse_width": to_actions(pulse_width),
     }
 
 
