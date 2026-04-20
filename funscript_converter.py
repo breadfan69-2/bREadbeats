@@ -60,6 +60,8 @@ class FreqConfig:
     enabled: bool = False
     freq_scale: float = 1.0
     carrier_scale: float = 1.0
+    pulse_center: float = 45.0    # center position for pulse_frequency (0-100)
+    carrier_center: float = 50.0  # center position for carrier_frequency (0-100)
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +201,10 @@ def generate_freq_axes(
     unified: dict[str, np.ndarray],
     config: FreqConfig | None = None,
 ) -> dict[str, np.ndarray]:
-    """Generate pulse_frequency and carrier_frequency from surge.
+    """Generate pulse_frequency, carrier_frequency, and frequency from surge.
+
+    Each axis is centered at its configured center position (0-100 scale)
+    and modulated by the surge signal.
 
     Returns {axis_name: values_0_100} for enabled outputs.
     """
@@ -211,12 +216,17 @@ def generate_freq_axes(
     result: dict[str, np.ndarray] = {}
 
     if cfg.freq_scale > 0:
-        pf = np.abs(surge) * cfg.freq_scale
-        result["pulse_frequency"] = np.clip(pf * 100.0, 0.0, 100.0)
+        # Center at pulse_center, modulate upward by abs(surge) * scale
+        # abs(surge) is small for near-neutral data → tight cluster around center
+        pf = cfg.pulse_center + np.abs(surge) * cfg.freq_scale * cfg.pulse_center
+        result["pulse_frequency"] = np.clip(pf, 0.0, 100.0)
 
     if cfg.carrier_scale > 0:
-        cf = np.abs(surge) * cfg.carrier_scale
-        result["carrier_frequency"] = np.clip(cf * 100.0, 0.0, 100.0)
+        # Center at carrier_center, modulate upward by abs(surge) * scale
+        cf = cfg.carrier_center + np.abs(surge) * cfg.carrier_scale * cfg.carrier_center
+        result["carrier_frequency"] = np.clip(cf, 0.0, 100.0)
+        # 'frequency' is identical to carrier_frequency
+        result["frequency"] = result["carrier_frequency"].copy()
 
     return result
 
@@ -234,7 +244,7 @@ def convert(
     """Run the full 6-axis → 4-phase conversion pipeline.
 
     Returns dict with keys 'e1'–'e4' and optionally
-    'pulse_frequency', 'carrier_frequency'.
+    'pulse_frequency', 'carrier_frequency', 'frequency'.
     """
     if placement is None:
         placement = PRESETS[DEFAULT_PRESET]

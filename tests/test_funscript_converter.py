@@ -229,8 +229,12 @@ class TestFreqAxes:
         result = generate_freq_axes(unified, FreqConfig(enabled=True))
         assert "pulse_frequency" in result
         assert "carrier_frequency" in result
-        # At surge=50 (neutral), output should be near 0
-        assert result["pulse_frequency"][1] < 1.0
+        assert "frequency" in result
+        # At surge=50 (neutral), outputs should be at their center values
+        assert abs(result["pulse_frequency"][1] - 45.0) < 0.1
+        assert abs(result["carrier_frequency"][1] - 50.0) < 0.1
+        # frequency is identical to carrier_frequency
+        np.testing.assert_array_equal(result["frequency"], result["carrier_frequency"])
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +266,7 @@ class TestConvert:
         result = convert(axes, freq_config=FreqConfig(enabled=True))
         assert "pulse_frequency" in result
         assert "carrier_frequency" in result
+        assert "frequency" in result
 
     def test_empty_input(self):
         result = convert({})
