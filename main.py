@@ -189,6 +189,7 @@ class BREadbeatsWindow(QMainWindow):
         self._developer_unlock_dialog = None
         self._developer_controls_unlocked = False
         self._pmv_window = None
+        self._converter_window = None
         self._trigger_settings_tab_content = None
         self._auto_fill_tab_content = None
         self.jitter_effect_action = None
@@ -528,6 +529,25 @@ class BREadbeatsWindow(QMainWindow):
             self._pmv_window.activateWindow()
         except Exception as exc:
             QMessageBox.critical(self, "PMV Launch Error", f"Unable to open PMV Generator: {exc}")
+
+    def _launch_funscript_converter(self):
+        """Open (or focus) the standalone FunScript Converter window."""
+        try:
+            if self._converter_window is None:
+                from funscript_converter_window import FunscriptConverterWindow
+
+                self._converter_window = FunscriptConverterWindow(parent=None)
+
+                def _on_destroyed(*_args):
+                    self._converter_window = None
+
+                self._converter_window.destroyed.connect(_on_destroyed)
+
+            self._converter_window.show()
+            self._converter_window.raise_()
+            self._converter_window.activateWindow()
+        except Exception as exc:
+            QMessageBox.critical(self, "Converter Error", f"Unable to open FunScript Converter: {exc}")
 
     def _on_pulse_settings_popup(self):
         """Show Pulse settings popout."""

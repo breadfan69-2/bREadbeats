@@ -65,6 +65,11 @@ def create_menu_bar(win):
     pmv_generator_action = main_menu.addAction("PMV Funscript Generator...")
     assert pmv_generator_action is not None
     pmv_generator_action.triggered.connect(win._launch_pmv_generator)
+
+    # FunScript Converter launcher
+    converter_action = main_menu.addAction("FunScript Converter (6→4 Phase)...")
+    assert converter_action is not None
+    converter_action.triggered.connect(win._launch_funscript_converter)
     
     # Nerds menu (advanced perf + diagnostics) - inserted near Help later
     nerds_menu = QMenu("Nerds", menubar)

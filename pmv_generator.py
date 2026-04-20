@@ -37,6 +37,7 @@ from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript,
 from pmv_position_mapper import PositionTimeline, generate_positions
 from pmv_visualizations import AuxAxisPanel, VideoPreviewWidget, VisualizationArea
 from funscript_edit_state import FunscriptEditState, LockedRegion
+from funscript_utils import AXIS_SUFFIXES, strip_axis_suffix as _strip_axis_suffix
 
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".aac", ".wma", ".m4a"}
@@ -44,27 +45,6 @@ VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".webm", ".wmv", ".mov", ".flv"}
 FUNSCRIPT_EXTENSIONS = {".funscript"}
 SUPPORTED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 IMPORTABLE_EXTENSIONS = SUPPORTED_EXTENSIONS | FUNSCRIPT_EXTENSIONS
-
-# Known axis suffixes used when exporting multi-axis funscripts.
-# File name pattern: {base_stem}.{axis_name}.funscript
-AXIS_SUFFIXES = {
-    "main", "alpha", "beta", "alpha_prostate", "beta_prostate",
-    "e1", "e2", "e3", "e4",
-    "frequency", "pulse_frequency", "volume", "pulse_rise", "pulse_width",
-}
-
-
-def _strip_axis_suffix(name: str) -> tuple[str, str | None]:
-    """Return (base_stem, axis_name) by stripping a known axis suffix.
-
-    ``'video.alpha'`` → ``('video', 'alpha')``
-    ``'video'``       → ``('video', None)``
-    """
-    for suffix in sorted(AXIS_SUFFIXES, key=len, reverse=True):
-        tail = f".{suffix}"
-        if name.lower().endswith(tail):
-            return name[: len(name) - len(tail)], suffix
-    return name, None
 
 
 def _merge_dict(base: dict, overrides: dict) -> dict:
@@ -1097,39 +1077,14 @@ class PMVGeneratorWindow(QMainWindow):
     @staticmethod
     def _discover_sibling_axes(script_path: Path) -> dict[str, list[FunscriptAction]]:
         """Find sibling axis funscript files and return {axis_name: actions}."""
-        base_stem, selected_axis = _strip_axis_suffix(script_path.stem)
-        folder = script_path.parent
-        axes: dict[str, list[FunscriptAction]] = {}
-        for suffix in AXIS_SUFFIXES:
-            if suffix == "main":
-                candidate = folder / f"{base_stem}.funscript"
-            else:
-                candidate = folder / f"{base_stem}.{suffix}.funscript"
-            if not candidate.exists() or not candidate.is_file():
-                continue
-            if candidate == script_path:
-                continue  # already loaded as primary
-            try:
-                sibling_actions, _ = read_funscript(candidate)
-                if sibling_actions:
-                    axes[suffix] = sibling_actions
-            except Exception:
-                pass  # skip unreadable siblings
-        return axes
+        from funscript_utils import discover_sibling_axes
+        return discover_sibling_axes(script_path)
 
     @staticmethod
     def _axis_name_from_file(path: Path) -> str | None:
         """Infer axis name from filename; returns None for plain non-axis stems."""
-        stem = path.stem
-        lowered = stem.lower()
-        if lowered == "main":
-            return "main"
-        _base_stem, suffix = _strip_axis_suffix(stem)
-        if suffix is not None:
-            return suffix
-        if lowered in AXIS_SUFFIXES:
-            return lowered
-        return None
+        from funscript_utils import axis_name_from_file
+        return axis_name_from_file(path)
 
     def _apply_opened_funscript(
         self,
@@ -2241,6 +2196,8 @@ class PMVGeneratorWindow(QMainWindow):
                     axis_actions = main_actions
                 elif axis_name in self._aux_edit_states and self._aux_edit_states[axis_name].actions:
                     axis_actions = list(self._aux_edit_states[axis_name].actions)
+                elif self._multi_axis is not None and axis_name in self._multi_axis.axes and self._multi_axis.axes[axis_name]:
+                    axis_actions = list(self._multi_axis.axes[axis_name])
                 else:
                     axis_actions = export_multi_axis.axes.get(axis_name, [])
 
