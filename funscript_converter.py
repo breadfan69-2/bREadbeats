@@ -216,14 +216,15 @@ def generate_freq_axes(
     result: dict[str, np.ndarray] = {}
 
     if cfg.freq_scale > 0:
-        # Center at pulse_center, modulate upward by abs(surge) * scale
-        # abs(surge) is small for near-neutral data → tight cluster around center
-        pf = cfg.pulse_center + np.abs(surge) * cfg.freq_scale * cfg.pulse_center
+        # Signed bipolar mapping: negative surge pushes above center,
+        # positive surge pulls below center.
+        pf = cfg.pulse_center - surge * cfg.freq_scale * cfg.pulse_center
         result["pulse_frequency"] = np.clip(pf, 0.0, 100.0)
 
     if cfg.carrier_scale > 0:
-        # Center at carrier_center, modulate upward by abs(surge) * scale
-        cf = cfg.carrier_center + np.abs(surge) * cfg.carrier_scale * cfg.carrier_center
+        # Signed bipolar mapping: negative surge pushes above center,
+        # positive surge pulls below center.
+        cf = cfg.carrier_center - surge * cfg.carrier_scale * cfg.carrier_center
         result["carrier_frequency"] = np.clip(cf, 0.0, 100.0)
         # 'frequency' is identical to carrier_frequency
         result["frequency"] = result["carrier_frequency"].copy()

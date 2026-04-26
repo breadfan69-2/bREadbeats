@@ -230,9 +230,12 @@ class TestFreqAxes:
         assert "pulse_frequency" in result
         assert "carrier_frequency" in result
         assert "frequency" in result
-        # At surge=50 (neutral), outputs should be at their center values
+        # At surge=50 (neutral), outputs should be at their center values.
         assert abs(result["pulse_frequency"][1] - 45.0) < 0.1
         assert abs(result["carrier_frequency"][1] - 50.0) < 0.1
+        # Negative surge pushes above center; positive surge pulls below center.
+        np.testing.assert_allclose(result["pulse_frequency"], [90.0, 45.0, 0.0])
+        np.testing.assert_allclose(result["carrier_frequency"], [100.0, 50.0, 0.0])
         # frequency is identical to carrier_frequency
         np.testing.assert_array_equal(result["frequency"], result["carrier_frequency"])
 
