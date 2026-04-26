@@ -170,9 +170,14 @@ def tetrahedral_project(
     points = np.column_stack([alpha, beta, gamma])           # (N, 3)
     raw = points @ TETRA_VERTICES.T                          # (N, 4)
 
-    # Map the signed tetrahedral projections into a fixed 0-1 range so
-    # amplitude is preserved instead of renormalizing every sample to full scale.
-    return np.clip((raw + 1.0) * 0.5, 0.0, 1.0)
+    # Match Restim's abc_to_e1234 convention:
+    #   1. Shift so the least-active electrode is at 0.
+    #   2. Divide by 4/3 — the vertex-to-opposite-face dot-product range
+    #      for a regular tetrahedron inscribed in the unit sphere.
+    # This gives every electrode its full [0, 1] range for vertex-aligned
+    # motion and preserves amplitude proportionally for off-axis motion.
+    min_vals = raw.min(axis=1, keepdims=True)
+    return np.clip((raw - min_vals) / (4.0 / 3.0), 0.0, 1.0)
 
 
 # ---------------------------------------------------------------------------

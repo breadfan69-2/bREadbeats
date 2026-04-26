@@ -153,8 +153,9 @@ class TestTetrahedralProject:
         result = tetrahedral_project(
             np.array([0.0]), np.array([0.0]), np.array([0.0])
         )
-        # At origin all channels land at neutral 0.5.
-        np.testing.assert_allclose(result[0], [0.5, 0.5, 0.5, 0.5], atol=1e-10)
+        # At the origin the min-shift step subtracts 0, so all channels are 0
+        # (no stimulation direction → all electrodes off).
+        np.testing.assert_allclose(result[0], [0.0, 0.0, 0.0, 0.0], atol=1e-10)
 
     def test_output_range(self):
         rng = np.random.default_rng(42)
@@ -166,12 +167,14 @@ class TestTetrahedralProject:
         assert np.all(result <= 1.0 + 1e-10)
 
     def test_projection_preserves_magnitude(self):
+        # For pure alpha input, E1 tracks alpha amplitude exactly while
+        # E2-E4 sit at 0 (min-shift removes the -1/3 cross-product offset).
         alpha = np.array([0.1, 0.5, 1.0])
         beta = np.zeros(3)
         gamma = np.zeros(3)
         result = tetrahedral_project(alpha, beta, gamma)
-        np.testing.assert_allclose(result[:, 0], [0.55, 0.75, 1.0], atol=1e-10)
-        np.testing.assert_allclose(result[:, 1], [0.4833333333, 0.4166666667, 0.3333333333], atol=1e-10)
+        np.testing.assert_allclose(result[:, 0], [0.1, 0.5, 1.0], atol=1e-10)
+        np.testing.assert_allclose(result[:, 1:], 0.0, atol=1e-10)
 
     def test_vertex_dominance(self):
         # At vertex v0 direction, channel 0 should dominate
