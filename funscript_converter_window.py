@@ -419,6 +419,10 @@ class FunscriptConverterWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_export(self) -> None:
+        if self._reconvert_timer.isActive():
+            self._reconvert_timer.stop()
+            self._run_conversion()
+
         if not self._result:
             return
 
