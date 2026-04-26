@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
+from typing import Callable
 
 import numpy as np
 import pyqtgraph as pg
@@ -50,11 +52,16 @@ def _style_plot(widget: pg.PlotWidget) -> None:
 
 
 class FunscriptConverterWindow(QMainWindow):
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        preview_callback: Callable[[str, dict[str, list[FunscriptAction]], Path | None], None] | None = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("FunScript Converter — 6-Axis to 4-Phase")
         self.resize(1100, 700)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._preview_callback = preview_callback
 
         # State
         self._loaded_axes: dict[str, list[FunscriptAction]] = {}
@@ -93,6 +100,13 @@ class FunscriptConverterWindow(QMainWindow):
         top_row.addWidget(btn_load_folder)
 
         top_row.addStretch(1)
+
+        self._preview_btn = QPushButton("Preview In Generator...")
+        self._preview_btn.setEnabled(False)
+        self._preview_btn.clicked.connect(self._on_preview_in_generator)
+        if self._preview_callback is None:
+            self._preview_btn.setToolTip("Open the converter from bREadbeats to preview in the PMV Generator.")
+        top_row.addWidget(self._preview_btn)
 
         self._export_btn = QPushButton("Export e1–e4...")
         self._export_btn.setEnabled(False)
@@ -407,7 +421,33 @@ class FunscriptConverterWindow(QMainWindow):
 
         self._result = convert(self._loaded_axes, placement, weights, freq_cfg)
         self._update_preview()
+        self._preview_btn.setEnabled(bool(self._result) and self._preview_callback is not None)
         self._export_btn.setEnabled(bool(self._result))
+
+    def _on_preview_in_generator(self) -> None:
+        if self._reconvert_timer.isActive():
+            self._reconvert_timer.stop()
+            self._run_conversion()
+
+        if not self._result:
+            return
+        if self._preview_callback is None:
+            QMessageBox.information(
+                self,
+                "Preview Unavailable",
+                "Open the converter from bREadbeats to preview in the PMV Generator.",
+            )
+            return
+
+        preview_axes = {
+            axis_name: [FunscriptAction(a.at, a.pos) for a in actions]
+            for axis_name, actions in self._result.items()
+            if actions
+        }
+        try:
+            self._preview_callback(self._base_stem or "converted", preview_axes, self._source_folder)
+        except Exception as exc:
+            QMessageBox.warning(self, "Preview Error", str(exc))
 
     def _update_preview(self) -> None:
         for i, name in enumerate(["e1", "e2", "e3", "e4"]):

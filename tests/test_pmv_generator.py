@@ -303,6 +303,159 @@ class TestPmvGenerator(unittest.TestCase):
                 [(0, 45), (500, 60), (1000, 40)],
             )
 
+    def test_open_selected_converted_funscripts_prefers_e1_primary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            e1_path = root / "clip.e1.funscript"
+            e2_path = root / "clip.e2.funscript"
+            freq_path = root / "clip.frequency.funscript"
+
+            e1_actions = [
+                FunscriptAction(0, 10),
+                FunscriptAction(500, 40),
+                FunscriptAction(1000, 20),
+            ]
+            e2_actions = [
+                FunscriptAction(0, 80),
+                FunscriptAction(500, 50),
+                FunscriptAction(1000, 70),
+            ]
+            freq_actions = [
+                FunscriptAction(0, 60),
+                FunscriptAction(500, 50),
+                FunscriptAction(1000, 40),
+            ]
+            write_funscript(e1_path, e1_actions, FunscriptMetadata(title="clip.e1", duration=1000))
+            write_funscript(e2_path, e2_actions, FunscriptMetadata(title="clip.e2", duration=1000))
+            write_funscript(freq_path, freq_actions, FunscriptMetadata(title="clip.frequency", duration=1000))
+
+            win = PMVGeneratorWindow()
+            self.assertTrue(
+                win.open_funscripts(
+                    [str(freq_path), str(e2_path), str(e1_path)],
+                    show_errors=False,
+                )
+            )
+
+            self.assertEqual(
+                [(a.at, a.pos) for a in win._positions.actions],
+                [(0, 10), (500, 40), (1000, 20)],
+            )
+            self.assertEqual(
+                [(a.at, a.pos) for a in win._multi_axis.axes["e1"]],
+                [(0, 10), (500, 40), (1000, 20)],
+            )
+
+    def test_open_selected_converted_funscripts_uses_parent_main_if_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            converted = root / "converted"
+            converted.mkdir()
+
+            main_path = root / "clip.funscript"
+            e1_path = converted / "clip.e1.funscript"
+            e2_path = converted / "clip.e2.funscript"
+            freq_path = converted / "clip.frequency.funscript"
+
+            main_actions = [
+                FunscriptAction(0, 25),
+                FunscriptAction(500, 75),
+                FunscriptAction(1000, 35),
+            ]
+            e1_actions = [
+                FunscriptAction(0, 10),
+                FunscriptAction(500, 40),
+                FunscriptAction(1000, 20),
+            ]
+            e2_actions = [
+                FunscriptAction(0, 80),
+                FunscriptAction(500, 50),
+                FunscriptAction(1000, 70),
+            ]
+            freq_actions = [
+                FunscriptAction(0, 60),
+                FunscriptAction(500, 50),
+                FunscriptAction(1000, 40),
+            ]
+
+            write_funscript(main_path, main_actions, FunscriptMetadata(title="clip", duration=1000))
+            write_funscript(e1_path, e1_actions, FunscriptMetadata(title="clip.e1", duration=1000))
+            write_funscript(e2_path, e2_actions, FunscriptMetadata(title="clip.e2", duration=1000))
+            write_funscript(freq_path, freq_actions, FunscriptMetadata(title="clip.frequency", duration=1000))
+
+            win = PMVGeneratorWindow()
+            self.assertTrue(
+                win.open_funscripts(
+                    [str(freq_path), str(e2_path), str(e1_path)],
+                    show_errors=False,
+                )
+            )
+
+            self.assertEqual(
+                [(a.at, a.pos) for a in win._positions.actions],
+                [(0, 25), (500, 75), (1000, 35)],
+            )
+            self.assertEqual(
+                [(a.at, a.pos) for a in win._multi_axis.axes["e1"]],
+                [(0, 10), (500, 40), (1000, 20)],
+            )
+            self.assertEqual(
+                [(a.at, a.pos) for a in win._multi_axis.axes["frequency"]],
+                [(0, 60), (500, 50), (1000, 40)],
+            )
+
+    def test_load_converted_preview_populates_axes(self):
+        win = PMVGeneratorWindow()
+        preview_axes = {
+            "e1": [FunscriptAction(0, 10), FunscriptAction(1000, 20)],
+            "e2": [FunscriptAction(0, 30), FunscriptAction(1000, 40)],
+            "e3": [FunscriptAction(0, 50), FunscriptAction(1000, 60)],
+            "e4": [FunscriptAction(0, 70), FunscriptAction(1000, 80)],
+            "pulse_frequency": [FunscriptAction(0, 90), FunscriptAction(1000, 0)],
+            "carrier_frequency": [FunscriptAction(0, 100), FunscriptAction(1000, 0)],
+            "frequency": [FunscriptAction(0, 100), FunscriptAction(1000, 0)],
+        }
+
+        self.assertTrue(win.load_converted_preview(preview_axes, base_name="clip"))
+
+        self.assertIsNotNone(win._multi_axis)
+        self.assertEqual(
+            [(a.at, a.pos) for a in win._positions.actions],
+            [(0, 10), (1000, 20)],
+        )
+        self.assertEqual(
+            [(a.at, a.pos) for a in win._multi_axis.axes["carrier_frequency"]],
+            [(0, 100), (1000, 0)],
+        )
+        self.assertEqual(win._current_edit_axis, "e1")
+        self.assertIn("Converted preview: clip", win.file_label.text())
+
+    def test_load_converted_preview_auto_loads_matching_media(self):
+        sr = 48_000
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media_path = root / "clip.wav"
+            samples = self._make_click_track(sr, duration_s=4.0, bpm=120.0)
+            self._write_wav(media_path, samples, sr)
+
+            win = PMVGeneratorWindow()
+            preview_axes = {
+                "e1": [FunscriptAction(0, 10), FunscriptAction(1000, 20)],
+                "e2": [FunscriptAction(0, 30), FunscriptAction(1000, 40)],
+            }
+
+            self.assertTrue(
+                win.load_converted_preview(
+                    preview_axes,
+                    base_name="clip",
+                    source_folder=root,
+                )
+            )
+
+            self.assertEqual(win._media_path, str(media_path))
+            self.assertIsNotNone(win._samples)
+            self.assertIn(media_path.name, win.file_label.text())
+
     def test_send_position_at_time_emits_e1_to_e4_tags(self):
         class DummyEngine:
             def __init__(self):

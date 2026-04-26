@@ -144,12 +144,14 @@ def mix_to_3d(
     beta = beta + twist * w.w_twist * cos(w.twist_phase)
     gamma = gamma + twist * w.w_twist * sin(w.twist_phase)
 
-    # Clamp to [-1, +1]
-    alpha = np.clip(alpha, -1.0, 1.0)
-    beta = np.clip(beta, -1.0, 1.0)
-    gamma = np.clip(gamma, -1.0, 1.0)
+    # Preserve direction by scaling the combined 3D vector into the unit ball
+    # instead of clipping each axis independently.
+    points = np.column_stack([alpha, beta, gamma])
+    norms = np.linalg.norm(points, axis=1, keepdims=True)
+    scale = np.where(norms > 1.0, norms, 1.0)
+    normalized_points = points / scale
 
-    return alpha, beta, gamma
+    return normalized_points[:, 0], normalized_points[:, 1], normalized_points[:, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +170,9 @@ def tetrahedral_project(
     points = np.column_stack([alpha, beta, gamma])           # (N, 3)
     raw = points @ TETRA_VERTICES.T                          # (N, 4)
 
-    # Per-sample: shift min→0, then normalize max→1
-    row_min = raw.min(axis=1, keepdims=True)
-    shifted = raw - row_min
-    row_max = shifted.max(axis=1, keepdims=True)
-    row_max = np.where(row_max > 0, row_max, 1.0)
-    normalized = shifted / row_max
-
-    return normalized
+    # Map the signed tetrahedral projections into a fixed 0-1 range so
+    # amplitude is preserved instead of renormalizing every sample to full scale.
+    return np.clip((raw + 1.0) * 0.5, 0.0, 1.0)
 
 
 # ---------------------------------------------------------------------------

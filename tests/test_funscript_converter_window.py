@@ -20,6 +20,37 @@ class TestFunscriptConverterWindow(unittest.TestCase):
     def setUpClass(cls):
         cls._app = QApplication.instance() or QApplication([])
 
+    def test_preview_in_generator_uses_callback(self):
+        received = []
+
+        def _preview_callback(
+            base_name: str,
+            axes: dict[str, list[FunscriptAction]],
+            source_folder: Path | None,
+        ) -> None:
+            received.append((base_name, axes, source_folder))
+
+        win = FunscriptConverterWindow(preview_callback=_preview_callback)
+        win._loaded_axes = {
+            "main": _make_actions([(0, 20), (500, 70), (1000, 30)]),
+            "surge": _make_actions([(0, 60), (500, 40), (1000, 80)]),
+        }
+        win._source_folder = Path(tempfile.gettempdir())
+        win._base_stem = "clip"
+        win._freq_enabled.setChecked(True)
+        win._run_conversion()
+
+        win._on_preview_in_generator()
+
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0][0], "clip")
+        self.assertIn("e1", received[0][1])
+        self.assertIn("pulse_frequency", received[0][1])
+        self.assertIn("carrier_frequency", received[0][1])
+        self.assertIn("frequency", received[0][1])
+        self.assertEqual(received[0][2], Path(tempfile.gettempdir()))
+        win.close()
+
     def test_load_file_accepts_multi_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

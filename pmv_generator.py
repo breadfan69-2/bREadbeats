@@ -1086,6 +1086,76 @@ class PMVGeneratorWindow(QMainWindow):
         from funscript_utils import axis_name_from_file
         return axis_name_from_file(path)
 
+    @staticmethod
+    def _pick_primary_loaded_entry(
+        loaded_entries: list[tuple[Path, list[FunscriptAction], FunscriptMetadata, str | None]],
+    ) -> tuple[Path, list[FunscriptAction], FunscriptMetadata, str | None]:
+        main_candidates = [entry for entry in loaded_entries if entry[3] in (None, "main")]
+        if main_candidates:
+            return max(
+                main_candidates,
+                key=lambda entry: (len(entry[1]), -len(entry[0].name), entry[0].name.lower()),
+            )
+
+        electrode_order = {"e1": 0, "e2": 1, "e3": 2, "e4": 3}
+        electrode_candidates = [entry for entry in loaded_entries if entry[3] in electrode_order]
+        if electrode_candidates:
+            return min(
+                electrode_candidates,
+                key=lambda entry: (
+                    electrode_order.get(entry[3], 99),
+                    -len(entry[1]),
+                    entry[0].name.lower(),
+                ),
+            )
+
+        return max(
+            loaded_entries,
+            key=lambda entry: (len(entry[1]), -len(entry[0].name), entry[0].name.lower()),
+        )
+
+    def _discover_parent_main_entry(
+        self,
+        script_paths: list[Path],
+        loaded_entries: list[tuple[Path, list[FunscriptAction], FunscriptMetadata, str | None]],
+    ) -> tuple[Path, list[FunscriptAction], FunscriptMetadata, str | None] | None:
+        if any(entry[3] in (None, "main") for entry in loaded_entries):
+            return None
+
+        selected_keys = {str(path).lower() for path in script_paths}
+        seen_candidates: set[str] = set()
+        candidates: list[tuple[Path, list[FunscriptAction], FunscriptMetadata, str | None]] = []
+
+        for script_path in script_paths:
+            base_stem, axis_name = _strip_axis_suffix(script_path.stem)
+            if axis_name in (None, "main"):
+                continue
+
+            parent_folder = script_path.parent.parent
+            if not parent_folder.exists() or not parent_folder.is_dir():
+                continue
+
+            candidate = parent_folder / f"{base_stem}.funscript"
+            candidate_key = str(candidate).lower()
+            if candidate_key in selected_keys or candidate_key in seen_candidates:
+                continue
+            seen_candidates.add(candidate_key)
+
+            if not candidate.exists() or not candidate.is_file():
+                continue
+
+            try:
+                actions, metadata = read_funscript(candidate)
+            except Exception:
+                continue
+
+            candidates.append((candidate, actions, metadata, self._axis_name_from_file(candidate)))
+
+        if not candidates:
+            return None
+
+        return self._pick_primary_loaded_entry(candidates)
+
     def _apply_opened_funscript(
         self,
         script_path: Path,
@@ -1103,10 +1173,9 @@ class PMVGeneratorWindow(QMainWindow):
         # actions as the primary position timeline; fall back to the selected
         # axis file's actions if the main file isn't available.
         if selected_axis is not None and selected_axis != "main":
+            sibling_axes[selected_axis] = [FunscriptAction(a.at, a.pos) for a in actions]
             main_actions_from_file = sibling_axes.pop("main", None)
             if main_actions_from_file:
-                # Put the selected file's actions into the sibling dict
-                sibling_axes[selected_axis] = [FunscriptAction(a.at, a.pos) for a in actions]
                 actions = main_actions_from_file
             # Else: opened an axis file with no main sibling → use its actions as primary
 
@@ -1208,6 +1277,150 @@ class PMVGeneratorWindow(QMainWindow):
             else:
                 parts.append("(no matching media found)")
             bar.showMessage(" | ".join(parts), 6000)
+
+    def load_converted_preview(
+        self,
+        axes: dict[str, list[FunscriptAction]],
+        *,
+        base_name: str = "converted",
+        source_folder: Path | str | None = None,
+    ) -> bool:
+        preview_axes = {
+            axis_name: [FunscriptAction(a.at, a.pos) for a in actions]
+            for axis_name, actions in axes.items()
+            if actions
+        }
+        if not preview_axes:
+            return False
+
+        primary_axis = next(
+            (axis_name for axis_name in ("e1", "e2", "e3", "e4") if axis_name in preview_axes),
+            None,
+        )
+        if primary_axis is None:
+            primary_axis = max(
+                preview_axes,
+                key=lambda axis_name: (len(preview_axes[axis_name]), -len(axis_name), axis_name),
+            )
+
+        primary_actions = [FunscriptAction(a.at, a.pos) for a in preview_axes[primary_axis]]
+        duration_ms = max(
+            (int(actions[-1].at) for actions in preview_axes.values() if actions),
+            default=(primary_actions[-1].at if primary_actions else 0),
+        )
+
+        analysis_cfg = self.controls.get_analysis_config()
+        matching_media: Path | None = None
+        samples = None
+
+        if source_folder is not None:
+            probe_folder = Path(source_folder)
+            probe_script = probe_folder / f"{base_name}.funscript"
+            probe_meta = FunscriptMetadata(title=base_name, duration=duration_ms)
+            matching_media = self._discover_matching_media(probe_script, probe_meta)
+
+            if matching_media is not None:
+                if self._samples is not None and self._media_path is not None and Path(self._media_path) == matching_media:
+                    samples = self._samples
+                else:
+                    try:
+                        samples = load_audio(str(matching_media), analysis_cfg, lambda *_args: None)
+                    except Exception:
+                        samples = None
+                        matching_media = None
+
+        self._file_path = None
+        self._media_path = str(matching_media) if matching_media is not None else None
+        self._load_video_preview()
+        self._samples = samples
+        self._timeline = None
+        self._beats = None
+        self._cached_orbital_result = None
+
+        self._live_preview_timer.stop()
+        self._last_live_preview_signature = None
+        self._positions = None
+        self._multi_axis = None
+        self._edit_state.load_actions([])
+        if samples is not None:
+            self.visualizations.set_audio_data(samples, int(analysis_cfg.sample_rate))
+        else:
+            self.visualizations.set_audio_data(np.array([], dtype=np.float32), 0)
+            self.visualizations.set_duration_hint(duration_ms)
+
+        speed_profile = np.zeros(len(primary_actions), dtype=np.float64)
+        self._positions = PositionTimeline(
+            actions=[FunscriptAction(a.at, a.pos) for a in primary_actions],
+            beat_actions=[FunscriptAction(a.at, a.pos) for a in primary_actions],
+            speed_profile=speed_profile,
+            ml_results=None,
+        )
+
+        result_axes = {"main": [FunscriptAction(a.at, a.pos) for a in primary_actions]}
+        for axis_name, axis_actions in preview_axes.items():
+            result_axes[axis_name] = [FunscriptAction(a.at, a.pos) for a in axis_actions]
+
+        self._multi_axis = MultiAxisResult(axes=result_axes)
+        self._edit_state.load_actions(self._positions.actions)
+        self._aux_edit_states.clear()
+        self._current_edit_axis = "main"
+        self.visualizations.set_positions(self._positions)
+        self.visualizations.set_multi_axis(self._multi_axis)
+        self.aux_panel.set_multi_axis(self._multi_axis)
+        self._refresh_edit_axis_combo()
+
+        default_edit_axis = next(
+            (
+                axis_name
+                for axis_name in (
+                    "e1",
+                    "e2",
+                    "e3",
+                    "e4",
+                    "pulse_frequency",
+                    "carrier_frequency",
+                    "frequency",
+                )
+                if axis_name in preview_axes
+            ),
+            None,
+        )
+        if default_edit_axis is not None:
+            self.aux_panel.select_edit_axis(default_edit_axis)
+
+        self.visualizations.set_playback_position(0.0)
+        if duration_ms > 0:
+            self.visualizations.zoom_to_range(0.0, max(1000.0, float(duration_ms)))
+
+        axis_names = sorted(preview_axes.keys())
+        label = f"Converted preview: {base_name} ({len(axis_names)} axes)"
+        if matching_media is not None:
+            label = f"{label} | {matching_media.name}"
+        self.file_label.setText(label)
+
+        tooltip = f"Converted preview: {base_name}\nPrimary: {primary_axis}\nAxes: {', '.join(axis_names)}"
+        if matching_media is not None:
+            tooltip += f"\nMedia: {matching_media}"
+        self.file_label.setToolTip(tooltip)
+
+        self.controls.step_bar.set_step_status(1, "done" if matching_media is not None else "ready")
+        self.controls.step_bar.set_step_status(2, "ready")
+        self.controls.step_bar.set_step_status(3, "ready")
+        self.controls.step_bar.set_step_status(4, "done")
+        self.controls.step_bar.set_step_status(5, "ready")
+        self._refresh_step_availability()
+
+        bar = self.statusBar()
+        if bar is not None:
+            parts = [
+                f"Loaded converted preview {base_name}",
+                f"primary: {primary_axis}",
+                f"axes: {', '.join(axis_names)}",
+            ]
+            if matching_media is not None:
+                parts.append(f"media: {matching_media.name}")
+            bar.showMessage(" | ".join(parts), 7000)
+        return True
 
     def open_funscript(
         self,
@@ -1323,14 +1536,11 @@ class PMVGeneratorWindow(QMainWindow):
             self._show_error("Open failed", "Unable to read any selected funscript files.", show_errors)
             return False
 
-        # Prefer a true main/non-axis script, otherwise fall back to the
-        # longest readable script as the primary timeline.
-        main_candidates = [e for e in loaded_entries if e[3] in (None, "main")]
-        primary_pool = main_candidates if main_candidates else loaded_entries
-        primary_script, primary_actions, primary_meta, primary_axis = max(
-            primary_pool,
-            key=lambda e: (len(e[1]), -len(e[0].name), e[0].name.lower()),
-        )
+        parent_main_entry = self._discover_parent_main_entry(script_paths, loaded_entries)
+        if parent_main_entry is not None:
+            loaded_entries.append(parent_main_entry)
+
+        primary_script, primary_actions, primary_meta, primary_axis = self._pick_primary_loaded_entry(loaded_entries)
 
         if isinstance(primary_meta.parameters, dict):
             preset = primary_meta.parameters.get("preset")
@@ -1480,14 +1690,11 @@ class PMVGeneratorWindow(QMainWindow):
             self._show_error("Open failed", "Unable to read any funscript files in folder.", show_errors)
             return False
 
-        # Prefer a true main/non-axis script, otherwise fall back to the
-        # longest readable script as the primary timeline.
-        main_candidates = [e for e in loaded_entries if e[3] in (None, "main")]
-        primary_pool = main_candidates if main_candidates else loaded_entries
-        primary_script, primary_actions, primary_meta, primary_axis = max(
-            primary_pool,
-            key=lambda e: (len(e[1]), -len(e[0].name), e[0].name.lower()),
-        )
+        parent_main_entry = self._discover_parent_main_entry(script_paths, loaded_entries)
+        if parent_main_entry is not None:
+            loaded_entries.append(parent_main_entry)
+
+        primary_script, primary_actions, primary_meta, primary_axis = self._pick_primary_loaded_entry(loaded_entries)
 
         if isinstance(primary_meta.parameters, dict):
             preset = primary_meta.parameters.get("preset")

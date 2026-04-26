@@ -98,7 +98,7 @@ class TestMixTo3d:
         np.testing.assert_allclose(gamma, [0.0, 0.0, 0.0], atol=1e-10)
 
     def test_clamping(self):
-        # Extreme values that would exceed ±1 after mixing
+        # Extreme values that would exceed unit radius after mixing
         w = MixWeights(w_primary=1.0, w_secondary=1.0, w_twist=1.0, twist_phase=0.0)
         unified = {
             "main": np.array([100.0]),
@@ -112,6 +112,7 @@ class TestMixTo3d:
         assert np.all(alpha <= 1.0)
         assert np.all(beta <= 1.0)
         assert np.all(gamma <= 1.0)
+        np.testing.assert_allclose(np.sqrt(alpha**2 + beta**2 + gamma**2), [1.0])
 
     def test_twist_phase_zero_only_beta(self):
         w = MixWeights(w_primary=0.0, w_secondary=0.0, w_twist=1.0, twist_phase=0.0)
@@ -152,8 +153,8 @@ class TestTetrahedralProject:
         result = tetrahedral_project(
             np.array([0.0]), np.array([0.0]), np.array([0.0])
         )
-        # At origin all dot products are 0 → all channels equal (0.0)
-        np.testing.assert_allclose(result[0], [0.0, 0.0, 0.0, 0.0], atol=1e-10)
+        # At origin all channels land at neutral 0.5.
+        np.testing.assert_allclose(result[0], [0.5, 0.5, 0.5, 0.5], atol=1e-10)
 
     def test_output_range(self):
         rng = np.random.default_rng(42)
@@ -164,15 +165,13 @@ class TestTetrahedralProject:
         assert np.all(result >= -1e-10)
         assert np.all(result <= 1.0 + 1e-10)
 
-    def test_at_least_one_zero_one_max(self):
-        rng = np.random.default_rng(42)
-        alpha = rng.uniform(-1, 1, 50)
-        beta = rng.uniform(-1, 1, 50)
-        gamma = rng.uniform(-1, 1, 50)
+    def test_projection_preserves_magnitude(self):
+        alpha = np.array([0.1, 0.5, 1.0])
+        beta = np.zeros(3)
+        gamma = np.zeros(3)
         result = tetrahedral_project(alpha, beta, gamma)
-        for row in result:
-            assert min(row) < 1e-10, "Minimum should be ~0"
-            assert max(row) > 1.0 - 1e-10, "Maximum should be ~1"
+        np.testing.assert_allclose(result[:, 0], [0.55, 0.75, 1.0], atol=1e-10)
+        np.testing.assert_allclose(result[:, 1], [0.4833333333, 0.4166666667, 0.3333333333], atol=1e-10)
 
     def test_vertex_dominance(self):
         # At vertex v0 direction, channel 0 should dominate
@@ -190,6 +189,7 @@ class TestTetrahedralProject:
         result = tetrahedral_project(alpha, beta, gamma)
         # Channel 0 (aligned with alpha) should increase
         assert result[-1, 0] > result[0, 0]
+        assert result[-1, 1] < result[0, 1]
 
 
 # ---------------------------------------------------------------------------

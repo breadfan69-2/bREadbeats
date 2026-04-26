@@ -530,13 +530,30 @@ class BREadbeatsWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "PMV Launch Error", f"Unable to open PMV Generator: {exc}")
 
+    def _preview_converter_result_in_pmv(self, base_name, axes, source_folder=None):
+        self._launch_pmv_generator()
+        if self._pmv_window is None:
+            raise RuntimeError("PMV Generator window is not available.")
+        if not self._pmv_window.load_converted_preview(
+            axes,
+            base_name=base_name,
+            source_folder=source_folder,
+        ):
+            raise RuntimeError("Converter produced no previewable axes.")
+        self._pmv_window.show()
+        self._pmv_window.raise_()
+        self._pmv_window.activateWindow()
+
     def _launch_funscript_converter(self):
         """Open (or focus) the standalone FunScript Converter window."""
         try:
             if self._converter_window is None:
                 from funscript_converter_window import FunscriptConverterWindow
 
-                self._converter_window = FunscriptConverterWindow(parent=None)
+                self._converter_window = FunscriptConverterWindow(
+                    parent=None,
+                    preview_callback=self._preview_converter_result_in_pmv,
+                )
 
                 def _on_destroyed(*_args):
                     self._converter_window = None

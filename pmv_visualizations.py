@@ -1877,6 +1877,10 @@ class AuxAxisPanel(QWidget):
             self._edit_axis_combo.setCurrentText(prev)
         self._edit_axis_combo.blockSignals(False)
 
+    def select_edit_axis(self, axis_name: str) -> None:
+        target = axis_name if axis_name and self._edit_axis_combo.findText(axis_name) >= 0 else "(none)"
+        self._edit_axis_combo.setCurrentText(target)
+
     def set_edit_state(self, state: FunscriptEditState | None) -> None:
         if self._edit_state is not None:
             try:
