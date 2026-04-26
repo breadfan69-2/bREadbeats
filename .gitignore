@@ -124,3 +124,5 @@ GAMEPAD_RECORD_BEAT_SNAP_PLAN.md
 scripts/analyze_favorites.py
 PMV_GENERATOR_REFACTOR_IMPLEMENTATION_PLAN.md
 plan-funscriptConverterSixAxisToFourPhase.prompt.md
+FOURPHASE_TCODE_HANDOFF_2026-04-25.md
+user_pmv_presets/_last_used.json

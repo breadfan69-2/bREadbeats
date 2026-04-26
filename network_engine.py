@@ -25,6 +25,7 @@ class TCodeCommand:
     pulse_freq: Optional[int] = None  # Optional P0 frequency (0-9999)
     pulse_freq_duration: Optional[int] = None  # Optional P0 duration (250ms for smooth averaging)
     tcode_tags: dict = field(default_factory=dict)  # Optional additional T-code tags
+    include_linear_axes: bool = True  # When False, omit L0/L1 from serialized T-code
 
     def to_tcode(self) -> str:
         """
@@ -34,29 +35,32 @@ class TCodeCommand:
             - L1 = horizontal axis (our beta/X, negated)
         Rotated 90 degrees clockwise to match restim display orientation
         """
-        # Rotate 90 degrees clockwise: swap and negate appropriately
-        rotated_alpha = self.beta
-        rotated_beta = -self.alpha
+        parts: list[str] = []
 
-        # Map -1.0..1.0 to 0..9999
-        l0_val = int((-rotated_alpha + 1.0) / 2.0 * 9999)
-        l1_val = int((-rotated_beta + 1.0) / 2.0 * 9999)
+        if self.include_linear_axes:
+            # Rotate 90 degrees clockwise: swap and negate appropriately
+            rotated_alpha = self.beta
+            rotated_beta = -self.alpha
 
-        # Clamp to valid range
-        l0_val = max(0, min(9999, l0_val))
-        l1_val = max(0, min(9999, l1_val))
+            # Map -1.0..1.0 to 0..9999
+            l0_val = int((-rotated_alpha + 1.0) / 2.0 * 9999)
+            l1_val = int((-rotated_beta + 1.0) / 2.0 * 9999)
+
+            # Clamp to valid range
+            l0_val = max(0, min(9999, l0_val))
+            l1_val = max(0, min(9999, l1_val))
+            parts.append(f"L0{l0_val:04d}I{self.duration_ms}")
+            parts.append(f"L1{l1_val:04d}I{self.duration_ms}")
 
         # Volume to 0..9999
         v0_val = int(max(0.0, min(1.0, self.volume)) * 9999)
-
-        # Build command string: L0xxxxIyyy L1xxxxIyyy V0xxxxIyyy [P0xxxx] [C0xxxx]
-        cmd = f"L0{l0_val:04d}I{self.duration_ms} L1{l1_val:04d}I{self.duration_ms} V0{v0_val:04d}I{self.duration_ms}"
+        parts.append(f"V0{v0_val:04d}I{self.duration_ms}")
         
         # Add P0xxxxIyyy if present (4 digits, 0000-9999)
         p0_val = getattr(self, 'pulse_freq', None)
         if p0_val is not None:
             p0_dur = getattr(self, 'pulse_freq_duration', None) or self.duration_ms
-            cmd += f" P0{int(p0_val):04d}I{p0_dur}"
+            parts.append(f"P0{int(p0_val):04d}I{p0_dur}")
         
         # Add any other tcode_tags if present (with interpolation time)
         tcode_tags = getattr(self, 'tcode_tags', {})
@@ -67,10 +71,9 @@ class TCodeCommand:
                 # Check for tag-specific duration override (e.g. C0_duration, P1_duration)
                 tag_dur = tcode_tags.get(f'{tag}_duration', None)
                 dur = tag_dur or self.duration_ms
-                cmd += f" {tag}{int(val):04d}I{dur}"
+                parts.append(f"{tag}{int(val):04d}I{dur}")
         
-        cmd += "\n"
-        return cmd
+        return " ".join(parts) + "\n"
 
 
 class NetworkEngine:

@@ -186,6 +186,14 @@ class PMVControlsPanel(QWidget):
             combo.setCurrentIndex(index)
 
     @staticmethod
+    def _set_combo_data(combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+            return
+        PMVControlsPanel._set_combo_text(combo, value)
+
+    @staticmethod
     def _as_float(value: Any, fallback: float) -> float:
         try:
             return float(value)
@@ -758,6 +766,15 @@ class PMVControlsPanel(QWidget):
             "orbital: replay live StrokeMapper engine offline (slower, matches live motion)"
         )
 
+        self._preview_tcode_mode_combo = QComboBox()
+        self._preview_tcode_mode_combo.addItem("threephase (L0/L1)", "threephase")
+        self._preview_tcode_mode_combo.addItem("fourphase (E1-E4)", "fourphase")
+        self._preview_tcode_mode_combo.setToolTip(
+            "threephase: send primary motion as L0/L1 during PMV preview\n"
+            "fourphase: send direct electrode motion as E1-E4 during PMV preview"
+        )
+        self._set_combo_data(self._preview_tcode_mode_combo, defaults.preview_tcode_mode)
+
         self._orbital_blend_slider = SliderWithLabel(
             "Orbital Blend", 0.0, 1.0, defaults.orbital_blend,
             decimals=2, step=0.01,
@@ -824,6 +841,7 @@ class PMVControlsPanel(QWidget):
             form.addWidget(self.axis_checkboxes[axis_name])
         form.addWidget(self._alpha_beta_toggle)
         form.addWidget(self._labeled_widget("Alpha/Beta Mode", self._alpha_beta_mode_combo))
+        form.addWidget(self._labeled_widget("Preview T-Code Mode", self._preview_tcode_mode_combo))
         form.addWidget(self._orbital_blend_slider)
         form.addWidget(self._e1234_toggle)
 
@@ -870,6 +888,7 @@ class PMVControlsPanel(QWidget):
             *tuple(self.axis_checkboxes.values()),
             self._alpha_beta_toggle,
             self._alpha_beta_mode_combo,
+            self._preview_tcode_mode_combo,
             self._orbital_blend_slider,
             self._e1234_toggle,
         )
@@ -998,6 +1017,7 @@ class PMVControlsPanel(QWidget):
             enabled_axes=enabled_axes,
             alpha_beta_mode=str(self._alpha_beta_mode_combo.currentText()),
             orbital_blend=float(self._orbital_blend_slider.value()),
+            preview_tcode_mode=str(self._preview_tcode_mode_combo.currentData() or "threephase"),
         )
 
     # -- group toggle handlers -------------------------------------------------
@@ -1197,6 +1217,8 @@ class PMVControlsPanel(QWidget):
 
             ab_mode = axis.get("alpha_beta_mode", self._alpha_beta_mode_combo.currentText())
             self._set_combo_text(self._alpha_beta_mode_combo, str(ab_mode))
+            preview_tcode_mode = axis.get("preview_tcode_mode", self._preview_tcode_mode_combo.currentData() or "threephase")
+            self._set_combo_data(self._preview_tcode_mode_combo, str(preview_tcode_mode))
             self._orbital_blend_slider.setValue(self._as_float(axis.get("orbital_blend"), self._orbital_blend_slider.value()))
 
             enabled_axes = axis.get("enabled_axes", [])

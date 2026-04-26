@@ -62,6 +62,7 @@ class AxisConfig:
     enabled_axes: set[str] = field(default_factory=lambda: {"main"})
     alpha_beta_mode: str = "restim"  # "restim" or "orbital"
     orbital_blend: float = 0.0  # 0.0 = pure restim, 1.0 = pure orbital
+    preview_tcode_mode: str = "threephase"  # "threephase" (L0/L1) or "fourphase" (E1-E4)
 
 
 @dataclass(slots=True)

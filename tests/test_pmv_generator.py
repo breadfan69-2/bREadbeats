@@ -10,6 +10,7 @@ import numpy as np
 from PyQt6.QtWidgets import QApplication
 
 from funscript_edit_state import LockedRegion
+from pmv_axis_converter import MultiAxisResult
 from pmv_generator import PMVGeneratorWindow
 from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
 from pmv_position_mapper import PositionTimeline
@@ -301,6 +302,87 @@ class TestPmvGenerator(unittest.TestCase):
                 [(a.at, a.pos) for a in win._multi_axis.axes["alpha"]],
                 [(0, 45), (500, 60), (1000, 40)],
             )
+
+    def test_send_position_at_time_emits_e1_to_e4_tags(self):
+        class DummyEngine:
+            def __init__(self):
+                self.connected = True
+                self.sent = []
+
+            def send_immediate(self, cmd):
+                self.sent.append(cmd)
+
+        win = PMVGeneratorWindow()
+        win._multi_axis = MultiAxisResult(
+            axes={
+                "alpha": [FunscriptAction(0, 50), FunscriptAction(1000, 50)],
+                "beta": [FunscriptAction(0, 50), FunscriptAction(1000, 50)],
+                "e1": [FunscriptAction(0, 10), FunscriptAction(1000, 10)],
+                "e2": [FunscriptAction(0, 20), FunscriptAction(1000, 20)],
+                "e3": [FunscriptAction(0, 30), FunscriptAction(1000, 30)],
+                "e4": [FunscriptAction(0, 40), FunscriptAction(1000, 40)],
+            }
+        )
+        win._network_engine = DummyEngine()
+        combo = win.controls._preview_tcode_mode_combo
+        combo.setCurrentIndex(combo.findData("fourphase"))
+        win.aux_panel.get_send_axes = lambda: {"e1", "e2", "e3", "e4"}
+
+        win._send_position_at_time(500.0)
+
+        self.assertEqual(len(win._network_engine.sent), 1)
+        cmd = win._network_engine.sent[0]
+        self.assertFalse(cmd.include_linear_axes)
+        self.assertNotIn("E0", cmd.tcode_tags)
+        self.assertEqual(cmd.tcode_tags["E1"], 999)
+        self.assertEqual(cmd.tcode_tags["E1_duration"], 33)
+        self.assertEqual(cmd.tcode_tags["E2"], 1999)
+        self.assertEqual(cmd.tcode_tags["E2_duration"], 33)
+        self.assertEqual(cmd.tcode_tags["E3"], 2999)
+        self.assertEqual(cmd.tcode_tags["E3_duration"], 33)
+        self.assertEqual(cmd.tcode_tags["E4"], 3999)
+        self.assertEqual(cmd.tcode_tags["E4_duration"], 33)
+        wire = cmd.to_tcode()
+        self.assertNotIn("L0", wire)
+        self.assertNotIn("L1", wire)
+        self.assertIn("E10999I33", wire)
+        self.assertIn("E43999I33", wire)
+
+    def test_send_position_at_time_threephase_omits_electrode_tags(self):
+        class DummyEngine:
+            def __init__(self):
+                self.connected = True
+                self.sent = []
+
+            def send_immediate(self, cmd):
+                self.sent.append(cmd)
+
+        win = PMVGeneratorWindow()
+        win._multi_axis = MultiAxisResult(
+            axes={
+                "alpha": [FunscriptAction(0, 25), FunscriptAction(1000, 25)],
+                "beta": [FunscriptAction(0, 75), FunscriptAction(1000, 75)],
+                "e1": [FunscriptAction(0, 10), FunscriptAction(1000, 10)],
+                "e2": [FunscriptAction(0, 20), FunscriptAction(1000, 20)],
+            }
+        )
+        win._network_engine = DummyEngine()
+        combo = win.controls._preview_tcode_mode_combo
+        combo.setCurrentIndex(combo.findData("threephase"))
+        win.aux_panel.get_send_axes = lambda: {"alpha", "beta", "e1", "e2", "e3", "e4"}
+
+        win._send_position_at_time(500.0)
+
+        self.assertEqual(len(win._network_engine.sent), 1)
+        cmd = win._network_engine.sent[0]
+        self.assertTrue(cmd.include_linear_axes)
+        self.assertNotIn("E1", cmd.tcode_tags)
+        self.assertNotIn("E2", cmd.tcode_tags)
+        wire = cmd.to_tcode()
+        self.assertIn("L0", wire)
+        self.assertIn("L1", wire)
+        self.assertNotIn("E1", wire)
+        self.assertNotIn("E2", wire)
 
 
 if __name__ == "__main__":

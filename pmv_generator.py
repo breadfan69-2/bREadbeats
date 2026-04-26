@@ -2320,24 +2320,36 @@ class PMVGeneratorWindow(QMainWindow):
 
     def _send_position_at_time(self, time_ms: float) -> None:
         """Send interpolated alpha/beta position to device or main window canvas."""
-        alpha_pos = self._interpolate_axis_at("alpha", time_ms)
-        beta_pos = self._interpolate_axis_at("beta", time_ms)
-        if alpha_pos is None or beta_pos is None:
-            return
-
-        # Convert funscript 0-100 to tcode -1.0..1.0
-        alpha_tc = (alpha_pos / 50.0) - 1.0
-        beta_tc = (beta_pos / 50.0) - 1.0
-
         # Try sending via shared network engine (ReStim connected)
         ne = self._network_engine
         if ne is not None and getattr(ne, 'connected', False):
+            axis_cfg = self.controls.get_axis_config()
+            transport_mode = str(getattr(axis_cfg, "preview_tcode_mode", "threephase") or "threephase").strip().lower()
+            include_linear_axes = transport_mode != "fourphase"
+            alpha_tc = 0.0
+            beta_tc = 0.0
+
+            if include_linear_axes:
+                alpha_pos = self._interpolate_axis_at("alpha", time_ms)
+                beta_pos = self._interpolate_axis_at("beta", time_ms)
+                if alpha_pos is None or beta_pos is None:
+                    return
+                # Convert funscript 0-100 to tcode -1.0..1.0
+                alpha_tc = (alpha_pos / 50.0) - 1.0
+                beta_tc = (beta_pos / 50.0) - 1.0
+
             from network_engine import TCodeCommand
             vol_pos = self._interpolate_axis_at("volume", time_ms)
             vol = (vol_pos / 100.0) if vol_pos is not None else 1.0
             # TCode: swap alpha/beta to match restim's L0/L1 convention
             # (only the bREadbeats canvas display needs the un-swapped order)
-            cmd = TCodeCommand(alpha=beta_tc, beta=alpha_tc, duration_ms=33, volume=vol)
+            cmd = TCodeCommand(
+                alpha=beta_tc,
+                beta=alpha_tc,
+                duration_ms=33,
+                volume=vol,
+                include_linear_axes=include_linear_axes,
+            )
 
             # Aux axes enabled by send-toggle checkboxes
             send_axes = self.aux_panel.get_send_axes()
@@ -2346,6 +2358,12 @@ class PMVGeneratorWindow(QMainWindow):
                 "carrier_frequency": "C0",
                 "pulse_width": "P1",
                 "pulse_rise": "P3",
+            }
+            _ELECTRODE_TCODE_MAP = {
+                "e1": "E1",
+                "e2": "E2",
+                "e3": "E3",
+                "e4": "E4",
             }
             for axis_name, tag in _AUX_TCODE_MAP.items():
                 if axis_name not in send_axes:
@@ -2362,8 +2380,29 @@ class PMVGeneratorWindow(QMainWindow):
                     cmd.tcode_tags[tag] = tcode_val
                     cmd.tcode_tags[f"{tag}_duration"] = 33
 
+            if transport_mode == "fourphase":
+                for axis_name, tag in _ELECTRODE_TCODE_MAP.items():
+                    if axis_name not in send_axes:
+                        continue
+                    val = self._interpolate_axis_at(axis_name, time_ms)
+                    if val is None:
+                        continue
+                    tcode_val = int(val / 100.0 * 9999)
+                    tcode_val = max(0, min(9999, tcode_val))
+                    cmd.tcode_tags[tag] = tcode_val
+                    cmd.tcode_tags[f"{tag}_duration"] = 33
+
             ne.send_immediate(cmd)
         elif self._position_canvas is not None:
+            alpha_pos = self._interpolate_axis_at("alpha", time_ms)
+            beta_pos = self._interpolate_axis_at("beta", time_ms)
+            if alpha_pos is None or beta_pos is None:
+                return
+
+            # Convert funscript 0-100 to tcode -1.0..1.0
+            alpha_tc = (alpha_pos / 50.0) - 1.0
+            beta_tc = (beta_pos / 50.0) - 1.0
+
             # bREadbeats PositionCanvas: arg1=horizontal, arg2=vertical.
             # Restim-style alpha=vertical, beta=horizontal → swap for display.
             # Orbital replay already outputs device-convention → no swap.

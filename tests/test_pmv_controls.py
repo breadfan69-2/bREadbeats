@@ -45,6 +45,7 @@ class TestPmvControls(unittest.TestCase):
             "ml": {"enabled": True, "strength": 0.42, "cadence_mode": "fixed_2"},
             "axis": {
                 "speed_threshold_pct": 66.0,
+                "preview_tcode_mode": "fourphase",
                 "enabled_axes": ["main", "alpha", "beta", "e1"],
             },
             "automap": {"enabled": True, "target_y_position": 48.0, "optimization_mode": "cmean"},
@@ -61,6 +62,7 @@ class TestPmvControls(unittest.TestCase):
         self.assertEqual(actual["mapping"]["overflow_mode"], "bounce")
         self.assertEqual(actual["ml"]["cadence_mode"], "fixed_2")
         self.assertIn("alpha", actual["axis"]["enabled_axes"])
+        self.assertEqual(actual["axis"]["preview_tcode_mode"], "fourphase")
         self.assertTrue(actual["automap"]["enabled"])
         self.assertEqual(actual["output"]["format"], "csv")
 
