@@ -8,7 +8,7 @@ from unittest.mock import patch
 from PyQt6.QtWidgets import QApplication
 
 from funscript_converter_window import FunscriptConverterWindow
-from pmv_funscript_io import FunscriptAction, read_funscript
+from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
 
 
 def _make_actions(pairs: list[tuple[int, int]]) -> list[FunscriptAction]:
@@ -19,6 +19,46 @@ class TestFunscriptConverterWindow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._app = QApplication.instance() or QApplication([])
+
+    def test_load_file_accepts_multi_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main_path = root / "clip.funscript"
+            surge_path = root / "clip.surge.funscript"
+
+            write_funscript(
+                main_path,
+                _make_actions([(0, 20), (500, 70), (1000, 30)]),
+                FunscriptMetadata(title="clip", duration=1000),
+            )
+            write_funscript(
+                surge_path,
+                _make_actions([(0, 60), (500, 40), (1000, 80)]),
+                FunscriptMetadata(title="clip.surge", duration=1000),
+            )
+
+            win = FunscriptConverterWindow()
+
+            with patch(
+                "funscript_converter_window.QFileDialog.getOpenFileNames",
+                return_value=([str(main_path), str(surge_path)], "Funscript Files (*.funscript)"),
+            ):
+                win._on_load_file()
+
+            self.assertEqual(win._base_stem, "clip")
+            self.assertEqual(win._source_folder, root)
+            self.assertIn("main", win._loaded_axes)
+            self.assertIn("surge", win._loaded_axes)
+            self.assertEqual(
+                [(a.at, a.pos) for a in win._loaded_axes["main"]],
+                [(0, 20), (500, 70), (1000, 30)],
+            )
+            self.assertEqual(
+                [(a.at, a.pos) for a in win._loaded_axes["surge"]],
+                [(0, 60), (500, 40), (1000, 80)],
+            )
+
+            win.close()
 
     def test_export_flushes_pending_frequency_reconvert(self):
         with tempfile.TemporaryDirectory() as tmp:

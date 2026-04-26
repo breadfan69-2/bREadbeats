@@ -279,12 +279,18 @@ class FunscriptConverterWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_load_file(self) -> None:
-        path_str, _ = QFileDialog.getOpenFileName(
+        path_list, _ = QFileDialog.getOpenFileNames(
             self, "Open Funscript", "", "Funscript Files (*.funscript);;All Files (*)"
         )
-        if not path_str:
+        selected_paths = [Path(path_str) for path_str in path_list if path_str]
+        if not selected_paths:
             return
-        script_path = Path(path_str)
+
+        if len(selected_paths) > 1:
+            self._load_selected_files(selected_paths)
+            return
+
+        script_path = selected_paths[0]
         self._source_folder = script_path.parent
 
         base_stem, suffix = strip_axis_suffix(script_path.stem)
@@ -305,6 +311,34 @@ class FunscriptConverterWindow(QMainWindow):
         siblings = discover_sibling_axes(script_path, CONVERTER_INPUT_AXES | {"main"})
         self._loaded_axes.update(siblings)
 
+        self._update_axes_status()
+        self._run_conversion()
+
+    def _load_selected_files(self, script_paths: list[Path]) -> None:
+        loaded_axes: dict[str, list[FunscriptAction]] = {}
+        base_script: Path | None = None
+
+        for script_path in script_paths:
+            try:
+                actions, _ = read_funscript(script_path)
+            except Exception as exc:
+                QMessageBox.warning(self, "Load Error", f"{script_path.name}: {exc}")
+                return
+
+            base_stem, suffix = strip_axis_suffix(script_path.stem)
+            axis_name = suffix if suffix else "main"
+            loaded_axes[axis_name] = actions
+
+            if base_script is None or axis_name == "main":
+                base_script = script_path
+
+        if not loaded_axes:
+            return
+
+        assert base_script is not None
+        self._source_folder = base_script.parent
+        self._base_stem, _ = strip_axis_suffix(base_script.stem)
+        self._loaded_axes = loaded_axes
         self._update_axes_status()
         self._run_conversion()
 
