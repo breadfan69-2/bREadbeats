@@ -187,6 +187,30 @@ class TestTetrahedralProject:
             atol=1e-10,
         )
 
+    def test_edge_direction_maps_to_ab_point(self):
+        point = (TETRA_VERTICES[0] + TETRA_VERTICES[1])
+        point = point / np.linalg.norm(point)
+        result = tetrahedral_project(
+            np.array([point[0]]), np.array([point[1]]), np.array([point[2]])
+        )
+        np.testing.assert_allclose(result[0], [1.0, 1.0, 0.0, 0.0], atol=1e-10)
+
+    def test_face_direction_maps_to_abc_point(self):
+        point = (TETRA_VERTICES[0] + TETRA_VERTICES[1] + TETRA_VERTICES[2])
+        point = point / np.linalg.norm(point)
+        result = tetrahedral_project(
+            np.array([point[0]]), np.array([point[1]]), np.array([point[2]])
+        )
+        np.testing.assert_allclose(result[0], [1.0, 1.0, 1.0, 0.0], atol=1e-10)
+
+    def test_half_radius_moves_halfway_to_edge_landmark(self):
+        point = (TETRA_VERTICES[0] + TETRA_VERTICES[1])
+        point = 0.5 * point / np.linalg.norm(point)
+        result = tetrahedral_project(
+            np.array([point[0]]), np.array([point[1]]), np.array([point[2]])
+        )
+        np.testing.assert_allclose(result[0], [1.0, 1.0, 0.5, 0.5], atol=1e-10)
+
     def test_vertex_dominance(self):
         # At vertex v0 direction, channel 0 should dominate
         result = tetrahedral_project(

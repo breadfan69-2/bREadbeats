@@ -168,22 +168,47 @@ def tetrahedral_project(
     beta: np.ndarray,
     gamma: np.ndarray,
 ) -> np.ndarray:
-    """Project (α,β,γ) points onto tetrahedral basis vectors.
+    """Map 3D motion into direct fourphase coordinates.
 
-    Returns array of shape (N, 4) with values in [0, 1].
+    The target space is FOC-Stim's direct e1-e4 position manifold, not the
+    legacy abc->e1234 helper space. Boundary directions should therefore hit
+    direct landmarks like A, AB, and ABC exactly:
+
+    * center -> [1, 1, 1, 1]
+    * tetra vertex -> [1, 1/3, 1/3, 1/3]
+    * edge direction -> [1, 1, 0, 0]
+    * face direction -> [1, 1, 1, 0]
+
+    We get that by:
+      1. normalizing each 3D point to its direction on the unit sphere,
+      2. projecting onto the tetrahedral basis,
+      3. scaling each row by its own min/max span so boundary edge/face
+         directions reach the expected direct fourphase landmarks,
+      4. constraining onto the valid e1-e4 manifold,
+      5. linearly interpolating from the direct center [1,1,1,1] by radius.
     """
-    points = np.column_stack([alpha, beta, gamma])           # (N, 3)
-    raw = points @ TETRA_VERTICES.T                          # (N, 4)
+    points = np.column_stack([alpha, beta, gamma])
+    radius = np.linalg.norm(points, axis=1, keepdims=True)
+    direction = np.divide(
+        points,
+        np.maximum(radius, 1e-12),
+        out=np.zeros_like(points),
+        where=radius > 1e-12,
+    )
+    raw = direction @ TETRA_VERTICES.T
 
-    # Match Restim's abc_to_e1234 convention:
-    #   1. Shift so the least-active electrode is at 0.
-    #   2. Divide by 4/3 — the vertex-to-opposite-face dot-product range
-    #      for a regular tetrahedron inscribed in the unit sphere.
-    # This gives every electrode its full [0, 1] range for vertex-aligned
-    # motion and preserves amplitude proportionally for off-axis motion.
     min_vals = raw.min(axis=1, keepdims=True)
-    projected = np.clip((raw - min_vals) / (4.0 / 3.0), 0.0, 1.0)
-    return constrain_fourphase_coordinates(projected)
+    max_vals = raw.max(axis=1, keepdims=True)
+    span = max_vals - min_vals
+    scaled = np.divide(
+        raw - min_vals,
+        span,
+        out=np.zeros_like(raw),
+        where=span > 1e-12,
+    )
+    boundary = constrain_fourphase_coordinates(scaled)
+    clamped_radius = np.clip(radius, 0.0, 1.0)
+    return 1.0 + clamped_radius * (boundary - 1.0)
 
 
 def constrain_fourphase_coordinates(projected: np.ndarray) -> np.ndarray:
