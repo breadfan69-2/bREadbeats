@@ -123,7 +123,7 @@ class TestFunscriptConverterWindow(unittest.TestCase):
             carrier_actions, _ = read_funscript(export_dir / "sample.carrier_frequency.funscript")
             frequency_actions, _ = read_funscript(export_dir / "sample.frequency.funscript")
 
-            self.assertEqual([a.pos for a in pulse_actions], [45, 45, 45])
+            self.assertEqual([a.pos for a in pulse_actions], [55, 55, 55])
             self.assertEqual([a.pos for a in carrier_actions], [50, 50, 50])
             self.assertEqual(
                 [a.pos for a in frequency_actions],
@@ -131,3 +131,29 @@ class TestFunscriptConverterWindow(unittest.TestCase):
             )
 
             win.close()
+
+    def test_freq_config_uses_explicit_center_and_bounds(self):
+        win = FunscriptConverterWindow()
+        win._freq_enabled.setChecked(True)
+        win._freq_scale.setValue(1.5)
+        win._pulse_center.setValue(58.0)
+        win._pulse_min.setValue(22.0)
+        win._pulse_max.setValue(76.0)
+        win._carrier_scale.setValue(1.2)
+        win._carrier_center.setValue(51.0)
+        win._carrier_min.setValue(41.0)
+        win._carrier_max.setValue(59.0)
+
+        cfg = win._get_freq_config()
+
+        self.assertTrue(cfg.enabled)
+        self.assertAlmostEqual(cfg.freq_scale, 1.5)
+        self.assertAlmostEqual(cfg.pulse_center, 58.0)
+        self.assertAlmostEqual(cfg.pulse_min, 22.0)
+        self.assertAlmostEqual(cfg.pulse_max, 76.0)
+        self.assertAlmostEqual(cfg.carrier_scale, 1.2)
+        self.assertAlmostEqual(cfg.carrier_center, 51.0)
+        self.assertAlmostEqual(cfg.carrier_min, 41.0)
+        self.assertAlmostEqual(cfg.carrier_max, 59.0)
+
+        win.close()

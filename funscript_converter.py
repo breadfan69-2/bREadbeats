@@ -11,6 +11,7 @@ from math import cos, sin, sqrt
 import numpy as np
 
 from pmv_funscript_io import FunscriptAction
+from pmv_axis_converter import apply_centered_output_limits
 
 # ---------------------------------------------------------------------------
 # Tetrahedral basis vectors (regular tetrahedron inscribed in unit sphere)
@@ -60,8 +61,12 @@ class FreqConfig:
     enabled: bool = False
     freq_scale: float = 1.0
     carrier_scale: float = 1.0
-    pulse_center: float = 45.0    # center position for pulse_frequency (0-100)
+    pulse_center: float = 55.0    # center position for pulse_frequency (0-100)
+    pulse_min: float = 20.0
+    pulse_max: float = 80.0
     carrier_center: float = 50.0  # center position for carrier_frequency (0-100)
+    carrier_min: float = 40.0
+    carrier_max: float = 60.0
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +182,41 @@ def tetrahedral_project(
     # This gives every electrode its full [0, 1] range for vertex-aligned
     # motion and preserves amplitude proportionally for off-axis motion.
     min_vals = raw.min(axis=1, keepdims=True)
-    return np.clip((raw - min_vals) / (4.0 / 3.0), 0.0, 1.0)
+    projected = np.clip((raw - min_vals) / (4.0 / 3.0), 0.0, 1.0)
+    return constrain_fourphase_coordinates(projected)
+
+
+def constrain_fourphase_coordinates(projected: np.ndarray) -> np.ndarray:
+    """Project 4-phase coordinates onto the valid FOC-Stim position manifold.
+
+    FOC-Stim's direct fourphase path expects coordinates where at least one
+    component is exactly 1 and the largest component does not exceed the sum
+    of the other three. This matches Restim's constrain_4p_amplitudes /
+    FOC-Stim's fourphase_constrain_coordinates behavior.
+    """
+    a = np.clip(projected[:, 0], 0.0, 1.0)
+    b = np.clip(projected[:, 1], 0.0, 1.0)
+    c = np.clip(projected[:, 2], 0.0, 1.0)
+    d = np.clip(projected[:, 3], 0.0, 1.0)
+
+    s_a = np.minimum(-a + b + c + d, 0.0) / -3.0
+    s_b = np.minimum(a - b + c + d, 0.0) / -3.0
+    s_c = np.minimum(a + b - c + d, 0.0) / -3.0
+    s_d = np.minimum(a + b + c - d, 0.0) / -3.0
+
+    a = a + s_b + s_c + s_d
+    b = b + s_a + s_c + s_d
+    c = c + s_a + s_b + s_d
+    d = d + s_a + s_b + s_c
+
+    constrained = np.column_stack([a, b, c, d])
+    max_vals = constrained.max(axis=1)
+    needs_shift = max_vals < 1.0
+    constrained[needs_shift] += (1.0 - max_vals[needs_shift])[:, None]
+
+    max_indices = np.argmax(constrained, axis=1)
+    constrained[np.arange(len(constrained)), max_indices] = 1.0
+    return constrained
 
 
 # ---------------------------------------------------------------------------
@@ -215,19 +254,26 @@ def generate_freq_axes(
         return {}
 
     surge = _norm(unified.get("surge", np.array([50.0])))
+    base_signal = np.clip(0.5 - (0.5 * surge), 0.0, 1.0)
     result: dict[str, np.ndarray] = {}
 
     if cfg.freq_scale > 0:
-        # Signed bipolar mapping: negative surge pushes above center,
-        # positive surge pulls below center.
-        pf = cfg.pulse_center - surge * cfg.freq_scale * cfg.pulse_center
-        result["pulse_frequency"] = np.clip(pf, 0.0, 100.0)
+        pf_signal = np.clip(0.5 + ((base_signal - 0.5) * cfg.freq_scale), 0.0, 1.0)
+        result["pulse_frequency"] = apply_centered_output_limits(
+            pf_signal,
+            center=cfg.pulse_center,
+            lower=cfg.pulse_min,
+            upper=cfg.pulse_max,
+        ) * 100.0
 
     if cfg.carrier_scale > 0:
-        # Signed bipolar mapping: negative surge pushes above center,
-        # positive surge pulls below center.
-        cf = cfg.carrier_center - surge * cfg.carrier_scale * cfg.carrier_center
-        result["carrier_frequency"] = np.clip(cf, 0.0, 100.0)
+        cf_signal = np.clip(0.5 + ((base_signal - 0.5) * cfg.carrier_scale), 0.0, 1.0)
+        result["carrier_frequency"] = apply_centered_output_limits(
+            cf_signal,
+            center=cfg.carrier_center,
+            lower=cfg.carrier_min,
+            upper=cfg.carrier_max,
+        ) * 100.0
         # 'frequency' is identical to carrier_frequency
         result["frequency"] = result["carrier_frequency"].copy()
 

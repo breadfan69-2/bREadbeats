@@ -207,6 +207,13 @@ class PMVControlsPanel(QWidget):
         except Exception:
             return int(fallback)
 
+    @staticmethod
+    def _normalized_center_bounds(center: float, lower: float, upper: float) -> tuple[float, float, float]:
+        lo = float(min(lower, upper))
+        hi = float(max(lower, upper))
+        mid = float(min(max(center, lo), hi))
+        return mid, lo, hi
+
     def _build_analysis_section(self) -> None:
         defaults = AnalysisConfig()
         group = CollapsibleGroupBox("Audio Analysis", collapsed=True)
@@ -658,11 +665,23 @@ class PMVControlsPanel(QWidget):
         self._pulse_freq_band_combo.setCurrentText(defaults.pulse_freq_band)
         self._pulse_freq_weight_slider = SliderWithLabel("Pulse Freq Weight", 0.0, 1.0, defaults.pulse_freq_weight, decimals=2, step=0.01)
 
-        self._pulse_freq_range_slider = RangeSliderWithLabel(
-            "PFreq Time Ramp", 0.0, 100.0,
-            defaults.pulse_freq_range_start, defaults.pulse_freq_range_end,
-            decimals=0,
-        )
+        self._pulse_freq_center_spin = QDoubleSpinBox()
+        self._pulse_freq_center_spin.setRange(0.0, 100.0)
+        self._pulse_freq_center_spin.setDecimals(1)
+        self._pulse_freq_center_spin.setSingleStep(1.0)
+        self._pulse_freq_center_spin.setValue(defaults.pulse_freq_center)
+
+        self._pulse_freq_min_spin = QDoubleSpinBox()
+        self._pulse_freq_min_spin.setRange(0.0, 100.0)
+        self._pulse_freq_min_spin.setDecimals(1)
+        self._pulse_freq_min_spin.setSingleStep(1.0)
+        self._pulse_freq_min_spin.setValue(defaults.pulse_freq_min)
+
+        self._pulse_freq_max_spin = QDoubleSpinBox()
+        self._pulse_freq_max_spin.setRange(0.0, 100.0)
+        self._pulse_freq_max_spin.setDecimals(1)
+        self._pulse_freq_max_spin.setSingleStep(1.0)
+        self._pulse_freq_max_spin.setValue(defaults.pulse_freq_max)
 
         self._carrier_freq_ratio_slider = SliderWithLabel("Carrier Frequency Ratio", 1.0, 10.0, defaults.carrier_frequency_ratio, decimals=1, step=0.1)
         self._carrier_freq_mode_combo = QComboBox()
@@ -680,6 +699,24 @@ class PMVControlsPanel(QWidget):
         self._carrier_freq_band_combo.addItems(_BAND_NAMES)
         self._carrier_freq_band_combo.setCurrentText(defaults.carrier_freq_band)
         self._carrier_freq_weight_slider = SliderWithLabel("Carrier Freq Weight", 0.0, 1.0, defaults.carrier_freq_weight, decimals=2, step=0.01)
+
+        self._carrier_freq_center_spin = QDoubleSpinBox()
+        self._carrier_freq_center_spin.setRange(0.0, 100.0)
+        self._carrier_freq_center_spin.setDecimals(1)
+        self._carrier_freq_center_spin.setSingleStep(1.0)
+        self._carrier_freq_center_spin.setValue(defaults.carrier_freq_center)
+
+        self._carrier_freq_min_spin = QDoubleSpinBox()
+        self._carrier_freq_min_spin.setRange(0.0, 100.0)
+        self._carrier_freq_min_spin.setDecimals(1)
+        self._carrier_freq_min_spin.setSingleStep(1.0)
+        self._carrier_freq_min_spin.setValue(defaults.carrier_freq_min)
+
+        self._carrier_freq_max_spin = QDoubleSpinBox()
+        self._carrier_freq_max_spin.setRange(0.0, 100.0)
+        self._carrier_freq_max_spin.setDecimals(1)
+        self._carrier_freq_max_spin.setSingleStep(1.0)
+        self._carrier_freq_max_spin.setValue(defaults.carrier_freq_max)
 
         # Visibility toggling: band combo visible only in BandEnergy mode
         def _update_pulse_freq_visibility(idx: int) -> None:
@@ -812,11 +849,16 @@ class PMVControlsPanel(QWidget):
             self.pulse_frequency_ratio_slider,
             self._labeled_widget("Pulse Freq Band", self._pulse_freq_band_combo),
             self._pulse_freq_weight_slider,
-            self._pulse_freq_range_slider,
+            self._labeled_widget("Pulse Freq Center", self._pulse_freq_center_spin),
+            self._labeled_widget("Pulse Freq Min", self._pulse_freq_min_spin),
+            self._labeled_widget("Pulse Freq Max", self._pulse_freq_max_spin),
             self._labeled_widget("Carrier Freq Mode", self._carrier_freq_mode_combo),
             self._carrier_freq_ratio_slider,
             self._labeled_widget("Carrier Freq Band", self._carrier_freq_band_combo),
             self._carrier_freq_weight_slider,
+            self._labeled_widget("Carrier Freq Center", self._carrier_freq_center_spin),
+            self._labeled_widget("Carrier Freq Min", self._carrier_freq_min_spin),
+            self._labeled_widget("Carrier Freq Max", self._carrier_freq_max_spin),
             self.volume_ratio_slider,
             self._labeled_widget("Ramp %/Hour", self.ramp_pct_per_hour_spin),
             self.pulse_rise_ratio_slider,
@@ -865,11 +907,16 @@ class PMVControlsPanel(QWidget):
             self._pulse_freq_mode_combo,
             self._pulse_freq_band_combo,
             self._pulse_freq_weight_slider,
-            self._pulse_freq_range_slider,
+            self._pulse_freq_center_spin,
+            self._pulse_freq_min_spin,
+            self._pulse_freq_max_spin,
             self._carrier_freq_ratio_slider,
             self._carrier_freq_mode_combo,
             self._carrier_freq_band_combo,
             self._carrier_freq_weight_slider,
+            self._carrier_freq_center_spin,
+            self._carrier_freq_min_spin,
+            self._carrier_freq_max_spin,
             self.volume_ratio_slider,
             self.ramp_pct_per_hour_spin,
             self.pulse_rise_ratio_slider,
@@ -969,6 +1016,17 @@ class PMVControlsPanel(QWidget):
         if not enabled_axes:
             enabled_axes = {"main"}
 
+        pulse_center, pulse_min, pulse_max = self._normalized_center_bounds(
+            float(self._pulse_freq_center_spin.value()),
+            float(self._pulse_freq_min_spin.value()),
+            float(self._pulse_freq_max_spin.value()),
+        )
+        carrier_center, carrier_min, carrier_max = self._normalized_center_bounds(
+            float(self._carrier_freq_center_spin.value()),
+            float(self._carrier_freq_min_spin.value()),
+            float(self._carrier_freq_max_spin.value()),
+        )
+
         return AxisConfig(
             direction_flip_probability=float(self.axis_direction_flip_slider.value()),
             min_distance=float(self.axis_min_distance_slider.value()),
@@ -994,12 +1052,16 @@ class PMVControlsPanel(QWidget):
             pulse_freq_mode=int(self._pulse_freq_mode_combo.currentIndex()),
             pulse_freq_band=str(self._pulse_freq_band_combo.currentText()),
             pulse_freq_weight=float(self._pulse_freq_weight_slider.value()),
-            pulse_freq_range_start=float(self._pulse_freq_range_slider.low()),
-            pulse_freq_range_end=float(self._pulse_freq_range_slider.high()),
+            pulse_freq_center=pulse_center,
+            pulse_freq_min=pulse_min,
+            pulse_freq_max=pulse_max,
             carrier_frequency_ratio=float(self._carrier_freq_ratio_slider.value()),
             carrier_freq_mode=int(self._carrier_freq_mode_combo.currentIndex()),
             carrier_freq_band=str(self._carrier_freq_band_combo.currentText()),
             carrier_freq_weight=float(self._carrier_freq_weight_slider.value()),
+            carrier_freq_center=carrier_center,
+            carrier_freq_min=carrier_min,
+            carrier_freq_max=carrier_max,
             volume_ramp_ratio=float(self.volume_ratio_slider.value()),
             ramp_percent_per_hour=float(self.ramp_pct_per_hour_spin.value()),
             pulse_rise_ratio=float(self.pulse_rise_ratio_slider.value()),
@@ -1192,14 +1254,28 @@ class PMVControlsPanel(QWidget):
             self._pulse_freq_mode_combo.setCurrentIndex(self._as_int(axis.get("pulse_freq_mode"), self._pulse_freq_mode_combo.currentIndex()))
             self._set_combo_text(self._pulse_freq_band_combo, str(axis.get("pulse_freq_band", self._pulse_freq_band_combo.currentText())))
             self._pulse_freq_weight_slider.setValue(self._as_float(axis.get("pulse_freq_weight"), self._pulse_freq_weight_slider.value()))
-            pf_start = self._as_float(axis.get("pulse_freq_range_start"), self._pulse_freq_range_slider.low())
-            pf_end = self._as_float(axis.get("pulse_freq_range_end"), self._pulse_freq_range_slider.high())
-            self._pulse_freq_range_slider.setLow(pf_start)
-            self._pulse_freq_range_slider.setHigh(pf_end)
+            pf_min = self._as_float(axis.get("pulse_freq_min"), self._pulse_freq_min_spin.value())
+            pf_max = self._as_float(axis.get("pulse_freq_max"), self._pulse_freq_max_spin.value())
+            pf_center = self._as_float(axis.get("pulse_freq_center"), self._pulse_freq_center_spin.value())
+            pf_center, pf_min, pf_max = self._normalized_center_bounds(pf_center, pf_min, pf_max)
+            self._pulse_freq_center_spin.setValue(pf_center)
+            self._pulse_freq_min_spin.setValue(pf_min)
+            self._pulse_freq_max_spin.setValue(pf_max)
             self._carrier_freq_ratio_slider.setValue(self._as_float(axis.get("carrier_frequency_ratio"), self._carrier_freq_ratio_slider.value()))
             self._carrier_freq_mode_combo.setCurrentIndex(self._as_int(axis.get("carrier_freq_mode"), self._carrier_freq_mode_combo.currentIndex()))
             self._set_combo_text(self._carrier_freq_band_combo, str(axis.get("carrier_freq_band", self._carrier_freq_band_combo.currentText())))
             self._carrier_freq_weight_slider.setValue(self._as_float(axis.get("carrier_freq_weight"), self._carrier_freq_weight_slider.value()))
+            carrier_min = self._as_float(axis.get("carrier_freq_min"), self._carrier_freq_min_spin.value())
+            carrier_max = self._as_float(axis.get("carrier_freq_max"), self._carrier_freq_max_spin.value())
+            carrier_center = self._as_float(axis.get("carrier_freq_center"), self._carrier_freq_center_spin.value())
+            carrier_center, carrier_min, carrier_max = self._normalized_center_bounds(
+                carrier_center,
+                carrier_min,
+                carrier_max,
+            )
+            self._carrier_freq_center_spin.setValue(carrier_center)
+            self._carrier_freq_min_spin.setValue(carrier_min)
+            self._carrier_freq_max_spin.setValue(carrier_max)
             self.volume_ratio_slider.setValue(self._as_float(axis.get("volume_ramp_ratio"), self.volume_ratio_slider.value()))
             self.ramp_pct_per_hour_spin.setValue(self._as_float(axis.get("ramp_percent_per_hour"), self.ramp_pct_per_hour_spin.value()))
             self.pulse_rise_ratio_slider.setValue(self._as_float(axis.get("pulse_rise_ratio"), self.pulse_rise_ratio_slider.value()))

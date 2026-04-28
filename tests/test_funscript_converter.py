@@ -10,6 +10,7 @@ from funscript_converter import (
     FreqConfig,
     MixWeights,
     apply_permutation,
+    constrain_fourphase_coordinates,
     convert,
     generate_freq_axes,
     mix_to_3d,
@@ -153,9 +154,7 @@ class TestTetrahedralProject:
         result = tetrahedral_project(
             np.array([0.0]), np.array([0.0]), np.array([0.0])
         )
-        # At the origin the min-shift step subtracts 0, so all channels are 0
-        # (no stimulation direction → all electrodes off).
-        np.testing.assert_allclose(result[0], [0.0, 0.0, 0.0, 0.0], atol=1e-10)
+        np.testing.assert_allclose(result[0], [1.0, 1.0, 1.0, 1.0], atol=1e-10)
 
     def test_output_range(self):
         rng = np.random.default_rng(42)
@@ -166,15 +165,27 @@ class TestTetrahedralProject:
         assert np.all(result >= -1e-10)
         assert np.all(result <= 1.0 + 1e-10)
 
-    def test_projection_preserves_magnitude(self):
-        # For pure alpha input, E1 tracks alpha amplitude exactly while
-        # E2-E4 sit at 0 (min-shift removes the -1/3 cross-product offset).
-        alpha = np.array([0.1, 0.5, 1.0])
-        beta = np.zeros(3)
-        gamma = np.zeros(3)
-        result = tetrahedral_project(alpha, beta, gamma)
-        np.testing.assert_allclose(result[:, 0], [0.1, 0.5, 1.0], atol=1e-10)
-        np.testing.assert_allclose(result[:, 1:], 0.0, atol=1e-10)
+    def test_projection_satisfies_fourphase_constraints(self):
+        rng = np.random.default_rng(7)
+        points = rng.normal(size=(1000, 3))
+        points /= np.maximum(np.linalg.norm(points, axis=1, keepdims=True), 1.0)
+        result = tetrahedral_project(points[:, 0], points[:, 1], points[:, 2])
+
+        np.testing.assert_allclose(result.max(axis=1), 1.0, atol=1e-10)
+        assert np.all(result[:, 0] <= result[:, 1] + result[:, 2] + result[:, 3] + 1e-10)
+        assert np.all(result[:, 1] <= result[:, 0] + result[:, 2] + result[:, 3] + 1e-10)
+        assert np.all(result[:, 2] <= result[:, 0] + result[:, 1] + result[:, 3] + 1e-10)
+        assert np.all(result[:, 3] <= result[:, 0] + result[:, 1] + result[:, 2] + 1e-10)
+
+    def test_vertex_matches_focstim_a_point(self):
+        result = tetrahedral_project(
+            np.array([1.0]), np.array([0.0]), np.array([0.0])
+        )
+        np.testing.assert_allclose(
+            result[0],
+            [1.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0],
+            atol=1e-10,
+        )
 
     def test_vertex_dominance(self):
         # At vertex v0 direction, channel 0 should dominate
@@ -193,6 +204,22 @@ class TestTetrahedralProject:
         # Channel 0 (aligned with alpha) should increase
         assert result[-1, 0] > result[0, 0]
         assert result[-1, 1] < result[0, 1]
+
+
+class TestConstrainFourphaseCoordinates:
+    def test_center_is_all_ones(self):
+        projected = np.array([[0.0, 0.0, 0.0, 0.0]])
+        result = constrain_fourphase_coordinates(projected)
+        np.testing.assert_allclose(result[0], [1.0, 1.0, 1.0, 1.0], atol=1e-10)
+
+    def test_vertex_is_repaired_to_focstim_a(self):
+        projected = np.array([[1.0, 0.0, 0.0, 0.0]])
+        result = constrain_fourphase_coordinates(projected)
+        np.testing.assert_allclose(
+            result[0],
+            [1.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0],
+            atol=1e-10,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -234,13 +261,31 @@ class TestFreqAxes:
         assert "carrier_frequency" in result
         assert "frequency" in result
         # At surge=50 (neutral), outputs should be at their center values.
-        assert abs(result["pulse_frequency"][1] - 45.0) < 0.1
+        assert abs(result["pulse_frequency"][1] - 55.0) < 0.1
         assert abs(result["carrier_frequency"][1] - 50.0) < 0.1
         # Negative surge pushes above center; positive surge pulls below center.
-        np.testing.assert_allclose(result["pulse_frequency"], [90.0, 45.0, 0.0])
-        np.testing.assert_allclose(result["carrier_frequency"], [100.0, 50.0, 0.0])
+        np.testing.assert_allclose(result["pulse_frequency"], [80.0, 55.0, 20.0])
+        np.testing.assert_allclose(result["carrier_frequency"], [60.0, 50.0, 40.0])
         # frequency is identical to carrier_frequency
         np.testing.assert_array_equal(result["frequency"], result["carrier_frequency"])
+
+    def test_enabled_custom_bounds(self):
+        unified = {"surge": np.array([0.0, 50.0, 100.0])}
+        result = generate_freq_axes(
+            unified,
+            FreqConfig(
+                enabled=True,
+                pulse_center=60.0,
+                pulse_min=30.0,
+                pulse_max=70.0,
+                carrier_center=52.0,
+                carrier_min=45.0,
+                carrier_max=58.0,
+            ),
+        )
+
+        np.testing.assert_allclose(result["pulse_frequency"], [70.0, 60.0, 30.0])
+        np.testing.assert_allclose(result["carrier_frequency"], [58.0, 52.0, 45.0])
 
 
 # ---------------------------------------------------------------------------

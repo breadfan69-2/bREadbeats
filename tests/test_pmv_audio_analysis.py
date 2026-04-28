@@ -27,7 +27,12 @@ class TestPmvAudioAnalysis(unittest.TestCase):
         self.assertAlmostEqual(float(np.percentile(normed, 95)), 1.0, places=1)
 
     def test_apply_frequency_filters(self):
-        config = AnalysisConfig(lowpass_enabled=True, lowpass_hz=1000.0)
+        config = AnalysisConfig(
+            lowpass_enabled=True,
+            lowpass_hz=1000.0,
+            freq_min_hz=0.0,
+            freq_max_hz=20_000.0,
+        )
         spectrum = np.ones(8, dtype=np.float32)
         freqs = np.array([0, 250, 500, 750, 1000, 1250, 1500, 1750], dtype=np.float32)
         filtered = apply_frequency_filters(spectrum, freqs, config)

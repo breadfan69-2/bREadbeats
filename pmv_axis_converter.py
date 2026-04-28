@@ -39,10 +39,16 @@ class AxisConfig:
     pulse_freq_mode: int = 0  # 0=Ratio 1=Hz 2=Speed 3=BandEnergy 4=Hybrid 5=MotionEnvelope
     pulse_freq_band: str = "sub_bass"
     pulse_freq_weight: float = 1.0
+    pulse_freq_center: float = 55.0
+    pulse_freq_min: float = 20.0
+    pulse_freq_max: float = 80.0
     carrier_frequency_ratio: float = 3.0
     carrier_freq_mode: int = 1  # 0=Ratio 1=Hz 2=Speed 3=BandEnergy 4=Hybrid 5=MotionEnvelope
     carrier_freq_band: str = "mid"
     carrier_freq_weight: float = 1.0
+    carrier_freq_center: float = 50.0
+    carrier_freq_min: float = 40.0
+    carrier_freq_max: float = 60.0
     volume_ramp_ratio: float = 20.0
     pulse_rise_ratio: float = 2.0
     pulse_width_ratio: float = 3.0
@@ -51,8 +57,6 @@ class AxisConfig:
     ramp_percent_per_hour: float = 15.0
     speed_window_sec: float = 5.0
     points_per_second: int = 25
-    pulse_freq_range_start: float = 30.0
-    pulse_freq_range_end: float = 70.0
     smooth_frequency_sec: float = 2.0
     smooth_pulse_frequency_sec: float = 3.0
     smooth_carrier_frequency_sec: float = 3.0
@@ -366,6 +370,35 @@ def _detect_rest_and_ramp(
     return np.clip(result, 0.0, 1.0)
 
 
+def apply_centered_output_limits(
+    signal: np.ndarray,
+    *,
+    center: float,
+    lower: float,
+    upper: float,
+) -> np.ndarray:
+    """Re-center a normalized signal onto explicit asymmetric output bounds."""
+    values = np.clip(np.asarray(signal, dtype=np.float64), 0.0, 1.0)
+    if len(values) == 0:
+        return values
+
+    lower_norm = float(np.clip(lower / 100.0, 0.0, 1.0))
+    upper_norm = float(np.clip(upper / 100.0, 0.0, 1.0))
+    if upper_norm <= lower_norm:
+        return np.full_like(values, lower_norm)
+
+    center_norm = float(np.clip(center / 100.0, lower_norm, upper_norm))
+    negative_scale = (center_norm - lower_norm) / 0.5
+    positive_scale = (upper_norm - center_norm) / 0.5
+
+    deviation = values - 0.5
+    scaled = np.empty_like(values)
+    negative_mask = deviation < 0.0
+    scaled[negative_mask] = center_norm + (deviation[negative_mask] * negative_scale)
+    scaled[~negative_mask] = center_norm + (deviation[~negative_mask] * positive_scale)
+    return np.clip(scaled, lower_norm, upper_norm)
+
+
 def _generate_aux_axes(
     main_actions: list[FunscriptAction],
     speed_norm: np.ndarray,
@@ -449,18 +482,6 @@ def _generate_aux_axes(
         config.pulse_freq_band, config.pulse_freq_weight,
     )
 
-    # Apply time-based ramp to pulse_frequency: rescale so the average
-    # trends from pulse_freq_range_start → pulse_freq_range_end (pos units)
-    # over the duration.  The mode_dispatch 0-1 signal modulates within
-    # a time-varying window centred on the ramp.
-    pf_lo = config.pulse_freq_range_start / 100.0
-    pf_hi = config.pulse_freq_range_end / 100.0
-    progress_t = np.clip((t - t[0]) / max(1.0, t[-1] - t[0]), 0.0, 1.0)
-    pf_centre = pf_lo + (pf_hi - pf_lo) * progress_t
-    # Scale the 0-1 reactive signal as deviation around the centre
-    pf_half_range = np.minimum(pf_centre, 1.0 - pf_centre)
-    pulse_freq = pf_centre + (pulse_freq - 0.5) * 2.0 * pf_half_range
-
     # --- carrier_frequency: mode-selectable (new axis) ---
     carrier_freq = _mode_dispatch(
         config.carrier_freq_mode, config.carrier_frequency_ratio,
@@ -513,6 +534,18 @@ def _generate_aux_axes(
     volume = _smooth(volume, config.smooth_volume_sec)
     pulse_rise = _smooth(pulse_rise, config.smooth_pulse_rise_sec)
     pulse_width = _smooth(pulse_width, config.smooth_pulse_width_sec)
+    pulse_freq = apply_centered_output_limits(
+        pulse_freq,
+        center=config.pulse_freq_center,
+        lower=config.pulse_freq_min,
+        upper=config.pulse_freq_max,
+    )
+    carrier_freq = apply_centered_output_limits(
+        carrier_freq,
+        center=config.carrier_freq_center,
+        lower=config.carrier_freq_min,
+        upper=config.carrier_freq_max,
+    )
     # Re-enforce constraint after smoothing
     pulse_rise = np.minimum(pulse_rise, pulse_width)
 
@@ -595,5 +628,6 @@ __all__ = [
     "AxisConfig",
     "MultiAxisResult",
     "PRESET_CURVES",
+    "apply_centered_output_limits",
     "convert_to_2d",
 ]

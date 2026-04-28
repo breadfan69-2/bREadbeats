@@ -46,6 +46,12 @@ class TestPmvControls(unittest.TestCase):
             "axis": {
                 "speed_threshold_pct": 66.0,
                 "preview_tcode_mode": "fourphase",
+                "pulse_freq_center": 57.0,
+                "pulse_freq_min": 24.0,
+                "pulse_freq_max": 78.0,
+                "carrier_freq_center": 52.0,
+                "carrier_freq_min": 42.0,
+                "carrier_freq_max": 58.0,
                 "enabled_axes": ["main", "alpha", "beta", "e1"],
             },
             "automap": {"enabled": True, "target_y_position": 48.0, "optimization_mode": "cmean"},
@@ -61,6 +67,14 @@ class TestPmvControls(unittest.TestCase):
         self.assertAlmostEqual(actual["mapping"]["pitch_range"], 80.0, places=1)
         self.assertEqual(actual["mapping"]["overflow_mode"], "bounce")
         self.assertEqual(actual["ml"]["cadence_mode"], "fixed_2")
+        self.assertAlmostEqual(actual["axis"]["pulse_freq_center"], 57.0, places=1)
+        self.assertAlmostEqual(actual["axis"]["pulse_freq_min"], 24.0, places=1)
+        self.assertAlmostEqual(actual["axis"]["pulse_freq_max"], 78.0, places=1)
+        for legacy_suffix in ("start", "end"):
+            self.assertNotIn(f"pulse_freq_range_{legacy_suffix}", actual["axis"])
+        self.assertAlmostEqual(actual["axis"]["carrier_freq_center"], 52.0, places=1)
+        self.assertAlmostEqual(actual["axis"]["carrier_freq_min"], 42.0, places=1)
+        self.assertAlmostEqual(actual["axis"]["carrier_freq_max"], 58.0, places=1)
         self.assertIn("alpha", actual["axis"]["enabled_axes"])
         self.assertEqual(actual["axis"]["preview_tcode_mode"], "fourphase")
         self.assertTrue(actual["automap"]["enabled"])

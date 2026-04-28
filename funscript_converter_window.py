@@ -204,7 +204,13 @@ class FunscriptConverterWindow(QMainWindow):
         self._freq_enabled.stateChanged.connect(self._schedule_reconvert)
         freq_layout.addWidget(self._freq_enabled)
         self._freq_scale = self._add_spin(freq_layout, "Pulse freq scale:", 0.0, 5.0, 1.0)
+        self._pulse_center = self._add_spin(freq_layout, "Pulse freq center:", 0.0, 100.0, 55.0, decimals=1)
+        self._pulse_min = self._add_spin(freq_layout, "Pulse freq min:", 0.0, 100.0, 20.0, decimals=1)
+        self._pulse_max = self._add_spin(freq_layout, "Pulse freq max:", 0.0, 100.0, 80.0, decimals=1)
         self._carrier_scale = self._add_spin(freq_layout, "Carrier freq scale:", 0.0, 5.0, 1.0)
+        self._carrier_center = self._add_spin(freq_layout, "Carrier freq center:", 0.0, 100.0, 50.0, decimals=1)
+        self._carrier_min = self._add_spin(freq_layout, "Carrier freq min:", 0.0, 100.0, 40.0, decimals=1)
+        self._carrier_max = self._add_spin(freq_layout, "Carrier freq max:", 0.0, 100.0, 60.0, decimals=1)
         left_layout.addWidget(freq_group)
 
         left_layout.addStretch(1)
@@ -405,10 +411,23 @@ class FunscriptConverterWindow(QMainWindow):
         )
 
     def _get_freq_config(self) -> FreqConfig:
+        pulse_min = min(self._pulse_min.value(), self._pulse_max.value())
+        pulse_max = max(self._pulse_min.value(), self._pulse_max.value())
+        pulse_center = min(max(self._pulse_center.value(), pulse_min), pulse_max)
+        carrier_min = min(self._carrier_min.value(), self._carrier_max.value())
+        carrier_max = max(self._carrier_min.value(), self._carrier_max.value())
+        carrier_center = min(max(self._carrier_center.value(), carrier_min), carrier_max)
+
         return FreqConfig(
             enabled=self._freq_enabled.isChecked(),
             freq_scale=self._freq_scale.value(),
+            pulse_center=pulse_center,
+            pulse_min=pulse_min,
+            pulse_max=pulse_max,
             carrier_scale=self._carrier_scale.value(),
+            carrier_center=carrier_center,
+            carrier_min=carrier_min,
+            carrier_max=carrier_max,
         )
 
     def _run_conversion(self) -> None:

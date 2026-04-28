@@ -83,6 +83,9 @@ class _DummyWindow(QMainWindow):
     def _launch_pmv_generator(self):
         self._pmv_launch_count += 1
 
+    def _launch_funscript_converter(self):
+        return None
+
 
 class TestPmvMenuIntegration(unittest.TestCase):
     @classmethod
