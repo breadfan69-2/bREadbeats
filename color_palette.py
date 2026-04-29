@@ -1,6 +1,10 @@
 """Quick color palette viewer for purple-grey tones"""
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+import importlib
+from typing import Any
+
+
+plt: Any = importlib.import_module("matplotlib.pyplot")
+patches: Any = importlib.import_module("matplotlib.patches")
 
 # Purple-grey tone options
 colors = {

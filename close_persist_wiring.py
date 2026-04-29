@@ -53,62 +53,62 @@ def persist_runtime_ui_to_config(window, config: Config) -> None:
     phase_snap_slider = _optional_window_attr(window, "phase_snap_slider")
     metrics_global_cb = _optional_window_attr(window, "metrics_global_cb")
 
-    if hasattr(pulse_freq_range_slider, "low") and hasattr(pulse_freq_range_slider, "high"):
+    if pulse_freq_range_slider is not None and hasattr(pulse_freq_range_slider, "low") and hasattr(pulse_freq_range_slider, "high"):
         config.pulse_freq.monitor_freq_min = pulse_freq_range_slider.low()
         config.pulse_freq.monitor_freq_max = pulse_freq_range_slider.high()
-    if hasattr(tcode_freq_range_slider, "low") and hasattr(tcode_freq_range_slider, "high"):
+    if tcode_freq_range_slider is not None and hasattr(tcode_freq_range_slider, "low") and hasattr(tcode_freq_range_slider, "high"):
         config.pulse_freq.tcode_min = int(tcode_freq_range_slider.low())
         config.pulse_freq.tcode_max = int(tcode_freq_range_slider.high())
-    if hasattr(freq_weight_slider, "value"):
+    if freq_weight_slider is not None and hasattr(freq_weight_slider, "value"):
         config.pulse_freq.freq_weight = freq_weight_slider.value()
-    if hasattr(pulse_mode_combo, "currentIndex"):
+    if pulse_mode_combo is not None and hasattr(pulse_mode_combo, "currentIndex"):
         config.pulse_freq.mode = int(pulse_mode_combo.currentIndex())
-    if hasattr(pulse_invert_checkbox, "isChecked"):
+    if pulse_invert_checkbox is not None and hasattr(pulse_invert_checkbox, "isChecked"):
         config.pulse_freq.invert = bool(pulse_invert_checkbox.isChecked())
-    if hasattr(pulse_enabled_checkbox, "isChecked"):
+    if pulse_enabled_checkbox is not None and hasattr(pulse_enabled_checkbox, "isChecked"):
         config.pulse_freq.enabled = bool(pulse_enabled_checkbox.isChecked())
 
-    if hasattr(f0_freq_range_slider, "low") and hasattr(f0_freq_range_slider, "high"):
+    if f0_freq_range_slider is not None and hasattr(f0_freq_range_slider, "low") and hasattr(f0_freq_range_slider, "high"):
         config.carrier_freq.monitor_freq_min = f0_freq_range_slider.low()
         config.carrier_freq.monitor_freq_max = f0_freq_range_slider.high()
-    if hasattr(f0_tcode_range_slider, "low") and hasattr(f0_tcode_range_slider, "high"):
+    if f0_tcode_range_slider is not None and hasattr(f0_tcode_range_slider, "low") and hasattr(f0_tcode_range_slider, "high"):
         config.carrier_freq.tcode_min = int(f0_tcode_range_slider.low())
         config.carrier_freq.tcode_max = int(f0_tcode_range_slider.high())
-    if hasattr(f0_weight_slider, "value"):
+    if f0_weight_slider is not None and hasattr(f0_weight_slider, "value"):
         config.carrier_freq.freq_weight = f0_weight_slider.value()
-    if hasattr(f0_mode_combo, "currentIndex"):
+    if f0_mode_combo is not None and hasattr(f0_mode_combo, "currentIndex"):
         config.carrier_freq.mode = int(f0_mode_combo.currentIndex())
-    if hasattr(f0_invert_checkbox, "isChecked"):
+    if f0_invert_checkbox is not None and hasattr(f0_invert_checkbox, "isChecked"):
         config.carrier_freq.invert = bool(f0_invert_checkbox.isChecked())
-    if hasattr(f0_enabled_checkbox, "isChecked"):
+    if f0_enabled_checkbox is not None and hasattr(f0_enabled_checkbox, "isChecked"):
         config.carrier_freq.enabled = bool(f0_enabled_checkbox.isChecked())
 
-    if hasattr(volume_slider, "value"):
+    if volume_slider is not None and hasattr(volume_slider, "value"):
         config.volume = volume_slider.value() / 100.0
     config.alpha_weight = 1.0
     config.beta_weight = 1.0
 
-    if hasattr(tempo_tracking_checkbox, "isChecked"):
+    if tempo_tracking_checkbox is not None and hasattr(tempo_tracking_checkbox, "isChecked"):
         config.beat.tempo_tracking_enabled = tempo_tracking_checkbox.isChecked()
-    if hasattr(time_sig_combo, "currentIndex"):
+    if time_sig_combo is not None and hasattr(time_sig_combo, "currentIndex"):
         beats_map = {0: 4, 1: 3, 2: 6}
         config.beat.beats_per_measure = beats_map.get(time_sig_combo.currentIndex(), 4)
-    if hasattr(stability_threshold_slider, "value"):
+    if stability_threshold_slider is not None and hasattr(stability_threshold_slider, "value"):
         config.beat.stability_threshold = stability_threshold_slider.value()
-    if hasattr(tempo_timeout_slider, "value"):
+    if tempo_timeout_slider is not None and hasattr(tempo_timeout_slider, "value"):
         config.beat.tempo_timeout_ms = int(tempo_timeout_slider.value())
-    if hasattr(phase_snap_slider, "value"):
+    if phase_snap_slider is not None and hasattr(phase_snap_slider, "value"):
         config.beat.phase_snap_weight = phase_snap_slider.value()
 
-    if hasattr(metrics_global_cb, "isChecked"):
+    if metrics_global_cb is not None and hasattr(metrics_global_cb, "isChecked"):
         config.auto_adjust.metrics_global_enabled = metrics_global_cb.isChecked()
 
     intensity_ramp_spin = _optional_window_attr(window, "intensity_ramp_spin")
-    if hasattr(intensity_ramp_spin, "value"):
+    if intensity_ramp_spin is not None and hasattr(intensity_ramp_spin, "value"):
         config.stroke.intensity_ramp_hours = float(intensity_ramp_spin.value())
 
     intensity_ramp_target_combo = _optional_window_attr(window, "intensity_ramp_target_combo")
-    if hasattr(intensity_ramp_target_combo, "currentText"):
+    if intensity_ramp_target_combo is not None and hasattr(intensity_ramp_target_combo, "currentText"):
         target = str(intensity_ramp_target_combo.currentText() or "both").strip().lower()
         if target not in {"size", "speed", "both"}:
             target = "both"

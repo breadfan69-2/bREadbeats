@@ -258,6 +258,12 @@ class AudioEngine:
         self._butter_zi = None                 # Filter state for continuity between frames
         self._use_butterworth = getattr(config.audio, 'use_butterworth', True)
         self._highpass_hz = getattr(config.audio, 'highpass_filter_hz', 30)
+
+        # Legacy valley tracking fallback (used when auto-ranging is unavailable)
+        self._prev_energy_for_valley: float = 0.0
+        self._energy_was_falling: bool = False
+        self._valley_history: list[float] = []
+        self._valley_max_samples: int = 120
         
         # Visualizer toggle
         self._visualizer_enabled = getattr(config.audio, 'visualizer_enabled', True)
@@ -714,7 +720,7 @@ class AudioEngine:
         raw_rms_db = rms_to_dbfs(raw_rms)
         
         # Apply Butterworth bandpass filter for beat detection (if available)
-        if self._butter_sos is not None and self._butter_zi is not None:
+        if callable(sosfilt) and self._butter_sos is not None and self._butter_zi is not None:
             # Filter with state preservation for continuity
             filtered_mono, self._butter_zi = sosfilt(self._butter_sos, mono, zi=self._butter_zi * mono[0])
             beat_mono = filtered_mono.astype(np.float32)

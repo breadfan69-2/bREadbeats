@@ -125,6 +125,10 @@ class StrokeConfig:
     # High flux (>=threshold): full strokes on every beat
     flux_scaling_weight: float = 1.0  # How much flux affects stroke size (0=none, 1=normal, 2=strong)
 
+    # Session-long motion ramp tuning
+    intensity_ramp_hours: float = 0.0
+    intensity_ramp_target: str = "both"
+
     # Silence detection thresholds (fade-out when truly silent)
     silence_threshold: float = -66.0      # dBFS threshold to enter silence deadzone gate (first-run tuned)
     silence_close_threshold: float = -58.0  # dBFS threshold to exit silence deadzone gate

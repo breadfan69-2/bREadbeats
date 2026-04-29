@@ -665,7 +665,9 @@ class VisualizationArea(QWidget):
         _style_plot(self.overlay_plot)
         self.overlay_plot.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.overlay_plot.installEventFilter(self)
-        self.overlay_plot.viewport().installEventFilter(self)
+        viewport = self.overlay_plot.viewport()
+        if viewport is not None:
+            viewport.installEventFilter(self)
         self.overlay_plot.setLabel("left", "Normalized / Position")
         self.overlay_plot.getAxis("bottom").setTicks([])
         self.overlay_plot.getAxis("bottom").setStyle(showValues=False)
@@ -1473,7 +1475,7 @@ class VisualizationArea(QWidget):
             return True
 
         if key == Qt.Key.Key_V and mod & Qt.KeyboardModifier.ControlModifier:
-            playhead_ms = int(self.playhead_line.value())
+            playhead_ms = self._playhead_ms_int()
             if mod & Qt.KeyboardModifier.ShiftModifier:
                 self._edit_state.paste_exact()
             else:
@@ -1507,7 +1509,7 @@ class VisualizationArea(QWidget):
             return True
 
         if key == Qt.Key.Key_L and mod & Qt.KeyboardModifier.ControlModifier:
-            self._edit_state.unlock_at(int(self.playhead_line.value()))
+            self._edit_state.unlock_at(self._playhead_ms_int())
             ev.accept()
             return True
 
@@ -1533,6 +1535,21 @@ class VisualizationArea(QWidget):
 
         return False
 
+    def _playhead_ms_int(self) -> int:
+        value = self.playhead_line.value()
+        if isinstance(value, np.ndarray):
+            if value.size == 0:
+                return 0
+            value = float(value.flat[0])
+        elif isinstance(value, (list, tuple)):
+            if not value:
+                return 0
+            value = value[0]
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return 0
+
     def eventFilter(self, watched, event) -> bool:
         if watched is self.overlay_plot.viewport():
             if event.type() == QEvent.Type.MouseButtonPress and self._handle_plot_viewport_mouse_press(event):
@@ -1550,69 +1567,76 @@ class VisualizationArea(QWidget):
     def _show_context_menu(self, global_pos, time_ms: float, pos: float) -> None:
         if self._edit_state is None:
             return
+        edit_state = self._edit_state
         menu = QMenu(self)
 
-        add_act = menu.addAction("Add Point Here")
+        def _menu_action(text: str):
+            act = menu.addAction(text)
+            if act is None:
+                raise RuntimeError(f"Unable to create action: {text}")
+            return act
+
+        add_act = _menu_action("Add Point Here")
         add_act.triggered.connect(lambda: self._ctx_add_point(time_ms, pos))
 
         menu.addSeparator()
 
-        lock_act = menu.addAction("Lock Selection Region")
-        lock_act.setEnabled(self._edit_state.has_selection)
-        lock_act.triggered.connect(self._edit_state.lock_selection_region)
+        lock_act = _menu_action("Lock Selection Region")
+        lock_act.setEnabled(edit_state.has_selection)
+        lock_act.triggered.connect(edit_state.lock_selection_region)
 
-        unlock_act = menu.addAction("Unlock This Region")
-        unlock_act.setEnabled(self._edit_state.is_locked(int(time_ms)))
-        unlock_act.triggered.connect(lambda: self._edit_state.unlock_at(int(time_ms)))
+        unlock_act = _menu_action("Unlock This Region")
+        unlock_act.setEnabled(edit_state.is_locked(int(time_ms)))
+        unlock_act.triggered.connect(lambda: edit_state.unlock_at(int(time_ms)))
 
-        clear_locks_act = menu.addAction("Clear All Locks")
-        clear_locks_act.setEnabled(len(self._edit_state.locked_regions) > 0)
-        clear_locks_act.triggered.connect(self._edit_state.clear_all_locks)
-
-        menu.addSeparator()
-
-        cut_act = menu.addAction("Cut\tCtrl+X")
-        cut_act.setEnabled(self._edit_state.has_selection)
-        cut_act.triggered.connect(self._edit_state.cut_selection)
-
-        copy_act = menu.addAction("Copy\tCtrl+C")
-        copy_act.setEnabled(self._edit_state.has_selection)
-        copy_act.triggered.connect(self._edit_state.copy_selection)
-
-        paste_act = menu.addAction("Paste Here\tCtrl+V")
-        paste_act.setEnabled(not self._edit_state.clipboard_empty)
-        paste_act.triggered.connect(lambda: self._edit_state.paste_at(int(time_ms)))
+        clear_locks_act = _menu_action("Clear All Locks")
+        clear_locks_act.setEnabled(len(edit_state.locked_regions) > 0)
+        clear_locks_act.triggered.connect(edit_state.clear_all_locks)
 
         menu.addSeparator()
 
-        invert_act = menu.addAction("Invert Selected\tI")
-        invert_act.setEnabled(self._edit_state.has_selection)
-        invert_act.triggered.connect(self._edit_state.invert_selection)
+        cut_act = _menu_action("Cut\tCtrl+X")
+        cut_act.setEnabled(edit_state.has_selection)
+        cut_act.triggered.connect(edit_state.cut_selection)
 
-        invert_all_act = menu.addAction("Invert All\tShift+I")
-        invert_all_act.setEnabled(len(self._edit_state.actions) > 0)
-        invert_all_act.triggered.connect(self._edit_state.invert_all)
+        copy_act = _menu_action("Copy\tCtrl+C")
+        copy_act.setEnabled(edit_state.has_selection)
+        copy_act.triggered.connect(edit_state.copy_selection)
 
-        eq_act = menu.addAction("Equalize\tE")
-        eq_act.setEnabled(len(self._edit_state.selection_indices) >= 3)
-        eq_act.triggered.connect(self._edit_state.equalize_selection)
+        paste_act = _menu_action("Paste Here\tCtrl+V")
+        paste_act.setEnabled(not edit_state.clipboard_empty)
+        paste_act.triggered.connect(lambda: edit_state.paste_at(int(time_ms)))
 
-        center_sel_act = menu.addAction("Center Selected At...")
-        center_sel_act.setEnabled(self._edit_state.has_selection)
+        menu.addSeparator()
+
+        invert_act = _menu_action("Invert Selected\tI")
+        invert_act.setEnabled(edit_state.has_selection)
+        invert_act.triggered.connect(edit_state.invert_selection)
+
+        invert_all_act = _menu_action("Invert All\tShift+I")
+        invert_all_act.setEnabled(len(edit_state.actions) > 0)
+        invert_all_act.triggered.connect(edit_state.invert_all)
+
+        eq_act = _menu_action("Equalize\tE")
+        eq_act.setEnabled(len(edit_state.selection_indices) >= 3)
+        eq_act.triggered.connect(edit_state.equalize_selection)
+
+        center_sel_act = _menu_action("Center Selected At...")
+        center_sel_act.setEnabled(edit_state.has_selection)
         center_sel_act.triggered.connect(lambda: self._prompt_center(selected_only=True))
 
-        center_all_act = menu.addAction("Center All At...")
-        center_all_act.setEnabled(len(self._edit_state.actions) > 0)
+        center_all_act = _menu_action("Center All At...")
+        center_all_act.setEnabled(len(edit_state.actions) > 0)
         center_all_act.triggered.connect(lambda: self._prompt_center(selected_only=False))
 
-        sa_act = menu.addAction("Select All\tCtrl+A")
-        sa_act.triggered.connect(self._edit_state.select_all)
+        sa_act = _menu_action("Select All\tCtrl+A")
+        sa_act.triggered.connect(edit_state.select_all)
 
         menu.addSeparator()
 
-        del_act = menu.addAction("Delete\tDel")
-        del_act.setEnabled(self._edit_state.has_selection)
-        del_act.triggered.connect(self._edit_state.remove_selected)
+        del_act = _menu_action("Delete\tDel")
+        del_act.setEnabled(edit_state.has_selection)
+        del_act.triggered.connect(edit_state.remove_selected)
 
         menu.exec(global_pos)
 
@@ -1629,6 +1653,8 @@ class VisualizationArea(QWidget):
 
     def _ctx_add_point(self, time_ms: float, pos: float) -> None:
         from pmv_funscript_io import FunscriptAction
+        if self._edit_state is None:
+            return
         self._edit_state.add_action(FunscriptAction(int(time_ms), int(max(0, min(100, pos)))))
 
 
@@ -1941,7 +1967,9 @@ class AuxAxisPanel(QWidget):
         plot.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         plot.setFocus()
         plot.installEventFilter(self)
-        plot.viewport().installEventFilter(self)
+        viewport = plot.viewport()
+        if viewport is not None:
+            viewport.installEventFilter(self)
 
         self._refresh_edit_overlay()
         self._rebuild_lock_overlays()
@@ -1963,7 +1991,9 @@ class AuxAxisPanel(QWidget):
             self._edit_plot.removeItem(self._selection_scatter)
             self._edit_plot.removeItem(self._rect_roi)
             self._edit_plot.removeEventFilter(self)
-            self._edit_plot.viewport().removeEventFilter(self)
+            viewport = self._edit_plot.viewport()
+            if viewport is not None:
+                viewport.removeEventFilter(self)
             self._edit_plot.setFixedHeight(self._edit_plot_default_height)
             self._edit_plot.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self._edit_plot = None
@@ -2257,69 +2287,77 @@ class AuxAxisPanel(QWidget):
     def _show_context_menu(self, global_pos, time_ms: float, pos: float) -> None:
         if self._edit_state is None:
             return
+        edit_state = self._edit_state
         menu = QMenu(self)
-        add_act = menu.addAction("Add Point Here")
-        add_act.triggered.connect(lambda: self._edit_state.add_action(
+
+        def _menu_action(text: str):
+            act = menu.addAction(text)
+            if act is None:
+                raise RuntimeError(f"Unable to create action: {text}")
+            return act
+
+        add_act = _menu_action("Add Point Here")
+        add_act.triggered.connect(lambda: edit_state.add_action(
             __import__("pmv_funscript_io", fromlist=["FunscriptAction"]).FunscriptAction(
                 int(time_ms), int(max(0, min(100, pos))))))
 
         menu.addSeparator()
 
-        cut_act = menu.addAction("Cut\tCtrl+X")
-        cut_act.setEnabled(self._edit_state.has_selection)
-        cut_act.triggered.connect(self._edit_state.cut_selection)
+        cut_act = _menu_action("Cut\tCtrl+X")
+        cut_act.setEnabled(edit_state.has_selection)
+        cut_act.triggered.connect(edit_state.cut_selection)
 
-        copy_act = menu.addAction("Copy\tCtrl+C")
-        copy_act.setEnabled(self._edit_state.has_selection)
-        copy_act.triggered.connect(self._edit_state.copy_selection)
+        copy_act = _menu_action("Copy\tCtrl+C")
+        copy_act.setEnabled(edit_state.has_selection)
+        copy_act.triggered.connect(edit_state.copy_selection)
 
-        paste_act = menu.addAction("Paste Here\tCtrl+V")
-        paste_act.setEnabled(not self._edit_state.clipboard_empty)
-        paste_act.triggered.connect(lambda: self._edit_state.paste_at(int(time_ms)))
+        paste_act = _menu_action("Paste Here\tCtrl+V")
+        paste_act.setEnabled(not edit_state.clipboard_empty)
+        paste_act.triggered.connect(lambda: edit_state.paste_at(int(time_ms)))
 
         menu.addSeparator()
 
-        invert_act = menu.addAction("Invert Selected\tI")
-        invert_act.setEnabled(self._edit_state.has_selection)
-        invert_act.triggered.connect(self._edit_state.invert_selection)
+        invert_act = _menu_action("Invert Selected\tI")
+        invert_act.setEnabled(edit_state.has_selection)
+        invert_act.triggered.connect(edit_state.invert_selection)
 
-        invert_all_act = menu.addAction("Invert All\tShift+I")
-        invert_all_act.setEnabled(len(self._edit_state.actions) > 0)
-        invert_all_act.triggered.connect(self._edit_state.invert_all)
+        invert_all_act = _menu_action("Invert All\tShift+I")
+        invert_all_act.setEnabled(len(edit_state.actions) > 0)
+        invert_all_act.triggered.connect(edit_state.invert_all)
 
-        eq_act = menu.addAction("Equalize\tE")
-        eq_act.setEnabled(len(self._edit_state.selection_indices) >= 3)
-        eq_act.triggered.connect(self._edit_state.equalize_selection)
+        eq_act = _menu_action("Equalize\tE")
+        eq_act.setEnabled(len(edit_state.selection_indices) >= 3)
+        eq_act.triggered.connect(edit_state.equalize_selection)
 
-        center_sel_act = menu.addAction("Center Selected At...")
-        center_sel_act.setEnabled(self._edit_state.has_selection)
+        center_sel_act = _menu_action("Center Selected At...")
+        center_sel_act.setEnabled(edit_state.has_selection)
         center_sel_act.triggered.connect(lambda: self._prompt_center(selected_only=True))
 
-        center_all_act = menu.addAction("Center All At...")
-        center_all_act.setEnabled(len(self._edit_state.actions) > 0)
+        center_all_act = _menu_action("Center All At...")
+        center_all_act.setEnabled(len(edit_state.actions) > 0)
         center_all_act.triggered.connect(lambda: self._prompt_center(selected_only=False))
 
-        sa_act = menu.addAction("Select All\tCtrl+A")
-        sa_act.triggered.connect(self._edit_state.select_all)
+        sa_act = _menu_action("Select All\tCtrl+A")
+        sa_act.triggered.connect(edit_state.select_all)
 
         menu.addSeparator()
 
-        del_act = menu.addAction("Delete\tDel")
-        del_act.setEnabled(self._edit_state.has_selection)
-        del_act.triggered.connect(self._edit_state.remove_selected)
+        del_act = _menu_action("Delete\tDel")
+        del_act.setEnabled(edit_state.has_selection)
+        del_act.triggered.connect(edit_state.remove_selected)
 
         menu.addSeparator()
-        lock_act = menu.addAction("Lock Selection Region")
-        lock_act.setEnabled(self._edit_state.has_selection)
-        lock_act.triggered.connect(self._edit_state.lock_selection_region)
+        lock_act = _menu_action("Lock Selection Region")
+        lock_act.setEnabled(edit_state.has_selection)
+        lock_act.triggered.connect(edit_state.lock_selection_region)
 
-        unlock_act = menu.addAction("Unlock This Region")
-        unlock_act.setEnabled(self._edit_state.is_locked(int(time_ms)))
-        unlock_act.triggered.connect(lambda: self._edit_state.unlock_at(int(time_ms)))
+        unlock_act = _menu_action("Unlock This Region")
+        unlock_act.setEnabled(edit_state.is_locked(int(time_ms)))
+        unlock_act.triggered.connect(lambda: edit_state.unlock_at(int(time_ms)))
 
-        clear_locks_act = menu.addAction("Clear All Locks")
-        clear_locks_act.setEnabled(len(self._edit_state.locked_regions) > 0)
-        clear_locks_act.triggered.connect(self._edit_state.clear_all_locks)
+        clear_locks_act = _menu_action("Clear All Locks")
+        clear_locks_act.setEnabled(len(edit_state.locked_regions) > 0)
+        clear_locks_act.triggered.connect(edit_state.clear_all_locks)
 
         menu.exec(global_pos)
 

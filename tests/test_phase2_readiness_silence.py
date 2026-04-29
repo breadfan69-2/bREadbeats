@@ -99,7 +99,7 @@ class TestReadinessState(Phase2Mixin, unittest.TestCase):
         cfg.beat.tempo_lock_required = True
         cfg.beat.teaching_metronome_relaxed_confidence = 0.5
         bi = BeatIntelligence(cfg)
-        bi._post_silence_entry_complete = True
+        setattr(bi, "_post_silence_entry_complete", True)
 
         # Locked event → readiness kicks in → downbeat fires
         decision = bi.build_decision(
@@ -125,7 +125,7 @@ class TestReadinessState(Phase2Mixin, unittest.TestCase):
         cfg.beat.teaching_ignore_traffic_lights = True
         cfg.beat.teaching_metronome_relaxed_confidence = 0.14
         bi = BeatIntelligence(cfg)
-        bi._post_silence_entry_complete = True
+        setattr(bi, "_post_silence_entry_complete", True)
 
         decision = bi.build_decision(
             self._event(

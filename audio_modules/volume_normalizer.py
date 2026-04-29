@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from logging_utils import log_event
 
@@ -82,7 +82,7 @@ class VolumeNormalizer:
         self._lock = threading.Lock()
 
         # COM / pycaw objects (created once on poller thread)
-        self._endpoint_volume = None  # IAudioEndpointVolume interface
+        self._endpoint_volume: Optional[Any] = None  # IAudioEndpointVolume interface
         self._com_initialized = False
 
         # Poller thread
@@ -157,7 +157,7 @@ class VolumeNormalizer:
             pass  # Already initialized on this thread
 
         AudioUtilities, _IAudioEndpointVolume, _CLSCTX_ALL = _try_import_pycaw()
-        if AudioUtilities is None:
+        if AudioUtilities is None or _IAudioEndpointVolume is None or _CLSCTX_ALL is None:
             log_event("WARN", "VolumeNorm",
                       "pycaw not installed — volume normalization disabled. "
                       "Install with: pip install pycaw")
@@ -165,16 +165,27 @@ class VolumeNormalizer:
 
         try:
             device = AudioUtilities.GetSpeakers()
+            if device is None:
+                log_event("ERROR", "VolumeNorm", "No default speakers endpoint found")
+                return False
 
             # pycaw >= 2024 exposes a high-level .EndpointVolume property;
             # older versions require the low-level .Activate() COM call.
-            if hasattr(device, 'EndpointVolume'):
-                self._endpoint_volume = device.EndpointVolume
+            endpoint_volume = getattr(device, 'EndpointVolume', None)
+            if endpoint_volume is not None:
+                self._endpoint_volume = endpoint_volume
             else:
-                interface = device.Activate(
-                    _IAudioEndpointVolume._iid_, _CLSCTX_ALL, None
-                )
+                activate = getattr(device, 'Activate', None)
+                endpoint_iid = getattr(_IAudioEndpointVolume, '_iid_', None)
+                if not callable(activate) or endpoint_iid is None:
+                    log_event("ERROR", "VolumeNorm", "Endpoint volume interface is unavailable")
+                    return False
+                interface: Any = activate(endpoint_iid, _CLSCTX_ALL, None)
                 self._endpoint_volume = interface.QueryInterface(_IAudioEndpointVolume)
+
+            if self._endpoint_volume is None:
+                log_event("ERROR", "VolumeNorm", "Failed to acquire endpoint volume interface")
+                return False
 
             self._com_initialized = True
             # Report initial volume reading
@@ -196,7 +207,10 @@ class VolumeNormalizer:
 
         while not self._stop_event.is_set():
             try:
-                vol = self._endpoint_volume.GetMasterVolumeLevelScalar()
+                endpoint = self._endpoint_volume
+                if endpoint is None:
+                    break
+                vol = endpoint.GetMasterVolumeLevelScalar()
                 vol = float(vol)
 
                 # Clamp to floor

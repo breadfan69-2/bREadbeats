@@ -25,6 +25,7 @@ from widgets import (
 )
 from stylesheet import get_thin_scrollbar_style
 from logging_utils import get_log_level, log_event, set_log_level
+from config_facade import save_config
 
 def create_menu_bar(win):
     """Create menu bar with top-level menus for app controls, options, and help."""
@@ -853,31 +854,31 @@ def create_tcode_freq_tab(win) -> QWidget:
         win.config.rise_time.tcode_max = _unit_to_tcode(p3_sent_max, p3_out_min, p3_out_max)
 
     class _RangeProxy:
-        def __init__(win, low_get, high_get, low_set, high_set, parent_get, blockers):
-            win._low_get = low_get
-            win._high_get = high_get
-            win._low_set = low_set
-            win._high_set = high_set
-            win._parent_get = parent_get
-            win._blockers = list(blockers)
+        def __init__(self, low_get, high_get, low_set, high_set, parent_get, blockers):
+            self._low_get = low_get
+            self._high_get = high_get
+            self._low_set = low_set
+            self._high_set = high_set
+            self._parent_get = parent_get
+            self._blockers = list(blockers)
 
-        def low(win):
-            return win._low_get()
+        def low(self):
+            return self._low_get()
 
-        def high(win):
-            return win._high_get()
+        def high(self):
+            return self._high_get()
 
-        def setLow(win, value):
-            win._low_set(value)
+        def setLow(self, value):
+            self._low_set(value)
 
-        def setHigh(win, value):
-            win._high_set(value)
+        def setHigh(self, value):
+            self._high_set(value)
 
-        def parent(win):
-            return win._parent_get()
+        def parent(self):
+            return self._parent_get()
 
-        def blockSignals(win, block: bool):
-            for widget in win._blockers:
+        def blockSignals(self, block: bool):
+            for widget in self._blockers:
                 if widget is not None:
                     widget.blockSignals(block)
 

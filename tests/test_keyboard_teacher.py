@@ -213,6 +213,7 @@ class TestCSVOutput:
         dec = FakeBeatDecision(trigger_kind="downbeat", radius_bloom=0.9)
         teacher.on_frame(ev, dec, dt=1 / 60)
         saved = teacher.stop_session()
+        assert saved is not None
         csv_path = saved / "directives.csv"
         with csv_path.open("r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -232,6 +233,7 @@ class TestCSVOutput:
         gs = _make_gate_state(gs_sub_bass=0.15, gs_low_mid=0.1)
         teacher.on_frame(ev, dec, gs, dt=1 / 60)
         saved = teacher.stop_session()
+        assert saved is not None
         csv_path = saved / "directives.csv"
         with csv_path.open("r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -256,6 +258,7 @@ class TestCSVOutput:
         gs = _make_gate_state(gs_sub_bass=0.2, gs_stroke_ready=1)
         teacher.on_frame(ev, None, gs, dt=1 / 60)
         saved = teacher.stop_session()
+        assert saved is not None
         csv_path = saved / "directives.csv"
         with csv_path.open("r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -272,6 +275,7 @@ class TestCSVOutput:
         for _ in range(3010):
             teacher.on_frame(ev, dt=1 / 60)
         # Some rows should already be flushed (auto-flush at 3000)
+        assert teacher.session_dir is not None
         csv_path = teacher.session_dir / "directives.csv"
         assert csv_path.exists()
         saved = teacher.stop_session()

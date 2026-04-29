@@ -179,13 +179,18 @@ class PlatformAudioCapture:
     def start_input_capture(self, device_index: int | None) -> None:
         eng = self.engine
         if device_index is None:
-            device_index = sd.default.device[0]
+            default_input = sd.default.device[0]
+            if default_input is None:
+                raise RuntimeError("No default input audio device is configured")
+            device_index = int(default_input)
 
-        device_info = sd.query_devices(device_index, 'input')
+        device_id = int(device_index)
+
+        device_info = sd.query_devices(device_id, 'input')
         sample_rate = int(float(device_info.get('default_samplerate', eng.config.audio.sample_rate)))
         channels = max(1, min(int(device_info.get('max_input_channels', 1)), 2))
 
-        log_event("INFO", "AudioEngine", "Using input device", device=device_info.get('name', str(device_index)))
+        log_event("INFO", "AudioEngine", "Using input device", device=device_info.get('name', str(device_id)))
         log_event("INFO", "AudioEngine", "Input format", channels=channels, sample_rate=sample_rate)
 
         eng.config.audio.sample_rate = sample_rate
@@ -206,7 +211,7 @@ class PlatformAudioCapture:
         eng.stream = sd.InputStream(
             samplerate=eng.config.audio.sample_rate,
             blocksize=int(eng.config.audio.buffer_size),
-            device=int(device_index),
+            device=device_id,
             channels=int(eng.config.audio.channels),
             dtype='float32',
             callback=self._sounddevice_callback,
@@ -217,6 +222,8 @@ class PlatformAudioCapture:
 
     def _start_windows_loopback(self, device_index: int | None = None) -> None:
         eng = self.engine
+        if pyaudio is None:
+            raise RuntimeError("pyaudiowpatch is required for Windows loopback capture")
         pa = pyaudio.PyAudio()
 
         wasapi_info = pa.get_host_api_info_by_type(pyaudio.paWASAPI)

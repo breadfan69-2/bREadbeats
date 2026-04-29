@@ -62,8 +62,8 @@ class CurveEditorWidget(pg.PlotWidget):
         self.setBackground("#2d2d2d")
         self.setMouseEnabled(x=False, y=False)
         self.showGrid(x=True, y=True, alpha=0.25)
-        self.setXRange(0, 100, padding=0.02)
-        self.setYRange(0, 100, padding=0.02)
+        self.setXRange(0, 100)
+        self.setYRange(0, 100)
         self.setLabel("bottom", "Input Position (0–100)")
         self.setLabel("left", "Output Position (0–100)")
 
@@ -83,13 +83,19 @@ class CurveEditorWidget(pg.PlotWidget):
         self._dragging_index: int | None = None
 
         self._scatter.sigClicked.connect(self._on_scatter_clicked)
-        self.scene().sigMouseMoved.connect(self._on_mouse_moved)
-        self.scene().sigMouseClicked.connect(self._on_scene_clicked)
+        scene = self.scene()
+        if scene is not None:
+            sig_mouse_moved = getattr(scene, "sigMouseMoved", None)
+            if sig_mouse_moved is not None:
+                sig_mouse_moved.connect(self._on_mouse_moved)
+            sig_mouse_clicked = getattr(scene, "sigMouseClicked", None)
+            if sig_mouse_clicked is not None:
+                sig_mouse_clicked.connect(self._on_scene_clicked)
 
     # -- public API --
 
     def get_points(self) -> list[tuple[float, float]]:
-        return [tuple(p) for p in self._control_points]
+        return list(self._control_points)
 
     def set_points(self, points: list[tuple[float, float]]) -> None:
         self._control_points = sorted(
@@ -116,7 +122,12 @@ class CurveEditorWidget(pg.PlotWidget):
     # -- interaction --
 
     def _scene_to_data(self, scene_pos) -> tuple[float, float] | None:
-        vb = self.plotItem.vb
+        plot_item = getattr(self, "plotItem", None)
+        if plot_item is None:
+            return None
+        vb = getattr(plot_item, "vb", None)
+        if vb is None:
+            return None
         mapped = vb.mapSceneToView(scene_pos)
         x, y = mapped.x() / 100.0, mapped.y() / 100.0
         if -0.05 <= x <= 1.05 and -0.05 <= y <= 1.05:

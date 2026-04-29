@@ -7,11 +7,11 @@ from network_engine import NetworkEngine
 def ensure_network_engine(
     existing_engine: Optional[NetworkEngine],
     config: Config,
-    status_callback,
+    status_callback: Optional[Callable[[str, bool], None]],
     *,
     dry_run_enabled: Optional[bool] = None,
     force_new: bool = False,
-    engine_factory: Callable[[Config, object], NetworkEngine] = NetworkEngine,
+    engine_factory: Callable[[Config, Optional[Callable[[str, bool], None]]], NetworkEngine] = NetworkEngine,
 ) -> NetworkEngine:
     """Create/start a network engine if needed and apply dry-run if provided."""
     engine = None if force_new else existing_engine

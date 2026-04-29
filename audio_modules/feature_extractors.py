@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -10,7 +11,7 @@ from .contracts import FeatureFrame, FrontendFrame
 
 
 def rolling_percentile_norm(
-    history: list | object,
+    history: list[float] | deque[float],
     value: float,
     *,
     min_samples: int = 4,

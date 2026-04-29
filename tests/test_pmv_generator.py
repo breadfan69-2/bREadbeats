@@ -337,6 +337,9 @@ class TestPmvGenerator(unittest.TestCase):
                 )
             )
 
+            assert win._positions is not None
+            assert win._multi_axis is not None
+
             self.assertEqual(
                 [(a.at, a.pos) for a in win._positions.actions],
                 [(0, 10), (500, 40), (1000, 20)],
@@ -391,6 +394,9 @@ class TestPmvGenerator(unittest.TestCase):
                 )
             )
 
+            assert win._positions is not None
+            assert win._multi_axis is not None
+
             self.assertEqual(
                 [(a.at, a.pos) for a in win._positions.actions],
                 [(0, 25), (500, 75), (1000, 35)],
@@ -419,6 +425,8 @@ class TestPmvGenerator(unittest.TestCase):
         self.assertTrue(win.load_converted_preview(preview_axes, base_name="clip"))
 
         self.assertIsNotNone(win._multi_axis)
+        assert win._positions is not None
+        assert win._multi_axis is not None
         self.assertEqual(
             [(a.at, a.pos) for a in win._positions.actions],
             [(0, 10), (1000, 20)],

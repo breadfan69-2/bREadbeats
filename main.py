@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRectF, QEvent
 from PyQt6.QtGui import QColor, QPainter, QBrush, QPen, QPixmap
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 # PyQtGraph for high-performance real-time plotting
 import pyqtgraph as pg
@@ -146,6 +146,9 @@ class BREadbeatsWindow(QMainWindow):
     FIXED_JITTER_AMPLITUDE = 0.04
     FIXED_JITTER_INTENSITY = 190.0
     FIXED_AXIS_WEIGHT = 1.0
+
+    if TYPE_CHECKING:
+        def __getattr__(self, name: str) -> Any: ...
     
     def __init__(self):
         super().__init__()
@@ -1479,9 +1482,12 @@ class BREadbeatsWindow(QMainWindow):
         """Update connection status"""
         if getattr(self, '_is_shutting_down', False):
             return
+        status_label = getattr(self, 'status_label', None)
+        if status_label is None:
+            return
         try:
-            self.status_label.setText("Connected" if connected else "Connect")
-            self.status_label.setStyleSheet(f"color: {'#0af' if connected else '#fff'};")
+            status_label.setText("Connected" if connected else "Connect")
+            status_label.setStyleSheet(f"color: {'#0af' if connected else '#fff'};")
         except RuntimeError:
             return
         connection_toggle_action = getattr(self, 'connection_toggle_action', None)

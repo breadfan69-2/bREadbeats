@@ -2,11 +2,18 @@
 Generate splash screen image for bREadbeats using PicTex.
 Uses bbicon.png as background with stylized loading text overlay.
 """
-from pictex import Canvas, Text, Row, Column, Shadow
-from PIL import Image as PILImage
+import importlib
+from typing import Any
+
+
+def _load_splash_dependencies() -> tuple[Any, Any, Any]:
+    pictex = importlib.import_module("pictex")
+    pil_image = importlib.import_module("PIL.Image")
+    return pictex.Canvas, pictex.Shadow, pil_image
 
 def create_splash_screen():
     """Create a splash screen with the icon and loading text."""
+    Canvas, Shadow, PILImage = _load_splash_dependencies()
     
     # Load and resize the icon for splash screen (200px = 50% of original 400px)
     icon = PILImage.open("bbicon.png")

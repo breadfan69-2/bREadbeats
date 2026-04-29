@@ -98,6 +98,7 @@ class TestPmvMenuIntegration(unittest.TestCase):
 
         menubar = win.menuBar()
         self.assertIsNotNone(menubar)
+        assert menubar is not None
 
         main_menu = None
         for action in menubar.actions():

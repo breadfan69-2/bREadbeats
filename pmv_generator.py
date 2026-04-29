@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PyQt6.QtCore import QEvent, QEventLoop, QObject, QThread, QTimer, Qt, pyqtSignal
@@ -38,6 +39,9 @@ from pmv_position_mapper import PositionTimeline, generate_positions
 from pmv_visualizations import AuxAxisPanel, VideoPreviewWidget, VisualizationArea
 from funscript_edit_state import FunscriptEditState, LockedRegion
 from funscript_utils import AXIS_SUFFIXES, strip_axis_suffix as _strip_axis_suffix
+
+if TYPE_CHECKING:
+    from orbital_replay import OrbitalReplayResult
 
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".aac", ".wma", ".m4a"}
@@ -141,8 +145,9 @@ class _BusyOverlay(QWidget):
 
     def show_busy(self, message: str = "Processing\u2026") -> None:
         self._label.setText(message)
-        if self.parent() is not None:
-            self.setGeometry(self.parent().rect())
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setGeometry(parent.rect())
         self.raise_()
         self.show()
 
@@ -151,8 +156,9 @@ class _BusyOverlay(QWidget):
 
     # keep overlay sized to parent
     def resizeEvent(self, event) -> None:  # noqa: N802
-        if self.parent() is not None:
-            self.setGeometry(self.parent().rect())
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setGeometry(parent.rect())
         super().resizeEvent(event)
 
 
@@ -642,7 +648,7 @@ class PMVGeneratorWindow(QMainWindow):
             path = f"{path}.json"
         self._save_preset_to_path(path, show_errors=True)
 
-    def _show_error(self, title: str, message: str, show_errors: bool) -> None:
+    def _show_error(self, title: str, message: str, show_errors: bool = True) -> None:
         self.controls.step_bar.set_step_status(1, "ready")
         bar = self.statusBar()
         if bar is not None:
@@ -765,9 +771,9 @@ class PMVGeneratorWindow(QMainWindow):
             self._progress_bar.hide()
             self._hide_busy_if_idle()
 
-        worker.progress.connect(handle_progress, Qt.ConnectionType.QueuedConnection)
-        worker.finished.connect(handle_finished, Qt.ConnectionType.QueuedConnection)
-        worker.error.connect(handle_error, Qt.ConnectionType.QueuedConnection)
+        worker.progress.connect(handle_progress)
+        worker.finished.connect(handle_finished)
+        worker.error.connect(handle_error)
         thread.started.connect(worker.run)
 
         self._worker_thread = thread
@@ -830,8 +836,8 @@ class PMVGeneratorWindow(QMainWindow):
             # Re-check for queued config changes that arrived while busy
             self._on_controls_changed()
 
-        worker.finished.connect(_on_finished, Qt.ConnectionType.QueuedConnection)
-        worker.error.connect(_on_error, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(_on_finished)
+        worker.error.connect(_on_error)
         thread.started.connect(worker.run)
 
         setattr(self, thread_attr, thread)
@@ -1103,7 +1109,7 @@ class PMVGeneratorWindow(QMainWindow):
             return min(
                 electrode_candidates,
                 key=lambda entry: (
-                    electrode_order.get(entry[3], 99),
+                    electrode_order.get(entry[3] or "", 99),
                     -len(entry[1]),
                     entry[0].name.lower(),
                 ),
@@ -1595,13 +1601,16 @@ class PMVGeneratorWindow(QMainWindow):
                 samples,
                 int(analysis_cfg.sample_rate),
             )
+            multi_axis = self._multi_axis
+            if multi_axis is None:
+                return
             for axis_name, axis_actions in overlays.items():
-                self._multi_axis.axes[axis_name] = [FunscriptAction(a.at, a.pos) for a in axis_actions]
-            self.visualizations.set_multi_axis(self._multi_axis)
-            self.aux_panel.set_multi_axis(self._multi_axis)
+                multi_axis.axes[axis_name] = [FunscriptAction(a.at, a.pos) for a in axis_actions]
+            self.visualizations.set_multi_axis(multi_axis)
+            self.aux_panel.set_multi_axis(multi_axis)
             self._refresh_edit_axis_combo()
 
-            axis_count = sum(1 for k, v in self._multi_axis.axes.items() if k != "main" and v)
+            axis_count = sum(1 for k, v in multi_axis.axes.items() if k != "main" and v)
             axis_info = f" (+{axis_count} axes)" if axis_count > 0 else ""
             source_label = f"selected: {len(script_paths)} files"
             if primary_axis not in (None, "main"):
@@ -1623,7 +1632,7 @@ class PMVGeneratorWindow(QMainWindow):
                     f"main points: {len(copied_primary)}",
                 ]
                 if axis_count > 0:
-                    axis_names = sorted(k for k, v in self._multi_axis.axes.items() if k != "main" and v)
+                    axis_names = sorted(k for k, v in multi_axis.axes.items() if k != "main" and v)
                     parts.append(f"axes: {', '.join(axis_names)}")
                 if read_failures > 0:
                     parts.append(f"skipped unreadable: {read_failures}")
@@ -1749,13 +1758,16 @@ class PMVGeneratorWindow(QMainWindow):
                 samples,
                 int(analysis_cfg.sample_rate),
             )
+            multi_axis = self._multi_axis
+            if multi_axis is None:
+                return
             for axis_name, axis_actions in overlays.items():
-                self._multi_axis.axes[axis_name] = [FunscriptAction(a.at, a.pos) for a in axis_actions]
-            self.visualizations.set_multi_axis(self._multi_axis)
-            self.aux_panel.set_multi_axis(self._multi_axis)
+                multi_axis.axes[axis_name] = [FunscriptAction(a.at, a.pos) for a in axis_actions]
+            self.visualizations.set_multi_axis(multi_axis)
+            self.aux_panel.set_multi_axis(multi_axis)
             self._refresh_edit_axis_combo()
 
-            axis_count = sum(1 for k, v in self._multi_axis.axes.items() if k != "main" and v)
+            axis_count = sum(1 for k, v in multi_axis.axes.items() if k != "main" and v)
             axis_info = f" (+{axis_count} axes)" if axis_count > 0 else ""
             source_label = f"folder: {folder.name}"
             if primary_axis not in (None, "main"):
@@ -1777,7 +1789,7 @@ class PMVGeneratorWindow(QMainWindow):
                     f"main points: {len(copied_primary)}",
                 ]
                 if axis_count > 0:
-                    axis_names = sorted(k for k, v in self._multi_axis.axes.items() if k != "main" and v)
+                    axis_names = sorted(k for k, v in multi_axis.axes.items() if k != "main" and v)
                     parts.append(f"axes: {', '.join(axis_names)}")
                 if read_failures > 0:
                     parts.append(f"skipped unreadable: {read_failures}")

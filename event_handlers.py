@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 import numpy as np
-from typing import Optional
+from typing import Any, Optional
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QTimer
 from config import BeatDetectionType, StrokeMode, BEAT_RANGE_LIMITS

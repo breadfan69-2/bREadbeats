@@ -25,6 +25,7 @@ from widgets import SliderWithLabel, RangeSliderWithLabel, CollapsibleGroupBox, 
 from stylesheet import get_thin_scrollbar_style
 from logging_utils import get_log_level, log_event, set_log_level
 from version import __version__
+from config_facade import save_config
 
 def on_options_audio_device(win):
     """Show Audio Device selection dialog"""
