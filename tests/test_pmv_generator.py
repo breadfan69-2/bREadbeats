@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 from PyQt6.QtWidgets import QApplication
@@ -463,6 +464,144 @@ class TestPmvGenerator(unittest.TestCase):
             self.assertEqual(win._media_path, str(media_path))
             self.assertIsNotNone(win._samples)
             self.assertIn(media_path.name, win.file_label.text())
+
+    def test_load_converted_preview_auto_loads_fuzzy_matching_media(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media_path = root / "01.CH & ST - COCK HERO FANTASTIC.mp4"
+            media_path.write_bytes(b"not-a-real-video")
+
+            win = PMVGeneratorWindow()
+            preview_axes = {
+                "e1": [FunscriptAction(0, 10), FunscriptAction(1000, 20)],
+                "e2": [FunscriptAction(0, 30), FunscriptAction(1000, 40)],
+            }
+
+            with mock.patch("pmv_generator.load_audio", return_value=np.zeros(48_000, dtype=np.float32)):
+                self.assertTrue(
+                    win.load_converted_preview(
+                        preview_axes,
+                        base_name="COCK HERO FANTASTIC",
+                        source_folder=root,
+                    )
+                )
+
+            self.assertEqual(win._media_path, str(media_path))
+            self.assertTrue(win.video_preview.isVisible())
+            self.assertIn(media_path.name, win.file_label.text())
+
+    def test_load_converted_preview_keeps_video_preview_when_audio_load_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media_path = root / "clip.mp4"
+            media_path.write_bytes(b"not-a-real-video")
+
+            win = PMVGeneratorWindow()
+            preview_axes = {
+                "e1": [FunscriptAction(0, 10), FunscriptAction(1000, 20)],
+                "e2": [FunscriptAction(0, 30), FunscriptAction(1000, 40)],
+            }
+
+            with mock.patch("pmv_generator.load_audio", side_effect=RuntimeError("ffmpeg extraction failed")):
+                self.assertTrue(
+                    win.load_converted_preview(
+                        preview_axes,
+                        base_name="clip",
+                        source_folder=root,
+                    )
+                )
+
+            self.assertEqual(win._media_path, str(media_path))
+            self.assertIsNone(win._samples)
+            self.assertTrue(win.video_preview.isVisible())
+            self.assertIn(media_path.name, win.file_label.text())
+
+    def test_step_1_load_audio_preserves_converted_preview_axes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media_path = root / "clip.mp4"
+            media_path.write_bytes(b"not-a-real-video")
+
+            win = PMVGeneratorWindow()
+            preview_axes = {
+                "e1": [FunscriptAction(0, 10), FunscriptAction(1000, 20)],
+                "e2": [FunscriptAction(0, 30), FunscriptAction(1000, 40)],
+            }
+
+            self.assertTrue(win.load_converted_preview(preview_axes, base_name="clip"))
+            assert win._positions is not None
+            assert win._multi_axis is not None
+            before_main = [(a.at, a.pos) for a in win._positions.actions]
+            before_e2 = [(a.at, a.pos) for a in win._multi_axis.axes["e2"]]
+
+            with mock.patch("pmv_generator.load_audio", return_value=np.zeros(48_000, dtype=np.float32)):
+                self.assertTrue(win.step_1_load_audio(str(media_path), show_errors=False))
+
+            assert win._positions is not None
+            assert win._multi_axis is not None
+            self.assertIsNone(win._file_path)
+            self.assertEqual(win._media_path, str(media_path))
+            self.assertEqual([(a.at, a.pos) for a in win._positions.actions], before_main)
+            self.assertEqual([(a.at, a.pos) for a in win._multi_axis.axes["e2"]], before_e2)
+            self.assertEqual(win._current_edit_axis, "e1")
+            self.assertTrue(win.video_preview.isVisible())
+            self.assertIn("Converted preview: clip", win.file_label.text())
+            self.assertIn(media_path.name, win.file_label.text())
+
+    def test_video_preview_popout_controls_mirror_transport_state(self):
+        win = PMVGeneratorWindow()
+        panel = win.visualizations.playback_panel
+        preview = win.video_preview
+
+        panel.set_duration_ms(2000.0)
+        panel.set_external_media_active(True)
+        preview.load_media("clip.mp4")
+
+        panel.set_preview_volume(0.4)
+        panel.set_preview_muted(True)
+
+        self.assertEqual(preview._volume_slider.value(), 40)
+        self.assertTrue(preview._mute_btn.isChecked())
+
+        preview._volume_slider.setValue(70)
+        preview._mute_btn.setChecked(False)
+
+        self.assertAlmostEqual(panel.preview_volume(), 0.70, places=2)
+        self.assertFalse(panel.preview_muted())
+
+        preview._play_btn.click()
+        self.assertTrue(panel._playing)
+
+        preview._pause_btn.click()
+        self.assertFalse(panel._playing)
+
+    def test_preview_audio_state_persists_in_last_used_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            defaults_dir = root / "defaults"
+            user_dir = root / "user"
+
+            with mock.patch.object(
+                PMVGeneratorWindow,
+                "_resolve_preset_dirs",
+                return_value=(defaults_dir, user_dir),
+            ):
+                win = PMVGeneratorWindow()
+                panel = win.visualizations.playback_panel
+                panel.set_preview_volume(0.27)
+                panel.set_preview_muted(True)
+                win._save_last_used_settings()
+                win.close()
+
+                last_used_path = user_dir / "_last_used.json"
+                self.assertTrue(last_used_path.is_file())
+
+                restored = PMVGeneratorWindow()
+                restored_panel = restored.visualizations.playback_panel
+
+                self.assertAlmostEqual(restored_panel.preview_volume(), 0.27, places=2)
+                self.assertTrue(restored_panel.preview_muted())
+                restored.close()
 
     def test_send_position_at_time_emits_e1_to_e4_tags(self):
         class DummyEngine:

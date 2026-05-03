@@ -10,10 +10,12 @@ from PyQt6.QtWidgets import QApplication
 
 from funscript_edit_state import FunscriptEditState
 from pmv_audio_analysis import AudioTimeline
+from pmv_axis_converter import MultiAxisResult
 from pmv_beat_engine import BeatCandidate, BeatTimeline
+from pmv_colors import FOURPHASE_AXIS_COLORS, FOURPHASE_AXIS_ORDER
 from pmv_funscript_io import FunscriptAction
 from pmv_position_mapper import PositionTimeline
-from pmv_visualizations import VisualizationArea
+from pmv_visualizations import VideoPreviewWidget, VisualizationArea
 
 
 class TestPmvVisualizations(unittest.TestCase):
@@ -108,6 +110,24 @@ class TestPmvVisualizations(unittest.TestCase):
         total_beats = sum(len(v) for v in area._beat_data.values())
         self.assertEqual(total_beats, 4)
 
+    def test_electrode_aux_colors_match_shared_fourphase_palette(self):
+        area = VisualizationArea()
+        area.set_multi_axis(
+            MultiAxisResult(
+                axes={
+                    axis_name: [FunscriptAction(at=0, pos=(index + 1) * 10)]
+                    for index, axis_name in enumerate(FOURPHASE_AXIS_ORDER)
+                }
+            )
+        )
+
+        colors = {
+            axis_name: area.extra_curves[axis_name].opts["pen"].color().name()
+            for axis_name in FOURPHASE_AXIS_ORDER
+        }
+
+        self.assertEqual(colors, FOURPHASE_AXIS_COLORS)
+
     def test_zoom_and_toggle(self):
         area = VisualizationArea()
 
@@ -156,6 +176,76 @@ class TestPmvVisualizations(unittest.TestCase):
 
         self.assertGreaterEqual(len(captured), 1)
         self.assertAlmostEqual(float(captured[-1]), 750.0, places=2)
+
+    def test_playback_seek_emits_transport_seek(self):
+        area = VisualizationArea()
+        captured: list[tuple[str, float]] = []
+        area.playback_panel.transport_changed.connect(lambda action, position: captured.append((str(action), float(position))))
+
+        area.playback_panel.set_duration_ms(2000.0)
+        area.playback_panel.seek(750.0)
+
+        self.assertGreaterEqual(len(captured), 1)
+        self.assertEqual(captured[-1][0], "seek")
+        self.assertAlmostEqual(captured[-1][1], 750.0, places=2)
+
+    def test_playback_panel_preview_volume_controls_track_state(self):
+        area = VisualizationArea()
+        panel = area.playback_panel
+
+        panel.set_preview_volume(0.35)
+
+        self.assertAlmostEqual(panel.preview_volume(), 0.35, places=2)
+        self.assertEqual(panel.volume_slider.value(), 35)
+        self.assertEqual(panel.volume_label.text(), "35%")
+
+        panel.set_preview_muted(True)
+
+        self.assertTrue(panel.preview_muted())
+        self.assertTrue(panel.mute_btn.isChecked())
+
+    def test_video_preview_widget_controls_sync_through_playback_panel(self):
+        area = VisualizationArea()
+        panel = area.playback_panel
+        preview = VideoPreviewWidget()
+
+        panel.duration_changed.connect(preview.set_duration_ms)
+        panel.position_changed.connect(preview.set_playback_position)
+        panel.preview_volume_changed.connect(preview.set_volume)
+        panel.preview_muted_changed.connect(preview.set_muted)
+        preview.seek_requested.connect(panel.seek)
+        preview.volume_changed.connect(panel.set_preview_volume)
+        preview.muted_changed.connect(panel.set_preview_muted)
+        preview.play_requested.connect(panel.play)
+        preview.pause_requested.connect(panel.pause)
+
+        panel.set_duration_ms(1500.0)
+        panel.set_external_media_active(True)
+        preview.load_media("clip.mp4")
+
+        panel.set_preview_volume(0.42)
+        panel.set_preview_muted(True)
+
+        self.assertEqual(preview._volume_slider.value(), 42)
+        self.assertTrue(preview._mute_btn.isChecked())
+
+        preview._volume_slider.setValue(65)
+        preview._mute_btn.setChecked(False)
+
+        self.assertAlmostEqual(panel.preview_volume(), 0.65, places=2)
+        self.assertFalse(panel.preview_muted())
+
+        preview._play_btn.click()
+        self.assertTrue(panel._playing)
+
+        preview._pause_btn.click()
+        self.assertFalse(panel._playing)
+
+        panel.seek(750.0)
+        self.assertEqual(preview._seek_slider.value(), 500)
+
+        preview._seek_slider.setValue(250)
+        self.assertAlmostEqual(panel._position_ms, 375.0, places=2)
 
     def test_edit_mode_viewport_click_selects_point(self):
         area = VisualizationArea()

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 from pmv_audio_analysis import AudioTimeline
 from pmv_axis_converter import MultiAxisResult
 from pmv_beat_engine import BeatCandidate, BeatTimeline
+from pmv_colors import FOURPHASE_AXIS_COLORS, FOURPHASE_AXIS_ORDER
 from pmv_position_mapper import PositionTimeline
 
 
@@ -47,6 +48,15 @@ if _sounddevice_spec is not None:  # pragma: no cover - optional dependency
 else:
     _sd = None
     _HAS_SOUNDDEVICE = False
+
+
+_MULTI_AXIS_PALETTE = {
+    "alpha": "#4dd0e1",
+    "beta": "#ff80ab",
+    **FOURPHASE_AXIS_COLORS,
+}
+
+_ELECTRODE_AXIS_GROUP = [(axis_name, FOURPHASE_AXIS_COLORS[axis_name]) for axis_name in FOURPHASE_AXIS_ORDER]
 
 
 def _style_plot(widget: pg.PlotWidget) -> None:
@@ -263,14 +273,7 @@ class PositionTimelinePanel(QWidget):
         self.main_curve.setData(t, y)
 
     def set_multi_axis(self, result: MultiAxisResult) -> None:
-        palette = {
-            "alpha": "#4dd0e1",
-            "beta": "#ff80ab",
-            "e1": "#90caf9",
-            "e2": "#a5d6a7",
-            "e3": "#ffcc80",
-            "e4": "#ce93d8",
-        }
+        palette = _MULTI_AXIS_PALETTE
 
         keep = set()
         for axis_name, actions in result.axes.items():
@@ -352,7 +355,10 @@ class PlaybackPanel(QWidget):
     """Lightweight transport scaffold that drives cursor sync in visualization panels."""
 
     position_changed = pyqtSignal(float)
+    duration_changed = pyqtSignal(float)
     transport_changed = pyqtSignal(str, float)  # ("play"|"pause"|"stop"|"seek", position_ms)
+    preview_volume_changed = pyqtSignal(float)
+    preview_muted_changed = pyqtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -363,6 +369,9 @@ class PlaybackPanel(QWidget):
         self._audio_sr = 0
         self._playback_t0 = 0.0
         self._playback_ref_pos_ms = 0.0
+        self._preview_volume = 1.0
+        self._preview_muted = False
+        self._external_media_active = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -372,6 +381,17 @@ class PlaybackPanel(QWidget):
         self.pause_btn = QPushButton("Pause")
         self.stop_btn = QPushButton("Stop")
         self.time_label = QLabel("00:00 / 00:00")
+        self.mute_btn = QPushButton("Mute")
+        self.mute_btn.setCheckable(True)
+        self.mute_btn.setToolTip("Mute preview audio")
+
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(100)
+        self.volume_slider.setFixedWidth(110)
+        self.volume_slider.setToolTip("Preview volume")
+
+        self.volume_label = QLabel("100%")
 
         self.seek_slider = QSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 1000)
@@ -383,6 +403,9 @@ class PlaybackPanel(QWidget):
         layout.addWidget(self.stop_btn)
         layout.addWidget(self.seek_slider, 1)
         layout.addWidget(self.time_label)
+        layout.addWidget(self.mute_btn)
+        layout.addWidget(self.volume_slider)
+        layout.addWidget(self.volume_label)
 
         self._timer = QTimer(self)
         self._timer.setInterval(16)  # ~60fps for smooth playback
@@ -394,6 +417,83 @@ class PlaybackPanel(QWidget):
         self.seek_slider.sliderPressed.connect(self._on_slider_pressed)
         self.seek_slider.sliderReleased.connect(self._on_slider_released)
         self.seek_slider.valueChanged.connect(self._on_seek_slider)
+        self.mute_btn.toggled.connect(self.set_preview_muted)
+        self.volume_slider.valueChanged.connect(self._on_volume_slider_changed)
+
+    def preview_volume(self) -> float:
+        return float(self._preview_volume)
+
+    def preview_muted(self) -> bool:
+        return bool(self._preview_muted)
+
+    def uses_external_media(self) -> bool:
+        return bool(self._external_media_active)
+
+    def set_external_media_active(self, active: bool) -> None:
+        active_flag = bool(active)
+        if self._external_media_active == active_flag:
+            return
+        self._external_media_active = active_flag
+        if active_flag and _HAS_SOUNDDEVICE and _sd is not None:
+            try:
+                _sd.stop()
+            except Exception:
+                pass
+
+    def _effective_preview_volume(self) -> float:
+        if self._preview_muted:
+            return 0.0
+        return float(np.clip(self._preview_volume, 0.0, 1.0))
+
+    def _sync_preview_audio_controls(self) -> None:
+        slider_value = int(round(float(np.clip(self._preview_volume, 0.0, 1.0)) * 100.0))
+        if self.volume_slider.value() != slider_value:
+            self.volume_slider.blockSignals(True)
+            self.volume_slider.setValue(slider_value)
+            self.volume_slider.blockSignals(False)
+        if self.mute_btn.isChecked() != self._preview_muted:
+            self.mute_btn.blockSignals(True)
+            self.mute_btn.setChecked(self._preview_muted)
+            self.mute_btn.blockSignals(False)
+        self.volume_label.setText(f"{slider_value}%")
+
+    def _restart_audio_from_current_position(self) -> None:
+        if not self._playing or self._external_media_active:
+            return
+        self._refresh_position_from_clock()
+        if self._start_audio_from_position():
+            self._playback_ref_pos_ms = self._position_ms
+            self._playback_t0 = time.perf_counter()
+            return
+        self._playing = False
+        self._timer.stop()
+        self._update_label()
+        self._emit_position()
+
+    def _on_volume_slider_changed(self, value: int) -> None:
+        self.set_preview_volume(float(value) / 100.0)
+
+    def set_preview_volume(self, volume: float) -> None:
+        volume_clamped = float(np.clip(volume, 0.0, 1.0))
+        if abs(volume_clamped - self._preview_volume) <= 1e-6:
+            self._sync_preview_audio_controls()
+            return
+        self._preview_volume = volume_clamped
+        self._sync_preview_audio_controls()
+        if self._playing and not self._external_media_active and not self._preview_muted:
+            self._restart_audio_from_current_position()
+        self.preview_volume_changed.emit(self._preview_volume)
+
+    def set_preview_muted(self, muted: bool) -> None:
+        muted_flag = bool(muted)
+        if self._preview_muted == muted_flag:
+            self._sync_preview_audio_controls()
+            return
+        self._preview_muted = muted_flag
+        self._sync_preview_audio_controls()
+        if self._playing and not self._external_media_active:
+            self._restart_audio_from_current_position()
+        self.preview_muted_changed.emit(self._preview_muted)
 
     @staticmethod
     def _fmt(ms: float) -> str:
@@ -425,6 +525,12 @@ class PlaybackPanel(QWidget):
         chunk = self._audio_samples[start_idx:]
         if len(chunk) <= 0:
             return False
+
+        gain = self._effective_preview_volume()
+        if gain <= 0.0:
+            chunk = np.zeros_like(chunk)
+        elif abs(gain - 1.0) > 1e-6:
+            chunk = (chunk * gain).astype(np.float32, copy=False)
 
         try:
             _sd.stop()
@@ -470,7 +576,10 @@ class PlaybackPanel(QWidget):
             return
         self._position_ms = float(value) / 1000.0 * self._duration_ms
         if self._playing:
-            if self._start_audio_from_position():
+            if self._external_media_active:
+                self._playback_ref_pos_ms = self._position_ms
+                self._playback_t0 = time.perf_counter()
+            elif self._start_audio_from_position():
                 self._playback_ref_pos_ms = self._position_ms
                 self._playback_t0 = time.perf_counter()
             else:
@@ -488,6 +597,7 @@ class PlaybackPanel(QWidget):
         self._sync_slider_from_position()
         self._update_label()
         self._emit_position()
+        self.duration_changed.emit(self._duration_ms)
 
     def set_audio_buffer(self, samples: np.ndarray, sr: int) -> None:
         arr = np.asarray(samples, dtype=np.float32)
@@ -518,9 +628,15 @@ class PlaybackPanel(QWidget):
         if self._position_ms >= self._duration_ms:
             self._position_ms = 0.0
 
-        if not self._start_audio_from_position():
+        if not self._external_media_active and not self._start_audio_from_position():
             self.time_label.setText(f"{self._fmt(self._position_ms)} / {self._fmt(self._duration_ms)} (audio unavailable)")
             return
+
+        if self._external_media_active and _HAS_SOUNDDEVICE and _sd is not None:
+            try:
+                _sd.stop()
+            except Exception:
+                pass
 
         self._playing = True
         self._playback_ref_pos_ms = self._position_ms
@@ -560,7 +676,10 @@ class PlaybackPanel(QWidget):
     def seek(self, time_ms: float) -> None:
         self._position_ms = float(np.clip(time_ms, 0.0, max(0.0, self._duration_ms)))
         if self._playing:
-            if self._start_audio_from_position():
+            if self._external_media_active:
+                self._playback_ref_pos_ms = self._position_ms
+                self._playback_t0 = time.perf_counter()
+            elif self._start_audio_from_position():
                 self._playback_ref_pos_ms = self._position_ms
                 self._playback_t0 = time.perf_counter()
             else:
@@ -569,6 +688,7 @@ class PlaybackPanel(QWidget):
         self._sync_slider_from_position()
         self._update_label()
         self._emit_position()
+        self.transport_changed.emit("seek", self._position_ms)
 
 
 # ---------------------------------------------------------------------------
@@ -1074,14 +1194,7 @@ class VisualizationArea(QWidget):
         self._refresh_lod()
 
     def set_multi_axis(self, result: MultiAxisResult) -> None:
-        palette = {
-            "alpha": "#4dd0e1",
-            "beta": "#ff80ab",
-            "e1": "#90caf9",
-            "e2": "#a5d6a7",
-            "e3": "#ffcc80",
-            "e4": "#ce93d8",
-        }
+        palette = _MULTI_AXIS_PALETTE
 
         keep = set()
         for axis_name, actions in result.axes.items():
@@ -1664,7 +1777,7 @@ class VisualizationArea(QWidget):
 
 _AXIS_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Alpha / Beta", [("alpha", "#4dd0e1"), ("beta", "#ff80ab")]),
-    ("Electrodes", [("e1", "#90caf9"), ("e2", "#a5d6a7"), ("e3", "#ffcc80"), ("e4", "#ce93d8")]),
+    ("Electrodes", _ELECTRODE_AXIS_GROUP),
     ("Alpha Prostate / Beta Prostate", [("alpha_prostate", "#26a69a"), ("beta_prostate", "#ec407a")]),
     ("Frequency", [("frequency", "#66bb6a")]),
     ("Pulse Frequency", [("pulse_frequency", "#42a5f5")]),
@@ -2392,6 +2505,12 @@ class VideoPreviewWidget(QWidget):
     a plain "no video" label if the Qt Multimedia module is not installed.
     """
 
+    play_requested = pyqtSignal()
+    pause_requested = pyqtSignal()
+    seek_requested = pyqtSignal(float)
+    volume_changed = pyqtSignal(float)
+    muted_changed = pyqtSignal(bool)
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent, Qt.WindowType.Window)  # separate top-level window
         self.setWindowTitle("Video Preview")
@@ -2406,11 +2525,15 @@ class VideoPreviewWidget(QWidget):
         self._audio_output = None
         self._syncing = False  # guard against recursive position updates
         self._was_playing = False
+        self._volume = 1.0
+        self._muted = False
+        self._duration_ms = 0.0
+        self._position_ms = 0.0
+        self._seek_slider_held = False
 
         if _qt_multimedia_available:
             self._video_widget = _QVideoWidget(self)
             self._audio_output = _QAudioOutput(self)
-            self._audio_output.setVolume(0.0)  # muted — audio comes from sounddevice
 
             self._player = QMediaPlayer(self)
             self._player.setVideoOutput(self._video_widget)
@@ -2423,22 +2546,146 @@ class VideoPreviewWidget(QWidget):
             lbl.setStyleSheet("color: #888; font-size: 11px;")
             layout.addWidget(lbl, 1)
 
+        controls_wrap = QVBoxLayout()
+        controls_wrap.setContentsMargins(8, 6, 8, 8)
+        controls_wrap.setSpacing(6)
+
+        controls = QHBoxLayout()
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(6)
+
+        self._play_btn = QPushButton("Play")
+        self._pause_btn = QPushButton("Pause")
+        self._mute_btn = QPushButton("Mute")
+        self._mute_btn.setCheckable(True)
+        self._mute_btn.setToolTip("Mute preview audio")
+        self._volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self._volume_slider.setRange(0, 100)
+        self._volume_slider.setValue(100)
+        self._volume_slider.setFixedWidth(140)
+        self._volume_slider.setToolTip("Preview volume")
+        self._volume_label = QLabel("100%")
+
+        controls.addWidget(self._play_btn)
+        controls.addWidget(self._pause_btn)
+        controls.addStretch(1)
+        controls.addWidget(self._mute_btn)
+        controls.addWidget(self._volume_slider)
+        controls.addWidget(self._volume_label)
+        controls_wrap.addLayout(controls)
+
+        seek_row = QHBoxLayout()
+        seek_row.setContentsMargins(0, 0, 0, 0)
+        seek_row.setSpacing(6)
+        self._seek_slider = QSlider(Qt.Orientation.Horizontal)
+        self._seek_slider.setRange(0, 1000)
+        self._seek_slider.setValue(0)
+        self._seek_slider.setToolTip("Seek preview position")
+        self._time_label = QLabel("00:00 / 00:00")
+        self._time_label.setMinimumWidth(96)
+        seek_row.addWidget(self._seek_slider, 1)
+        seek_row.addWidget(self._time_label)
+        controls_wrap.addLayout(seek_row)
+        layout.addLayout(controls_wrap)
+
+        self._play_btn.clicked.connect(lambda _checked=False: self.play_requested.emit())
+        self._pause_btn.clicked.connect(lambda _checked=False: self.pause_requested.emit())
+        self._mute_btn.toggled.connect(self._on_mute_toggled)
+        self._volume_slider.valueChanged.connect(self._on_volume_slider_changed)
+        self._seek_slider.sliderPressed.connect(self._on_seek_slider_pressed)
+        self._seek_slider.sliderReleased.connect(self._on_seek_slider_released)
+        self._seek_slider.valueChanged.connect(self._on_seek_slider_changed)
+
+        self._set_controls_enabled(False)
+        self._sync_audio_controls()
+        self._sync_seek_controls()
+        self._apply_audio_state()
+
+    def _set_controls_enabled(self, enabled: bool) -> None:
+        enabled_flag = bool(enabled)
+        for widget in (self._play_btn, self._pause_btn, self._mute_btn, self._volume_slider, self._seek_slider):
+            widget.setEnabled(enabled_flag)
+
+    @staticmethod
+    def _fmt(ms: float) -> str:
+        secs = max(0, int(round(ms / 1000.0)))
+        m = secs // 60
+        s = secs % 60
+        return f"{m:02d}:{s:02d}"
+
+    def _sync_seek_controls(self) -> None:
+        if not self._seek_slider_held:
+            if self._duration_ms <= 0.0:
+                slider_value = 0
+            else:
+                slider_value = int(round((self._position_ms / self._duration_ms) * 1000.0))
+            self._seek_slider.blockSignals(True)
+            self._seek_slider.setValue(int(np.clip(slider_value, 0, 1000)))
+            self._seek_slider.blockSignals(False)
+        self._time_label.setText(f"{self._fmt(self._position_ms)} / {self._fmt(self._duration_ms)}")
+
+    def _sync_audio_controls(self) -> None:
+        slider_value = int(round(float(np.clip(self._volume, 0.0, 1.0)) * 100.0))
+        if self._volume_slider.value() != slider_value:
+            self._volume_slider.blockSignals(True)
+            self._volume_slider.setValue(slider_value)
+            self._volume_slider.blockSignals(False)
+        if self._mute_btn.isChecked() != self._muted:
+            self._mute_btn.blockSignals(True)
+            self._mute_btn.setChecked(self._muted)
+            self._mute_btn.blockSignals(False)
+        self._volume_label.setText(f"{slider_value}%")
+
+    def _apply_audio_state(self) -> None:
+        if self._audio_output is not None:
+            self._audio_output.setVolume(0.0 if self._muted else float(np.clip(self._volume, 0.0, 1.0)))
+
+    def _on_volume_slider_changed(self, value: int) -> None:
+        self.volume_changed.emit(float(value) / 100.0)
+
+    def _on_mute_toggled(self, muted: bool) -> None:
+        self.muted_changed.emit(bool(muted))
+
+    def _emit_seek_for_slider(self) -> None:
+        if self._duration_ms <= 0.0:
+            return
+        position_ms = (float(self._seek_slider.value()) / 1000.0) * self._duration_ms
+        self.seek_requested.emit(position_ms)
+
+    def _on_seek_slider_pressed(self) -> None:
+        self._seek_slider_held = True
+
+    def _on_seek_slider_released(self) -> None:
+        self._seek_slider_held = False
+        self._emit_seek_for_slider()
+
+    def _on_seek_slider_changed(self, _value: int) -> None:
+        if self._seek_slider_held:
+            return
+        self._emit_seek_for_slider()
+
     # ── public API ──
 
     def load_media(self, file_path: str | None) -> None:
         """Load a video file for preview.  Pass None to clear."""
         self._media_path = file_path
+        self._set_controls_enabled(bool(file_path))
         if self._player is None:
             return
         from PyQt6.QtCore import QUrl
         if file_path is None:
             self._player.stop()
             self._player.setSource(QUrl())
+            self._position_ms = 0.0
+            self._sync_seek_controls()
             return
         url = QUrl.fromLocalFile(file_path)
         self._player.setSource(url)
         # Seek to beginning and pause so a frame is visible
         self._player.pause()
+        self._position_ms = 0.0
+        self._sync_seek_controls()
+        self._apply_audio_state()
 
     def on_transport(self, action: str, position_ms: float) -> None:
         """Slot for PlaybackPanel.transport_changed(str, float)."""
@@ -2449,21 +2696,41 @@ class VideoPreviewWidget(QWidget):
             self._player.setPosition(pos_int)
             self._player.play()
             self._was_playing = True
+            self._position_ms = float(pos_int)
         elif action == "pause":
             self._player.pause()
             self._player.setPosition(pos_int)
             self._was_playing = False
+            self._position_ms = float(pos_int)
         elif action == "stop":
             self._player.stop()
             self._player.setPosition(0)
             self._was_playing = False
+            self._position_ms = 0.0
         elif action == "seek":
             self._player.setPosition(pos_int)
+            self._position_ms = float(pos_int)
+        self._sync_seek_controls()
+
+    def set_duration_ms(self, duration_ms: float) -> None:
+        self._duration_ms = max(0.0, float(duration_ms))
+        self._position_ms = min(self._position_ms, self._duration_ms)
+        self._sync_seek_controls()
+
+    def set_playback_position(self, position_ms: float) -> None:
+        self._position_ms = float(np.clip(position_ms, 0.0, max(0.0, self._duration_ms)))
+        self._sync_seek_controls()
 
     def set_muted(self, muted: bool) -> None:
         """Mute / un-mute the video audio track."""
-        if self._audio_output is not None:
-            self._audio_output.setVolume(0.0 if muted else 1.0)
+        self._muted = bool(muted)
+        self._sync_audio_controls()
+        self._apply_audio_state()
+
+    def set_volume(self, volume: float) -> None:
+        self._volume = float(np.clip(volume, 0.0, 1.0))
+        self._sync_audio_controls()
+        self._apply_audio_state()
 
 
 __all__ = [

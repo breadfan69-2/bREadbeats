@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import QApplication
 
 from config import Config
 from funscript_converter_window import FunscriptConverterWindow
+from pmv_colors import FOURPHASE_AXIS_COLORS, FOURPHASE_AXIS_ORDER
 from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
 
 
@@ -41,7 +42,7 @@ class TestFunscriptConverterWindow(unittest.TestCase):
 
         colors = [win._curves[index].opts["pen"].color().name() for index in range(4)]
 
-        self.assertEqual(colors, ["#ff6b6b", "#4d96ff", "#ffd93d", "#6bcb77"])
+        self.assertEqual(colors, [FOURPHASE_AXIS_COLORS[name] for name in FOURPHASE_AXIS_ORDER])
 
         win.close()
 

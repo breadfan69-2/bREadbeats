@@ -61,6 +61,37 @@ def _merge_dict(base: dict, overrides: dict) -> dict:
     return out
 
 
+def _normalize_media_match_key(value: str) -> str:
+    lowered = "".join(ch.lower() if ch.isalnum() else " " for ch in str(value))
+    return " ".join(lowered.split())
+
+
+def _score_media_match(target_name: str, candidate_name: str) -> float:
+    target = _normalize_media_match_key(target_name)
+    candidate = _normalize_media_match_key(candidate_name)
+    if not target or not candidate:
+        return 0.0
+    if target == candidate:
+        return 1.0
+    if len(target) >= 5 and target in candidate:
+        return 0.94
+    if len(candidate) >= 5 and candidate in target:
+        return 0.90
+
+    target_tokens = set(target.split())
+    candidate_tokens = set(candidate.split())
+    if not target_tokens or not candidate_tokens:
+        return 0.0
+
+    shared = target_tokens & candidate_tokens
+    if not shared:
+        return 0.0
+
+    coverage = len(shared) / float(len(target_tokens))
+    precision = len(shared) / float(len(candidate_tokens))
+    return (coverage * 0.7) + (precision * 0.3)
+
+
 class _PipelineWorker(QObject):
     """Runs a single callable off the main thread and reports progress."""
 
@@ -407,7 +438,16 @@ class PMVGeneratorWindow(QMainWindow):
         self.controls.config_changed.connect(self._on_controls_changed)
         self.controls.step_bar.step_requested.connect(self._on_step_requested)
         self.visualizations.position_changed.connect(self._on_visualization_position_changed)
+        self.visualizations.playback_panel.duration_changed.connect(self.video_preview.set_duration_ms)
+        self.visualizations.playback_panel.position_changed.connect(self.video_preview.set_playback_position)
         self.visualizations.playback_panel.transport_changed.connect(self.video_preview.on_transport)
+        self.visualizations.playback_panel.preview_volume_changed.connect(self.video_preview.set_volume)
+        self.visualizations.playback_panel.preview_muted_changed.connect(self.video_preview.set_muted)
+        self.video_preview.play_requested.connect(self.visualizations.playback_panel.play)
+        self.video_preview.pause_requested.connect(self.visualizations.playback_panel.pause)
+        self.video_preview.seek_requested.connect(self.visualizations.playback_panel.seek)
+        self.video_preview.volume_changed.connect(self.visualizations.playback_panel.set_preview_volume)
+        self.video_preview.muted_changed.connect(self.visualizations.playback_panel.set_preview_muted)
         self._edit_state.changed.connect(self._on_edit_state_changed)
         self.aux_panel.link_x_axis(self.visualizations.overlay_plot)
         self.load_preset_btn.clicked.connect(self._on_load_preset_clicked)
@@ -423,6 +463,10 @@ class PMVGeneratorWindow(QMainWindow):
         self._reload_preset_catalog()
         self._load_last_used_settings()
         self._refresh_step_availability()
+        self.video_preview.set_duration_ms(self.visualizations.playback_panel._duration_ms)
+        self.video_preview.set_playback_position(0.0)
+        self.video_preview.set_volume(self.visualizations.playback_panel.preview_volume())
+        self.video_preview.set_muted(self.visualizations.playback_panel.preview_muted())
         self._on_controls_changed()
 
     def _preset_dirs(self) -> tuple[Path, Path]:
@@ -621,6 +665,10 @@ class PMVGeneratorWindow(QMainWindow):
             payload = self.controls.to_preset()
             payload["pmv_preset_version"] = 1
             payload["name"] = "_last_used"
+            payload["preview_audio"] = {
+                "volume": float(self.visualizations.playback_panel.preview_volume()),
+                "muted": bool(self.visualizations.playback_panel.preview_muted()),
+            }
             target = self._last_used_path()
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -629,8 +677,26 @@ class PMVGeneratorWindow(QMainWindow):
 
     def _load_last_used_settings(self) -> None:
         p = self._last_used_path()
-        if p.is_file():
-            self._load_preset_from_path(str(p), show_errors=False)
+        if not p.is_file():
+            return
+        try:
+            payload = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
+            self.controls.set_from_preset(payload)
+            preview_audio = payload.get("preview_audio", {})
+            if isinstance(preview_audio, dict):
+                volume = preview_audio.get("volume")
+                if volume is not None:
+                    try:
+                        self.visualizations.playback_panel.set_preview_volume(float(volume))
+                    except (TypeError, ValueError):
+                        pass
+                if "muted" in preview_audio:
+                    self.visualizations.playback_panel.set_preview_muted(bool(preview_audio.get("muted")))
+            self._on_controls_changed()
+        except Exception:
+            pass
 
     def _on_load_preset_clicked(self) -> None:
         idx = self.preset_combo.currentIndex()
@@ -659,13 +725,73 @@ class PMVGeneratorWindow(QMainWindow):
     def _load_video_preview(self) -> None:
         """Show/hide the video preview popout based on current _media_path."""
         media = self._media_path
-        if media is not None and Path(media).suffix.lower() in VIDEO_EXTENSIONS:
+        is_video = media is not None and Path(media).suffix.lower() in VIDEO_EXTENSIONS
+        self.visualizations.playback_panel.set_external_media_active(is_video)
+        if is_video:
             self.video_preview.load_media(media)
+            self.video_preview.set_volume(self.visualizations.playback_panel.preview_volume())
+            self.video_preview.set_muted(self.visualizations.playback_panel.preview_muted())
+            self.video_preview.showNormal()
             self.video_preview.show()
             self.video_preview.raise_()
+            self.video_preview.activateWindow()
         else:
             self.video_preview.load_media(None)
             self.video_preview.hide()
+
+    def _has_converted_preview_loaded(self) -> bool:
+        return (
+            self._file_path is None
+            and self._positions is not None
+            and self._multi_axis is not None
+            and self.file_label.text().startswith("Converted preview:")
+        )
+
+    def _attach_media_to_converted_preview(
+        self,
+        path: str | Path,
+        samples,
+        analysis_sample_rate: int,
+    ) -> None:
+        media_path = Path(path)
+        self._media_path = str(media_path)
+        self._load_video_preview()
+        self._samples = samples
+        self._timeline = None
+        self._beats = None
+        self._cached_orbital_result = None
+        self._beat_preview_timer.stop()
+        self._last_beat_preview_signature = None
+        self._live_preview_timer.stop()
+        self._last_live_preview_signature = None
+
+        self.visualizations.set_beats(BeatTimeline(beats=[], tempo_bpm=0.0, tempo_confidence=0.0, beat_period_ms=0.0))
+        self.visualizations.set_audio_data(samples, int(analysis_sample_rate))
+        if self._positions is not None:
+            self.visualizations.set_positions(self._positions)
+        if self._multi_axis is not None:
+            self.visualizations.set_multi_axis(self._multi_axis)
+            self.aux_panel.set_multi_axis(self._multi_axis)
+        self._refresh_edit_axis_combo()
+        if self._current_edit_axis != "main":
+            self.aux_panel.select_edit_axis(self._current_edit_axis)
+
+        label_base = self.file_label.text().split(" | ", 1)[0]
+        self.file_label.setText(f"{label_base} | {media_path.name}")
+
+        tooltip_base = self.file_label.toolTip().split("\nMedia:", 1)[0]
+        self.file_label.setToolTip(f"{tooltip_base}\nMedia: {media_path}")
+
+        self.controls.step_bar.set_step_status(1, "done")
+        self.controls.step_bar.set_step_status(2, "ready")
+        self.controls.step_bar.set_step_status(3, "ready")
+        self.controls.step_bar.set_step_status(4, "done")
+        self.controls.step_bar.set_step_status(5, "ready")
+        self._refresh_step_availability()
+
+        bar = self.statusBar()
+        if bar is not None:
+            bar.showMessage(f"Attached media {media_path.name} to current converted preview", 4000)
 
     def _progress(self, step_name: str, message: str, percent: float) -> None:
         import sys
@@ -928,6 +1054,48 @@ class PMVGeneratorWindow(QMainWindow):
             seen.add(key)
             if candidate.exists() and candidate.is_file():
                 return candidate
+
+        search_roots: list[Path] = [script_path.parent]
+        parent = script_path.parent.parent
+        for _ in range(3):
+            if parent == parent.parent:
+                break
+            search_roots.append(parent)
+            parent = parent.parent
+
+        query_names = {script_path.stem}
+        if _axis is not None:
+            query_names.add(base_stem)
+        if title:
+            query_names.add(Path(title).stem if Path(title).suffix.lower() in SUPPORTED_EXTENSIONS else title)
+
+        best_match: Path | None = None
+        best_score = 0.0
+        seen_roots: set[str] = set()
+        for depth, folder in enumerate(search_roots):
+            folder_key = str(folder).lower()
+            if folder_key in seen_roots or not folder.exists() or not folder.is_dir():
+                continue
+            seen_roots.add(folder_key)
+
+            try:
+                entries = sorted(folder.iterdir())
+            except Exception:
+                continue
+
+            for candidate in entries:
+                if not candidate.is_file() or candidate.suffix.lower() not in SUPPORTED_EXTENSIONS:
+                    continue
+                score = max((_score_media_match(name, candidate.stem) for name in query_names), default=0.0)
+                if score < 0.72:
+                    continue
+                adjusted_score = score - (depth * 0.04)
+                if adjusted_score > best_score:
+                    best_match = candidate
+                    best_score = adjusted_score
+
+        if best_match is not None:
+            return best_match
         return None
 
     def _on_open_script_clicked(self) -> None:
@@ -1333,7 +1501,6 @@ class PMVGeneratorWindow(QMainWindow):
                         samples = load_audio(str(matching_media), analysis_cfg, lambda *_args: None)
                     except Exception:
                         samples = None
-                        matching_media = None
 
         self._file_path = None
         self._media_path = str(matching_media) if matching_media is not None else None
@@ -2085,6 +2252,9 @@ class PMVGeneratorWindow(QMainWindow):
             return load_audio(path, analysis_cfg, progress_cb)
 
         def apply(samples):
+            if self._has_converted_preview_loaded():
+                self._attach_media_to_converted_preview(path, samples, int(analysis_cfg.sample_rate))
+                return
             self._file_path = str(path)
             self._media_path = str(path)
             self._load_video_preview()

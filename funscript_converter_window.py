@@ -36,12 +36,13 @@ from funscript_converter import (
 )
 from config import Config
 from funscript_utils import AXIS_SUFFIXES, load_folder, strip_axis_suffix
+from pmv_colors import FOURPHASE_AXIS_COLORS, FOURPHASE_AXIS_ORDER
 from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
 from widgets import SliderWithLabel
 
 # Electrode channel colors (match FOC-Stim output colors)
-_E_COLORS = ["#ff6b6b", "#4d96ff", "#ffd93d", "#6bcb77"]
-_E_NAMES = ["E1", "E2", "E3", "E4"]
+_E_COLORS = [FOURPHASE_AXIS_COLORS[name] for name in FOURPHASE_AXIS_ORDER]
+_E_NAMES = [name.upper() for name in FOURPHASE_AXIS_ORDER]
 _PREVIEW_SPECS = [
     ("e1", _E_NAMES[0], _E_COLORS[0]),
     ("e2", _E_NAMES[1], _E_COLORS[1]),

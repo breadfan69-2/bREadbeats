@@ -16,7 +16,7 @@ from pathlib import Path
 t_pyqt = time.perf_counter()
 from PyQt6.QtWidgets import QApplication, QSplashScreen
 from PyQt6.QtGui import QIcon, QPixmap
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, qInstallMessageHandler
 
 print(
     f"[Startup] GUI framework loaded (+{(time.perf_counter() - t_pyqt) * 1000:.0f} ms). "
@@ -25,7 +25,24 @@ print(
 )
 
 
+_PREVIOUS_QT_MESSAGE_HANDLER = None
+_QT_FFMPEG_TEARDOWN_PREFIX = "QObject::disconnect: wildcard call disconnects from destroyed signal of QFFmpeg::"
+
+
+def _qt_message_handler(_msg_type, _context, message: str) -> None:
+    if str(message).startswith(_QT_FFMPEG_TEARDOWN_PREFIX):
+        return
+    if _PREVIOUS_QT_MESSAGE_HANDLER is not None:
+        _PREVIOUS_QT_MESSAGE_HANDLER(_msg_type, _context, message)
+        return
+    print(str(message), file=sys.stderr, flush=True)
+
+
 def run_app(app_argv: list[str]) -> int:
+    global _PREVIOUS_QT_MESSAGE_HANDLER
+    if _PREVIOUS_QT_MESSAGE_HANDLER is None:
+        _PREVIOUS_QT_MESSAGE_HANDLER = qInstallMessageHandler(_qt_message_handler)
+
     app = QApplication(app_argv)
     app.setStyle("Fusion")
 
