@@ -6,7 +6,7 @@ Pipeline: load multi-axis funscripts → unify timeline → mix to (α,β,γ)
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cos, sin, sqrt
+from math import cos, sin, sqrt, pi
 
 import numpy as np
 
@@ -28,8 +28,8 @@ TETRA_VERTICES = np.array([
 ], dtype=np.float64)
 
 # ---------------------------------------------------------------------------
-# Electrode placement presets — permutation of (0,1,2,3)
-# placement[i] = which basis-vector index electrode E(i+1) receives
+# Legacy wiring presets — permutation of (0,1,2,3)
+# placement[i] = which decoded output index physical electrode E(i+1) receives
 # ---------------------------------------------------------------------------
 PRESETS: dict[str, tuple[int, int, int, int]] = {
     "Triangle + Behind":            (0, 1, 2, 3),
@@ -38,6 +38,79 @@ PRESETS: dict[str, tuple[int, int, int, int]] = {
 }
 
 DEFAULT_PRESET = "Triangle + Behind"
+IDENTITY_WIRING_MAP = PRESETS[DEFAULT_PRESET]
+
+# ---------------------------------------------------------------------------
+# Pair-position layout models (direct E1-E4 decoder)
+# ---------------------------------------------------------------------------
+
+DEFAULT_LAYOUT_MODEL = "Pair At Middle"
+
+LAYOUT_MODEL_DISPLAY_NAMES: dict[str, str] = {
+    "Pair At Top": "Pair At Top",
+    "Pair At Middle": "Pair At Middle",
+    "Pair At Bottom / Rear": "Pair At Bottom / Rear",
+}
+
+LAYOUT_MODEL_ALIASES: dict[str, str] = {
+    "Triangle + Behind": "Pair At Middle",
+    "Tip Sides + Base": "Pair At Top",
+    "Tip-Base + Bipolar Internal": "Pair At Bottom / Rear",
+}
+
+_POINT_CENTER = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float64)
+_POINT_A = np.array([1.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64)
+_POINT_B = np.array([1.0 / 3.0, 1.0, 1.0 / 3.0, 1.0 / 3.0], dtype=np.float64)
+_POINT_C = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0, 1.0 / 3.0], dtype=np.float64)
+_POINT_D = np.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 1.0], dtype=np.float64)
+_POINT_AB = np.array([1.0, 1.0, 0.0, 0.0], dtype=np.float64)
+_POINT_BC = np.array([0.0, 1.0, 1.0, 0.0], dtype=np.float64)
+_POINT_CD = np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
+_POINT_ABC = np.array([1.0, 1.0, 1.0, 0.0], dtype=np.float64)
+_POINT_ABD = np.array([1.0, 1.0, 0.0, 1.0], dtype=np.float64)
+_POINT_ACD = np.array([1.0, 0.0, 1.0, 1.0], dtype=np.float64)
+_POINT_BCD = np.array([0.0, 1.0, 1.0, 1.0], dtype=np.float64)
+
+_SIDE_GAIN = 0.45
+_ROT_GAIN = 0.35
+
+LAYOUT_MODELS: dict[str, dict[str, np.ndarray]] = {
+    "Pair At Top": {
+        "top": _POINT_AB,
+        "mid": _POINT_C,
+        "low": _POINT_D,
+        "side_left": _POINT_A,
+        "side_right": _POINT_B,
+        "rot_left": _POINT_ACD,
+        "rot_right": _POINT_BCD,
+    },
+    "Pair At Middle": {
+        "top": _POINT_A,
+        "mid": _POINT_BC,
+        "low": _POINT_D,
+        "side_left": _POINT_B,
+        "side_right": _POINT_C,
+        "rot_left": _POINT_ABD,
+        "rot_right": _POINT_ACD,
+    },
+    "Pair At Bottom / Rear": {
+        "top": _POINT_A,
+        "mid": _POINT_B,
+        "low": _POINT_CD,
+        "side_left": _POINT_C,
+        "side_right": _POINT_D,
+        "rot_left": _POINT_ABC,
+        "rot_right": _POINT_ABD,
+    },
+}
+
+_LAYOUT_CONTROL_ROTATIONS: dict[str, float] = {
+    # Rotate the upstream alpha/gamma frame so pair position changes how
+    # axial travel and rotational branch bias borrow from the same 3-DOF input.
+    "Pair At Top": -pi / 6.0,
+    "Pair At Middle": 0.0,
+    "Pair At Bottom / Rear": pi / 6.0,
+}
 
 # ---------------------------------------------------------------------------
 # Input axis names recognised by the converter
@@ -159,6 +232,32 @@ def mix_to_3d(
     return normalized_points[:, 0], normalized_points[:, 1], normalized_points[:, 2]
 
 
+def mix_to_layout_controls(
+    unified: dict[str, np.ndarray],
+    weights: MixWeights | None = None,
+    layout_model: str | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Map 6 input axes to axial/side/rotation layout controls.
+
+    Pair-position layouts share one 3-DOF upstream motion source, but each
+    layout rotates the axial/rotational frame differently so the accessory
+    axes land in distinct places before direct E1-E4 decoding.
+    """
+    alpha, beta, gamma = mix_to_3d(unified, weights)
+    resolved_layout = _resolve_layout_model(layout_model)
+    theta = _LAYOUT_CONTROL_ROTATIONS[resolved_layout]
+
+    axial = alpha * cos(theta) - gamma * sin(theta)
+    side = beta
+    rotation = alpha * sin(theta) + gamma * cos(theta)
+
+    points = np.column_stack([axial, side, rotation])
+    norms = np.linalg.norm(points, axis=1, keepdims=True)
+    scale = np.where(norms > 1.0, norms, 1.0)
+    normalized_points = points / scale
+    return normalized_points[:, 0], normalized_points[:, 1], normalized_points[:, 2]
+
+
 # ---------------------------------------------------------------------------
 # Tetrahedral projection
 # ---------------------------------------------------------------------------
@@ -244,6 +343,69 @@ def constrain_fourphase_coordinates(projected: np.ndarray) -> np.ndarray:
     return constrained
 
 
+def _resolve_layout_model(layout_model: str | None) -> str:
+    if layout_model is None:
+        return DEFAULT_LAYOUT_MODEL
+    if layout_model in LAYOUT_MODELS:
+        return layout_model
+    if layout_model in LAYOUT_MODEL_ALIASES:
+        return LAYOUT_MODEL_ALIASES[layout_model]
+    raise ValueError(f"Unknown layout model: {layout_model}")
+
+
+def _blend_rows(start: np.ndarray, end: np.ndarray, t: np.ndarray) -> np.ndarray:
+    weights = np.asarray(t, dtype=np.float64).reshape(-1, 1)
+    if weights.size == 0:
+        return np.empty((0, start.shape[0]), dtype=np.float64)
+    return start[np.newaxis, :] * (1.0 - weights) + end[np.newaxis, :] * weights
+
+
+def _pm_rows(values: np.ndarray, left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    t = (np.clip(np.asarray(values, dtype=np.float64), -1.0, 1.0) + 1.0) * 0.5
+    return _blend_rows(left, right, t)
+
+
+def _step_rows(points: np.ndarray, anchors: np.ndarray, gains: np.ndarray) -> np.ndarray:
+    weight = np.clip(np.asarray(gains, dtype=np.float64), 0.0, 1.0).reshape(-1, 1)
+    return constrain_fourphase_coordinates(points + weight * (anchors - points))
+
+
+def decode_layout_controls(
+    u: np.ndarray,
+    s: np.ndarray,
+    r: np.ndarray,
+    layout_model: str | None = None,
+) -> np.ndarray:
+    """Decode axial/side/rotation controls into direct fourphase coordinates."""
+    resolved_layout = _resolve_layout_model(layout_model)
+    layout = LAYOUT_MODELS[resolved_layout]
+
+    axial = np.clip(np.asarray(u, dtype=np.float64), -1.0, 1.0)
+    side = np.clip(np.asarray(s, dtype=np.float64), -1.0, 1.0)
+    rotation = np.clip(np.asarray(r, dtype=np.float64), -1.0, 1.0)
+    if not (len(axial) == len(side) == len(rotation)):
+        raise ValueError("Layout controls must have equal length")
+
+    points = np.repeat(_POINT_CENTER[np.newaxis, :], len(axial), axis=0)
+
+    pos_mask = axial >= 0.0
+    mid_mask = (axial < 0.0) & (axial >= -0.5)
+    low_mask = axial < -0.5
+
+    if np.any(pos_mask):
+        points[pos_mask] = _blend_rows(_POINT_CENTER, layout["top"], axial[pos_mask])
+    if np.any(mid_mask):
+        points[mid_mask] = _blend_rows(_POINT_CENTER, layout["mid"], -2.0 * axial[mid_mask])
+    if np.any(low_mask):
+        points[low_mask] = _blend_rows(layout["mid"], layout["low"], -2.0 * axial[low_mask] - 1.0)
+
+    points = constrain_fourphase_coordinates(points)
+    side_anchor = _pm_rows(side, layout["side_left"], layout["side_right"])
+    points = _step_rows(points, side_anchor, _SIDE_GAIN * np.abs(side))
+    rot_anchor = _pm_rows(rotation, layout["rot_left"], layout["rot_right"])
+    return _step_rows(points, rot_anchor, _ROT_GAIN * np.abs(rotation))
+
+
 # ---------------------------------------------------------------------------
 # Permutation
 # ---------------------------------------------------------------------------
@@ -252,11 +414,19 @@ def apply_permutation(
     projected: np.ndarray,
     placement: tuple[int, int, int, int],
 ) -> np.ndarray:
-    """Reorder columns of projected (N,4) according to placement.
+    """Legacy alias for applying a post-decode wiring map.
 
     placement[i] = which basis vector index electrode E(i+1) gets.
     """
-    return projected[:, list(placement)]
+    return apply_wiring_map(projected, placement)
+
+
+def apply_wiring_map(
+    projected: np.ndarray,
+    wiring_map: tuple[int, int, int, int],
+) -> np.ndarray:
+    """Reorder columns of direct e1-e4 output according to wiring_map."""
+    return projected[:, list(wiring_map)]
 
 
 # ---------------------------------------------------------------------------
@@ -314,8 +484,11 @@ def convert(
     placement: tuple[int, int, int, int] | None = None,
     weights: MixWeights | None = None,
     freq_config: FreqConfig | None = None,
+    layout_model: str | None = None,
 ) -> dict[str, list[FunscriptAction]]:
-    """Run the full 6-axis → 4-phase conversion pipeline.
+    """Run the full 6-axis → direct fourphase conversion pipeline.
+
+    placement is a post-decode wiring map for physical channel order.
 
     Returns dict with keys 'e1'–'e4' and optionally
     'pulse_frequency', 'carrier_frequency', 'frequency'.
@@ -327,9 +500,9 @@ def convert(
     if len(timestamps) == 0:
         return {}
 
-    alpha, beta, gamma = mix_to_3d(unified, weights)
-    projected = tetrahedral_project(alpha, beta, gamma)
-    permuted = apply_permutation(projected, placement)
+    axial, side, rotation = mix_to_layout_controls(unified, weights, layout_model)
+    decoded = decode_layout_controls(axial, side, rotation, layout_model)
+    permuted = apply_wiring_map(decoded, placement)
 
     ts_int = timestamps.astype(np.int64)
 

@@ -556,6 +556,8 @@ class BREadbeatsWindow(QMainWindow):
                 self._converter_window = FunscriptConverterWindow(
                     parent=None,
                     preview_callback=self._preview_converter_result_in_pmv,
+                    config=self.config,
+                    save_settings=save_config,
                 )
 
                 def _on_destroyed(*_args):

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from PyQt6.QtWidgets import QApplication
 
+from config import Config
 from funscript_converter_window import FunscriptConverterWindow
 from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
 
@@ -155,5 +156,35 @@ class TestFunscriptConverterWindow(unittest.TestCase):
         self.assertAlmostEqual(cfg.carrier_center, 51.0)
         self.assertAlmostEqual(cfg.carrier_min, 41.0)
         self.assertAlmostEqual(cfg.carrier_max, 59.0)
+
+        win.close()
+
+    def test_layout_and_wiring_restore_and_persist(self):
+        saved_states: list[tuple[str, list[int]]] = []
+        config = Config()
+        config.funscript_converter.layout_model = "Pair At Bottom / Rear"
+        config.funscript_converter.wiring_map = [2, 1, 0, 3]
+
+        def _save_settings(updated_config: Config) -> bool:
+            saved_states.append(
+                (
+                    updated_config.funscript_converter.layout_model,
+                    list(updated_config.funscript_converter.wiring_map),
+                )
+            )
+            return True
+
+        win = FunscriptConverterWindow(config=config, save_settings=_save_settings)
+
+        self.assertEqual(win._get_current_layout_model(), "Pair At Bottom / Rear")
+        self.assertEqual(win._get_current_wiring_map(), (2, 1, 0, 3))
+
+        win._layout_combo.setCurrentIndex(win._layout_combo.findData("Pair At Top"))
+        win._swap_electrodes(0, 3)
+
+        self.assertEqual(config.funscript_converter.layout_model, "Pair At Top")
+        self.assertEqual(config.funscript_converter.wiring_map, [3, 1, 0, 2])
+        self.assertGreaterEqual(len(saved_states), 2)
+        self.assertEqual(saved_states[-1], ("Pair At Top", [3, 1, 0, 2]))
 
         win.close()

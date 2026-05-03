@@ -12,8 +12,10 @@ from funscript_converter import (
     apply_permutation,
     constrain_fourphase_coordinates,
     convert,
+    decode_layout_controls,
     generate_freq_axes,
     mix_to_3d,
+    mix_to_layout_controls,
     tetrahedral_project,
     unify_timeline,
 )
@@ -145,6 +147,27 @@ class TestMixTo3d:
         assert abs(gamma[0]) > 0.1  # twist affects gamma
 
 
+class TestLayoutControlMix:
+    def test_pair_position_rotates_axial_vs_rotation_mix(self):
+        unified = {
+            "main": np.array([100.0]),
+            "sway": np.array([50.0]),
+            "surge": np.array([100.0]),
+            "roll": np.array([50.0]),
+            "pitch": np.array([50.0]),
+            "twist": np.array([50.0]),
+        }
+
+        top_axial, top_side, top_rotation = mix_to_layout_controls(unified, layout_model="Pair At Top")
+        middle_axial, middle_side, middle_rotation = mix_to_layout_controls(unified, layout_model="Pair At Middle")
+        bottom_axial, bottom_side, bottom_rotation = mix_to_layout_controls(unified, layout_model="Pair At Bottom / Rear")
+
+        np.testing.assert_allclose(top_side, middle_side, atol=1e-10)
+        np.testing.assert_allclose(bottom_side, middle_side, atol=1e-10)
+        assert top_axial[0] > middle_axial[0] > bottom_axial[0]
+        assert top_rotation[0] < middle_rotation[0] < bottom_rotation[0]
+
+
 # ---------------------------------------------------------------------------
 # Tetrahedral projection
 # ---------------------------------------------------------------------------
@@ -244,6 +267,56 @@ class TestConstrainFourphaseCoordinates:
             [1.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0],
             atol=1e-10,
         )
+
+
+class TestLayoutDecoder:
+    def test_pair_at_top_axial_anchors(self):
+        result = decode_layout_controls(
+            np.array([1.0, -0.5, -1.0]),
+            np.zeros(3),
+            np.zeros(3),
+            "Pair At Top",
+        )
+        np.testing.assert_allclose(result[0], [1.0, 1.0, 0.0, 0.0], atol=1e-10)
+        np.testing.assert_allclose(result[1], [1.0 / 3.0, 1.0 / 3.0, 1.0, 1.0 / 3.0], atol=1e-10)
+        np.testing.assert_allclose(result[2], [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 1.0], atol=1e-10)
+
+    def test_pair_at_middle_axial_anchors(self):
+        result = decode_layout_controls(
+            np.array([1.0, -0.5, -1.0]),
+            np.zeros(3),
+            np.zeros(3),
+            "Pair At Middle",
+        )
+        np.testing.assert_allclose(result[0], [1.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], atol=1e-10)
+        np.testing.assert_allclose(result[1], [0.0, 1.0, 1.0, 0.0], atol=1e-10)
+        np.testing.assert_allclose(result[2], [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 1.0], atol=1e-10)
+
+    def test_pair_at_bottom_rear_axial_anchors(self):
+        result = decode_layout_controls(
+            np.array([1.0, -0.5, -1.0]),
+            np.zeros(3),
+            np.zeros(3),
+            "Pair At Bottom / Rear",
+        )
+        np.testing.assert_allclose(result[0], [1.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], atol=1e-10)
+        np.testing.assert_allclose(result[1], [1.0 / 3.0, 1.0, 1.0 / 3.0, 1.0 / 3.0], atol=1e-10)
+        np.testing.assert_allclose(result[2], [0.0, 0.0, 1.0, 1.0], atol=1e-10)
+
+    def test_legacy_layout_alias_maps_to_pair_at_middle(self):
+        direct = decode_layout_controls(
+            np.array([1.0]),
+            np.array([0.0]),
+            np.array([0.0]),
+            "Pair At Middle",
+        )
+        legacy = decode_layout_controls(
+            np.array([1.0]),
+            np.array([0.0]),
+            np.array([0.0]),
+            "Triangle + Behind",
+        )
+        np.testing.assert_allclose(direct, legacy, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +428,12 @@ class TestConvert:
         p1 = [a.pos for a in r1["e1"]]
         p2 = [a.pos for a in r2["e1"]]
         assert p1 != p2
+
+    def test_layout_model_changes_output(self):
+        axes = {"main": _make_actions([(0, 0), (1000, 100)])}
+        top_pair = convert(axes, layout_model="Pair At Top")
+        middle_pair = convert(axes, layout_model="Pair At Middle")
+        assert [a.pos for a in top_pair["e2"]] != [a.pos for a in middle_pair["e2"]]
 
     def test_round_trip(self, tmp_path):
         """Generate → export → re-read should produce valid data."""

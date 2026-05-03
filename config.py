@@ -351,6 +351,14 @@ class AudioConfig:
     use_butterworth: bool = True      # Use Butterworth bandpass for beat detection
     volume_normalize: bool = True     # Compensate for Windows volume (pycaw) so beat detection is volume-independent
 
+
+@dataclass
+class FunscriptConverterConfig:
+    """Persisted UI state for the standalone FunScript Converter."""
+
+    layout_model: str = "Pair At Middle"
+    wiring_map: list[int] = field(default_factory=lambda: [0, 1, 2, 3])
+
 @dataclass
 class Config:
     """Master configuration"""
@@ -366,6 +374,7 @@ class Config:
     rise_time: RiseTimeConfig = field(default_factory=RiseTimeConfig)
     device_limits: DeviceLimitsConfig = field(default_factory=DeviceLimitsConfig)
     auto_adjust: AutoAdjustConfig = field(default_factory=AutoAdjustConfig)
+    funscript_converter: FunscriptConverterConfig = field(default_factory=FunscriptConverterConfig)
     
     # Global
     base_radius: float = 0.30        # Global idle orbit radius (0.05-1.0)
@@ -433,6 +442,23 @@ def migrate_config(config: Config, loaded_version) -> None:
         jitter_size = 0.024
     config.jitter.size = max(0.0, min(0.2, jitter_size))
     config.jitter.amplitude = config.jitter.size
+
+    try:
+        layout_model = str(getattr(config.funscript_converter, 'layout_model', 'Pair At Middle') or 'Pair At Middle')
+    except Exception:
+        layout_model = 'Pair At Middle'
+    if layout_model not in {'Pair At Top', 'Pair At Middle', 'Pair At Bottom / Rear'}:
+        layout_model = 'Pair At Middle'
+    config.funscript_converter.layout_model = layout_model
+
+    raw_wiring_map = getattr(config.funscript_converter, 'wiring_map', [0, 1, 2, 3])
+    try:
+        wiring_map = [int(value) for value in raw_wiring_map]
+    except Exception:
+        wiring_map = [0, 1, 2, 3]
+    if len(wiring_map) != 4 or sorted(wiring_map) != [0, 1, 2, 3]:
+        wiring_map = [0, 1, 2, 3]
+    config.funscript_converter.wiring_map = wiring_map
 
     config.version = CURRENT_CONFIG_VERSION
 

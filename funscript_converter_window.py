@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable
-from typing import Callable
 
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,18 +27,38 @@ from PyQt6.QtWidgets import (
 
 from funscript_converter import (
     CONVERTER_INPUT_AXES,
-    DEFAULT_PRESET,
-    PRESETS,
+    DEFAULT_LAYOUT_MODEL,
     FreqConfig,
+    IDENTITY_WIRING_MAP,
+    LAYOUT_MODEL_DISPLAY_NAMES,
     MixWeights,
     convert,
 )
+from config import Config
 from funscript_utils import AXIS_SUFFIXES, load_folder, strip_axis_suffix
 from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
 
 # Electrode channel colors (match restim convention)
 _E_COLORS = ["#ff6b6b", "#6bcb77", "#4d96ff", "#ffd93d"]
 _E_NAMES = ["E1", "E2", "E3", "E4"]
+
+_LAYOUT_DIAGRAMS = {
+    "Pair At Top": (
+        "      E1   E2\n"
+        "        E3\n"
+        "        E4"
+    ),
+    "Pair At Middle": (
+        "        E1\n"
+        "      E2   E3\n"
+        "        E4"
+    ),
+    "Pair At Bottom / Rear": (
+        "        E1\n"
+        "        E2\n"
+        "      E3   E4"
+    ),
+}
 
 # Performance options for pyqtgraph curves
 _DS = dict(clipToView=True, autoDownsample=True, downsampleMethod="peak")
@@ -56,24 +76,30 @@ class FunscriptConverterWindow(QMainWindow):
         self,
         parent: QWidget | None = None,
         preview_callback: Callable[[str, dict[str, list[FunscriptAction]], Path | None], None] | None = None,
+        config: Config | None = None,
+        save_settings: Callable[[Config], bool] | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("FunScript Converter — 6-Axis to 4-Phase")
         self.resize(1100, 700)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._preview_callback = preview_callback
+        self._config = config
+        self._save_settings = save_settings
 
         # State
         self._loaded_axes: dict[str, list[FunscriptAction]] = {}
         self._source_folder: Path | None = None
         self._base_stem: str = ""
         self._result: dict[str, list[FunscriptAction]] = {}
+        self._wiring_map: tuple[int, int, int, int] = IDENTITY_WIRING_MAP
         self._reconvert_timer = QTimer(self)
         self._reconvert_timer.setSingleShot(True)
         self._reconvert_timer.setInterval(150)
         self._reconvert_timer.timeout.connect(self._run_conversion)
 
         self._build_ui()
+        self._restore_persisted_state()
         self._update_axes_status()
 
     # ------------------------------------------------------------------
@@ -140,20 +166,21 @@ class FunscriptConverterWindow(QMainWindow):
             self._axis_labels[axis] = lbl
         left_layout.addWidget(axes_group)
 
-        # Electrode Layout group
-        layout_group = QGroupBox("Electrode Layout")
+        # Layout model group
+        layout_group = QGroupBox("Layout Model")
         layout_gl = QVBoxLayout(layout_group)
 
-        preset_row = QHBoxLayout()
-        preset_row.addWidget(QLabel("Preset:"))
-        self._preset_combo = QComboBox()
-        for name in PRESETS:
-            self._preset_combo.addItem(name)
-        self._preset_combo.addItem("Custom (modified)")
-        self._preset_combo.setCurrentText(DEFAULT_PRESET)
-        self._preset_combo.currentTextChanged.connect(self._on_preset_changed)
-        preset_row.addWidget(self._preset_combo, 1)
-        layout_gl.addLayout(preset_row)
+        layout_row = QHBoxLayout()
+        layout_row.addWidget(QLabel("Layout:"))
+        self._layout_combo = QComboBox()
+        for model_name, display_name in LAYOUT_MODEL_DISPLAY_NAMES.items():
+            self._layout_combo.addItem(display_name, model_name)
+        default_index = self._layout_combo.findData(DEFAULT_LAYOUT_MODEL)
+        if default_index >= 0:
+            self._layout_combo.setCurrentIndex(default_index)
+        self._layout_combo.currentIndexChanged.connect(self._on_layout_changed)
+        layout_row.addWidget(self._layout_combo, 1)
+        layout_gl.addLayout(layout_row)
 
         # Diagram label
         self._diagram_label = QLabel()
@@ -164,25 +191,6 @@ class FunscriptConverterWindow(QMainWindow):
         )
         layout_gl.addWidget(self._diagram_label)
         self._update_diagram()
-
-        # Swap buttons
-        swap_row1 = QHBoxLayout()
-        btn_swap_12 = QPushButton("Swap E1↔E2")
-        btn_swap_12.clicked.connect(lambda: self._swap_electrodes(0, 1))
-        swap_row1.addWidget(btn_swap_12)
-        btn_swap_34 = QPushButton("Swap E3↔E4")
-        btn_swap_34.clicked.connect(lambda: self._swap_electrodes(2, 3))
-        swap_row1.addWidget(btn_swap_34)
-        layout_gl.addLayout(swap_row1)
-
-        swap_row2 = QHBoxLayout()
-        btn_swap_tb = QPushButton("Swap Top↔Bottom")
-        btn_swap_tb.clicked.connect(lambda: self._swap_electrodes(0, 3))
-        swap_row2.addWidget(btn_swap_tb)
-        btn_swap_lr = QPushButton("Swap Left↔Right")
-        btn_swap_lr.clicked.connect(lambda: self._swap_electrodes(1, 2))
-        swap_row2.addWidget(btn_swap_lr)
-        layout_gl.addLayout(swap_row2)
 
         left_layout.addWidget(layout_group)
 
@@ -275,24 +283,60 @@ class FunscriptConverterWindow(QMainWindow):
     # Diagram
     # ------------------------------------------------------------------
 
-    def _get_current_placement(self) -> tuple[int, int, int, int]:
-        name = self._preset_combo.currentText()
-        if name in PRESETS:
-            return PRESETS[name]
-        return getattr(self, "_custom_placement", PRESETS[DEFAULT_PRESET])
+    def _get_current_layout_model(self) -> str:
+        model_name = self._layout_combo.currentData()
+        return model_name if isinstance(model_name, str) else DEFAULT_LAYOUT_MODEL
+
+    def _get_current_wiring_map(self) -> tuple[int, int, int, int]:
+        return getattr(self, "_wiring_map", IDENTITY_WIRING_MAP)
 
     def _update_diagram(self) -> None:
-        p = self._get_current_placement()
-        # Map vertex indices to labels
-        labels = [f"v{p[i]}" for i in range(4)]
-        text = (
-            f"      {_E_NAMES[0]} ({labels[0]})\n"
-            f"     /        \\\n"
-            f"  {_E_NAMES[1]} ({labels[1]})   {_E_NAMES[2]} ({labels[2]})\n"
-            f"     \\        /\n"
-            f"      {_E_NAMES[3]} ({labels[3]})"
-        )
-        self._diagram_label.setText(text)
+        layout_model = self._get_current_layout_model()
+        diagram = _LAYOUT_DIAGRAMS.get(layout_model, _LAYOUT_DIAGRAMS[DEFAULT_LAYOUT_MODEL])
+        self._diagram_label.setText(diagram)
+
+    def _normalize_wiring_map(self, raw_wiring_map: object) -> tuple[int, int, int, int]:
+        try:
+            wiring_map = [int(value) for value in raw_wiring_map]  # type: ignore[arg-type]
+        except Exception:
+            return IDENTITY_WIRING_MAP
+        if len(wiring_map) != 4 or sorted(wiring_map) != [0, 1, 2, 3]:
+            return IDENTITY_WIRING_MAP
+        return (wiring_map[0], wiring_map[1], wiring_map[2], wiring_map[3])
+
+    def _restore_persisted_state(self) -> None:
+        if self._config is None:
+            self._update_diagram()
+            return
+        state = getattr(self._config, "funscript_converter", None)
+        if state is None:
+            self._update_diagram()
+            return
+
+        layout_model = str(getattr(state, "layout_model", DEFAULT_LAYOUT_MODEL) or DEFAULT_LAYOUT_MODEL)
+        if layout_model not in LAYOUT_MODEL_DISPLAY_NAMES:
+            layout_model = DEFAULT_LAYOUT_MODEL
+        self._wiring_map = self._normalize_wiring_map(getattr(state, "wiring_map", IDENTITY_WIRING_MAP))
+
+        layout_index = self._layout_combo.findData(layout_model)
+        if layout_index < 0:
+            layout_index = self._layout_combo.findData(DEFAULT_LAYOUT_MODEL)
+        self._layout_combo.blockSignals(True)
+        if layout_index >= 0:
+            self._layout_combo.setCurrentIndex(layout_index)
+        self._layout_combo.blockSignals(False)
+        self._update_diagram()
+
+    def _persist_state(self, *, save_now: bool) -> None:
+        if self._config is None:
+            return
+        state = getattr(self._config, "funscript_converter", None)
+        if state is None:
+            return
+        state.layout_model = self._get_current_layout_model()
+        state.wiring_map = list(self._get_current_wiring_map())
+        if save_now and self._save_settings is not None:
+            self._save_settings(self._config)
 
     # ------------------------------------------------------------------
     # Loading
@@ -434,11 +478,18 @@ class FunscriptConverterWindow(QMainWindow):
         if not self._loaded_axes:
             return
 
-        placement = self._get_current_placement()
+        layout_model = self._get_current_layout_model()
+        wiring_map = self._get_current_wiring_map()
         weights = self._get_mix_weights()
         freq_cfg = self._get_freq_config()
 
-        self._result = convert(self._loaded_axes, placement, weights, freq_cfg)
+        self._result = convert(
+            self._loaded_axes,
+            placement=wiring_map,
+            weights=weights,
+            freq_config=freq_cfg,
+            layout_model=layout_model,
+        )
         self._update_preview()
         self._preview_btn.setEnabled(bool(self._result) and self._preview_callback is not None)
         self._export_btn.setEnabled(bool(self._result))
@@ -483,29 +534,28 @@ class FunscriptConverterWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _swap_electrodes(self, a: int, b: int) -> None:
-        placement = list(self._get_current_placement())
-        placement[a], placement[b] = placement[b], placement[a]
-        perm = tuple(placement)
-
-        # Check if it matches a preset
-        matched = False
-        for name, preset in PRESETS.items():
-            if preset == perm:
-                self._preset_combo.setCurrentText(name)
-                matched = True
-                break
-
-        if not matched:
-            self._custom_placement = perm  # type: ignore[attr-defined]
-            self._preset_combo.setCurrentText("Custom (modified)")
+        wiring_map = list(self._get_current_wiring_map())
+        wiring_map[a], wiring_map[b] = wiring_map[b], wiring_map[a]
+        self._wiring_map = (wiring_map[0], wiring_map[1], wiring_map[2], wiring_map[3])
 
         self._update_diagram()
+        self._persist_state(save_now=True)
         self._schedule_reconvert()
 
-    def _on_preset_changed(self, name: str) -> None:
-        if name in PRESETS:
-            self._update_diagram()
-            self._schedule_reconvert()
+    def _reset_wiring_map(self) -> None:
+        self._wiring_map = IDENTITY_WIRING_MAP
+        self._update_diagram()
+        self._persist_state(save_now=True)
+        self._schedule_reconvert()
+
+    def _on_layout_changed(self, _index: int) -> None:
+        self._update_diagram()
+        self._persist_state(save_now=True)
+        self._schedule_reconvert()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._persist_state(save_now=True)
+        super().closeEvent(event)
 
     # ------------------------------------------------------------------
     # Export
