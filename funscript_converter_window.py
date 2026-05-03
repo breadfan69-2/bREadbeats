@@ -356,6 +356,55 @@ class FunscriptConverterWindow(QMainWindow):
         if layout_index >= 0:
             self._layout_combo.setCurrentIndex(layout_index)
         self._layout_combo.blockSignals(False)
+        self._w_primary.setValue(
+            max(0.0, min(1.0, float(getattr(state, "w_primary", 0.8))))
+        )
+        self._w_secondary.setValue(
+            max(0.0, min(1.0, float(getattr(state, "w_secondary", 0.2))))
+        )
+        self._w_twist.setValue(
+            max(0.0, min(1.0, float(getattr(state, "w_twist", 0.3))))
+        )
+        self._twist_phase.setValue(
+            max(0.0, min(6.28, float(getattr(state, "twist_phase", 0.7854))))
+        )
+        self._freq_enabled.setChecked(bool(getattr(state, "freq_enabled", True)))
+        self._freq_scale.setValue(
+            max(0.0, min(5.0, float(getattr(state, "freq_scale", 1.0))))
+        )
+        self._pulse_surge_influence.setValue(
+            max(0.0, min(2.0, float(getattr(state, "pulse_surge_influence", 1.0))))
+        )
+        self._pulse_speed_influence.setValue(
+            max(0.0, min(1.0, float(getattr(state, "pulse_speed_influence", 0.15))))
+        )
+        self._pulse_center.setValue(
+            max(0.0, min(100.0, float(getattr(state, "pulse_center", 55.0))))
+        )
+        self._pulse_min.setValue(
+            max(0.0, min(100.0, float(getattr(state, "pulse_min", 20.0))))
+        )
+        self._pulse_max.setValue(
+            max(0.0, min(100.0, float(getattr(state, "pulse_max", 80.0))))
+        )
+        self._carrier_scale.setValue(
+            max(0.0, min(5.0, float(getattr(state, "carrier_scale", 1.0))))
+        )
+        self._carrier_surge_influence.setValue(
+            max(0.0, min(2.0, float(getattr(state, "carrier_surge_influence", 1.0))))
+        )
+        self._carrier_speed_influence.setValue(
+            max(0.0, min(1.0, float(getattr(state, "carrier_speed_influence", 0.10))))
+        )
+        self._carrier_center.setValue(
+            max(0.0, min(100.0, float(getattr(state, "carrier_center", 50.0))))
+        )
+        self._carrier_min.setValue(
+            max(0.0, min(100.0, float(getattr(state, "carrier_min", 40.0))))
+        )
+        self._carrier_max.setValue(
+            max(0.0, min(100.0, float(getattr(state, "carrier_max", 60.0))))
+        )
         self._update_diagram()
 
     def _persist_state(self, *, save_now: bool) -> None:
@@ -366,6 +415,23 @@ class FunscriptConverterWindow(QMainWindow):
             return
         state.layout_model = self._get_current_layout_model()
         state.wiring_map = list(self._get_current_wiring_map())
+        state.w_primary = self._w_primary.value()
+        state.w_secondary = self._w_secondary.value()
+        state.w_twist = self._w_twist.value()
+        state.twist_phase = self._twist_phase.value()
+        state.freq_enabled = self._freq_enabled.isChecked()
+        state.freq_scale = self._freq_scale.value()
+        state.pulse_surge_influence = self._pulse_surge_influence.value()
+        state.pulse_speed_influence = self._pulse_speed_influence.value()
+        state.pulse_center = self._pulse_center.value()
+        state.pulse_min = self._pulse_min.value()
+        state.pulse_max = self._pulse_max.value()
+        state.carrier_scale = self._carrier_scale.value()
+        state.carrier_surge_influence = self._carrier_surge_influence.value()
+        state.carrier_speed_influence = self._carrier_speed_influence.value()
+        state.carrier_center = self._carrier_center.value()
+        state.carrier_min = self._carrier_min.value()
+        state.carrier_max = self._carrier_max.value()
         if save_now and self._save_settings is not None:
             self._save_settings(self._config)
 

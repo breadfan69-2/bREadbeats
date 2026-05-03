@@ -358,6 +358,23 @@ class FunscriptConverterConfig:
 
     layout_model: str = "Pair At Middle"
     wiring_map: list[int] = field(default_factory=lambda: [0, 1, 2, 3])
+    w_primary: float = 0.8
+    w_secondary: float = 0.2
+    w_twist: float = 0.3
+    twist_phase: float = 0.7853981633974483
+    freq_enabled: bool = True
+    freq_scale: float = 1.0
+    pulse_surge_influence: float = 1.0
+    pulse_speed_influence: float = 0.15
+    pulse_center: float = 55.0
+    pulse_min: float = 20.0
+    pulse_max: float = 80.0
+    carrier_scale: float = 1.0
+    carrier_surge_influence: float = 1.0
+    carrier_speed_influence: float = 0.10
+    carrier_center: float = 50.0
+    carrier_min: float = 40.0
+    carrier_max: float = 60.0
 
 @dataclass
 class Config:
@@ -459,6 +476,40 @@ def migrate_config(config: Config, loaded_version) -> None:
     if len(wiring_map) != 4 or sorted(wiring_map) != [0, 1, 2, 3]:
         wiring_map = [0, 1, 2, 3]
     config.funscript_converter.wiring_map = wiring_map
+
+    def _normalize_converter_bool(field_name: str, default: bool) -> None:
+        raw_value = getattr(config.funscript_converter, field_name, default)
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip().lower() not in {"", "0", "false", "no", "off"}
+        else:
+            normalized = bool(raw_value)
+        setattr(config.funscript_converter, field_name, normalized)
+
+    def _clamp_converter_float(field_name: str, default: float, min_value: float, max_value: float) -> None:
+        try:
+            value = float(getattr(config.funscript_converter, field_name, default))
+        except Exception:
+            value = default
+        setattr(config.funscript_converter, field_name, max(min_value, min(max_value, value)))
+
+    _clamp_converter_float('w_primary', 0.8, 0.0, 1.0)
+    _clamp_converter_float('w_secondary', 0.2, 0.0, 1.0)
+    _clamp_converter_float('w_twist', 0.3, 0.0, 1.0)
+    _clamp_converter_float('twist_phase', 0.7853981633974483, 0.0, 6.28)
+    _normalize_converter_bool('freq_enabled', True)
+    _clamp_converter_float('freq_scale', 1.0, 0.0, 5.0)
+
+    _clamp_converter_float('pulse_surge_influence', 1.0, 0.0, 2.0)
+    _clamp_converter_float('pulse_speed_influence', 0.15, 0.0, 1.0)
+    _clamp_converter_float('pulse_center', 55.0, 0.0, 100.0)
+    _clamp_converter_float('pulse_min', 20.0, 0.0, 100.0)
+    _clamp_converter_float('pulse_max', 80.0, 0.0, 100.0)
+    _clamp_converter_float('carrier_scale', 1.0, 0.0, 5.0)
+    _clamp_converter_float('carrier_surge_influence', 1.0, 0.0, 2.0)
+    _clamp_converter_float('carrier_speed_influence', 0.10, 0.0, 1.0)
+    _clamp_converter_float('carrier_center', 50.0, 0.0, 100.0)
+    _clamp_converter_float('carrier_min', 40.0, 0.0, 100.0)
+    _clamp_converter_float('carrier_max', 60.0, 0.0, 100.0)
 
     config.version = CURRENT_CONFIG_VERSION
 
