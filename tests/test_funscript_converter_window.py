@@ -21,6 +21,25 @@ class TestFunscriptConverterWindow(unittest.TestCase):
     def setUpClass(cls):
         cls._app = QApplication.instance() or QApplication([])
 
+    def test_frequency_preview_defaults_on_and_uses_horizontal_zoom(self):
+        win = FunscriptConverterWindow()
+
+        self.assertTrue(win._freq_enabled.isChecked())
+        self.assertEqual(len(win._plots), 6)
+        for plot in win._plots:
+            self.assertEqual(plot.getViewBox().state["mouseEnabled"], [True, False])
+
+        win.close()
+
+    def test_electrode_preview_colors_match_focstim_outputs(self):
+        win = FunscriptConverterWindow()
+
+        colors = [win._curves[index].opts["pen"].color().name() for index in range(4)]
+
+        self.assertEqual(colors, ["#ff6b6b", "#4d96ff", "#ffd93d", "#6bcb77"])
+
+        win.close()
+
     def test_preview_in_generator_uses_callback(self):
         received = []
 
@@ -50,6 +69,25 @@ class TestFunscriptConverterWindow(unittest.TestCase):
         self.assertIn("carrier_frequency", received[0][1])
         self.assertIn("frequency", received[0][1])
         self.assertEqual(received[0][2], Path(tempfile.gettempdir()))
+        win.close()
+
+    def test_preview_plots_include_frequency_axes(self):
+        win = FunscriptConverterWindow()
+        win._loaded_axes = {
+            "main": _make_actions([(0, 0), (500, 50), (1000, 100)]),
+            "surge": _make_actions([(0, 0), (500, 50), (1000, 100)]),
+        }
+
+        win._run_conversion()
+
+        pulse_t, pulse_y = win._curves[4].getData()
+        carrier_t, carrier_y = win._curves[5].getData()
+
+        self.assertEqual(list(pulse_t), [0.0, 0.5, 1.0])
+        self.assertEqual([int(value) for value in pulse_y], [80, 55, 20])
+        self.assertEqual([int(value) for value in carrier_y], [60, 50, 40])
+        self.assertEqual(list(carrier_t), [0.0, 0.5, 1.0])
+
         win.close()
 
     def test_load_file_accepts_multi_selection(self):
@@ -99,6 +137,7 @@ class TestFunscriptConverterWindow(unittest.TestCase):
             export_dir.mkdir()
 
             win = FunscriptConverterWindow()
+            win._freq_enabled.setChecked(False)
             win._loaded_axes = {
                 "main": _make_actions([(0, 50), (500, 50), (1000, 50)]),
                 "surge": _make_actions([(0, 50), (500, 50), (1000, 50)]),

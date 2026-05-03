@@ -38,9 +38,17 @@ from config import Config
 from funscript_utils import AXIS_SUFFIXES, load_folder, strip_axis_suffix
 from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
 
-# Electrode channel colors (match restim convention)
-_E_COLORS = ["#ff6b6b", "#6bcb77", "#4d96ff", "#ffd93d"]
+# Electrode channel colors (match FOC-Stim output colors)
+_E_COLORS = ["#ff6b6b", "#4d96ff", "#ffd93d", "#6bcb77"]
 _E_NAMES = ["E1", "E2", "E3", "E4"]
+_PREVIEW_SPECS = [
+    ("e1", _E_NAMES[0], _E_COLORS[0]),
+    ("e2", _E_NAMES[1], _E_COLORS[1]),
+    ("e3", _E_NAMES[2], _E_COLORS[2]),
+    ("e4", _E_NAMES[3], _E_COLORS[3]),
+    ("pulse_frequency", "Pulse", "#ff9f43"),
+    ("carrier_frequency", "Carrier", "#a29bfe"),
+]
 
 _LAYOUT_DIAGRAMS = {
     "Pair At Top": (
@@ -69,6 +77,8 @@ def _style_plot(widget: pg.PlotWidget) -> None:
     widget.showGrid(x=True, y=True, alpha=0.12)
     widget.getAxis("bottom").setTextPen(pg.mkPen("#c8c8c8"))
     widget.getAxis("left").setTextPen(pg.mkPen("#c8c8c8"))
+    widget.setMouseEnabled(x=True, y=False)
+    widget.getViewBox().setLimits(yMin=0.0, yMax=100.0, minYRange=100.0, maxYRange=100.0)
 
 
 class FunscriptConverterWindow(QMainWindow):
@@ -209,6 +219,7 @@ class FunscriptConverterWindow(QMainWindow):
         freq_group = QGroupBox("Frequency Outputs")
         freq_layout = QVBoxLayout(freq_group)
         self._freq_enabled = QCheckBox("Export frequency axes")
+        self._freq_enabled.setChecked(True)
         self._freq_enabled.stateChanged.connect(self._schedule_reconvert)
         freq_layout.addWidget(self._freq_enabled)
         self._freq_scale = self._add_spin(freq_layout, "Pulse freq scale:", 0.0, 5.0, 1.0)
@@ -234,22 +245,22 @@ class FunscriptConverterWindow(QMainWindow):
         self._plots: list[pg.PlotWidget] = []
         self._curves: list[pg.PlotDataItem] = []
 
-        for i in range(4):
+        for i, (_axis_name, axis_label, color) in enumerate(_PREVIEW_SPECS):
             pw = pg.PlotWidget()
             _style_plot(pw)
-            pw.setLabel("left", _E_NAMES[i])
-            pw.setYRange(0, 100)
-            if i < 3:
+            pw.setLabel("left", axis_label)
+            pw.setYRange(0, 100, padding=0)
+            if i < len(_PREVIEW_SPECS) - 1:
                 pw.getAxis("bottom").setStyle(showValues=False)
             else:
                 pw.setLabel("bottom", "Time (s)")
-            curve = pw.plot([], [], pen=pg.mkPen(_E_COLORS[i], width=1.4), **_DS)
+            curve = pw.plot([], [], pen=pg.mkPen(color, width=1.4), **_DS)
             self._plots.append(pw)
             self._curves.append(curve)
             right_layout.addWidget(pw)
 
         # Link X axes so they zoom/pan together
-        for i in range(1, 4):
+        for i in range(1, len(self._plots)):
             self._plots[i].setXLink(self._plots[0])
 
         splitter.addWidget(right_widget)
@@ -520,7 +531,7 @@ class FunscriptConverterWindow(QMainWindow):
             QMessageBox.warning(self, "Preview Error", str(exc))
 
     def _update_preview(self) -> None:
-        for i, name in enumerate(["e1", "e2", "e3", "e4"]):
+        for i, (name, _axis_label, _color) in enumerate(_PREVIEW_SPECS):
             actions = self._result.get(name, [])
             if actions:
                 t = np.array([a.at / 1000.0 for a in actions])
