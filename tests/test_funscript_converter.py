@@ -360,7 +360,7 @@ class TestFreqAxes:
         # At surge=50 (neutral), outputs should be at their center values.
         assert abs(result["pulse_frequency"][1] - 55.0) < 0.1
         assert abs(result["carrier_frequency"][1] - 50.0) < 0.1
-        # Negative surge pushes above center; positive surge pulls below center.
+        # Positive surge now lowers both pulse and carrier.
         np.testing.assert_allclose(result["pulse_frequency"], [80.0, 55.0, 20.0])
         np.testing.assert_allclose(result["carrier_frequency"], [60.0, 50.0, 40.0])
         # frequency is identical to carrier_frequency
@@ -383,6 +383,97 @@ class TestFreqAxes:
 
         np.testing.assert_allclose(result["pulse_frequency"], [70.0, 60.0, 30.0])
         np.testing.assert_allclose(result["carrier_frequency"], [58.0, 52.0, 45.0])
+
+    def test_surge_influence_is_separate_per_axis(self):
+        unified = {
+            "main": np.array([50.0, 50.0, 50.0]),
+            "surge": np.array([0.0, 50.0, 100.0]),
+        }
+        result = generate_freq_axes(
+            unified,
+            FreqConfig(
+                enabled=True,
+                pulse_surge_influence=0.0,
+                carrier_surge_influence=1.0,
+            ),
+        )
+
+        np.testing.assert_allclose(result["pulse_frequency"], [55.0, 55.0, 55.0])
+        np.testing.assert_allclose(result["carrier_frequency"], [60.0, 50.0, 40.0])
+
+    def test_surge_influence_can_exceed_1x(self):
+        unified = {
+            "main": np.array([50.0, 50.0, 50.0]),
+            "surge": np.array([25.0, 50.0, 75.0]),
+        }
+
+        baseline = generate_freq_axes(
+            unified,
+            FreqConfig(
+                enabled=True,
+                pulse_speed_influence=0.0,
+                carrier_speed_influence=0.0,
+            ),
+        )
+        boosted = generate_freq_axes(
+            unified,
+            FreqConfig(
+                enabled=True,
+                pulse_surge_influence=2.0,
+                pulse_speed_influence=0.0,
+                carrier_surge_influence=2.0,
+                carrier_speed_influence=0.0,
+            ),
+        )
+
+        np.testing.assert_allclose(baseline["pulse_frequency"], [67.5, 55.0, 37.5], atol=1e-10)
+        np.testing.assert_allclose(boosted["pulse_frequency"], [80.0, 55.0, 20.0], atol=1e-10)
+        np.testing.assert_allclose(baseline["carrier_frequency"], [55.0, 50.0, 45.0], atol=1e-10)
+        np.testing.assert_allclose(boosted["carrier_frequency"], [60.0, 50.0, 40.0], atol=1e-10)
+
+    def test_main_speed_lifts_pulse_frequency(self):
+        unified = {
+            "main": np.array([0.0, 0.0, 50.0, 100.0]),
+            "surge": np.array([50.0, 50.0, 50.0, 50.0]),
+        }
+        timestamps = np.array([0.0, 1000.0, 1500.0, 2000.0])
+
+        result = generate_freq_axes(unified, FreqConfig(enabled=True), timestamps)
+
+        np.testing.assert_allclose(result["pulse_frequency"], [55.0, 56.875, 58.75, 58.75], atol=1e-10)
+
+    def test_carrier_speed_influence_is_configurable(self):
+        unified = {
+            "main": np.array([0.0, 0.0, 50.0, 100.0]),
+            "surge": np.array([50.0, 50.0, 50.0, 50.0]),
+        }
+        timestamps = np.array([0.0, 1000.0, 1500.0, 2000.0])
+        low_speed = generate_freq_axes(
+            unified,
+            FreqConfig(enabled=True, carrier_surge_influence=0.0, carrier_speed_influence=0.0),
+            timestamps,
+        )
+        high_speed = generate_freq_axes(
+            unified,
+            FreqConfig(enabled=True, carrier_surge_influence=0.0, carrier_speed_influence=0.4),
+            timestamps,
+        )
+
+        assert high_speed["carrier_frequency"][1] > low_speed["carrier_frequency"][1]
+        assert high_speed["carrier_frequency"][2] > low_speed["carrier_frequency"][2]
+
+    def test_main_position_tilts_carrier_frequency(self):
+        unified = {
+            "main": np.array([0.0, 50.0, 100.0]),
+            "surge": np.array([50.0, 50.0, 50.0]),
+        }
+
+        result = generate_freq_axes(
+            unified,
+            FreqConfig(enabled=True, carrier_surge_influence=0.0, carrier_speed_influence=0.0),
+        )
+
+        np.testing.assert_allclose(result["carrier_frequency"], [48.5, 50.0, 51.5], atol=1e-10)
 
 
 # ---------------------------------------------------------------------------

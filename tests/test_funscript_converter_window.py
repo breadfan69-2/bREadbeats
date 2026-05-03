@@ -29,6 +29,11 @@ class TestFunscriptConverterWindow(unittest.TestCase):
         for plot in win._plots:
             self.assertEqual(plot.getViewBox().state["mouseEnabled"], [True, False])
 
+        self.assertAlmostEqual(win._pulse_surge_influence.value(), 1.0)
+        self.assertAlmostEqual(win._pulse_speed_influence.value(), 0.15)
+        self.assertAlmostEqual(win._carrier_surge_influence.value(), 1.0)
+        self.assertAlmostEqual(win._carrier_speed_influence.value(), 0.10)
+
         win.close()
 
     def test_electrode_preview_colors_match_focstim_outputs(self):
@@ -83,9 +88,13 @@ class TestFunscriptConverterWindow(unittest.TestCase):
         pulse_t, pulse_y = win._curves[4].getData()
         carrier_t, carrier_y = win._curves[5].getData()
 
+        assert pulse_t is not None
+        assert pulse_y is not None
+        assert carrier_t is not None
+        assert carrier_y is not None
         self.assertEqual(list(pulse_t), [0.0, 0.5, 1.0])
-        self.assertEqual([int(value) for value in pulse_y], [80, 55, 20])
-        self.assertEqual([int(value) for value in carrier_y], [60, 50, 40])
+        self.assertEqual(list(pulse_y), [80, 59, 25])
+        self.assertEqual(list(carrier_y), [60, 51, 43])
         self.assertEqual(list(carrier_t), [0.0, 0.5, 1.0])
 
         win.close()
@@ -176,10 +185,14 @@ class TestFunscriptConverterWindow(unittest.TestCase):
         win = FunscriptConverterWindow()
         win._freq_enabled.setChecked(True)
         win._freq_scale.setValue(1.5)
+        win._pulse_surge_influence.setValue(1.75)
+        win._pulse_speed_influence.setValue(0.2)
         win._pulse_center.setValue(58.0)
         win._pulse_min.setValue(22.0)
         win._pulse_max.setValue(76.0)
         win._carrier_scale.setValue(1.2)
+        win._carrier_surge_influence.setValue(1.5)
+        win._carrier_speed_influence.setValue(0.12)
         win._carrier_center.setValue(51.0)
         win._carrier_min.setValue(41.0)
         win._carrier_max.setValue(59.0)
@@ -188,10 +201,14 @@ class TestFunscriptConverterWindow(unittest.TestCase):
 
         self.assertTrue(cfg.enabled)
         self.assertAlmostEqual(cfg.freq_scale, 1.5)
+        self.assertAlmostEqual(cfg.pulse_surge_influence, 1.75)
+        self.assertAlmostEqual(cfg.pulse_speed_influence, 0.2)
         self.assertAlmostEqual(cfg.pulse_center, 58.0)
         self.assertAlmostEqual(cfg.pulse_min, 22.0)
         self.assertAlmostEqual(cfg.pulse_max, 76.0)
         self.assertAlmostEqual(cfg.carrier_scale, 1.2)
+        self.assertAlmostEqual(cfg.carrier_surge_influence, 1.5)
+        self.assertAlmostEqual(cfg.carrier_speed_influence, 0.12)
         self.assertAlmostEqual(cfg.carrier_center, 51.0)
         self.assertAlmostEqual(cfg.carrier_min, 41.0)
         self.assertAlmostEqual(cfg.carrier_max, 59.0)

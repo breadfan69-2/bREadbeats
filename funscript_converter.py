@@ -73,6 +73,9 @@ _POINT_BCD = np.array([0.0, 1.0, 1.0, 1.0], dtype=np.float64)
 
 _SIDE_GAIN = 0.45
 _ROT_GAIN = 0.35
+_PULSE_SPEED_BIAS_GAIN = 0.15
+_CARRIER_SPEED_BIAS_GAIN = 0.10
+_CARRIER_POSITION_BIAS_GAIN = 0.15
 
 LAYOUT_MODELS: dict[str, dict[str, np.ndarray]] = {
     "Pair At Top": {
@@ -134,9 +137,13 @@ class FreqConfig:
     enabled: bool = False
     freq_scale: float = 1.0
     carrier_scale: float = 1.0
+    pulse_surge_influence: float = 1.0
+    pulse_speed_influence: float = _PULSE_SPEED_BIAS_GAIN
     pulse_center: float = 55.0    # center position for pulse_frequency (0-100)
     pulse_min: float = 20.0
     pulse_max: float = 80.0
+    carrier_surge_influence: float = 1.0
+    carrier_speed_influence: float = _CARRIER_SPEED_BIAS_GAIN
     carrier_center: float = 50.0  # center position for carrier_frequency (0-100)
     carrier_min: float = 40.0
     carrier_max: float = 60.0
@@ -195,6 +202,36 @@ def unify_timeline(
 def _norm(pos: np.ndarray) -> np.ndarray:
     """Funscript 0-100 → signed -1.0 to +1.0 (center at 50 → 0.0)."""
     return (pos / 100.0 - 0.5) * 2.0
+
+
+def _compute_speed_signal(
+    positions: np.ndarray,
+    timestamps_ms: np.ndarray | None = None,
+) -> np.ndarray:
+    """Compute a normalized 0-1 motion speed envelope from the main axis."""
+    values = np.clip(np.asarray(positions, dtype=np.float64) / 100.0, 0.0, 1.0)
+    if len(values) == 0:
+        return values
+    if len(values) == 1:
+        return np.zeros_like(values)
+
+    if timestamps_ms is None or len(timestamps_ms) != len(values):
+        delta_t_sec = np.ones(len(values) - 1, dtype=np.float64)
+    else:
+        delta_t_sec = np.diff(np.asarray(timestamps_ms, dtype=np.float64)) / 1000.0
+        delta_t_sec = np.where(delta_t_sec > 1e-9, delta_t_sec, 1e-9)
+
+    velocity = np.abs(np.diff(values)) / delta_t_sec
+    speed = np.empty_like(values)
+    speed[0] = velocity[0]
+    speed[-1] = velocity[-1]
+    if len(values) > 2:
+        speed[1:-1] = 0.5 * (velocity[:-1] + velocity[1:])
+
+    peak = float(np.max(speed))
+    if peak <= 1e-12:
+        return np.zeros_like(values)
+    return np.clip(speed / peak, 0.0, 1.0)
 
 
 def mix_to_3d(
@@ -436,11 +473,14 @@ def apply_wiring_map(
 def generate_freq_axes(
     unified: dict[str, np.ndarray],
     config: FreqConfig | None = None,
+    timestamps_ms: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
-    """Generate pulse_frequency, carrier_frequency, and frequency from surge.
+    """Generate pulse/carrier frequency axes from surge plus mild main cues.
 
     Each axis is centered at its configured center position (0-100 scale)
-    and modulated by the surge signal.
+    and uses the same surge polarity. Pulse and carrier each get configurable
+    surge and main-speed influence, while carrier also keeps a mild
+    main-position tilt.
 
     Returns {axis_name: values_0_100} for enabled outputs.
     """
@@ -448,12 +488,43 @@ def generate_freq_axes(
     if not cfg.enabled:
         return {}
 
-    surge = _norm(unified.get("surge", np.array([50.0])))
-    base_signal = np.clip(0.5 - (0.5 * surge), 0.0, 1.0)
+    sample_count = len(next(iter(unified.values()))) if unified else 1
+    surge_values = np.asarray(unified.get("surge", np.full(sample_count, 50.0)), dtype=np.float64)
+    main_values = np.asarray(unified.get("main", np.full(sample_count, 50.0)), dtype=np.float64)
+
+    pulse_surge_influence = float(np.clip(cfg.pulse_surge_influence, 0.0, 2.0))
+    pulse_speed_influence = float(np.clip(cfg.pulse_speed_influence, 0.0, 1.0))
+    carrier_surge_influence = float(np.clip(cfg.carrier_surge_influence, 0.0, 2.0))
+    carrier_speed_influence = float(np.clip(cfg.carrier_speed_influence, 0.0, 1.0))
+
+    surge = _norm(surge_values)
+    # Positive surge pulls both frequency axes downward before their
+    # per-axis main-motion bias is applied.
+    pulse_surge_signal = np.clip(0.5 - (0.5 * surge), 0.0, 1.0)
+    carrier_surge_signal = pulse_surge_signal.copy()
+
+    main_speed_signal = 0.5 + (0.5 * _compute_speed_signal(main_values, timestamps_ms))
+    main_position_signal = np.clip(main_values / 100.0, 0.0, 1.0)
+
+    pulse_base = np.clip(
+        0.5
+        + (pulse_surge_influence * (pulse_surge_signal - 0.5))
+        + (pulse_speed_influence * (main_speed_signal - 0.5)),
+        0.0,
+        1.0,
+    )
+    carrier_base = np.clip(
+        0.5
+        + (carrier_surge_influence * (carrier_surge_signal - 0.5))
+        + (carrier_speed_influence * (main_speed_signal - 0.5))
+        + (_CARRIER_POSITION_BIAS_GAIN * (main_position_signal - 0.5)),
+        0.0,
+        1.0,
+    )
     result: dict[str, np.ndarray] = {}
 
     if cfg.freq_scale > 0:
-        pf_signal = np.clip(0.5 + ((base_signal - 0.5) * cfg.freq_scale), 0.0, 1.0)
+        pf_signal = np.clip(0.5 + ((pulse_base - 0.5) * cfg.freq_scale), 0.0, 1.0)
         result["pulse_frequency"] = apply_centered_output_limits(
             pf_signal,
             center=cfg.pulse_center,
@@ -462,7 +533,7 @@ def generate_freq_axes(
         ) * 100.0
 
     if cfg.carrier_scale > 0:
-        cf_signal = np.clip(0.5 + ((base_signal - 0.5) * cfg.carrier_scale), 0.0, 1.0)
+        cf_signal = np.clip(0.5 + ((carrier_base - 0.5) * cfg.carrier_scale), 0.0, 1.0)
         result["carrier_frequency"] = apply_centered_output_limits(
             cf_signal,
             center=cfg.carrier_center,
@@ -515,7 +586,7 @@ def convert(
         ]
 
     # Optional frequency outputs
-    freq_axes = generate_freq_axes(unified, freq_config)
+    freq_axes = generate_freq_axes(unified, freq_config, timestamps)
     for fname, fvals in freq_axes.items():
         positions = np.clip(np.round(fvals), 0, 100).astype(int)
         result[fname] = [

@@ -37,6 +37,7 @@ from funscript_converter import (
 from config import Config
 from funscript_utils import AXIS_SUFFIXES, load_folder, strip_axis_suffix
 from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
+from widgets import SliderWithLabel
 
 # Electrode channel colors (match FOC-Stim output colors)
 _E_COLORS = ["#ff6b6b", "#4d96ff", "#ffd93d", "#6bcb77"]
@@ -223,10 +224,14 @@ class FunscriptConverterWindow(QMainWindow):
         self._freq_enabled.stateChanged.connect(self._schedule_reconvert)
         freq_layout.addWidget(self._freq_enabled)
         self._freq_scale = self._add_spin(freq_layout, "Pulse freq scale:", 0.0, 5.0, 1.0)
+        self._pulse_surge_influence = self._add_slider(freq_layout, "Pulse surge influence:", 0.0, 2.0, 1.0)
+        self._pulse_speed_influence = self._add_slider(freq_layout, "Pulse speed influence:", 0.0, 1.0, 0.15)
         self._pulse_center = self._add_spin(freq_layout, "Pulse freq center:", 0.0, 100.0, 55.0, decimals=1)
         self._pulse_min = self._add_spin(freq_layout, "Pulse freq min:", 0.0, 100.0, 20.0, decimals=1)
         self._pulse_max = self._add_spin(freq_layout, "Pulse freq max:", 0.0, 100.0, 80.0, decimals=1)
         self._carrier_scale = self._add_spin(freq_layout, "Carrier freq scale:", 0.0, 5.0, 1.0)
+        self._carrier_surge_influence = self._add_slider(freq_layout, "Carrier surge influence:", 0.0, 2.0, 1.0)
+        self._carrier_speed_influence = self._add_slider(freq_layout, "Carrier speed influence:", 0.0, 1.0, 0.10)
         self._carrier_center = self._add_spin(freq_layout, "Carrier freq center:", 0.0, 100.0, 50.0, decimals=1)
         self._carrier_min = self._add_spin(freq_layout, "Carrier freq min:", 0.0, 100.0, 40.0, decimals=1)
         self._carrier_max = self._add_spin(freq_layout, "Carrier freq max:", 0.0, 100.0, 60.0, decimals=1)
@@ -249,7 +254,7 @@ class FunscriptConverterWindow(QMainWindow):
             pw = pg.PlotWidget()
             _style_plot(pw)
             pw.setLabel("left", axis_label)
-            pw.setYRange(0, 100, padding=0)
+            pw.setYRange(0, 100)
             if i < len(_PREVIEW_SPECS) - 1:
                 pw.getAxis("bottom").setStyle(showValues=False)
             else:
@@ -289,6 +294,21 @@ class FunscriptConverterWindow(QMainWindow):
         row.addWidget(spin)
         layout.addLayout(row)
         return spin
+
+    def _add_slider(
+        self,
+        layout: QVBoxLayout,
+        label: str,
+        min_val: float,
+        max_val: float,
+        default: float,
+        decimals: int = 2,
+        step: float = 0.01,
+    ) -> SliderWithLabel:
+        slider = SliderWithLabel(label, min_val, max_val, default, decimals=decimals, step=step)
+        slider.valueChanged.connect(self._schedule_reconvert)
+        layout.addWidget(slider)
+        return slider
 
     # ------------------------------------------------------------------
     # Diagram
@@ -476,10 +496,14 @@ class FunscriptConverterWindow(QMainWindow):
         return FreqConfig(
             enabled=self._freq_enabled.isChecked(),
             freq_scale=self._freq_scale.value(),
+            pulse_surge_influence=self._pulse_surge_influence.value(),
+            pulse_speed_influence=self._pulse_speed_influence.value(),
             pulse_center=pulse_center,
             pulse_min=pulse_min,
             pulse_max=pulse_max,
             carrier_scale=self._carrier_scale.value(),
+            carrier_surge_influence=self._carrier_surge_influence.value(),
+            carrier_speed_influence=self._carrier_speed_influence.value(),
             carrier_center=carrier_center,
             carrier_min=carrier_min,
             carrier_max=carrier_max,
