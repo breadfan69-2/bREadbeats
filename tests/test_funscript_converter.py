@@ -80,6 +80,17 @@ class TestUnifyTimeline:
         ts, unified = unify_timeline(axes)
         np.testing.assert_allclose(unified["surge"], [0.0, 100.0])
 
+    def test_extends_authoritative_timeline_to_later_axis_end(self):
+        axes = {
+            "main": _make_actions([(0, 0), (1000, 100)]),
+            "surge": _make_actions([(0, 0), (1500, 100)]),
+        }
+        ts, unified = unify_timeline(axes)
+
+        np.testing.assert_allclose(ts, [0.0, 1000.0, 1500.0])
+        np.testing.assert_allclose(unified["main"], [0.0, 100.0, 100.0])
+        np.testing.assert_allclose(unified["surge"], [0.0, 100.0 * (2.0 / 3.0), 100.0])
+
 
 # ---------------------------------------------------------------------------
 # 6→3 mixing

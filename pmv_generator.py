@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-from PyQt6.QtCore import QEvent, QEventLoop, QObject, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QEventLoop, QObject, QSignalBlocker, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -316,6 +316,7 @@ class PMVGeneratorWindow(QMainWindow):
         self._position_canvas = position_canvas
 
         self._file_path: str | None = None
+        self._converted_preview_base_name: str | None = None
         self._media_path: str | None = None
         self._samples = None
         self._timeline = None
@@ -742,9 +743,48 @@ class PMVGeneratorWindow(QMainWindow):
     def _has_converted_preview_loaded(self) -> bool:
         return (
             self._file_path is None
+            and self._converted_preview_base_name is not None
             and self._positions is not None
             and self._multi_axis is not None
-            and self.file_label.text().startswith("Converted preview:")
+        )
+
+    def _preview_duration_ms(self) -> int:
+        durations: list[int] = []
+        if self._timeline is not None:
+            durations.append(int(self._timeline.duration_ms))
+        if self._positions is not None:
+            if self._positions.actions:
+                durations.append(int(self._positions.actions[-1].at))
+            if self._positions.beat_actions:
+                durations.append(int(self._positions.beat_actions[-1].at))
+        if self._multi_axis is not None:
+            durations.extend(int(actions[-1].at) for actions in self._multi_axis.axes.values() if actions)
+        return max(durations, default=0)
+
+    def _configure_converted_preview_controls(self, preview_axis_names: set[str]) -> None:
+        enabled_axes = {
+            axis_name
+            for axis_name in preview_axis_names
+            if axis_name in self.controls.axis_checkboxes
+        }
+        blockers = [
+            QSignalBlocker(self.controls._preview_tcode_mode_combo),
+            QSignalBlocker(self.controls._alpha_beta_toggle),
+            QSignalBlocker(self.controls._e1234_toggle),
+        ]
+        blockers.extend(QSignalBlocker(chk) for chk in self.controls.axis_checkboxes.values())
+
+        for axis_name, chk in self.controls.axis_checkboxes.items():
+            chk.setChecked(axis_name in enabled_axes)
+
+        if any(axis_name in enabled_axes for axis_name in ("e1", "e2", "e3", "e4")):
+            self.controls._set_combo_data(self.controls._preview_tcode_mode_combo, "fourphase")
+
+        self.controls._alpha_beta_toggle.setChecked(
+            any(self.controls.axis_checkboxes[k].isChecked() for k in ("alpha", "beta"))
+        )
+        self.controls._e1234_toggle.setChecked(
+            any(self.controls.axis_checkboxes[k].isChecked() for k in ("e1", "e2", "e3", "e4"))
         )
 
     def _attach_media_to_converted_preview(
@@ -1364,6 +1404,7 @@ class PMVGeneratorWindow(QMainWindow):
         prev_samples = self._samples if samples is None else samples
 
         self._file_path = str(script_path)
+        self._converted_preview_base_name = None
         self._media_path = str(matching_media) if matching_media is not None else None
         self._load_video_preview()
         self._samples = prev_samples
@@ -1467,6 +1508,9 @@ class PMVGeneratorWindow(QMainWindow):
         if not preview_axes:
             return False
 
+        self._converted_preview_base_name = str(base_name).strip() or "converted"
+        self._configure_converted_preview_controls(set(preview_axes))
+
         primary_axis = next(
             (axis_name for axis_name in ("e1", "e2", "e3", "e4") if axis_name in preview_axes),
             None,
@@ -1566,12 +1610,12 @@ class PMVGeneratorWindow(QMainWindow):
             self.visualizations.zoom_to_range(0.0, max(1000.0, float(duration_ms)))
 
         axis_names = sorted(preview_axes.keys())
-        label = f"Converted preview: {base_name} ({len(axis_names)} axes)"
+        label = f"Converted preview: {self._converted_preview_base_name} ({len(axis_names)} axes)"
         if matching_media is not None:
             label = f"{label} | {matching_media.name}"
         self.file_label.setText(label)
 
-        tooltip = f"Converted preview: {base_name}\nPrimary: {primary_axis}\nAxes: {', '.join(axis_names)}"
+        tooltip = f"Converted preview: {self._converted_preview_base_name}\nPrimary: {primary_axis}\nAxes: {', '.join(axis_names)}"
         if matching_media is not None:
             tooltip += f"\nMedia: {matching_media}"
         self.file_label.setToolTip(tooltip)
@@ -1586,7 +1630,7 @@ class PMVGeneratorWindow(QMainWindow):
         bar = self.statusBar()
         if bar is not None:
             parts = [
-                f"Loaded converted preview {base_name}",
+                f"Loaded converted preview {self._converted_preview_base_name}",
                 f"primary: {primary_axis}",
                 f"axes: {', '.join(axis_names)}",
             ]
@@ -2256,6 +2300,7 @@ class PMVGeneratorWindow(QMainWindow):
                 self._attach_media_to_converted_preview(path, samples, int(analysis_cfg.sample_rate))
                 return
             self._file_path = str(path)
+            self._converted_preview_base_name = None
             self._media_path = str(path)
             self._load_video_preview()
             self._samples = samples
@@ -2534,8 +2579,12 @@ class PMVGeneratorWindow(QMainWindow):
             enabled_axes = sorted(axis_cfg.enabled_axes or {"main"})
             output_format = str(self.controls.output_format_combo.currentText()).strip().lower()
 
-            stem = Path(self._file_path).stem if self._file_path else "pmv_output"
-            duration_ms = int(self._timeline.duration_ms if self._timeline is not None else 0)
+            stem = (
+                Path(self._file_path).stem
+                if self._file_path
+                else (self._converted_preview_base_name or "pmv_output")
+            )
+            duration_ms = self._preview_duration_ms()
             metadata = FunscriptMetadata(
                 title=stem,
                 duration=duration_ms,

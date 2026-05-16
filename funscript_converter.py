@@ -182,6 +182,9 @@ def unify_timeline(
             if last_t > max_t:
                 max_t = last_t
 
+    if len(timestamps) > 0 and max_t > timestamps[-1]:
+        timestamps = np.append(timestamps, float(max_t))
+
     unified: dict[str, np.ndarray] = {}
     for axis_name in CONVERTER_INPUT_AXES:
         if axis_name in axes and axes[axis_name]:

@@ -436,8 +436,62 @@ class TestPmvGenerator(unittest.TestCase):
             [(a.at, a.pos) for a in win._multi_axis.axes["carrier_frequency"]],
             [(0, 100), (1000, 0)],
         )
+        self.assertEqual(win.controls._preview_tcode_mode_combo.currentData(), "fourphase")
+        self.assertEqual(
+            win.controls.get_axis_config().enabled_axes,
+            {"e1", "e2", "e3", "e4", "pulse_frequency", "carrier_frequency", "frequency"},
+        )
         self.assertEqual(win._current_edit_axis, "e1")
         self.assertIn("Converted preview: clip", win.file_label.text())
+
+    def test_load_converted_preview_overrides_threephase_transport_mode(self):
+        win = PMVGeneratorWindow()
+        combo = win.controls._preview_tcode_mode_combo
+        combo.setCurrentIndex(combo.findData("threephase"))
+
+        self.assertTrue(
+            win.load_converted_preview(
+                {
+                    "e1": [FunscriptAction(0, 10), FunscriptAction(1000, 20)],
+                    "e2": [FunscriptAction(0, 30), FunscriptAction(1000, 40)],
+                },
+                base_name="clip",
+            )
+        )
+
+        self.assertEqual(combo.currentData(), "fourphase")
+
+    def test_step_5_export_uses_converted_preview_axes_and_stem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            export_dir = root / "out"
+            export_dir.mkdir()
+
+            win = PMVGeneratorWindow()
+            win.controls.output_format_combo.setCurrentText("funscript")
+            preview_axes = {
+                "e1": [FunscriptAction(0, 10), FunscriptAction(1000, 20)],
+                "e2": [FunscriptAction(0, 30), FunscriptAction(1000, 40)],
+                "e3": [FunscriptAction(0, 50), FunscriptAction(1000, 60)],
+                "e4": [FunscriptAction(0, 70), FunscriptAction(1000, 80)],
+            }
+
+            self.assertTrue(win.load_converted_preview(preview_axes, base_name="clip"))
+            self.assertTrue(win.step_5_export(str(export_dir), show_errors=False, show_success=False))
+
+            self.assertEqual(
+                sorted(path.name for path in export_dir.glob("*.funscript")),
+                [
+                    "clip.e1.funscript",
+                    "clip.e2.funscript",
+                    "clip.e3.funscript",
+                    "clip.e4.funscript",
+                ],
+            )
+            exported_e1, metadata = read_funscript(export_dir / "clip.e1.funscript")
+            self.assertEqual([(a.at, a.pos) for a in exported_e1], [(0, 10), (1000, 20)])
+            self.assertEqual(metadata.title, "clip")
+            self.assertEqual(metadata.duration, 1000)
 
     def test_load_converted_preview_auto_loads_matching_media(self):
         sr = 48_000
