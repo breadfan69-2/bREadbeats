@@ -308,8 +308,10 @@ def _compute_raw_position(
     offset = pitch_component + centering_component + float(config.center_offset)
 
     if ml_result is not None and config.ml_config.enabled:
-        ml_factor = 0.75 + 0.25 * float(ml_result.speed_mult) * float(np.clip(config.ml_config.strength, 0.0, 1.0))
-        energy_component *= float(np.clip(ml_factor, 0.0, 1.0))
+        strength = float(np.clip(config.ml_config.strength, 0.0, 1.0))
+        # Blend around a neutral 1.0 factor so strength=0 matches the raw mapping.
+        ml_factor = 1.0 + (float(ml_result.speed_mult) - 0.5) * 0.5 * strength
+        energy_component *= float(np.clip(ml_factor, 0.0, 2.0))
 
     if is_upstroke:
         return float(energy_component + offset)

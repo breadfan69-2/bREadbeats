@@ -213,22 +213,31 @@ def _grid_to_actions(grid: np.ndarray, step_ms: float,
         return []
     actions = [FunscriptAction(int(round(i * step_ms)), int(round(float(v))))
                for i, v in enumerate(grid)]
-    # Inline simplification — keep points where linear interp deviates
+    return _simplify_actions(actions, tolerance=tolerance)
+
+
+def _simplify_actions(
+    actions: list[FunscriptAction],
+    tolerance: float = 0.8,
+) -> list[FunscriptAction]:
+    """Remove intermediate points that stay within linear interpolation tolerance."""
     if len(actions) <= 2:
-        return actions
+        return [FunscriptAction(a.at, a.pos) for a in actions]
+
+    ordered = [FunscriptAction(a.at, a.pos) for a in sorted(actions, key=lambda action: action.at)]
     keep = [True] * len(actions)
     i = 0
-    while i < len(actions) - 2:
+    while i < len(ordered) - 2:
         j = i + 1
-        while j < len(actions) - 1:
-            a_i, a_next = actions[i], actions[j + 1]
+        while j < len(ordered) - 1:
+            a_i, a_next = ordered[i], ordered[j + 1]
             dt_total = a_next.at - a_i.at
             if dt_total <= 0:
                 j += 1
                 continue
             can_remove = True
             for k in range(i + 1, j + 1):
-                a_k = actions[k]
+                a_k = ordered[k]
                 t = (a_k.at - a_i.at) / dt_total
                 interp = a_i.pos + t * (a_next.pos - a_i.pos)
                 if abs(a_k.pos - interp) > tolerance:
@@ -240,7 +249,7 @@ def _grid_to_actions(grid: np.ndarray, step_ms: float,
             else:
                 break
         i = j
-    return [a for a, k in zip(actions, keep) if k]
+    return [a for a, k in zip(ordered, keep) if k]
 
 
 def _apply_orbital_overlay(
@@ -1150,8 +1159,31 @@ class PMVGeneratorWindow(QMainWindow):
         if len(main_actions) < 2:
             return
         axis_cfg = self.controls.get_axis_config()
-        duration_ms = int(main_actions[-1].at) if main_actions else 1
-        self._multi_axis = convert_to_2d(main_actions, axis_cfg, max(duration_ms, 1), audio_timeline=self._timeline)
+        duration_ms = max(self._preview_duration_ms(), int(main_actions[-1].at) if main_actions else 1)
+        prior_multi_axis = self._multi_axis
+        self._multi_axis, orbital_result = self._rebuild_multi_axis_from_main_actions(
+            main_actions,
+            axis_cfg,
+            duration_ms=max(duration_ms, 1),
+        )
+        if orbital_result is not None:
+            self._cached_orbital_result = orbital_result
+        locked_regions = [LockedRegion(r.start_ms, r.end_ms) for r in self._edit_state.locked_regions]
+        if locked_regions and prior_multi_axis is not None:
+            for ax_name, prev_actions in prior_multi_axis.axes.items():
+                prev_locked = [
+                    FunscriptAction(a.at, a.pos)
+                    for a in prev_actions
+                    if any(r.start_ms <= int(a.at) <= r.end_ms for r in locked_regions)
+                ]
+                if not prev_locked:
+                    continue
+                new_actions = self._multi_axis.axes.get(ax_name, [])
+                self._multi_axis.axes[ax_name] = self._merge_generated_actions_with_locked_regions(
+                    new_actions,
+                    prev_locked,
+                    locked_regions,
+                )
         self.visualizations.set_multi_axis(self._multi_axis)
         self.aux_panel.set_multi_axis(self._multi_axis)
         axis_count = sum(1 for k, v in self._multi_axis.axes.items() if k != "main" and v)
@@ -2057,6 +2089,51 @@ class PMVGeneratorWindow(QMainWindow):
             return []
         return [FunscriptAction(a.at, a.pos) for a in self._positions.actions]
 
+    def _axis_conversion_source_actions(self, main_actions: list[FunscriptAction]) -> list[FunscriptAction]:
+        actions = [FunscriptAction(a.at, a.pos) for a in main_actions]
+        if len(actions) < 2:
+            return actions
+
+        if (
+            self._positions is not None
+            and not self._edit_state.dirty
+            and len(self._positions.beat_actions) >= 2
+        ):
+            return [FunscriptAction(a.at, a.pos) for a in self._positions.beat_actions]
+
+        simplified = _simplify_actions(actions, tolerance=0.8)
+        if len(simplified) >= 2:
+            return simplified
+        return actions
+
+    def _rebuild_multi_axis_from_main_actions(
+        self,
+        main_actions: list[FunscriptAction],
+        axis_cfg,
+        *,
+        duration_ms: int,
+    ) -> tuple[MultiAxisResult, 'OrbitalReplayResult' | None]:
+        axis_source_actions = self._axis_conversion_source_actions(main_actions)
+        multi_axis = convert_to_2d(
+            axis_source_actions,
+            axis_cfg,
+            max(int(duration_ms), 1),
+            audio_timeline=self._timeline,
+        )
+        orbital_result = None
+        blend = 1.0 if axis_cfg.alpha_beta_mode == "orbital" else axis_cfg.orbital_blend
+        if blend > 0.0 and self._timeline is not None and self._beats is not None:
+            analysis_cfg = self.controls.get_analysis_config()
+            multi_axis, orbital_result = _apply_orbital_overlay(
+                multi_axis,
+                self._timeline,
+                self._beats,
+                analysis_cfg,
+                blend=blend,
+                cached_orbital=self._cached_orbital_result,
+            )
+        return multi_axis, orbital_result
+
     @staticmethod
     def _merge_generated_actions_with_locked_regions(
         generated_actions: list[FunscriptAction],
@@ -2599,21 +2676,11 @@ class PMVGeneratorWindow(QMainWindow):
             if not main_actions:
                 raise RuntimeError("No main-axis actions are available for export.")
 
-            # Use sparse beat-level actions for 2D conversion (restim
-            # semicircle arcs need large deltas between consecutive points).
-            beat_level = (
-                [FunscriptAction(a.at, a.pos) for a in self._positions.beat_actions]
-                if self._positions is not None and len(self._positions.beat_actions) >= 2
-                else main_actions
+            export_multi_axis, _ = self._rebuild_multi_axis_from_main_actions(
+                main_actions,
+                axis_cfg,
+                duration_ms=duration_ms,
             )
-            export_multi_axis = convert_to_2d(beat_level, axis_cfg, duration_ms, audio_timeline=self._timeline)
-            blend = 1.0 if axis_cfg.alpha_beta_mode == "orbital" else axis_cfg.orbital_blend
-            if blend > 0.0 and self._timeline is not None and self._beats is not None:
-                analysis_cfg = self.controls.get_analysis_config()
-                export_multi_axis, _ = _apply_orbital_overlay(
-                    export_multi_axis, self._timeline, self._beats, analysis_cfg, blend=blend,
-                    cached_orbital=self._cached_orbital_result,
-                )
 
             # Merge locked multi-axis actions into export
             locked_regions = [LockedRegion(r.start_ms, r.end_ms) for r in self._edit_state.locked_regions]

@@ -215,6 +215,85 @@ class TestPmvGenerator(unittest.TestCase):
                 [(action.at, action.pos) for action in edited_actions],
             )
 
+    def test_regen_axes_preserves_generated_axis_math(self):
+        sr = 48_000
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_wav = root / "clip.wav"
+
+            samples = self._make_click_track(sr, duration_s=8.0, bpm=120.0)
+            self._write_wav(input_wav, samples, sr)
+
+            win = PMVGeneratorWindow()
+            win.controls.use_librosa_chk.setChecked(False)
+            win.controls.axis_checkboxes["e1"].setChecked(True)
+
+            self.assertTrue(win.step_1_load_audio(str(input_wav), show_errors=False))
+            self.assertTrue(win.step_2_analyze(show_errors=False))
+            self.assertTrue(win.step_3_detect_beats(show_errors=False))
+            self.assertTrue(win.step_4_generate(show_errors=False))
+
+            self.assertIsNotNone(win._multi_axis)
+            if win._multi_axis is None:
+                self.fail("Multi-axis data should exist after generation")
+
+            before = {
+                axis_name: [(a.at, a.pos) for a in win._multi_axis.axes.get(axis_name, [])]
+                for axis_name in ("alpha", "beta", "e1")
+            }
+
+            win._on_regen_axes_clicked()
+
+            self.assertIsNotNone(win._multi_axis)
+            if win._multi_axis is None:
+                self.fail("Multi-axis data should exist after regen")
+
+            after = {
+                axis_name: [(a.at, a.pos) for a in win._multi_axis.axes.get(axis_name, [])]
+                for axis_name in ("alpha", "beta", "e1")
+            }
+            self.assertEqual(after, before)
+
+    def test_regen_axes_reapplies_orbital_overlay_when_enabled(self):
+        win = PMVGeneratorWindow()
+        actions = [
+            FunscriptAction(0, 15),
+            FunscriptAction(500, 85),
+            FunscriptAction(1000, 20),
+        ]
+        win._positions = PositionTimeline(
+            actions=[FunscriptAction(a.at, a.pos) for a in actions],
+            beat_actions=[FunscriptAction(a.at, a.pos) for a in actions],
+            speed_profile=np.array([], dtype=np.float32),
+            ml_results=None,
+        )
+        win._edit_state.load_actions(actions)
+        win._timeline = mock.Mock(duration_ms=1000)
+        win._beats = mock.Mock(beats=[mock.Mock(time_ms=0.0)])
+        win.controls._orbital_blend_slider.setValue(0.5)
+
+        base_multi = MultiAxisResult(axes={
+            "main": [FunscriptAction(a.at, a.pos) for a in actions],
+            "alpha": [FunscriptAction(0, 50)],
+            "beta": [FunscriptAction(0, 50)],
+        })
+        overlay_multi = MultiAxisResult(axes={
+            "main": [FunscriptAction(a.at, a.pos) for a in actions],
+            "alpha": [FunscriptAction(0, 12)],
+            "beta": [FunscriptAction(0, 88)],
+        })
+
+        with (
+            mock.patch("pmv_generator.convert_to_2d", return_value=base_multi) as convert_mock,
+            mock.patch("pmv_generator._apply_orbital_overlay", return_value=(overlay_multi, "orbital-cache")) as overlay_mock,
+        ):
+            win._on_regen_axes_clicked()
+
+        convert_mock.assert_called_once()
+        overlay_mock.assert_called_once()
+        self.assertIs(win._multi_axis, overlay_multi)
+        self.assertEqual(win._cached_orbital_result, "orbital-cache")
+
     def test_merge_generated_actions_preserves_locked_regions(self):
         generated = [
             FunscriptAction(0, 10),
