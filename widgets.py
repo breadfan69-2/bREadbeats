@@ -15,6 +15,9 @@ from PyQt6.QtGui import QColor, QPainter, QBrush, QPen
 import pyqtgraph as pg
 from typing import Optional
 
+from command_wiring import compute_live_fourphase_levels, normalize_live_fourphase_layout_model
+from pmv_colors import FOURPHASE_AXIS_COLORS, FOURPHASE_AXIS_ORDER
+
 
 class SignalBridge(QObject):
     """Bridge for thread-safe signal emission"""
@@ -285,7 +288,7 @@ class FFTBinBarGraphCanvas(pg.PlotWidget):
 
 
 class PositionCanvas(pg.PlotWidget):
-    """Alpha/Beta position visualizer using PyQtGraph - circular display"""
+    """Live position visualizer for threephase circles and fourphase electrode bars."""
     
     def __init__(self, parent=None, size=2, get_rotation=None):
         super().__init__(parent)
@@ -301,16 +304,62 @@ class PositionCanvas(pg.PlotWidget):
         self.setYRange(-1.2, 1.2)
         self.hideAxis('left')
         self.hideAxis('bottom')
+
+        self._live_tcode_mode = ""
+        self._fourphase_bar_x = np.arange(4, dtype=np.float32)
+        self._fourphase_bar_width_bg = 0.86
+        self._fourphase_bar_width_fg = 0.58
+        self._last_fourphase_levels: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
         
         # Draw unit circle
         theta = np.linspace(0, 2*np.pi, 100)
         circle_x = np.cos(theta)
         circle_y = np.sin(theta)
-        self.addItem(pg.PlotCurveItem(circle_x, circle_y, pen=pg.mkPen('#555555', width=1)))
+        self._circle_outline = pg.PlotCurveItem(circle_x, circle_y, pen=pg.mkPen('#555555', width=1))
+        self.addItem(self._circle_outline)
         
         # Draw crosshairs
-        self.addItem(pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#4a4a4a', width=0.5)))
-        self.addItem(pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#4a4a4a', width=0.5)))
+        self._crosshair_h = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('#4a4a4a', width=0.5))
+        self._crosshair_v = pg.InfiniteLine(pos=0, angle=90, pen=pg.mkPen('#4a4a4a', width=0.5))
+        self.addItem(self._crosshair_h)
+        self.addItem(self._crosshair_v)
+
+        bg_brushes = []
+        fg_brushes = []
+        for axis_name in FOURPHASE_AXIS_ORDER:
+            base = QColor(FOURPHASE_AXIS_COLORS[axis_name])
+            bg = QColor(base)
+            bg.setAlpha(70)
+            fg = QColor(base)
+            fg.setAlpha(220)
+            bg_brushes.append(bg)
+            fg_brushes.append(fg)
+
+        self._fourphase_bg_bars = pg.BarGraphItem(
+            x=self._fourphase_bar_x,
+            y0=np.zeros(4, dtype=np.float32),
+            height=np.ones(4, dtype=np.float32),
+            width=self._fourphase_bar_width_bg,
+            brushes=bg_brushes,
+            pens=[pg.mkPen('#2a2a2a', width=1.0) for _ in range(4)],
+        )
+        self.addItem(self._fourphase_bg_bars)
+        self._fourphase_fill_bars = pg.BarGraphItem(
+            x=self._fourphase_bar_x,
+            y0=np.zeros(4, dtype=np.float32),
+            height=np.ones(4, dtype=np.float32),
+            width=self._fourphase_bar_width_fg,
+            brushes=fg_brushes,
+            pens=[pg.mkPen('#111111', width=0.8) for _ in range(4)],
+        )
+        self.addItem(self._fourphase_fill_bars)
+        self._fourphase_bar_labels: list[pg.TextItem] = []
+        for index, axis_name in enumerate(FOURPHASE_AXIS_ORDER):
+            label = pg.TextItem(axis_name.upper(), color=FOURPHASE_AXIS_COLORS[axis_name], anchor=(0.5, 0.5))
+            label.setPos(float(index), -0.14)
+            self._fourphase_bar_labels.append(label)
+            self.addItem(label)
+        self._set_fourphase_levels(self._last_fourphase_levels)
         
         # Trail storage
         self.trail_x = []
@@ -333,6 +382,8 @@ class PositionCanvas(pg.PlotWidget):
 
         self._last_x_display = 0.0
         self._last_y_display = 0.0
+        self._live_fourphase_model = 'tetra3d'
+        self._live_fourphase_layout_model = 'Straight Line'
         self._ghost_theta: Optional[float] = None
         self._ghost_radius: float = 0.70
         self._ghost_last_real_theta: Optional[float] = None
@@ -341,22 +392,106 @@ class PositionCanvas(pg.PlotWidget):
         self._ghost_is_parked: bool = False
         
         self.get_rotation = get_rotation
+        self.set_live_tcode_mode("threephase")
+
+    def _set_fourphase_levels(self, levels: tuple[float, float, float, float]) -> None:
+        clipped = np.clip(np.asarray(levels, dtype=np.float64), 0.0, 1.0)
+        self._last_fourphase_levels = (
+            float(clipped[0]),
+            float(clipped[1]),
+            float(clipped[2]),
+            float(clipped[3]),
+        )
+        self._fourphase_fill_bars.setOpts(
+            x=self._fourphase_bar_x,
+            y0=np.zeros(4, dtype=np.float32),
+            height=np.asarray(self._last_fourphase_levels, dtype=np.float32),
+            width=self._fourphase_bar_width_fg,
+        )
+
+    def update_fourphase_levels(self, levels: tuple[float, float, float, float]) -> None:
+        self._set_fourphase_levels(levels)
+        self.position_scatter.setData([], [])
+        self._last_x_display = 0.0
+        self._last_y_display = 0.0
+
+    def set_live_tcode_mode(self, mode: str) -> None:
+        normalized = str(mode or 'threephase').strip().lower()
+        normalized = 'fourphase' if normalized == 'fourphase' else 'threephase'
+        if normalized == self._live_tcode_mode:
+            return
+
+        self._live_tcode_mode = normalized
+        self.trail_x.clear()
+        self.trail_y.clear()
+        self.trail_curve.setData([], [])
+
+        is_fourphase = normalized == 'fourphase'
+        for item in (self._circle_outline, self._crosshair_h, self._crosshair_v):
+            item.setVisible(not is_fourphase)
+        self.trail_curve.setVisible(not is_fourphase)
+        self.position_scatter.setVisible(not is_fourphase)
+        self._fourphase_bg_bars.setVisible(is_fourphase)
+        self._fourphase_fill_bars.setVisible(is_fourphase)
+        for label in self._fourphase_bar_labels:
+            label.setVisible(is_fourphase)
+        self.teacher_preview_scatter.setVisible(not is_fourphase)
+        view_box = self.getViewBox()
+
+        if is_fourphase:
+            self.setAspectLocked(False)
+            view_box.setXRange(-0.6, 3.6, padding=0.0)
+            view_box.setYRange(-0.22, 1.05, padding=0.0)
+        else:
+            self.setAspectLocked(True)
+            view_box.setXRange(-1.2, 1.2, padding=0.0)
+            view_box.setYRange(-1.2, 1.2, padding=0.0)
+
+        if is_fourphase:
+            self.clear_teacher_preview()
+
+    def set_live_fourphase_model(self, model: str) -> None:
+        normalized = str(model or 'tetra3d').strip().lower()
+        if normalized == 'classic':
+            self._live_fourphase_model = 'classic'
+        elif normalized in {'bandrouter', 'band_routed', 'band-routed', 'band routed'}:
+            self._live_fourphase_model = 'bandrouter'
+        else:
+            self._live_fourphase_model = 'tetra3d'
+
+    def set_live_fourphase_layout_model(self, layout_model: str) -> None:
+        self._live_fourphase_layout_model = normalize_live_fourphase_layout_model(layout_model)
 
     def update_position(self, alpha: float, beta: float):
-        # Alpha = vertical (y-axis): 1.0 = top, -1.0 = bottom
-        # Beta = horizontal (x-axis): 1.0 = LEFT, -1.0 = right (matches restim orientation)
-        angle_deg = self.get_rotation() if self.get_rotation else 0.0
-        angle_rad = np.deg2rad(angle_deg)
-        cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-        
-        x_base = -beta  # Negated to match restim
-        y_base = alpha
-        x_rot = x_base * cos_a - y_base * sin_a
-        y_rot = x_base * sin_a + y_base * cos_a
-        
-        # 90° CCW rotation so our display matches restim orientation
-        x_display = -y_rot
-        y_display = x_rot
+        if self._live_tcode_mode == 'fourphase':
+            self._set_fourphase_levels(
+                compute_live_fourphase_levels(
+                    alpha,
+                    beta,
+                    0.0,
+                    model=self._live_fourphase_model,
+                    layout_model=self._live_fourphase_layout_model,
+                )
+            )
+            self._last_x_display = 0.0
+            self._last_y_display = 0.0
+            self.position_scatter.setData([], [])
+            return
+        else:
+            # Alpha = vertical (y-axis): 1.0 = top, -1.0 = bottom
+            # Beta = horizontal (x-axis): 1.0 = LEFT, -1.0 = right (matches restim orientation)
+            angle_deg = self.get_rotation() if self.get_rotation else 0.0
+            angle_rad = np.deg2rad(angle_deg)
+            cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
+            
+            x_base = -beta  # Negated to match restim
+            y_base = alpha
+            x_rot = x_base * cos_a - y_base * sin_a
+            y_rot = x_base * sin_a + y_base * cos_a
+            
+            # 90° CCW rotation so our display matches restim orientation
+            x_display = float(-y_rot)
+            y_display = float(x_rot)
         
         self.trail_x.append(x_display)
         self.trail_y.append(y_display)
@@ -385,6 +520,10 @@ class PositionCanvas(pg.PlotWidget):
         - is_parked: ghost freezes at its current angle (shows a stationary dot).
         - Ghost radius is fixed at _GHOST_ORBIT_RADIUS; decoupled from device position.
         """
+        if self._live_tcode_mode != 'threephase':
+            self.clear_teacher_preview()
+            return
+
         import math
         now = time.perf_counter()
         dt = float(np.clip(now - self._ghost_last_update_time, 1e-3, 0.20))

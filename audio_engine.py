@@ -299,6 +299,15 @@ class AudioEngine:
             ('mid',       500,  2000),  # snare body, guitars, vocals
             ('high',      2000, 16000), # hi-hat, cymbals, clicks
         ]
+        self._live_fourphase_bands = [
+            ('sub_bass', 20, 60),
+            ('bass', 60, 250),
+            ('low_mid', 250, 500),
+            ('mid', 500, 2000),
+            ('upper_mid', 2000, 4000),
+            ('presence', 4000, 6000),
+            ('brilliance', 6000, 20000),
+        ]
         # One z-score detector per band (same params, independent rolling stats)
         self._zscore_detectors = {
             name: ZScorePeakDetector(lag=30, threshold=2.5, influence=0.05)
@@ -306,6 +315,13 @@ class AudioEngine:
         }
         # Per-band energy values (updated every frame in audio callback)
         self._band_energies: dict[str, float] = {name: 0.0 for name, _, _ in self._zscore_bands}
+        self._live_fourphase_band_energies: dict[str, float] = {
+            name: 0.0 for name, _, _ in self._live_fourphase_bands
+        }
+        self._live_fourphase_band_history: dict[str, deque[float]] = {
+            name: deque(maxlen=600) for name, _, _ in self._live_fourphase_bands
+        }
+        self._live_fourphase_band_ema_alpha: float = 0.2
         # Per-band z-score signals (updated every frame: +1, -1, or 0)
         self._band_zscore_signals: dict[str, int] = {name: 0 for name, _, _ in self._zscore_bands}
         # Band confidence: rolling count of z-score fires in last N frames
@@ -1213,6 +1229,23 @@ class AudioEngine:
         if n_bins == 0:
             return
         gain = self.config.audio.gain
+        live_band_energies = compute_multiband_energies(spectrum, sr, gain, self._live_fourphase_bands)
+        for name, _, _ in self._live_fourphase_bands:
+            raw_energy = float(live_band_energies.get(name, 0.0))
+            history = self._live_fourphase_band_history[name]
+            history.append(raw_energy)
+            if len(history) >= 30:
+                p95 = float(np.percentile(list(history), 95))
+                reference = max(p95, 1e-9)
+                normalized_energy = float(np.clip(raw_energy / reference, 0.0, 1.0))
+            else:
+                normalized_energy = float(np.clip(raw_energy, 0.0, 1.0))
+
+            previous_energy = float(self._live_fourphase_band_energies.get(name, 0.0) or 0.0)
+            self._live_fourphase_band_energies[name] = previous_energy + (
+                normalized_energy - previous_energy
+            ) * self._live_fourphase_band_ema_alpha
+
         band_energies = compute_multiband_energies(spectrum, sr, gain, self._zscore_bands)
 
         for name, low_hz, high_hz in self._zscore_bands:
@@ -1435,6 +1468,21 @@ class AudioEngine:
             'low_mid': float(energies.get('low_mid', 0.0) or 0.0),
             'mid': float(energies.get('mid', 0.0) or 0.0),
             'high': float(energies.get('high', 0.0) or 0.0),
+        }
+
+    def get_live_fourphase_band_energies(self) -> dict[str, float]:
+        """Public accessor for mobile-style 7-band energies used by live fourphase routing."""
+        energies = getattr(self, '_live_fourphase_band_energies', None)
+        if not isinstance(energies, dict):
+            return {}
+        return {
+            'sub_bass': float(energies.get('sub_bass', 0.0) or 0.0),
+            'bass': float(energies.get('bass', 0.0) or 0.0),
+            'low_mid': float(energies.get('low_mid', 0.0) or 0.0),
+            'mid': float(energies.get('mid', 0.0) or 0.0),
+            'upper_mid': float(energies.get('upper_mid', 0.0) or 0.0),
+            'presence': float(energies.get('presence', 0.0) or 0.0),
+            'brilliance': float(energies.get('brilliance', 0.0) or 0.0),
         }
 
     def set_silence_gate(self, active: bool) -> None:

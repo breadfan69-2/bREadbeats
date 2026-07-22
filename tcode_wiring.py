@@ -8,7 +8,15 @@ Extracted from main.py for modularization.
 import time
 import random
 import numpy as np
-from typing import Optional
+from typing import Optional, cast
+from command_wiring import (
+    apply_live_output_mode,
+    compute_live_fourphase_bandrouter_pulse_interval_random_normalized,
+    live_fourphase_beat_response_curve_log_token,
+    live_fourphase_band_mapping_log_token,
+    live_fourphase_layout_log_token,
+    normalize_live_fourphase_model,
+)
 from frequency_utils import extract_dominant_freq
 from network_engine import TCodeCommand
 from audio_engine import BeatEvent
@@ -301,6 +309,87 @@ def compute_and_attach_tcode(win, cmd: TCodeCommand, event: BeatEvent, spectrum:
     else:
         win._cached_p3_display = "Rise Time: off"
         win._p3_window.clear()
+
+    mapper = getattr(win, 'stroke_mapper', None)
+    decision = getattr(mapper, '_last_decision', None) if mapper is not None else None
+    energies = getattr(getattr(mapper, '_intelligence', None), 'energies', None) if mapper is not None else None
+    band_levels_getter = getattr(mapper, '_current_band_levels', None) if mapper is not None else None
+    if callable(band_levels_getter):
+        try:
+            maybe_band_levels = band_levels_getter()
+        except Exception:
+            maybe_band_levels = None
+        if isinstance(maybe_band_levels, dict):
+            band_levels = {
+                str(name): float(np.clip(value or 0.0, 0.0, 1.0))
+                for name, value in maybe_band_levels.items()
+            }
+        else:
+            band_levels = {
+                'sub_bass': float(np.clip(getattr(energies, 'sub_bass', 0.0) or 0.0, 0.0, 1.0)),
+                'low_mid': float(np.clip(getattr(energies, 'low_mid', 0.0) or 0.0, 0.0, 1.0)),
+                'mid': float(np.clip(getattr(energies, 'mid', 0.0) or 0.0, 0.0, 1.0)),
+                'high': float(np.clip(getattr(energies, 'high', 0.0) or 0.0, 0.0, 1.0)),
+            }
+    else:
+        band_levels = {
+            'sub_bass': float(np.clip(getattr(energies, 'sub_bass', 0.0) or 0.0, 0.0, 1.0)),
+            'low_mid': float(np.clip(getattr(energies, 'low_mid', 0.0) or 0.0, 0.0, 1.0)),
+            'mid': float(np.clip(getattr(energies, 'mid', 0.0) or 0.0, 0.0, 1.0)),
+            'high': float(np.clip(getattr(energies, 'high', 0.0) or 0.0, 0.0, 1.0)),
+        }
+    vertical_signal_getter = getattr(mapper, '_current_vertical_lift_signal', None) if mapper is not None else None
+    vertical_signal = float(np.clip(getattr(energies, 'sub_bass', 0.0) or 0.0, 0.0, 1.0))
+    if callable(vertical_signal_getter):
+        try:
+            vertical_signal = float(vertical_signal_getter())
+        except Exception:
+            vertical_signal = float(np.clip(getattr(energies, 'sub_bass', 0.0) or 0.0, 0.0, 1.0))
+    orbit_radius = float(np.clip(getattr(mapper, '_actual_radius', 0.0) or 0.0, 0.0, 1.0)) if mapper is not None else float(np.clip(np.hypot(cmd.alpha, cmd.beta), 0.0, 1.0))
+    orbit_angular_speed = 0.0
+    orbit_speed_getter = getattr(mapper, '_current_classic_orbit_angular_speed', None) if mapper is not None else None
+    if callable(orbit_speed_getter):
+        try:
+            orbit_angular_speed = float(cast(float, orbit_speed_getter()))
+        except Exception:
+            orbit_angular_speed = 0.0
+    apply_live_output_mode(
+        cmd,
+        live_tcode_mode=getattr(getattr(win, 'config', None), 'live_tcode_mode', 'threephase'),
+        live_fourphase_model=getattr(getattr(win, 'config', None), 'live_fourphase_model', 'tetra3d'),
+        live_fourphase_layout_model=getattr(getattr(win, 'config', None), 'live_fourphase_layout_model', 'Straight Line'),
+        tetra_post_projection_expansion=getattr(getattr(win, 'config', None), 'live_fourphase_tetra_post_projection_expansion', 1.0),
+        beat_radius_contrast_strength=getattr(getattr(win, 'config', None), 'live_fourphase_beat_radius_contrast_strength', 0.0),
+        beat_speed_threshold_spread_strength=getattr(getattr(win, 'config', None), 'live_fourphase_beat_speed_spread_strength', 0.0),
+        beat_response_curves=getattr(getattr(win, 'config', None), 'live_fourphase_beat_response_curves', None),
+        live_fourphase_band_mapping=getattr(getattr(win, 'config', None), 'live_fourphase_band_mapping', None),
+        sub_bass=vertical_signal,
+        band_levels=band_levels,
+        fill_angle=float(getattr(mapper, '_orbit_phase', 0.0) or 0.0) if mapper is not None else 0.0,
+        base=orbit_radius,
+        silence_fade=0.0 if getattr(decision, 'silence_active', False) else 1.0,
+        orbit_radius=orbit_radius,
+        orbit_angular_speed=orbit_angular_speed,
+        bandrouter_fill_mix=getattr(getattr(win, 'config', None), 'live_fourphase_bandrouter_fill_mix', 0.12),
+        bandrouter_idle_floor=getattr(getattr(win, 'config', None), 'live_fourphase_bandrouter_idle_floor', 0.10),
+        bandrouter_post_projection_expansion=getattr(getattr(win, 'config', None), 'live_fourphase_bandrouter_post_projection_expansion', 1.0),
+    )
+    cfg = getattr(win, 'config', None)
+    model = normalize_live_fourphase_model(getattr(cfg, 'live_fourphase_model', 'tetra3d'))
+    live_mode = str(getattr(cfg, 'live_tcode_mode', 'threephase') or 'threephase').strip().lower()
+    if live_mode == 'fourphase' and model == 'bandrouter':
+        pulse_interval_random_normalized = compute_live_fourphase_bandrouter_pulse_interval_random_normalized(
+            band_levels=band_levels,
+            pulse_interval_random_percent=getattr(
+                cfg,
+                'live_fourphase_bandrouter_pulse_interval_random_percent',
+                10.0,
+            ),
+        )
+        if cmd.tcode_tags is None:
+            cmd.tcode_tags = {}
+        cmd.tcode_tags['P2'] = int(np.clip(round(pulse_interval_random_normalized * 9999.0), 0, 9999))
+        cmd.tcode_tags['P2_duration'] = int(win._freq_window_ms)
     
     # Log
     p0_str = f"P0={cmd.pulse_freq:04d}" if cmd.pulse_freq is not None else "P0=off"
@@ -308,12 +397,70 @@ def compute_and_attach_tcode(win, cmd: TCodeCommand, event: BeatEvent, spectrum:
     c0_str = f"C0={c0_tag:04d}" if c0_tag is not None else "C0=off"
     p1_tag = cmd.tcode_tags.get('P1', None) if cmd.tcode_tags else None
     p1_str = f"P1={p1_tag:04d}" if p1_tag is not None else "P1=off"
+    p2_tag = cmd.tcode_tags.get('P2', None) if cmd.tcode_tags else None
+    p2_str = f"P2={p2_tag:04d}" if p2_tag is not None else "P2=off"
     p3_tag = cmd.tcode_tags.get('P3', None) if cmd.tcode_tags else None
     p3_str = f"P3={p3_tag:04d}" if p3_tag is not None else "P3=off"
+    fourphase_str = ""
+    if not cmd.include_linear_axes and cmd.tcode_tags:
+        e_values: list[str] = []
+        for tag in ("E1", "E2", "E3", "E4"):
+            tag_value = cmd.tcode_tags.get(tag, None)
+            e_values.append(f"{tag}={tag_value:04d}" if tag_value is not None else f"{tag}=off")
+        cfg = getattr(win, 'config', None)
+        model = str(getattr(cfg, 'live_fourphase_model', 'tetra3d') or 'tetra3d')
+        layout = live_fourphase_layout_log_token(getattr(cfg, 'live_fourphase_layout_model', 'Straight Line'))
+        beat_curve_token = live_fourphase_beat_response_curve_log_token(
+            getattr(cfg, 'live_fourphase_beat_response_curves', None)
+        )
+        beat_radius_contrast = float(
+            getattr(cfg, 'live_fourphase_beat_radius_contrast_strength', 0.0) or 0.0
+        )
+        beat_speed_spread = float(
+            getattr(cfg, 'live_fourphase_beat_speed_spread_strength', 0.0) or 0.0
+        )
+        band_mapping = live_fourphase_band_mapping_log_token(getattr(cfg, 'live_fourphase_band_mapping', None))
+        lift = getattr(cfg, 'live_fourphase_vertical_lift_mix', 0.90)
+        curve = getattr(cfg, 'live_fourphase_vertical_lift_curve', 1.00)
+        center_drift = getattr(cfg, 'live_fourphase_center_drift_mix', 0.35)
+        trigger_bias = getattr(cfg, 'live_fourphase_trigger_bias_mix', 1.00)
+        bandrouter_fill_mix = getattr(cfg, 'live_fourphase_bandrouter_fill_mix', 0.12)
+        bandrouter_idle_floor = getattr(cfg, 'live_fourphase_bandrouter_idle_floor', 0.10)
+        tetra_projection_expansion = getattr(cfg, 'live_fourphase_tetra_post_projection_expansion', 1.0)
+        bandrouter_projection_expansion = getattr(cfg, 'live_fourphase_bandrouter_post_projection_expansion', 1.0)
+        bandrouter_pulse_random_percent = getattr(cfg, 'live_fourphase_bandrouter_pulse_interval_random_percent', 10.0)
+        lift = float(0.90 if lift is None else lift)
+        curve = float(1.00 if curve is None else curve)
+        center_drift = float(0.35 if center_drift is None else center_drift)
+        trigger_bias = float(1.00 if trigger_bias is None else trigger_bias)
+        bandrouter_fill_mix = float(0.12 if bandrouter_fill_mix is None else bandrouter_fill_mix)
+        bandrouter_idle_floor = float(0.10 if bandrouter_idle_floor is None else bandrouter_idle_floor)
+        tetra_projection_expansion = float(1.0 if tetra_projection_expansion is None else tetra_projection_expansion)
+        bandrouter_projection_expansion = float(1.0 if bandrouter_projection_expansion is None else bandrouter_projection_expansion)
+        bandrouter_pulse_random_percent = float(10.0 if bandrouter_pulse_random_percent is None else bandrouter_pulse_random_percent)
+        band = str(getattr(cfg, 'live_fourphase_vertical_lift_band', 'sub_bass') or 'sub_bass')
+        bandrouter_mode = str(model).strip().lower() == 'bandrouter'
+        classic_mode = str(model).strip().lower() == 'classic'
+        tetra_mode = str(model).strip().lower() == 'tetra3d'
+        band_map_str = f" 4BM={band_mapping}" if bandrouter_mode else ""
+        classic_curve_str = (
+            f" 4RC={beat_radius_contrast:.2f} 4SS={beat_speed_spread:.2f} 4BC={beat_curve_token}"
+            if classic_mode
+            else ""
+        )
+        tetra_expansion_str = f" 4TX={tetra_projection_expansion:.2f}" if tetra_mode else ""
+        bandrouter_curve_str = (
+            f" 4BFILL={bandrouter_fill_mix:.2f} 4BIDLE={bandrouter_idle_floor:.2f} 4BX={bandrouter_projection_expansion:.2f} 4BRAND={bandrouter_pulse_random_percent:.1f}"
+            if bandrouter_mode
+            else ""
+        )
+        fourphase_str = (
+            f" {' '.join(e_values)} 4P={model} 4L={layout}{classic_curve_str}{tetra_expansion_str}{band_map_str}{bandrouter_curve_str} ZSRC={band} ZCURVE={curve:.2f} ZMIX={lift:.2f}"
+            f" ZDRIFT={center_drift:.2f} ZTRIG={trigger_bias:.2f}"
+        )
     gate_str = ""
-    mapper = getattr(win, 'stroke_mapper', None)
     gf = getattr(mapper, '_last_gate_fail', None) if mapper is not None else None
     if gf:
         gate_str = f" GATE_FAIL={gf}"
-    print(f"[Main] Cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} {p0_str} {c0_str} {p1_str} {p3_str}{gate_str}")
+    print(f"[Main] Cmd: a={cmd.alpha:.2f} b={cmd.beta:.2f} v={cmd.volume:.2f} {p0_str} {c0_str} {p1_str} {p2_str} {p3_str}{fourphase_str}{gate_str}")
 

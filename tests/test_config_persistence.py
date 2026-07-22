@@ -30,12 +30,46 @@ class TestConfigPersistence(unittest.TestCase):
             cfg_file = Path(tmpdir) / "config.json"
             cfg = Config()
             cfg.stroke.flux_threshold = 0.42
+            cfg.live_tcode_mode = "fourphase"
+            cfg.live_fourphase_model = "classic"
+            cfg.live_fourphase_layout_model = "Pair At Top"
+            cfg.live_fourphase_beat_radius_contrast_strength = 0.65
+            cfg.live_fourphase_beat_speed_spread_strength = 0.35
+            cfg.live_fourphase_beat_response_curves = ["linear", "ease", "bell", "ease"]
+            cfg.live_fourphase_band_mapping = [["mid", "upper_mid", "presence"], ["low_mid"], ["sub_bass", "bass"], ["presence", "brilliance"]]
+            cfg.live_fourphase_bandrouter_fill_mix = 0.28
+            cfg.live_fourphase_bandrouter_idle_floor = 0.18
+            cfg.live_fourphase_bandrouter_post_projection_expansion = 1.45
+            cfg.live_fourphase_bandrouter_pulse_interval_random_percent = 22.0
+            cfg.live_fourphase_vertical_lift_mix = 1.25
+            cfg.live_fourphase_vertical_lift_curve = 1.75
+            cfg.live_fourphase_center_drift_mix = 0.55
+            cfg.live_fourphase_trigger_bias_mix = 1.40
+            cfg.live_fourphase_tetra_post_projection_expansion = 1.35
+            cfg.live_fourphase_vertical_lift_band = "presence"
 
             with mock.patch.object(config_persistence, "get_config_file", return_value=cfg_file):
                 self.assertTrue(config_persistence.save_config(cfg))
                 loaded = config_persistence.load_config()
 
             self.assertAlmostEqual(loaded.stroke.flux_threshold, 0.42, places=6)
+            self.assertEqual(loaded.live_tcode_mode, "fourphase")
+            self.assertEqual(loaded.live_fourphase_model, "classic")
+            self.assertEqual(loaded.live_fourphase_layout_model, "Pair At Top")
+            self.assertAlmostEqual(loaded.live_fourphase_beat_radius_contrast_strength, 0.65, places=6)
+            self.assertAlmostEqual(loaded.live_fourphase_beat_speed_spread_strength, 0.35, places=6)
+            self.assertEqual(loaded.live_fourphase_beat_response_curves, ["linear", "ease", "bell", "ease"])
+            self.assertEqual(loaded.live_fourphase_band_mapping, [["mid", "upper_mid", "presence"], ["low_mid"], ["sub_bass", "bass"], ["presence", "brilliance"]])
+            self.assertAlmostEqual(loaded.live_fourphase_bandrouter_fill_mix, 0.28, places=6)
+            self.assertAlmostEqual(loaded.live_fourphase_bandrouter_idle_floor, 0.18, places=6)
+            self.assertAlmostEqual(loaded.live_fourphase_bandrouter_post_projection_expansion, 1.45, places=6)
+            self.assertAlmostEqual(loaded.live_fourphase_bandrouter_pulse_interval_random_percent, 22.0, places=6)
+            self.assertAlmostEqual(loaded.live_fourphase_vertical_lift_mix, 1.25, places=6)
+            self.assertAlmostEqual(loaded.live_fourphase_vertical_lift_curve, 1.75, places=6)
+            self.assertAlmostEqual(loaded.live_fourphase_center_drift_mix, 0.55, places=6)
+            self.assertAlmostEqual(loaded.live_fourphase_trigger_bias_mix, 1.40, places=6)
+            self.assertAlmostEqual(loaded.live_fourphase_tetra_post_projection_expansion, 1.35, places=6)
+            self.assertEqual(loaded.live_fourphase_vertical_lift_band, "presence")
 
     def test_save_after_legacy_load_omits_deprecated_noise_burst_keys(self):
         with tempfile.TemporaryDirectory() as tmpdir:

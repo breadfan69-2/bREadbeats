@@ -31,6 +31,8 @@ def create_menu_bar(win):
     """Create menu bar with top-level menus for app controls, options, and help."""
     menubar = win.menuBar()
     assert menubar is not None
+    if hasattr(menubar, 'clear'):
+        menubar.clear()
     
     main_menu = menubar.addMenu("Menu")
     assert main_menu is not None
@@ -61,16 +63,6 @@ def create_menu_bar(win):
     device_limits_action = main_menu.addAction("Device Limits...")
     assert device_limits_action is not None
     device_limits_action.triggered.connect(win._on_device_limits)
-
-    # PMV standalone generator launcher
-    pmv_generator_action = main_menu.addAction("PMV Funscript Generator...")
-    assert pmv_generator_action is not None
-    pmv_generator_action.triggered.connect(win._launch_pmv_generator)
-
-    # FunScript Converter launcher
-    converter_action = main_menu.addAction("FunScript Converter (6→4 Phase)...")
-    assert converter_action is not None
-    converter_action.triggered.connect(win._launch_funscript_converter)
     
     # Nerds menu (advanced perf + diagnostics) - inserted near Help later
     nerds_menu = QMenu("Nerds", menubar)
@@ -125,6 +117,33 @@ def create_menu_bar(win):
     motion_settings_action = options_menu.addAction("Motion Settings...")
     assert motion_settings_action is not None
     motion_settings_action.triggered.connect(win._on_options_motion_settings)
+
+    live_tcode_menu = options_menu.addMenu("Phase Mode")
+    assert live_tcode_menu is not None
+    phase_mode_note = (
+        "Selects 3phase vs 4phase live transport. "
+        "If direct FOC V4 support is added later, this same selector will also "
+        "control that connection's 3phase/4phase mode."
+    )
+    live_tcode_menu.setToolTip(phase_mode_note)
+    live_tcode_menu.setStatusTip(phase_mode_note)
+    live_tcode_menu.menuAction().setToolTip(phase_mode_note)
+    live_tcode_menu.menuAction().setStatusTip(phase_mode_note)
+    win._live_tcode_mode_actions = []
+    current_live_mode = str(getattr(win.config, 'live_tcode_mode', 'threephase') or 'threephase').strip().lower()
+    current_live_mode = 'fourphase' if current_live_mode == 'fourphase' else 'threephase'
+    for label, mode in (("3phase (L0/L1)", "threephase"), ("4phase (E1-E4)", "fourphase")):
+        action = live_tcode_menu.addAction(label)
+        assert action is not None
+        action.setCheckable(True)
+        action.setData(mode)
+        action.setChecked(mode == current_live_mode)
+        action.triggered.connect(lambda checked, value=mode: win._on_live_tcode_mode_change(value))
+        win._live_tcode_mode_actions.append(action)
+
+    live_fourphase_options_action = options_menu.addAction("4-Phase Options...")
+    assert live_fourphase_options_action is not None
+    live_fourphase_options_action.triggered.connect(win._on_live_fourphase_options_popup)
 
     # Spectrum visualizer type submenu
     viz_menu = options_menu.addMenu("Spectrum Type")
@@ -188,6 +207,17 @@ def create_menu_bar(win):
     developer_controls_action = options_menu.addAction("Developer Controls")
     assert developer_controls_action is not None
     developer_controls_action.triggered.connect(win._open_developer_controls_window)
+
+    tools_menu = menubar.addMenu("Tools")
+    assert tools_menu is not None
+
+    pmv_generator_action = tools_menu.addAction("PMV Funscript Generator...")
+    assert pmv_generator_action is not None
+    pmv_generator_action.triggered.connect(win._launch_pmv_generator)
+
+    converter_action = tools_menu.addAction("FunScript Converter (6→4 Phase)...")
+    assert converter_action is not None
+    converter_action.triggered.connect(win._launch_funscript_converter)
 
     nerds_menu.addSeparator()
 
@@ -643,6 +673,13 @@ def create_position_panel(win) -> QWidget:
 
     # Position canvas (no rotation - fixed at 0)
     win.position_canvas = PositionCanvas(win, size=2, get_rotation=lambda: 0)
+    win.position_canvas.set_live_tcode_mode(getattr(win.config, 'live_tcode_mode', 'threephase'))
+    if hasattr(win.position_canvas, 'set_live_fourphase_model'):
+        win.position_canvas.set_live_fourphase_model(getattr(win.config, 'live_fourphase_model', 'tetra3d'))
+    if hasattr(win.position_canvas, 'set_live_fourphase_layout_model'):
+        win.position_canvas.set_live_fourphase_layout_model(
+            getattr(win.config, 'live_fourphase_layout_model', 'Straight Line')
+        )
     layout.addWidget(win.position_canvas)
 
     # Keyboard teaching indicator (dev-only, hidden until activated with Ctrl+Shift+K)

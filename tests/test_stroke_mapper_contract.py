@@ -10,6 +10,10 @@ from stroke_mapper import StrokeMapper
 
 
 class TestStrokeMapperContract(unittest.TestCase):
+    @staticmethod
+    def _excursion_from_center(levels: tuple[float, float, float, float]) -> float:
+        return math.sqrt(sum((1.0 - float(value)) ** 2 for value in levels))
+
     def _event(self, **overrides) -> BeatEvent:
         payload: dict[str, Any] = dict(
             timestamp=time.time(),
@@ -190,6 +194,28 @@ class TestStrokeMapperContract(unittest.TestCase):
         mapper = StrokeMapper(Config())
         self.assertAlmostEqual(mapper._park_y, 0.20, places=6)
 
+    def test_band_levels_prefer_audio_engine_seven_band_getter(self):
+        class _SevenBandAudioStub:
+            @staticmethod
+            def get_live_fourphase_band_energies() -> dict[str, float]:
+                return {
+                    "sub_bass": 0.10,
+                    "bass": 0.20,
+                    "low_mid": 0.30,
+                    "mid": 0.40,
+                    "upper_mid": 0.50,
+                    "presence": 0.60,
+                    "brilliance": 0.70,
+                }
+
+        mapper = StrokeMapper(Config())
+        mapper._intelligence.audio_engine = _SevenBandAudioStub()
+
+        band_levels = mapper._current_band_levels()
+
+        self.assertAlmostEqual(band_levels["presence"], 0.60, places=6)
+        self.assertAlmostEqual(band_levels["brilliance"], 0.70, places=6)
+
     def test_radius_bloom_uses_continuous_smoothing(self):
         mapper = StrokeMapper(Config())
         target = 0.95
@@ -214,6 +240,471 @@ class TestStrokeMapperContract(unittest.TestCase):
         self.assertIsNotNone(cmd)
         assert cmd is not None
         self.assertEqual(cmd.duration_ms, 25)
+
+    def test_process_beat_fourphase_attaches_direct_electrode_tags(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "classic"
+        mapper = StrokeMapper(cfg)
+
+        cmd = mapper.process_beat(self._event(is_beat=True, raw_rms=0.15, peak_energy=0.5))
+
+        self.assertIsNotNone(cmd)
+        assert cmd is not None
+        self.assertFalse(cmd.include_linear_axes)
+        self.assertIsNotNone(mapper._last_fourphase_levels)
+        assert mapper._last_fourphase_levels is not None
+        for index, level in enumerate(mapper._last_fourphase_levels, start=1):
+            tag = f"E{index}"
+            self.assertIn(tag, cmd.tcode_tags)
+            self.assertIn(f"{tag}_duration", cmd.tcode_tags)
+            self.assertEqual(cmd.tcode_tags[f"{tag}_duration"], 25)
+            self.assertEqual(cmd.tcode_tags[tag], int(max(0.0, min(1.0, level)) * 9999))
+
+    def test_tetra3d_fourphase_levels_follow_mapper_orbit_state(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "tetra3d"
+        cfg.live_fourphase_vertical_lift_mix = 0.9
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._base_center_y = 0.30
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.8
+
+        mapper._orbit_phase = 0.0
+        phase_a = mapper.get_current_fourphase_levels()
+        mapper._orbit_phase = float(math.pi / 2.0)
+        phase_b = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(phase_a, phase_b)
+
+    def test_tetra3d_vertical_lift_mix_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "tetra3d"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._base_center_y = 0.30
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.8
+
+        cfg.live_fourphase_vertical_lift_mix = 0.0
+        low_mix = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_vertical_lift_mix = 1.6
+        high_mix = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(low_mix, high_mix)
+
+    def test_tetra3d_center_drift_mix_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "tetra3d"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._base_center_y = 0.35
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.0
+
+        cfg.live_fourphase_center_drift_mix = 0.0
+        low_mix = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_center_drift_mix = 1.2
+        high_mix = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(low_mix, high_mix)
+
+    def test_tetra3d_post_projection_expansion_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "tetra3d"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.18
+        mapper.state.beta = -0.22
+        mapper._actual_radius = 0.58
+        mapper._base_center_y = 0.30
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.35
+
+        cfg.live_fourphase_tetra_post_projection_expansion = 1.0
+        base = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_tetra_post_projection_expansion = 1.6
+        expanded = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(base, expanded)
+        self.assertGreater(self._excursion_from_center(expanded), self._excursion_from_center(base))
+
+    def test_tetra3d_trigger_bias_mix_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "tetra3d"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._base_center_y = mapper._baseline_center_y
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="downbeat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.0
+
+        cfg.live_fourphase_trigger_bias_mix = 0.0
+        low_mix = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_trigger_bias_mix = 2.0
+        high_mix = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(low_mix, high_mix)
+
+    def test_tetra3d_layout_model_is_user_assignable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "tetra3d"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._base_center_y = 0.30
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.8
+
+        cfg.live_fourphase_layout_model = "Straight Line"
+        straight_layout = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_layout_model = "Pair At Top"
+        pair_top_layout = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(straight_layout, pair_top_layout)
+
+    def test_classic_radius_contrast_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "classic"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+
+        cfg.live_fourphase_beat_radius_contrast_strength = 0.0
+        low_contrast = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_beat_radius_contrast_strength = 1.0
+        high_contrast = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(low_contrast, high_contrast)
+
+    def test_classic_speed_spread_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "classic"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+
+        cfg.live_fourphase_beat_speed_spread_strength = 0.0
+        low_spread = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_beat_speed_spread_strength = 1.0
+        high_spread = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(low_spread, high_spread)
+
+    def test_classic_response_curves_are_user_assignable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "classic"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+
+        cfg.live_fourphase_beat_response_curves = ["linear", "linear", "linear", "linear"]
+        linear = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_beat_response_curves = ["bell", "linear", "linear", "linear"]
+        bell = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(linear, bell)
+
+    def test_bandrouter_mapping_is_user_assignable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "bandrouter"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.8
+        mapper._intelligence.energies.bass = 0.6
+        mapper._intelligence.energies.low_mid = 0.4
+        mapper._intelligence.energies.mid = 0.1
+        mapper._intelligence.energies.upper_mid = 0.0
+        mapper._intelligence.energies.presence = 0.0
+        mapper._intelligence.energies.brilliance = 0.0
+
+        cfg.live_fourphase_band_mapping = [["mid", "upper_mid", "presence"], ["low_mid", "mid"], ["bass", "low_mid"], ["sub_bass", "bass"]]
+        default_mapping = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_band_mapping = [["sub_bass"], ["bass"], ["mid"], ["brilliance"]]
+        remapped = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(default_mapping, remapped)
+
+    def test_tetra3d_vertical_lift_band_supports_seven_band_selection(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "tetra3d"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._base_center_y = 0.30
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.1
+        mapper._intelligence.energies.presence = 0.8
+
+        cfg.live_fourphase_vertical_lift_band = "sub_bass"
+        low_band = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_vertical_lift_band = "presence"
+        high_band = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(low_band, high_band)
+
+    def test_bandrouter_fill_mix_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "bandrouter"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.8
+        mapper._intelligence.energies.low_mid = 0.4
+        mapper._intelligence.energies.mid = 0.1
+        mapper._intelligence.energies.high = 0.0
+
+        cfg.live_fourphase_bandrouter_fill_mix = 0.0
+        low_fill = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_bandrouter_fill_mix = 0.45
+        high_fill = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(low_fill, high_fill)
+
+    def test_bandrouter_idle_floor_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "bandrouter"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.72
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.8
+        mapper._intelligence.energies.low_mid = 0.3
+        mapper._intelligence.energies.mid = 0.1
+        mapper._intelligence.energies.high = 0.0
+
+        cfg.live_fourphase_bandrouter_idle_floor = 0.0
+        low_idle = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_bandrouter_idle_floor = 0.25
+        high_idle = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(low_idle, high_idle)
+
+    def test_bandrouter_post_projection_expansion_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "bandrouter"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.18
+        mapper.state.beta = -0.22
+        mapper._actual_radius = 0.55
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.55
+        mapper._intelligence.energies.low_mid = 0.30
+        mapper._intelligence.energies.mid = 0.15
+        mapper._intelligence.energies.high = 0.05
+
+        cfg.live_fourphase_bandrouter_post_projection_expansion = 1.0
+        base = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_bandrouter_post_projection_expansion = 1.6
+        expanded = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(base, expanded)
+        self.assertGreater(self._excursion_from_center(expanded), self._excursion_from_center(base))
+
+    def test_tetra3d_vertical_lift_curve_is_user_tunable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "tetra3d"
+        cfg.live_fourphase_vertical_lift_band = "sub_bass"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._base_center_y = 0.30
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.5
+
+        cfg.live_fourphase_vertical_lift_curve = 0.5
+        low_curve = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_vertical_lift_curve = 2.0
+        high_curve = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(low_curve, high_curve)
+
+    def test_tetra3d_vertical_lift_band_is_user_assignable(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "tetra3d"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._base_center_y = 0.30
+        mapper._orbit_phase = 0.0
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.2
+        mapper._intelligence.energies.high = 0.8
+
+        cfg.live_fourphase_vertical_lift_band = "sub_bass"
+        sub_bass_levels = mapper.get_current_fourphase_levels()
+        cfg.live_fourphase_vertical_lift_band = "high"
+        high_levels = mapper.get_current_fourphase_levels()
+
+        self.assertNotEqual(sub_bass_levels, high_levels)
+
+    def test_classic_fourphase_levels_ignore_mapper_orbit_state(self):
+        cfg = Config()
+        cfg.live_tcode_mode = "fourphase"
+        cfg.live_fourphase_model = "classic"
+        mapper = StrokeMapper(cfg)
+        mapper.state.alpha = 0.25
+        mapper.state.beta = -0.5
+        mapper._actual_radius = 0.92
+        mapper._base_center_y = 0.30
+        mapper._orbit_phase_initialized = True
+        mapper._last_decision = BeatDecision(
+            trigger_kind="beat",
+            interval_beats=2,
+            radius_bloom=0.9,
+            silence_active=False,
+            journey_completion=0.25,
+        )
+        mapper._intelligence.energies.sub_bass = 0.8
+
+        mapper._orbit_phase = 0.0
+        phase_a = mapper.get_current_fourphase_levels()
+        mapper._orbit_phase = float(math.pi / 2.0)
+        phase_b = mapper.get_current_fourphase_levels()
+
+        self.assertEqual(phase_a, phase_b)
 
     def test_fill_parks_motion_when_jitter_off(self):
         """Creep mode parks when Jitter/Fill is disabled."""

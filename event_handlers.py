@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 import numpy as np
-from typing import Any, Optional
+from typing import Any, Optional, cast
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt, QTimer
 from config import BeatDetectionType, StrokeMode, BEAT_RANGE_LIMITS
@@ -18,7 +18,7 @@ from logging_utils import get_log_level, log_event, set_log_level
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import TCodeCommand
 from network_lifecycle import ensure_network_engine
-from command_wiring import apply_volume_ramp
+from command_wiring import apply_volume_ramp, compute_live_fourphase_levels
 from transport_wiring import (
     begin_volume_ramp, play_button_text, send_zero_volume_immediate,
     set_transport_sending, shutdown_runtime, start_stop_ui_state,
@@ -811,8 +811,93 @@ def update_display(win):
         return True
 
     if win.stroke_mapper:
+        if hasattr(win.position_canvas, 'set_live_tcode_mode'):
+            win.position_canvas.set_live_tcode_mode(getattr(win.config, 'live_tcode_mode', 'threephase'))
+        if hasattr(win.position_canvas, 'set_live_fourphase_model'):
+            win.position_canvas.set_live_fourphase_model(getattr(win.config, 'live_fourphase_model', 'tetra3d'))
+        if hasattr(win.position_canvas, 'set_live_fourphase_layout_model'):
+            win.position_canvas.set_live_fourphase_layout_model(
+                getattr(win.config, 'live_fourphase_layout_model', 'Straight Line')
+            )
         alpha, beta = win.stroke_mapper.get_current_position()
-        win.position_canvas.update_position(alpha, beta)
+        if str(getattr(win.config, 'live_tcode_mode', 'threephase')).strip().lower() == 'fourphase':
+            levels = getattr(win.stroke_mapper, '_last_fourphase_levels', None)
+            if levels is None and hasattr(win.stroke_mapper, 'get_current_fourphase_levels'):
+                levels = win.stroke_mapper.get_current_fourphase_levels()
+            if levels is None:
+                decision = getattr(win.stroke_mapper, '_last_decision', None)
+                intelligence = getattr(win.stroke_mapper, '_intelligence', None)
+                energies = getattr(intelligence, 'energies', None)
+                sub_bass = float(np.clip(getattr(energies, 'sub_bass', 0.0) or 0.0, 0.0, 1.0))
+                vertical_signal_getter = getattr(win.stroke_mapper, '_current_vertical_lift_signal', None)
+                if callable(vertical_signal_getter):
+                    try:
+                        sub_bass = float(vertical_signal_getter())
+                    except Exception:
+                        sub_bass = float(np.clip(getattr(energies, 'sub_bass', 0.0) or 0.0, 0.0, 1.0))
+                band_levels_getter = getattr(win.stroke_mapper, '_current_band_levels', None)
+                if callable(band_levels_getter):
+                    try:
+                        maybe_band_levels = band_levels_getter()
+                    except Exception:
+                        maybe_band_levels = None
+                    if isinstance(maybe_band_levels, dict):
+                        band_levels = {
+                            str(name): float(np.clip(value or 0.0, 0.0, 1.0))
+                            for name, value in maybe_band_levels.items()
+                        }
+                    else:
+                        band_levels = {
+                            'sub_bass': float(np.clip(getattr(energies, 'sub_bass', 0.0) or 0.0, 0.0, 1.0)),
+                            'low_mid': float(np.clip(getattr(energies, 'low_mid', 0.0) or 0.0, 0.0, 1.0)),
+                            'mid': float(np.clip(getattr(energies, 'mid', 0.0) or 0.0, 0.0, 1.0)),
+                            'high': float(np.clip(getattr(energies, 'high', 0.0) or 0.0, 0.0, 1.0)),
+                        }
+                else:
+                    band_levels = {
+                        'sub_bass': float(np.clip(getattr(energies, 'sub_bass', 0.0) or 0.0, 0.0, 1.0)),
+                        'low_mid': float(np.clip(getattr(energies, 'low_mid', 0.0) or 0.0, 0.0, 1.0)),
+                        'mid': float(np.clip(getattr(energies, 'mid', 0.0) or 0.0, 0.0, 1.0)),
+                        'high': float(np.clip(getattr(energies, 'high', 0.0) or 0.0, 0.0, 1.0)),
+                    }
+                fill_angle = float(getattr(win.stroke_mapper, '_orbit_phase', 0.0) or 0.0)
+                orbit_radius = float(np.clip(getattr(win.stroke_mapper, '_actual_radius', 0.0) or 0.0, 0.0, 1.0))
+                silence_fade = 0.0 if getattr(decision, 'silence_active', False) else 1.0
+                orbit_angular_speed = 0.0
+                orbit_speed_getter = getattr(win.stroke_mapper, '_current_classic_orbit_angular_speed', None)
+                if callable(orbit_speed_getter):
+                    try:
+                        orbit_angular_speed = float(cast(float, orbit_speed_getter()))
+                    except Exception:
+                        orbit_angular_speed = 0.0
+                levels = compute_live_fourphase_levels(
+                    alpha,
+                    beta,
+                    0.0,
+                    model=str(getattr(win.config, 'live_fourphase_model', 'tetra3d') or 'tetra3d'),
+                    sub_bass=sub_bass,
+                    layout_model=str(getattr(win.config, 'live_fourphase_layout_model', 'Straight Line') or 'Straight Line'),
+                    tetra_post_projection_expansion=getattr(win.config, 'live_fourphase_tetra_post_projection_expansion', 1.0),
+                    beat_radius_contrast_strength=getattr(win.config, 'live_fourphase_beat_radius_contrast_strength', 0.0),
+                    beat_speed_threshold_spread_strength=getattr(win.config, 'live_fourphase_beat_speed_spread_strength', 0.0),
+                    beat_response_curves=getattr(win.config, 'live_fourphase_beat_response_curves', None),
+                    band_levels=band_levels,
+                    band_mapping=getattr(win.config, 'live_fourphase_band_mapping', None),
+                    fill_angle=fill_angle,
+                    base=orbit_radius,
+                    silence_fade=silence_fade,
+                    orbit_radius=orbit_radius,
+                    orbit_angular_speed=orbit_angular_speed,
+                    bandrouter_fill_mix=getattr(win.config, 'live_fourphase_bandrouter_fill_mix', 0.12),
+                    bandrouter_idle_floor=getattr(win.config, 'live_fourphase_bandrouter_idle_floor', 0.10),
+                    bandrouter_post_projection_expansion=getattr(win.config, 'live_fourphase_bandrouter_post_projection_expansion', 1.0),
+                )
+            if hasattr(win.position_canvas, 'update_fourphase_levels'):
+                win.position_canvas.update_fourphase_levels(levels)
+            else:
+                win.position_canvas.update_position(alpha, beta)
+        else:
+            win.position_canvas.update_position(alpha, beta)
 
     # Refresh keyboard teaching overlay at display rate
     teacher = getattr(win, '_keyboard_teacher', None)

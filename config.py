@@ -399,6 +399,33 @@ class Config:
     beta_weight: float = 1.0          # Per-axis mix for beta
     volume: float = 1.0               # Output volume (0.0-1.0)
     log_level: str = "INFO"           # Logging level (DEBUG/INFO/WARNING/ERROR)
+    live_tcode_mode: str = "threephase"  # "threephase" (L0/L1) or "fourphase" (E1-E4)
+    live_fourphase_model: str = "tetra3d"  # "classic" ring parity or "tetra3d" true 3D mapping
+    live_fourphase_layout_model: str = "Straight Line"  # live 4-phase electrode layout family
+    live_fourphase_beat_radius_contrast_strength: float = 0.0  # classic beat-orbit radius-aware contrast
+    live_fourphase_beat_speed_spread_strength: float = 0.0  # classic beat-orbit speed-threshold spread
+    live_fourphase_beat_response_curves: list[str] = field(default_factory=lambda: [
+        "linear",
+        "linear",
+        "linear",
+        "linear",
+    ])
+    live_fourphase_band_mapping: list[list[str]] = field(default_factory=lambda: [
+        ["mid", "upper_mid", "presence"],
+        ["low_mid", "mid"],
+        ["bass", "low_mid"],
+        ["sub_bass", "bass"],
+    ])
+    live_fourphase_bandrouter_fill_mix: float = 0.12  # bandrouter orbit-fill proximity scaling
+    live_fourphase_bandrouter_idle_floor: float = 0.10  # bandrouter idle floor fraction of base level
+    live_fourphase_bandrouter_post_projection_expansion: float = 1.00  # bandrouter direct-space expansion after constraint
+    live_fourphase_bandrouter_pulse_interval_random_percent: float = 10.0  # bandrouter base P2 randomness before brilliance boost
+    live_fourphase_vertical_lift_mix: float = 0.90  # tetra3d bass-driven vertical lift scaling
+    live_fourphase_vertical_lift_curve: float = 1.00  # tetra3d lift response exponent
+    live_fourphase_center_drift_mix: float = 0.35  # tetra3d center-drift contribution scaling
+    live_fourphase_trigger_bias_mix: float = 1.00  # tetra3d trigger-kind lift scaling
+    live_fourphase_tetra_post_projection_expansion: float = 1.00  # tetra3d direct-space expansion after projection
+    live_fourphase_vertical_lift_band: str = "sub_bass"  # band source for tetra3d vertical lift
 
 
 def apply_dict_to_dataclass(target, data) -> None:
@@ -467,6 +494,111 @@ def migrate_config(config: Config, loaded_version) -> None:
     if layout_model not in {'Pair At Top', 'Pair At Middle', 'Pair At Bottom / Rear'}:
         layout_model = 'Pair At Middle'
     config.funscript_converter.layout_model = layout_model
+
+    try:
+        live_layout_model = str(getattr(config, 'live_fourphase_layout_model', 'Straight Line') or 'Straight Line')
+    except Exception:
+        live_layout_model = 'Straight Line'
+    if live_layout_model not in {'Straight Line', 'Pair At Top', 'Pair At Middle', 'Pair At Bottom / Rear'}:
+        live_layout_model = 'Straight Line'
+    config.live_fourphase_layout_model = live_layout_model
+
+    try:
+        beat_radius_contrast_strength = float(
+            getattr(config, 'live_fourphase_beat_radius_contrast_strength', 0.0)
+        )
+    except Exception:
+        beat_radius_contrast_strength = 0.0
+    config.live_fourphase_beat_radius_contrast_strength = max(0.0, min(1.0, beat_radius_contrast_strength))
+
+    try:
+        beat_speed_spread_strength = float(
+            getattr(config, 'live_fourphase_beat_speed_spread_strength', 0.0)
+        )
+    except Exception:
+        beat_speed_spread_strength = 0.0
+    config.live_fourphase_beat_speed_spread_strength = max(0.0, min(1.0, beat_speed_spread_strength))
+
+    default_live_beat_curves = ['linear', 'linear', 'linear', 'linear']
+    raw_live_beat_curves = getattr(config, 'live_fourphase_beat_response_curves', default_live_beat_curves)
+    if not isinstance(raw_live_beat_curves, (list, tuple)) or len(raw_live_beat_curves) != 4:
+        raw_live_beat_curves = default_live_beat_curves
+    normalized_live_beat_curves: list[str] = []
+    for index, default_curve in enumerate(default_live_beat_curves):
+        raw_curve = raw_live_beat_curves[index] if index < len(raw_live_beat_curves) else default_curve
+        curve_name = str(raw_curve or default_curve).strip().lower()
+        if curve_name not in {'linear', 'ease', 'bell'}:
+            curve_name = default_curve
+        normalized_live_beat_curves.append(curve_name)
+    config.live_fourphase_beat_response_curves = normalized_live_beat_curves
+
+    default_live_band_mapping = [
+        ['mid', 'upper_mid', 'presence'],
+        ['low_mid', 'mid'],
+        ['bass', 'low_mid'],
+        ['sub_bass', 'bass'],
+    ]
+    raw_live_band_mapping = getattr(config, 'live_fourphase_band_mapping', default_live_band_mapping)
+    normalized_live_band_mapping: list[list[str]] = []
+    if not isinstance(raw_live_band_mapping, (list, tuple)) or len(raw_live_band_mapping) != 4:
+        raw_live_band_mapping = default_live_band_mapping
+    for index, default_bands in enumerate(default_live_band_mapping):
+        raw_entry = raw_live_band_mapping[index] if index < len(raw_live_band_mapping) else default_bands
+        if not isinstance(raw_entry, (list, tuple)):
+            normalized_live_band_mapping.append(list(default_bands))
+            continue
+        selected: list[str] = []
+        for raw_band in raw_entry:
+            band_name = str(raw_band or 'sub_bass').strip().lower()
+            if band_name == 'high':
+                band_name = 'presence'
+            if band_name not in {'sub_bass', 'bass', 'low_mid', 'mid', 'upper_mid', 'presence', 'brilliance'}:
+                continue
+            if band_name not in selected:
+                selected.append(band_name)
+            if len(selected) >= 3:
+                break
+        normalized_live_band_mapping.append(selected if selected else list(default_bands))
+    config.live_fourphase_band_mapping = normalized_live_band_mapping
+
+    try:
+        bandrouter_fill_mix = float(getattr(config, 'live_fourphase_bandrouter_fill_mix', 0.12))
+    except Exception:
+        bandrouter_fill_mix = 0.12
+    config.live_fourphase_bandrouter_fill_mix = max(0.0, min(1.0, bandrouter_fill_mix))
+
+    try:
+        bandrouter_idle_floor = float(getattr(config, 'live_fourphase_bandrouter_idle_floor', 0.10))
+    except Exception:
+        bandrouter_idle_floor = 0.10
+    config.live_fourphase_bandrouter_idle_floor = max(0.0, min(0.5, bandrouter_idle_floor))
+
+    try:
+        bandrouter_pulse_random_percent = float(
+            getattr(config, 'live_fourphase_bandrouter_pulse_interval_random_percent', 10.0)
+        )
+    except Exception:
+        bandrouter_pulse_random_percent = 10.0
+    config.live_fourphase_bandrouter_pulse_interval_random_percent = max(
+        0.0,
+        min(100.0, bandrouter_pulse_random_percent),
+    )
+
+    try:
+        bandrouter_post_projection_expansion = float(
+            getattr(config, 'live_fourphase_bandrouter_post_projection_expansion', 1.0)
+        )
+    except Exception:
+        bandrouter_post_projection_expansion = 1.0
+    config.live_fourphase_bandrouter_post_projection_expansion = max(0.0, min(2.0, bandrouter_post_projection_expansion))
+
+    try:
+        tetra_post_projection_expansion = float(
+            getattr(config, 'live_fourphase_tetra_post_projection_expansion', 1.0)
+        )
+    except Exception:
+        tetra_post_projection_expansion = 1.0
+    config.live_fourphase_tetra_post_projection_expansion = max(0.0, min(2.0, tetra_post_projection_expansion))
 
     raw_wiring_map = getattr(config.funscript_converter, 'wiring_map', [0, 1, 2, 3])
     try:

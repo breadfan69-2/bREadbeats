@@ -112,6 +112,9 @@ class _AudioEngineStub:
     def get_band_energies(self) -> dict[str, float]:
         return dict(self._band_energies)
 
+    def get_live_fourphase_band_energies(self) -> dict[str, float]:
+        return dict(self._band_energies)
+
     def set_silence_gate(self, active: bool) -> None:
         self.silence_gate_active = active
 

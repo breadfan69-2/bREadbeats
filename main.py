@@ -57,7 +57,19 @@ from logging_utils import get_log_level, log_event, set_log_level
 from audio_engine import AudioEngine, BeatEvent
 from network_engine import TCodeCommand
 from network_lifecycle import ensure_network_engine, toggle_user_connection
-from command_wiring import apply_volume_ramp
+from command_wiring import (
+    apply_volume_ramp,
+    normalize_live_fourphase_band_mapping,
+    normalize_live_fourphase_beat_radius_contrast_strength,
+    normalize_live_fourphase_beat_response_curves,
+    normalize_live_fourphase_beat_speed_spread_strength,
+    normalize_live_fourphase_bandrouter_fill_mix,
+    normalize_live_fourphase_bandrouter_idle_floor,
+    normalize_live_fourphase_bandrouter_pulse_interval_random_percent,
+    normalize_live_fourphase_bandrouter_post_projection_expansion,
+    normalize_live_fourphase_layout_model,
+    normalize_live_fourphase_tetra_post_projection_expansion,
+)
 from close_persist_wiring import persist_runtime_ui_to_config
 from config_facade import (
     load_config,
@@ -199,6 +211,15 @@ class BREadbeatsWindow(QMainWindow):
         self.intelligence_enabled_action = None
         self._beats_per_rotation_menu = None
         self._beats_per_rotation_actions = []
+        self._live_tcode_mode_actions = []
+        self._live_fourphase_model_actions = []
+        self._live_fourphase_options_dialog = None
+        self._live_fourphase_options_widgets = {}
+        self._live_fourphase_bandrouter_fill_mix_action = None
+        self._live_fourphase_bandrouter_idle_floor_action = None
+        self._live_fourphase_vertical_lift_action = None
+        self._live_fourphase_vertical_lift_curve_action = None
+        self._live_fourphase_vertical_lift_band_actions = []
         self.connection_toggle_action = None
         self.connection_test_action = None
         
@@ -658,6 +679,808 @@ class BREadbeatsWindow(QMainWindow):
         set_log_level(level)
         self.config.log_level = level.upper()
         self._sync_log_level_menu(self.config.log_level)
+
+    @staticmethod
+    def _normalize_live_tcode_mode(mode: str | None) -> str:
+        normalized = str(mode or "threephase").strip().lower()
+        return "fourphase" if normalized == "fourphase" else "threephase"
+
+    @staticmethod
+    def _normalize_live_fourphase_model(model: str | None) -> str:
+        normalized = str(model or "tetra3d").strip().lower()
+        if normalized == "classic":
+            return "classic"
+        if normalized in {"bandrouter", "band_routed", "band-routed", "band routed"}:
+            return "bandrouter"
+        return "tetra3d"
+
+    @staticmethod
+    def _normalize_live_fourphase_layout_model(layout_model: str | None) -> str:
+        return normalize_live_fourphase_layout_model(layout_model)
+
+    @staticmethod
+    def _normalize_live_fourphase_band_mapping(mapping: object | None) -> list[list[str]]:
+        return [list(group) for group in normalize_live_fourphase_band_mapping(mapping)]
+
+    @staticmethod
+    def _normalize_live_fourphase_beat_radius_contrast_strength(value: float | None) -> float:
+        return normalize_live_fourphase_beat_radius_contrast_strength(value)
+
+    @staticmethod
+    def _normalize_live_fourphase_beat_speed_spread_strength(value: float | None) -> float:
+        return normalize_live_fourphase_beat_speed_spread_strength(value)
+
+    @staticmethod
+    def _normalize_live_fourphase_beat_response_curves(curves: object | None) -> list[str]:
+        return list(normalize_live_fourphase_beat_response_curves(curves))
+
+    @staticmethod
+    def _normalize_live_fourphase_bandrouter_fill_mix(mix: float | None) -> float:
+        return normalize_live_fourphase_bandrouter_fill_mix(mix)
+
+    @staticmethod
+    def _normalize_live_fourphase_bandrouter_idle_floor(idle_floor: float | None) -> float:
+        return normalize_live_fourphase_bandrouter_idle_floor(idle_floor)
+
+    @staticmethod
+    def _normalize_live_fourphase_bandrouter_pulse_interval_random_percent(value: float | None) -> float:
+        return normalize_live_fourphase_bandrouter_pulse_interval_random_percent(value)
+
+    @staticmethod
+    def _normalize_live_fourphase_bandrouter_post_projection_expansion(value: float | None) -> float:
+        return normalize_live_fourphase_bandrouter_post_projection_expansion(value)
+
+    @staticmethod
+    def _normalize_live_fourphase_vertical_lift_mix(mix: float | None) -> float:
+        return float(np.clip(0.90 if mix is None else mix, 0.0, 2.0))
+
+    @staticmethod
+    def _normalize_live_fourphase_tetra_post_projection_expansion(value: float | None) -> float:
+        return normalize_live_fourphase_tetra_post_projection_expansion(value)
+
+    @staticmethod
+    def _normalize_live_fourphase_vertical_lift_curve(curve: float | None) -> float:
+        return float(np.clip(1.00 if curve is None else curve, 0.25, 3.0))
+
+    @staticmethod
+    def _normalize_live_fourphase_center_drift_mix(mix: float | None) -> float:
+        return float(np.clip(0.35 if mix is None else mix, 0.0, 2.0))
+
+    @staticmethod
+    def _normalize_live_fourphase_trigger_bias_mix(mix: float | None) -> float:
+        return float(np.clip(1.00 if mix is None else mix, 0.0, 2.0))
+
+    @staticmethod
+    def _normalize_live_fourphase_vertical_lift_band(band: str | None) -> str:
+        normalized = str(band or 'sub_bass').strip().lower()
+        if normalized == 'high':
+            normalized = 'presence'
+        return normalized if normalized in {'sub_bass', 'bass', 'low_mid', 'mid', 'upper_mid', 'presence', 'brilliance'} else 'sub_bass'
+
+    @staticmethod
+    def _live_fourphase_band_label(band: str) -> str:
+        return {
+            'sub_bass': 'Sub Bass',
+            'bass': 'Bass',
+            'low_mid': 'Low Mid',
+            'mid': 'Mid',
+            'upper_mid': 'Upper Mid',
+            'presence': 'Presence',
+            'brilliance': 'Brilliance',
+        }.get(band, 'Sub Bass')
+
+    @staticmethod
+    def _live_fourphase_curve_label(curve: str) -> str:
+        return {
+            'linear': 'Linear',
+            'ease': 'Ease',
+            'bell': 'Bell',
+        }.get(curve, 'Linear')
+
+    @staticmethod
+    def _live_fourphase_selector_label(label: str) -> str:
+        return f'{label} [v]'
+
+    def _sync_live_fourphase_vertical_lift_action(self) -> None:
+        action = getattr(self, '_live_fourphase_vertical_lift_action', None)
+        if action is None:
+            return
+        mix = self._normalize_live_fourphase_vertical_lift_mix(
+            getattr(self.config, 'live_fourphase_vertical_lift_mix', 0.90)
+        )
+        action.setText(f"Vertical Lift Mix... ({mix:.2f}x)")
+
+    def _sync_live_fourphase_vertical_lift_curve_action(self) -> None:
+        action = getattr(self, '_live_fourphase_vertical_lift_curve_action', None)
+        if action is None:
+            return
+        curve = self._normalize_live_fourphase_vertical_lift_curve(
+            getattr(self.config, 'live_fourphase_vertical_lift_curve', 1.00)
+        )
+        action.setText(f"Vertical Lift Curve... ({curve:.2f})")
+
+    def _sync_live_fourphase_bandrouter_fill_mix_action(self) -> None:
+        action = getattr(self, '_live_fourphase_bandrouter_fill_mix_action', None)
+        if action is None:
+            return
+        mix = self._normalize_live_fourphase_bandrouter_fill_mix(
+            getattr(self.config, 'live_fourphase_bandrouter_fill_mix', 0.12)
+        )
+        action.setText(f"Band-Routed Fill Proximity... ({mix:.2f}x)")
+
+    def _sync_live_fourphase_bandrouter_idle_floor_action(self) -> None:
+        action = getattr(self, '_live_fourphase_bandrouter_idle_floor_action', None)
+        if action is None:
+            return
+        idle_floor = self._normalize_live_fourphase_bandrouter_idle_floor(
+            getattr(self.config, 'live_fourphase_bandrouter_idle_floor', 0.10)
+        )
+        action.setText(f"Band-Routed Idle Floor... ({idle_floor:.2f}x)")
+
+    def _sync_live_fourphase_layout_menu(self, active_layout: str | None = None) -> None:
+        target_layout = self._normalize_live_fourphase_layout_model(
+            getattr(self.config, 'live_fourphase_layout_model', 'Straight Line') if active_layout is None else active_layout
+        )
+        for action in getattr(self, '_live_fourphase_layout_actions', []):
+            action_layout = self._normalize_live_fourphase_layout_model(action.data())
+            action.blockSignals(True)
+            action.setChecked(action_layout == target_layout)
+            action.blockSignals(False)
+
+    def _sync_live_fourphase_bandrouter_mapping_menu(self) -> None:
+        mapping = self._normalize_live_fourphase_band_mapping(
+            getattr(self.config, 'live_fourphase_band_mapping', None)
+        )
+        for electrode_index, actions in enumerate(getattr(self, '_live_fourphase_bandrouter_band_actions', [])):
+            selected_bands = set(mapping[electrode_index])
+            for action in actions:
+                action_band = str(action.data() or 'sub_bass').strip().lower()
+                action.blockSignals(True)
+                action.setChecked(action_band in selected_bands)
+                action.blockSignals(False)
+
+    def _sync_live_fourphase_center_drift_action(self) -> None:
+        action = getattr(self, '_live_fourphase_center_drift_action', None)
+        if action is None:
+            return
+        mix = self._normalize_live_fourphase_center_drift_mix(
+            getattr(self.config, 'live_fourphase_center_drift_mix', 0.35)
+        )
+        action.setText(f"Center Drift Mix... ({mix:.2f}x)")
+
+    def _sync_live_fourphase_trigger_bias_action(self) -> None:
+        action = getattr(self, '_live_fourphase_trigger_bias_action', None)
+        if action is None:
+            return
+        mix = self._normalize_live_fourphase_trigger_bias_mix(
+            getattr(self.config, 'live_fourphase_trigger_bias_mix', 1.00)
+        )
+        action.setText(f"Trigger Bias Mix... ({mix:.2f}x)")
+
+    def _sync_live_fourphase_vertical_lift_band_menu(self, active_band: str | None = None) -> None:
+        target_band = self._normalize_live_fourphase_vertical_lift_band(
+            getattr(self.config, 'live_fourphase_vertical_lift_band', 'sub_bass') if active_band is None else active_band
+        )
+        for action in getattr(self, '_live_fourphase_vertical_lift_band_actions', []):
+            action_band = self._normalize_live_fourphase_vertical_lift_band(action.data())
+            action.blockSignals(True)
+            action.setChecked(action_band == target_band)
+            action.blockSignals(False)
+
+    def _refresh_live_fourphase_options_dialog(self) -> None:
+        widgets = getattr(self, '_live_fourphase_options_widgets', None)
+        if not widgets:
+            return
+
+        model = self._normalize_live_fourphase_model(getattr(self.config, 'live_fourphase_model', 'tetra3d'))
+        layout = self._normalize_live_fourphase_layout_model(
+            getattr(self.config, 'live_fourphase_layout_model', 'Straight Line')
+        )
+        beat_radius_contrast = self._normalize_live_fourphase_beat_radius_contrast_strength(
+            getattr(self.config, 'live_fourphase_beat_radius_contrast_strength', 0.0)
+        )
+        beat_speed_spread = self._normalize_live_fourphase_beat_speed_spread_strength(
+            getattr(self.config, 'live_fourphase_beat_speed_spread_strength', 0.0)
+        )
+        beat_curves = self._normalize_live_fourphase_beat_response_curves(
+            getattr(self.config, 'live_fourphase_beat_response_curves', None)
+        )
+        vertical_lift_mix = self._normalize_live_fourphase_vertical_lift_mix(
+            getattr(self.config, 'live_fourphase_vertical_lift_mix', 0.90)
+        )
+        tetra_post_projection_expansion = self._normalize_live_fourphase_tetra_post_projection_expansion(
+            getattr(self.config, 'live_fourphase_tetra_post_projection_expansion', 1.0)
+        )
+        vertical_lift_curve = self._normalize_live_fourphase_vertical_lift_curve(
+            getattr(self.config, 'live_fourphase_vertical_lift_curve', 1.00)
+        )
+        center_drift_mix = self._normalize_live_fourphase_center_drift_mix(
+            getattr(self.config, 'live_fourphase_center_drift_mix', 0.35)
+        )
+        trigger_bias_mix = self._normalize_live_fourphase_trigger_bias_mix(
+            getattr(self.config, 'live_fourphase_trigger_bias_mix', 1.00)
+        )
+        vertical_lift_band = self._normalize_live_fourphase_vertical_lift_band(
+            getattr(self.config, 'live_fourphase_vertical_lift_band', 'sub_bass')
+        )
+        bandrouter_fill_mix = self._normalize_live_fourphase_bandrouter_fill_mix(
+            getattr(self.config, 'live_fourphase_bandrouter_fill_mix', 0.12)
+        )
+        bandrouter_idle_floor = self._normalize_live_fourphase_bandrouter_idle_floor(
+            getattr(self.config, 'live_fourphase_bandrouter_idle_floor', 0.10)
+        )
+        bandrouter_pulse_random_percent = self._normalize_live_fourphase_bandrouter_pulse_interval_random_percent(
+            getattr(self.config, 'live_fourphase_bandrouter_pulse_interval_random_percent', 10.0)
+        )
+        bandrouter_post_projection_expansion = self._normalize_live_fourphase_bandrouter_post_projection_expansion(
+            getattr(self.config, 'live_fourphase_bandrouter_post_projection_expansion', 1.0)
+        )
+        band_mapping = self._normalize_live_fourphase_band_mapping(
+            getattr(self.config, 'live_fourphase_band_mapping', None)
+        )
+
+        def _set_combo_value(combo: QComboBox | None, target_value) -> None:
+            if combo is None:
+                return
+            combo.blockSignals(True)
+            for index in range(combo.count()):
+                if combo.itemData(index) == target_value:
+                    combo.setCurrentIndex(index)
+                    break
+            combo.blockSignals(False)
+
+        def _set_spin_value(spin: QDoubleSpinBox | None, target_value: float) -> None:
+            if spin is None:
+                return
+            spin.blockSignals(True)
+            spin.setValue(target_value)
+            spin.blockSignals(False)
+
+        _set_combo_value(widgets.get('model_combo'), model)
+        _set_combo_value(widgets.get('layout_combo'), layout)
+        _set_spin_value(widgets.get('beat_radius_contrast_spin'), beat_radius_contrast)
+        _set_spin_value(widgets.get('beat_speed_spread_spin'), beat_speed_spread)
+        for index, combo in enumerate(widgets.get('beat_curve_combos', [])):
+            _set_combo_value(combo, beat_curves[index])
+
+        _set_spin_value(widgets.get('vertical_lift_mix_spin'), vertical_lift_mix)
+        _set_spin_value(widgets.get('tetra_post_projection_expansion_spin'), tetra_post_projection_expansion)
+        _set_spin_value(widgets.get('vertical_lift_curve_spin'), vertical_lift_curve)
+        _set_spin_value(widgets.get('center_drift_spin'), center_drift_mix)
+        _set_spin_value(widgets.get('trigger_bias_spin'), trigger_bias_mix)
+        _set_combo_value(widgets.get('vertical_lift_band_combo'), vertical_lift_band)
+
+        _set_spin_value(widgets.get('bandrouter_fill_spin'), bandrouter_fill_mix)
+        _set_spin_value(widgets.get('bandrouter_idle_spin'), bandrouter_idle_floor)
+        _set_spin_value(widgets.get('bandrouter_pulse_random_spin'), bandrouter_pulse_random_percent)
+        _set_spin_value(widgets.get('bandrouter_post_projection_expansion_spin'), bandrouter_post_projection_expansion)
+
+        band_mapping_boxes = widgets.get('band_mapping_boxes', {})
+        for electrode_index in range(4):
+            selected_bands = set(band_mapping[electrode_index])
+            for band in ('sub_bass', 'bass', 'low_mid', 'mid', 'upper_mid', 'presence', 'brilliance'):
+                checkbox = band_mapping_boxes.get((electrode_index, band))
+                if checkbox is None:
+                    continue
+                checkbox.blockSignals(True)
+                checkbox.setChecked(band in selected_bands)
+                checkbox.blockSignals(False)
+
+        beat_group = widgets.get('beat_group')
+        if beat_group is not None:
+            beat_group.setEnabled(model == 'classic')
+        tetra_group = widgets.get('tetra_group')
+        if tetra_group is not None:
+            tetra_group.setEnabled(model == 'tetra3d')
+        bandrouter_group = widgets.get('bandrouter_group')
+        if bandrouter_group is not None:
+            bandrouter_group.setEnabled(model == 'bandrouter')
+        layout_label = widgets.get('layout_label')
+        if layout_label is not None:
+            layout_label.setEnabled(model == 'tetra3d')
+        layout_combo = widgets.get('layout_combo')
+        if layout_combo is not None:
+            layout_combo.setEnabled(model == 'tetra3d')
+
+    def _refresh_live_fourphase_preview(self) -> None:
+        position_canvas = getattr(self, 'position_canvas', None)
+        if position_canvas is None or self.stroke_mapper is None:
+            return
+
+        alpha, beta = self.stroke_mapper.get_current_position()
+        if self._normalize_live_tcode_mode(getattr(self.config, 'live_tcode_mode', 'threephase')) == 'fourphase':
+            if hasattr(position_canvas, 'update_fourphase_levels') and hasattr(self.stroke_mapper, 'get_current_fourphase_levels'):
+                position_canvas.update_fourphase_levels(self.stroke_mapper.get_current_fourphase_levels())
+            else:
+                position_canvas.update_position(alpha, beta)
+        else:
+            position_canvas.update_position(alpha, beta)
+
+    def _on_live_tcode_mode_change(self, mode: str) -> None:
+        self.config.live_tcode_mode = self._normalize_live_tcode_mode(mode)
+        self._sync_live_tcode_mode_menu(self.config.live_tcode_mode)
+        position_canvas = getattr(self, 'position_canvas', None)
+        if position_canvas is not None and hasattr(position_canvas, 'set_live_tcode_mode'):
+            position_canvas.set_live_tcode_mode(self.config.live_tcode_mode)
+            if hasattr(position_canvas, 'set_live_fourphase_model'):
+                position_canvas.set_live_fourphase_model(getattr(self.config, 'live_fourphase_model', 'tetra3d'))
+            if hasattr(position_canvas, 'set_live_fourphase_layout_model'):
+                position_canvas.set_live_fourphase_layout_model(
+                    getattr(self.config, 'live_fourphase_layout_model', 'Straight Line')
+                )
+            self._refresh_live_fourphase_preview()
+
+    def _on_live_fourphase_model_change(self, model: str) -> None:
+        self.config.live_fourphase_model = self._normalize_live_fourphase_model(model)
+        self._sync_live_fourphase_model_menu(self.config.live_fourphase_model)
+        position_canvas = getattr(self, 'position_canvas', None)
+        if position_canvas is not None and hasattr(position_canvas, 'set_live_fourphase_model'):
+            position_canvas.set_live_fourphase_model(self.config.live_fourphase_model)
+            self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_layout_model_change(self, layout_model: str) -> None:
+        self.config.live_fourphase_layout_model = self._normalize_live_fourphase_layout_model(layout_model)
+        self._sync_live_fourphase_layout_menu(self.config.live_fourphase_layout_model)
+        position_canvas = getattr(self, 'position_canvas', None)
+        if position_canvas is not None and hasattr(position_canvas, 'set_live_fourphase_layout_model'):
+            position_canvas.set_live_fourphase_layout_model(self.config.live_fourphase_layout_model)
+            self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_beat_radius_contrast_change(self, value: float) -> None:
+        self.config.live_fourphase_beat_radius_contrast_strength = self._normalize_live_fourphase_beat_radius_contrast_strength(value)
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_beat_speed_spread_change(self, value: float) -> None:
+        self.config.live_fourphase_beat_speed_spread_strength = self._normalize_live_fourphase_beat_speed_spread_strength(value)
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_beat_response_curve_change(self, electrode_index: int, curve: str) -> None:
+        if electrode_index < 0 or electrode_index >= 4:
+            return
+        curves = self._normalize_live_fourphase_beat_response_curves(
+            getattr(self.config, 'live_fourphase_beat_response_curves', None)
+        )
+        curves[electrode_index] = str(curve or 'linear').strip().lower()
+        self.config.live_fourphase_beat_response_curves = self._normalize_live_fourphase_beat_response_curves(curves)
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_bandrouter_mapping_change(self, electrode_index: int, band: str, checked: bool) -> None:
+        if electrode_index < 0 or electrode_index >= 4:
+            return
+        mapping = self._normalize_live_fourphase_band_mapping(
+            getattr(self.config, 'live_fourphase_band_mapping', None)
+        )
+        normalized_band = str(band or 'sub_bass').strip().lower()
+        selected = list(mapping[electrode_index])
+        if checked:
+            if normalized_band not in selected and len(selected) < 3:
+                selected.append(normalized_band)
+        else:
+            if normalized_band in selected and len(selected) > 1:
+                selected = [entry for entry in selected if entry != normalized_band]
+        mapping[electrode_index] = selected
+        self.config.live_fourphase_band_mapping = mapping
+        self._sync_live_fourphase_bandrouter_mapping_menu()
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_vertical_lift_mix_change(self, mix: float) -> None:
+        self.config.live_fourphase_vertical_lift_mix = self._normalize_live_fourphase_vertical_lift_mix(mix)
+        self._sync_live_fourphase_vertical_lift_action()
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_tetra_post_projection_expansion_change(self, expansion: float) -> None:
+        self.config.live_fourphase_tetra_post_projection_expansion = self._normalize_live_fourphase_tetra_post_projection_expansion(expansion)
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_vertical_lift_curve_change(self, curve: float) -> None:
+        self.config.live_fourphase_vertical_lift_curve = self._normalize_live_fourphase_vertical_lift_curve(curve)
+        self._sync_live_fourphase_vertical_lift_curve_action()
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_center_drift_mix_change(self, mix: float) -> None:
+        self.config.live_fourphase_center_drift_mix = self._normalize_live_fourphase_center_drift_mix(mix)
+        self._sync_live_fourphase_center_drift_action()
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_trigger_bias_mix_change(self, mix: float) -> None:
+        self.config.live_fourphase_trigger_bias_mix = self._normalize_live_fourphase_trigger_bias_mix(mix)
+        self._sync_live_fourphase_trigger_bias_action()
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_bandrouter_fill_mix_change(self, mix: float) -> None:
+        self.config.live_fourphase_bandrouter_fill_mix = self._normalize_live_fourphase_bandrouter_fill_mix(mix)
+        self._sync_live_fourphase_bandrouter_fill_mix_action()
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_bandrouter_idle_floor_change(self, idle_floor: float) -> None:
+        self.config.live_fourphase_bandrouter_idle_floor = self._normalize_live_fourphase_bandrouter_idle_floor(idle_floor)
+        self._sync_live_fourphase_bandrouter_idle_floor_action()
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_bandrouter_pulse_interval_random_percent_change(self, value: float) -> None:
+        self.config.live_fourphase_bandrouter_pulse_interval_random_percent = (
+            self._normalize_live_fourphase_bandrouter_pulse_interval_random_percent(value)
+        )
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_bandrouter_post_projection_expansion_change(self, expansion: float) -> None:
+        self.config.live_fourphase_bandrouter_post_projection_expansion = self._normalize_live_fourphase_bandrouter_post_projection_expansion(expansion)
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_vertical_lift_band_change(self, band: str) -> None:
+        self.config.live_fourphase_vertical_lift_band = self._normalize_live_fourphase_vertical_lift_band(band)
+        self._sync_live_fourphase_vertical_lift_band_menu(self.config.live_fourphase_vertical_lift_band)
+        self._refresh_live_fourphase_preview()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _prompt_live_fourphase_vertical_lift_mix(self) -> None:
+        current = self._normalize_live_fourphase_vertical_lift_mix(
+            getattr(self.config, 'live_fourphase_vertical_lift_mix', 0.90)
+        )
+        value, accepted = QInputDialog.getDouble(
+            self,
+            "4-Phase Vertical Lift Mix",
+            "Bass-driven vertical lift mix (0.00-2.00):",
+            current,
+            0.0,
+            2.0,
+            2,
+        )
+        if accepted:
+            self._on_live_fourphase_vertical_lift_mix_change(value)
+
+    def _prompt_live_fourphase_vertical_lift_curve(self) -> None:
+        current = self._normalize_live_fourphase_vertical_lift_curve(
+            getattr(self.config, 'live_fourphase_vertical_lift_curve', 1.00)
+        )
+        value, accepted = QInputDialog.getDouble(
+            self,
+            "4-Phase Vertical Lift Curve",
+            "Vertical lift response curve exponent (0.25-3.00):",
+            current,
+            0.25,
+            3.0,
+            2,
+        )
+        if accepted:
+            self._on_live_fourphase_vertical_lift_curve_change(value)
+
+    def _prompt_live_fourphase_center_drift_mix(self) -> None:
+        current = self._normalize_live_fourphase_center_drift_mix(
+            getattr(self.config, 'live_fourphase_center_drift_mix', 0.35)
+        )
+        value, accepted = QInputDialog.getDouble(
+            self,
+            "4-Phase Center Drift Mix",
+            "Center-drift contribution to tetra height (0.00-2.00):",
+            current,
+            0.0,
+            2.0,
+            2,
+        )
+        if accepted:
+            self._on_live_fourphase_center_drift_mix_change(value)
+
+    def _prompt_live_fourphase_trigger_bias_mix(self) -> None:
+        current = self._normalize_live_fourphase_trigger_bias_mix(
+            getattr(self.config, 'live_fourphase_trigger_bias_mix', 1.00)
+        )
+        value, accepted = QInputDialog.getDouble(
+            self,
+            "4-Phase Trigger Bias Mix",
+            "Trigger-kind contribution to tetra height (0.00-2.00):",
+            current,
+            0.0,
+            2.0,
+            2,
+        )
+        if accepted:
+            self._on_live_fourphase_trigger_bias_mix_change(value)
+
+    def _prompt_live_fourphase_bandrouter_fill_mix(self) -> None:
+        current = self._normalize_live_fourphase_bandrouter_fill_mix(
+            getattr(self.config, 'live_fourphase_bandrouter_fill_mix', 0.12)
+        )
+        value, accepted = QInputDialog.getDouble(
+            self,
+            "4-Phase Band Routed Fill Proximity",
+            "Orbit-fill proximity contribution (0.00-1.00):",
+            current,
+            0.0,
+            1.0,
+            2,
+        )
+        if accepted:
+            self._on_live_fourphase_bandrouter_fill_mix_change(value)
+
+    def _prompt_live_fourphase_bandrouter_idle_floor(self) -> None:
+        current = self._normalize_live_fourphase_bandrouter_idle_floor(
+            getattr(self.config, 'live_fourphase_bandrouter_idle_floor', 0.10)
+        )
+        value, accepted = QInputDialog.getDouble(
+            self,
+            "4-Phase Band Routed Idle Floor",
+            "Idle floor as a fraction of base level (0.00-0.50):",
+            current,
+            0.0,
+            0.5,
+            2,
+        )
+        if accepted:
+            self._on_live_fourphase_bandrouter_idle_floor_change(value)
+
+    def _sync_live_fourphase_model_menu(self, active_model: str) -> None:
+        target_model = self._normalize_live_fourphase_model(active_model)
+        for action in getattr(self, '_live_fourphase_model_actions', []):
+            action_model = self._normalize_live_fourphase_model(action.data())
+            action.blockSignals(True)
+            action.setChecked(action_model == target_model)
+            action.blockSignals(False)
+        self._sync_live_fourphase_layout_menu()
+        self._sync_live_fourphase_bandrouter_mapping_menu()
+        self._sync_live_fourphase_bandrouter_fill_mix_action()
+        self._sync_live_fourphase_bandrouter_idle_floor_action()
+        self._sync_live_fourphase_vertical_lift_action()
+        self._sync_live_fourphase_vertical_lift_curve_action()
+        self._sync_live_fourphase_center_drift_action()
+        self._sync_live_fourphase_trigger_bias_action()
+        self._sync_live_fourphase_vertical_lift_band_menu()
+        self._refresh_live_fourphase_options_dialog()
+
+    def _on_live_fourphase_options_popup(self):
+        def _focus_fourphase_dialog(target_dialog) -> None:
+            try:
+                target_dialog.activateWindow()
+                target_dialog.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+            except RuntimeError:
+                pass
+
+        dialog = getattr(self, '_live_fourphase_options_dialog', None)
+        if dialog is not None:
+            try:
+                dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+                self._refresh_live_fourphase_options_dialog()
+                dialog.show()
+                dialog.raise_()
+                _focus_fourphase_dialog(dialog)
+                QTimer.singleShot(0, lambda d=dialog: _focus_fourphase_dialog(d))
+                return
+            except RuntimeError:
+                self._live_fourphase_options_dialog = None
+                self._live_fourphase_options_widgets = {}
+
+        from PyQt6.QtWidgets import QDialog
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle('4-Phase Options')
+        dialog.resize(760, 720)
+        dialog.setMinimumWidth(700)
+        dialog.setMinimumHeight(640)
+        dialog.setModal(False)
+        dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def _on_live_fourphase_options_destroyed() -> None:
+            self._live_fourphase_options_dialog = None
+            self._live_fourphase_options_widgets = {}
+
+        dialog.destroyed.connect(_on_live_fourphase_options_destroyed)
+
+        outer_layout = QVBoxLayout(dialog)
+        outer_layout.setContentsMargins(8, 8, 8, 8)
+
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(get_thin_scrollbar_style())
+        content = QWidget(scroll)
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll)
+
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setSpacing(10)
+
+        def _new_double_spin(parent_widget: QWidget, minimum: float, maximum: float, step: float, decimals: int = 2) -> QDoubleSpinBox:
+            spin = QDoubleSpinBox(parent_widget)
+            spin.setRange(minimum, maximum)
+            spin.setSingleStep(step)
+            spin.setDecimals(decimals)
+            return spin
+
+        def _add_combo_row(grid: QGridLayout, row: int, label_text: str, combo: QComboBox) -> QLabel:
+            row_parent = grid.parentWidget() or content
+            label = QLabel(self._live_fourphase_selector_label(label_text), row_parent)
+            label.setBuddy(combo)
+            label.setToolTip('Dropdown selector')
+            combo.setToolTip('Dropdown selector')
+            grid.addWidget(label, row, 0)
+            grid.addWidget(combo, row, 1)
+            return label
+
+        def _add_spin_row(grid: QGridLayout, row: int, label_text: str, spin: QDoubleSpinBox) -> QLabel:
+            row_parent = grid.parentWidget() or content
+            label = QLabel(label_text, row_parent)
+            label.setBuddy(spin)
+            grid.addWidget(label, row, 0)
+            grid.addWidget(spin, row, 1)
+            return label
+
+        general_group = QGroupBox('General', content)
+        general_grid = QGridLayout(general_group)
+        model_combo = QComboBox(general_group)
+        for label, value in (('Orbit', 'classic'), ('Tetra 3D', 'tetra3d'), ('Band Routed', 'bandrouter')):
+            model_combo.addItem(label, value)
+        model_combo.currentIndexChanged.connect(
+            lambda index, combo=model_combo: self._on_live_fourphase_model_change(combo.itemData(index))
+        )
+        layout_combo = QComboBox(general_group)
+        for label in ('Straight Line', 'Pair At Top', 'Pair At Middle', 'Pair At Bottom / Rear'):
+            layout_combo.addItem(label, label)
+        layout_combo.currentIndexChanged.connect(
+            lambda index, combo=layout_combo: self._on_live_fourphase_layout_model_change(combo.itemData(index))
+        )
+        _add_combo_row(general_grid, 0, 'Motion Model', model_combo)
+        layout_label = _add_combo_row(general_grid, 1, 'Electrode Layout', layout_combo)
+        content_layout.addWidget(general_group)
+
+        beat_group = QGroupBox('Beat Orbit Shaping', content)
+        beat_grid = QGridLayout(beat_group)
+        beat_radius_contrast_spin = _new_double_spin(beat_group, 0.0, 1.0, 0.05)
+        beat_radius_contrast_spin.valueChanged.connect(self._on_live_fourphase_beat_radius_contrast_change)
+        beat_speed_spread_spin = _new_double_spin(beat_group, 0.0, 1.0, 0.05)
+        beat_speed_spread_spin.valueChanged.connect(self._on_live_fourphase_beat_speed_spread_change)
+        _add_spin_row(beat_grid, 0, 'Radius Contrast', beat_radius_contrast_spin)
+        _add_spin_row(beat_grid, 1, 'Speed Spread', beat_speed_spread_spin)
+        beat_curve_combos: list[QComboBox] = []
+        for electrode_index, electrode_label in enumerate(('E1 Curve', 'E2 Curve', 'E3 Curve', 'E4 Curve')):
+            curve_combo = QComboBox(beat_group)
+            for curve_name in ('linear', 'ease', 'bell'):
+                curve_combo.addItem(self._live_fourphase_curve_label(curve_name), curve_name)
+            curve_combo.currentIndexChanged.connect(
+                lambda index, idx=electrode_index, combo=curve_combo: self._on_live_fourphase_beat_response_curve_change(idx, combo.itemData(index))
+            )
+            beat_curve_combos.append(curve_combo)
+            _add_combo_row(beat_grid, 2 + electrode_index, electrode_label, curve_combo)
+        content_layout.addWidget(beat_group)
+
+        tetra_group = QGroupBox('Tetra 3D Tuning', content)
+        tetra_grid = QGridLayout(tetra_group)
+        vertical_lift_mix_spin = _new_double_spin(tetra_group, 0.0, 2.0, 0.05)
+        vertical_lift_mix_spin.valueChanged.connect(self._on_live_fourphase_vertical_lift_mix_change)
+        tetra_post_projection_expansion_spin = _new_double_spin(tetra_group, 0.0, 2.0, 0.05)
+        tetra_post_projection_expansion_spin.valueChanged.connect(self._on_live_fourphase_tetra_post_projection_expansion_change)
+        vertical_lift_curve_spin = _new_double_spin(tetra_group, 0.25, 3.0, 0.05)
+        vertical_lift_curve_spin.valueChanged.connect(self._on_live_fourphase_vertical_lift_curve_change)
+        center_drift_spin = _new_double_spin(tetra_group, 0.0, 2.0, 0.05)
+        center_drift_spin.valueChanged.connect(self._on_live_fourphase_center_drift_mix_change)
+        trigger_bias_spin = _new_double_spin(tetra_group, 0.0, 2.0, 0.05)
+        trigger_bias_spin.valueChanged.connect(self._on_live_fourphase_trigger_bias_mix_change)
+        vertical_lift_band_combo = QComboBox(tetra_group)
+        for band in ('sub_bass', 'bass', 'low_mid', 'mid', 'upper_mid', 'presence', 'brilliance'):
+            vertical_lift_band_combo.addItem(self._live_fourphase_band_label(band), band)
+        vertical_lift_band_combo.currentIndexChanged.connect(
+            lambda index, combo=vertical_lift_band_combo: self._on_live_fourphase_vertical_lift_band_change(combo.itemData(index))
+        )
+        _add_spin_row(tetra_grid, 0, 'Vertical Lift Mix', vertical_lift_mix_spin)
+        _add_spin_row(tetra_grid, 1, 'Post-Projection Expansion', tetra_post_projection_expansion_spin)
+        _add_spin_row(tetra_grid, 2, 'Vertical Lift Curve', vertical_lift_curve_spin)
+        _add_spin_row(tetra_grid, 3, 'Center Drift Mix', center_drift_spin)
+        _add_spin_row(tetra_grid, 4, 'Trigger Bias Mix', trigger_bias_spin)
+        _add_combo_row(tetra_grid, 5, 'Vertical Lift Band', vertical_lift_band_combo)
+        content_layout.addWidget(tetra_group)
+
+        bandrouter_group = QGroupBox('Band Routed', content)
+        bandrouter_grid = QGridLayout(bandrouter_group)
+        bandrouter_fill_spin = _new_double_spin(bandrouter_group, 0.0, 1.0, 0.05)
+        bandrouter_fill_spin.valueChanged.connect(self._on_live_fourphase_bandrouter_fill_mix_change)
+        bandrouter_idle_spin = _new_double_spin(bandrouter_group, 0.0, 0.5, 0.05)
+        bandrouter_idle_spin.valueChanged.connect(self._on_live_fourphase_bandrouter_idle_floor_change)
+        bandrouter_pulse_random_spin = _new_double_spin(bandrouter_group, 0.0, 100.0, 1.0, 1)
+        bandrouter_pulse_random_spin.setSuffix('%')
+        bandrouter_pulse_random_spin.setToolTip(
+            'Base pulse-interval random percent before brilliance raises it toward 50%.'
+        )
+        bandrouter_pulse_random_spin.valueChanged.connect(
+            self._on_live_fourphase_bandrouter_pulse_interval_random_percent_change
+        )
+        bandrouter_post_projection_expansion_spin = _new_double_spin(bandrouter_group, 0.0, 2.0, 0.05)
+        bandrouter_post_projection_expansion_spin.valueChanged.connect(self._on_live_fourphase_bandrouter_post_projection_expansion_change)
+        _add_spin_row(bandrouter_grid, 0, 'Fill Proximity', bandrouter_fill_spin)
+        _add_spin_row(bandrouter_grid, 1, 'Idle Floor', bandrouter_idle_spin)
+        pulse_random_label = _add_spin_row(bandrouter_grid, 2, 'Base Interval Random %', bandrouter_pulse_random_spin)
+        pulse_random_label.setToolTip(
+            'Base pulse-interval random percent before brilliance raises it toward 50%.'
+        )
+        _add_spin_row(bandrouter_grid, 3, 'Post-Projection Expansion', bandrouter_post_projection_expansion_spin)
+        band_mapping_boxes: dict[tuple[int, str], QCheckBox] = {}
+        band_options = (
+            ('Sub Bass', 'sub_bass'),
+            ('Bass', 'bass'),
+            ('Low Mid', 'low_mid'),
+            ('Mid', 'mid'),
+            ('Upper Mid', 'upper_mid'),
+            ('Presence', 'presence'),
+            ('Brilliance', 'brilliance'),
+        )
+        for electrode_index, electrode_label in enumerate(('E1 Bands', 'E2 Bands', 'E3 Bands', 'E4 Bands')):
+            band_row = QWidget(bandrouter_group)
+            band_row_layout = QHBoxLayout(band_row)
+            band_row_layout.setContentsMargins(0, 0, 0, 0)
+            band_row_layout.setSpacing(6)
+            for label, band in band_options:
+                checkbox = QCheckBox(label, band_row)
+                checkbox.toggled.connect(
+                    lambda checked, idx=electrode_index, value=band: self._on_live_fourphase_bandrouter_mapping_change(idx, value, checked)
+                )
+                band_mapping_boxes[(electrode_index, band)] = checkbox
+                band_row_layout.addWidget(checkbox)
+            band_row_layout.addStretch(1)
+            bandrouter_grid.addWidget(QLabel(electrode_label, bandrouter_group), 4 + electrode_index, 0)
+            bandrouter_grid.addWidget(band_row, 4 + electrode_index, 1)
+        content_layout.addWidget(bandrouter_group)
+        content_layout.addStretch(1)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        close_button = QPushButton('Close', dialog)
+        close_button.clicked.connect(dialog.close)
+        close_row.addWidget(close_button)
+        outer_layout.addLayout(close_row)
+
+        dialog.finished.connect(lambda _result: save_config(self.config))
+
+        self._live_fourphase_options_dialog = dialog
+        self._live_fourphase_options_widgets = {
+            'model_combo': model_combo,
+            'layout_label': layout_label,
+            'layout_combo': layout_combo,
+            'beat_group': beat_group,
+            'beat_radius_contrast_spin': beat_radius_contrast_spin,
+            'beat_speed_spread_spin': beat_speed_spread_spin,
+            'beat_curve_combos': beat_curve_combos,
+            'tetra_group': tetra_group,
+            'vertical_lift_mix_spin': vertical_lift_mix_spin,
+            'tetra_post_projection_expansion_spin': tetra_post_projection_expansion_spin,
+            'vertical_lift_curve_spin': vertical_lift_curve_spin,
+            'center_drift_spin': center_drift_spin,
+            'trigger_bias_spin': trigger_bias_spin,
+            'vertical_lift_band_combo': vertical_lift_band_combo,
+            'bandrouter_group': bandrouter_group,
+            'bandrouter_fill_spin': bandrouter_fill_spin,
+            'bandrouter_idle_spin': bandrouter_idle_spin,
+            'bandrouter_pulse_random_spin': bandrouter_pulse_random_spin,
+            'bandrouter_post_projection_expansion_spin': bandrouter_post_projection_expansion_spin,
+            'band_mapping_boxes': band_mapping_boxes,
+        }
+        self._refresh_live_fourphase_options_dialog()
+
+        dialog.show()
+        dialog.raise_()
+        _focus_fourphase_dialog(dialog)
+        QTimer.singleShot(0, lambda d=dialog: _focus_fourphase_dialog(d))
+
+    def _sync_live_tcode_mode_menu(self, active_mode: str) -> None:
+        target_mode = self._normalize_live_tcode_mode(active_mode)
+        for action in getattr(self, '_live_tcode_mode_actions', []):
+            action_mode = self._normalize_live_tcode_mode(action.data())
+            action.blockSignals(True)
+            action.setChecked(action_mode == target_mode)
+            action.blockSignals(False)
 
     def _sync_log_level_menu(self, active_level: str):
         """Update log level menu checkmarks."""

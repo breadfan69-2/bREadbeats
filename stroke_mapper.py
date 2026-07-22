@@ -26,6 +26,22 @@ from geometry_utils import (
     quintic_ease,
     radius_cap_for_center,
 )
+from command_wiring import (
+    LIVE_FOURPHASE_BAND_OPTIONS,
+    attach_direct_fourphase_levels,
+    compute_live_fourphase_levels,
+    normalize_live_fourphase_band_mapping,
+    normalize_live_fourphase_band_name,
+    normalize_live_fourphase_beat_radius_contrast_strength,
+    normalize_live_fourphase_beat_response_curves,
+    normalize_live_fourphase_beat_speed_spread_strength,
+    normalize_live_fourphase_bandrouter_fill_mix,
+    normalize_live_fourphase_bandrouter_idle_floor,
+    normalize_live_fourphase_bandrouter_post_projection_expansion,
+    normalize_live_fourphase_layout_model,
+    normalize_live_fourphase_tetra_post_projection_expansion,
+    project_live_fourphase_point,
+)
 from network_engine import TCodeCommand
 from ramp_engine import RampEngine
 from stroke_mapper_experimental import ExperimentalSimpleMapper
@@ -166,6 +182,7 @@ class StrokeMapper:
 
         self._last_gate_fail = ""  # diagnostic: which gate blocked last beat-family event
         self._last_decision = None      # latest BeatDecision (for keyboard teacher snapshot)
+        self._last_fourphase_levels: tuple[float, float, float, float] | None = None
 
         # ── Fixed anchor state (§1) ──
         self._anchor_sign: int = 1               # +1 = +Y anchor, -1 = -Y anchor
@@ -341,6 +358,241 @@ class StrokeMapper:
     def get_current_position(self) -> tuple[float, float]:
         return self.state.alpha, self.state.beta
 
+    def _live_tcode_mode(self) -> str:
+        mode = str(getattr(self.config, 'live_tcode_mode', 'threephase') or 'threephase').strip().lower()
+        return 'fourphase' if mode == 'fourphase' else 'threephase'
+
+    def _current_fourphase_model(self) -> str:
+        model = str(getattr(self.config, 'live_fourphase_model', 'tetra3d') or 'tetra3d').strip().lower()
+        if model == 'classic':
+            return 'classic'
+        if model in {'bandrouter', 'band_routed', 'band-routed', 'band routed'}:
+            return 'bandrouter'
+        return 'tetra3d'
+
+    def _current_fourphase_layout_model(self) -> str:
+        return normalize_live_fourphase_layout_model(
+            getattr(self.config, 'live_fourphase_layout_model', 'Straight Line')
+        )
+
+    def _current_fourphase_band_mapping(self) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        return normalize_live_fourphase_band_mapping(
+            getattr(self.config, 'live_fourphase_band_mapping', None)
+        )
+
+    def _current_fourphase_beat_radius_contrast_strength(self) -> float:
+        return normalize_live_fourphase_beat_radius_contrast_strength(
+            getattr(self.config, 'live_fourphase_beat_radius_contrast_strength', 0.0)
+        )
+
+    def _current_fourphase_beat_speed_spread_strength(self) -> float:
+        return normalize_live_fourphase_beat_speed_spread_strength(
+            getattr(self.config, 'live_fourphase_beat_speed_spread_strength', 0.0)
+        )
+
+    def _current_fourphase_beat_response_curves(self) -> tuple[str, str, str, str]:
+        return normalize_live_fourphase_beat_response_curves(
+            getattr(self.config, 'live_fourphase_beat_response_curves', None)
+        )
+
+    def _current_live_fourphase_band_levels(self) -> dict[str, float]:
+        audio_engine = getattr(self._intelligence, 'audio_engine', None)
+        getter = getattr(audio_engine, 'get_live_fourphase_band_energies', None) if audio_engine is not None else None
+        if callable(getter):
+            try:
+                maybe = getter()
+            except Exception:
+                maybe = None
+            if isinstance(maybe, dict):
+                return {
+                    band_name: float(np.clip(maybe.get(band_name, 0.0) or 0.0, 0.0, 1.0))
+                    for band_name in LIVE_FOURPHASE_BAND_OPTIONS
+                }
+        return {
+            band_name: float(np.clip(getattr(self._intelligence.energies, band_name, 0.0) or 0.0, 0.0, 1.0))
+            for band_name in LIVE_FOURPHASE_BAND_OPTIONS
+        }
+
+    def _current_band_level(self, band_name: str) -> float:
+        normalized_band = normalize_live_fourphase_band_name(band_name)
+        return float(self._current_live_fourphase_band_levels().get(normalized_band, 0.0))
+
+    def _current_band_levels(self) -> dict[str, float]:
+        return self._current_live_fourphase_band_levels()
+
+    def _current_sub_bass(self) -> float:
+        return self._current_band_level('sub_bass')
+
+    def _current_vertical_lift_mix(self) -> float:
+        mix = getattr(self.config, 'live_fourphase_vertical_lift_mix', 0.90)
+        return float(np.clip(0.90 if mix is None else mix, 0.0, 2.0))
+
+    def _current_vertical_lift_curve(self) -> float:
+        curve = getattr(self.config, 'live_fourphase_vertical_lift_curve', 1.00)
+        return float(np.clip(1.00 if curve is None else curve, 0.25, 3.0))
+
+    def _current_center_drift_mix(self) -> float:
+        mix = getattr(self.config, 'live_fourphase_center_drift_mix', 0.35)
+        return float(np.clip(0.35 if mix is None else mix, 0.0, 2.0))
+
+    def _current_trigger_bias_mix(self) -> float:
+        mix = getattr(self.config, 'live_fourphase_trigger_bias_mix', 1.00)
+        return float(np.clip(1.00 if mix is None else mix, 0.0, 2.0))
+
+    def _current_bandrouter_fill_mix(self) -> float:
+        return normalize_live_fourphase_bandrouter_fill_mix(
+            getattr(self.config, 'live_fourphase_bandrouter_fill_mix', 0.12)
+        )
+
+    def _current_bandrouter_idle_floor(self) -> float:
+        return normalize_live_fourphase_bandrouter_idle_floor(
+            getattr(self.config, 'live_fourphase_bandrouter_idle_floor', 0.10)
+        )
+
+    def _current_bandrouter_post_projection_expansion(self) -> float:
+        return normalize_live_fourphase_bandrouter_post_projection_expansion(
+            getattr(self.config, 'live_fourphase_bandrouter_post_projection_expansion', 1.0)
+        )
+
+    def _current_tetra_post_projection_expansion(self) -> float:
+        return normalize_live_fourphase_tetra_post_projection_expansion(
+            getattr(self.config, 'live_fourphase_tetra_post_projection_expansion', 1.0)
+        )
+
+    def _current_vertical_lift_band(self) -> str:
+        return normalize_live_fourphase_band_name(
+            getattr(self.config, 'live_fourphase_vertical_lift_band', 'sub_bass')
+        )
+
+    def _current_vertical_lift_signal(self) -> float:
+        band_name = self._current_vertical_lift_band()
+        raw_value = self._current_band_level(band_name)
+        return float(np.power(raw_value, self._current_vertical_lift_curve()))
+
+    def _current_classic_orbit_angular_speed(self) -> float:
+        decision = self._last_decision
+        interval_beats = int(getattr(decision, 'interval_beats', 2) or 2) if decision is not None else 2
+        interval_beats = max(1, min(4, interval_beats))
+        bpm = self._current_bpm()
+        base_speed = float((2.0 * math.pi) * (bpm / 60.0) / float(interval_beats))
+        if decision is not None and getattr(decision, 'silence_active', False):
+            return float(base_speed * 0.04)
+        return base_speed
+
+    def _compute_bandrouter_fourphase_levels(self, alpha: float, beta: float) -> tuple[float, float, float, float]:
+        decision = self._last_decision
+        silence_fade = 0.0 if getattr(decision, 'silence_active', False) else 1.0
+        if self._orbit_phase_initialized:
+            fill_angle = float(self._orbit_phase)
+        else:
+            fill_angle = float(np.arctan2(alpha, -beta))
+        orbit_radius = float(np.clip(max(self._actual_radius, float(np.hypot(alpha, beta))), 0.0, 1.0))
+        return compute_live_fourphase_levels(
+            alpha,
+            beta,
+            0.0,
+            model='bandrouter',
+            band_levels=self._current_band_levels(),
+            band_mapping=self._current_fourphase_band_mapping(),
+            fill_angle=fill_angle,
+            base=orbit_radius,
+            silence_fade=silence_fade,
+            orbit_radius=orbit_radius,
+            bandrouter_fill_mix=self._current_bandrouter_fill_mix(),
+            bandrouter_idle_floor=self._current_bandrouter_idle_floor(),
+            bandrouter_post_projection_expansion=self._current_bandrouter_post_projection_expansion(),
+        )
+
+    def _compute_tetra3d_fourphase_levels(self, alpha: float, beta: float) -> tuple[float, float, float, float]:
+        decision = self._last_decision
+        if (
+            decision is None
+            or getattr(decision, 'silence_active', False)
+            or str(getattr(decision, 'trigger_kind', 'creep') or 'creep') == 'creep'
+            or not self._orbit_phase_initialized
+        ):
+            return compute_live_fourphase_levels(
+                alpha,
+                beta,
+                0.0,
+                model='tetra3d',
+                sub_bass=self._current_vertical_lift_signal(),
+                layout_model=self._current_fourphase_layout_model(),
+                tetra_post_projection_expansion=self._current_tetra_post_projection_expansion(),
+            )
+
+        vertical_signal = self._current_vertical_lift_signal()
+        center_component = float(np.clip(
+            (self._base_center_y + self._center_y_offset - self._baseline_center_y) / 0.25,
+            -1.0,
+            1.0,
+        ))
+        trigger_lift = {
+            'downbeat': 0.18,
+            'beat': 0.08,
+            'syncopation': -0.02,
+        }.get(str(getattr(decision, 'trigger_kind', 'beat') or 'beat'), 0.0)
+        trigger_lift *= self._current_trigger_bias_mix()
+        direction_z = float(np.clip(
+            (vertical_signal * self._current_vertical_lift_mix())
+            - 0.25
+            + (center_component * self._current_center_drift_mix())
+            + trigger_lift,
+            -0.85,
+            0.85,
+        ))
+
+        radius = float(np.clip(self._actual_radius, 0.0, 1.0))
+        horizontal_radius = float(radius * math.sqrt(max(0.0, 1.0 - direction_z * direction_z)))
+        x = float(math.cos(self._orbit_phase) * horizontal_radius)
+        y = float(math.sin(self._orbit_phase) * horizontal_radius)
+        z = float(radius * direction_z)
+        return project_live_fourphase_point(
+            x,
+            y,
+            z,
+            layout_model=self._current_fourphase_layout_model(),
+            post_projection_expansion=self._current_tetra_post_projection_expansion(),
+        )
+
+    def _compute_fourphase_levels(self, alpha: float, beta: float) -> tuple[float, float, float, float]:
+        model = self._current_fourphase_model()
+        if model == 'tetra3d':
+            return self._compute_tetra3d_fourphase_levels(alpha, beta)
+
+        if model == 'bandrouter':
+            return self._compute_bandrouter_fourphase_levels(alpha, beta)
+
+        return compute_live_fourphase_levels(
+            alpha,
+            beta,
+            0.0,
+            model=model,
+            sub_bass=self._current_sub_bass(),
+            layout_model=self._current_fourphase_layout_model(),
+            beat_radius_contrast_strength=self._current_fourphase_beat_radius_contrast_strength(),
+            beat_speed_threshold_spread_strength=self._current_fourphase_beat_speed_spread_strength(),
+            beat_response_curves=self._current_fourphase_beat_response_curves(),
+            orbit_angular_speed=self._current_classic_orbit_angular_speed(),
+        )
+
+    def get_current_fourphase_levels(self) -> tuple[float, float, float, float]:
+        levels = self._compute_fourphase_levels(self.state.alpha, self.state.beta)
+        self._last_fourphase_levels = levels
+        return levels
+
+    def _finalize_live_command(self, cmd: TCodeCommand) -> TCodeCommand:
+        if self._live_tcode_mode() != 'fourphase':
+            self._last_fourphase_levels = None
+            cmd.include_linear_axes = True
+            return cmd
+
+        levels = self._compute_fourphase_levels(cmd.alpha, cmd.beta)
+        self._last_fourphase_levels = levels
+        cmd.include_linear_axes = False
+        attach_direct_fourphase_levels(cmd, levels)
+        return cmd
+
     # ── Simple mode: pure fixed-radius circles ──────────────────────
 
     # Simple-mode state (initialised lazily on first call)
@@ -500,7 +752,9 @@ class StrokeMapper:
             volume = float(np.clip(self.get_volume() * min(fade, ramp), 0.0, 1.0))
             self.state.alpha = float(np.clip(self.state.alpha, -1.0, 1.0))
             self.state.beta = float(np.clip(self.state.beta, -1.0, 1.0))
-            return TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
+            return self._finalize_live_command(
+                TCodeCommand(alpha=self.state.alpha, beta=self.state.beta, duration_ms=25, volume=volume)
+            )
 
         # ── Simple mode: bypass all intelligence/expression ──
         if not getattr(self.config.stroke, 'intelligence_enabled', True):
@@ -511,8 +765,10 @@ class StrokeMapper:
                 # Sync state back so display/diagnostics stay consistent
                 self.state.alpha = cmd.alpha
                 self.state.beta = cmd.beta
-                return cmd
-            return self._process_simple_mode(event=event, decision=decision, dt=dt, now=now)
+                return self._finalize_live_command(cmd)
+            return self._finalize_live_command(
+                self._process_simple_mode(event=event, decision=decision, dt=dt, now=now)
+            )
 
         # ── Expression layer: per-frame updates ──
         self._update_expression_layer(decision=decision, dt=dt, now=now)
@@ -637,7 +893,9 @@ class StrokeMapper:
                     self._last_journey_completion = progress
                     self.state.alpha = alpha
                     self.state.beta = beta
-                    return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+                    return self._finalize_live_command(
+                        TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+                    )
 
             # ── Funscript fill: plays when trigger_kind == "creep" ──
             # The baked loop IS the motion — no orbit, no rate limiter,
@@ -743,8 +1001,8 @@ class StrokeMapper:
                     self._last_journey_completion = 1.0
                     self.state.alpha = float(alpha)
                     self.state.beta = float(beta)
-                    return TCodeCommand(
-                        alpha=alpha, beta=beta, duration_ms=25, volume=volume,
+                    return self._finalize_live_command(
+                        TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
                     )
 
                 alpha, beta, volume = self._apply_park_motion_frame(dt=dt, fade=min(fade, ramp))
@@ -753,7 +1011,9 @@ class StrokeMapper:
                 # is not suppressed by the orbital velocity EMA.
                 self.state.alpha = alpha
                 self.state.beta = beta
-                return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+                return self._finalize_live_command(
+                    TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+                )
 
             if not fill_enabled and decision.trigger_kind == "creep":
                 self._fill_exit_active = False
@@ -765,7 +1025,9 @@ class StrokeMapper:
                 fade = float(np.clip(decision.silence_fade, 0.0, 1.0))
                 ramp = float(np.clip(decision.post_silence_ramp, 0.0, 1.0))
                 volume = float(np.clip(self.get_volume() * min(fade, ramp), 0.0, 1.0))
-                return self._rate_limited_output(0.0, self._park_y, volume, dt)
+                return self._finalize_live_command(
+                    self._rate_limited_output(0.0, self._park_y, volume, dt)
+                )
 
             # ── Detect fill → orbit transition: latch center, start wobble decay ──
             if fill_enabled and prev_trigger_kind == "creep" and not self._fill_exit_active:
@@ -813,7 +1075,9 @@ class StrokeMapper:
                 self._last_journey_completion = progress
                 self.state.alpha = float(alpha)
                 self.state.beta = float(beta)
-                return TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+                return self._finalize_live_command(
+                    TCodeCommand(alpha=alpha, beta=beta, duration_ms=25, volume=volume)
+                )
 
             started_new_journey = bool(progress <= 1e-9 and self._last_journey_completion > 1e-9)
             if started_new_journey:
@@ -1011,7 +1275,9 @@ class StrokeMapper:
         # ── Universal per-frame rate-limited output ──
         # All paths converge here via _rate_limited_output which applies
         # velocity EMA smoothing + per-frame-capped position limiting.
-        return self._rate_limited_output(alpha, beta, volume, dt)
+        return self._finalize_live_command(
+            self._rate_limited_output(alpha, beta, volume, dt)
+        )
 
     # ── Expression layer ──────────────────────────────────────────────
 
