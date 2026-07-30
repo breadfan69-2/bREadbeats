@@ -43,6 +43,35 @@ def dict_list_to_actions(data: list[dict[str, Any]]) -> list[FunscriptAction]:
     return actions
 
 
+def _read_funscript_payload(path: str | Path) -> dict[str, Any]:
+    source = Path(path)
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("Invalid funscript payload: expected top-level object")
+    return raw
+
+
+def _read_funscript_metadata(raw: dict[str, Any]) -> FunscriptMetadata:
+    metadata_raw = raw.get("metadata", {})
+    if not isinstance(metadata_raw, dict):
+        metadata_raw = {}
+
+    params_raw = raw.get("pmv_params", {})
+    if not isinstance(params_raw, dict):
+        params_raw = {}
+
+    return FunscriptMetadata(
+        creator=str(metadata_raw.get("creator", "bREadbeats PMV Generator")),
+        title=str(metadata_raw.get("title", "")),
+        duration=int(metadata_raw.get("duration", 0) or 0),
+        description=str(metadata_raw.get("description", "")),
+        performers=[str(v) for v in metadata_raw.get("performers", []) if v is not None],
+        tags=[str(v) for v in metadata_raw.get("tags", []) if v is not None],
+        type=str(metadata_raw.get("type", "basic")),
+        parameters=dict(params_raw),
+    )
+
+
 def write_funscript(
     path: str | Path,
     actions: list[FunscriptAction],
@@ -78,35 +107,39 @@ def write_funscript(
 
 def read_funscript(path: str | Path) -> tuple[list[FunscriptAction], FunscriptMetadata]:
     """Read a Funscript JSON file and return actions plus metadata."""
-    source = Path(path)
-    raw = json.loads(source.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError("Invalid funscript payload: expected top-level object")
+    raw = _read_funscript_payload(path)
 
     actions_raw = raw.get("actions", [])
     if not isinstance(actions_raw, list):
         raise ValueError("Invalid funscript payload: 'actions' must be a list")
 
-    metadata_raw = raw.get("metadata", {})
-    if not isinstance(metadata_raw, dict):
-        metadata_raw = {}
-
-    params_raw = raw.get("pmv_params", {})
-    if not isinstance(params_raw, dict):
-        params_raw = {}
-
-    metadata = FunscriptMetadata(
-        creator=str(metadata_raw.get("creator", "bREadbeats PMV Generator")),
-        title=str(metadata_raw.get("title", "")),
-        duration=int(metadata_raw.get("duration", 0) or 0),
-        description=str(metadata_raw.get("description", "")),
-        performers=[str(v) for v in metadata_raw.get("performers", []) if v is not None],
-        tags=[str(v) for v in metadata_raw.get("tags", []) if v is not None],
-        type=str(metadata_raw.get("type", "basic")),
-        parameters=dict(params_raw),
-    )
+    metadata = _read_funscript_metadata(raw)
 
     return dict_list_to_actions(actions_raw), metadata
+
+
+def read_embedded_funscript_axes(path: str | Path) -> dict[str, list[FunscriptAction]]:
+    """Read any embedded single-file multi-axis tracks keyed by their TCode axis id."""
+    raw = _read_funscript_payload(path)
+    axes_raw = raw.get("axes", [])
+    if not isinstance(axes_raw, list):
+        return {}
+
+    axes: dict[str, list[FunscriptAction]] = {}
+    for axis_raw in axes_raw:
+        if not isinstance(axis_raw, dict):
+            continue
+        axis_id = str(axis_raw.get("id", "") or "").strip().upper()
+        if not axis_id:
+            continue
+        actions_raw = axis_raw.get("actions", [])
+        if not isinstance(actions_raw, list):
+            continue
+        actions = dict_list_to_actions(actions_raw)
+        if actions:
+            axes[axis_id] = actions
+
+    return axes
 
 
 def write_csv(path: str | Path, actions: list[FunscriptAction]) -> None:

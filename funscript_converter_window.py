@@ -35,7 +35,7 @@ from funscript_converter import (
     convert,
 )
 from config import Config
-from funscript_utils import AXIS_SUFFIXES, load_folder, strip_axis_suffix
+from funscript_utils import AXIS_SUFFIXES, load_folder, load_script_axes, strip_axis_suffix
 from pmv_colors import FOURPHASE_AXIS_COLORS, FOURPHASE_AXIS_ORDER
 from pmv_funscript_io import FunscriptAction, FunscriptMetadata, read_funscript, write_funscript
 from widgets import SliderWithLabel
@@ -458,15 +458,17 @@ class FunscriptConverterWindow(QMainWindow):
         base_stem, suffix = strip_axis_suffix(script_path.stem)
         self._base_stem = base_stem
 
-        # Load selected file
-        axis_name = suffix if suffix else "main"
         try:
-            actions, _ = read_funscript(script_path)
+            loaded_axes = load_script_axes(script_path, CONVERTER_INPUT_AXES | {"main"})
         except Exception as exc:
             QMessageBox.warning(self, "Load Error", str(exc))
             return
 
-        self._loaded_axes = {axis_name: actions}
+        if not loaded_axes:
+            QMessageBox.warning(self, "Load Error", "No supported axes found in file.")
+            return
+
+        self._loaded_axes = loaded_axes
 
         # Discover siblings
         from funscript_utils import discover_sibling_axes
@@ -482,16 +484,18 @@ class FunscriptConverterWindow(QMainWindow):
 
         for script_path in script_paths:
             try:
-                actions, _ = read_funscript(script_path)
+                script_axes = load_script_axes(script_path, CONVERTER_INPUT_AXES | {"main"})
             except Exception as exc:
                 QMessageBox.warning(self, "Load Error", f"{script_path.name}: {exc}")
                 return
 
-            base_stem, suffix = strip_axis_suffix(script_path.stem)
-            axis_name = suffix if suffix else "main"
-            loaded_axes[axis_name] = actions
+            if not script_axes:
+                continue
 
-            if base_script is None or axis_name == "main":
+            base_stem, suffix = strip_axis_suffix(script_path.stem)
+            loaded_axes.update(script_axes)
+
+            if base_script is None or "main" in script_axes or suffix is None:
                 base_script = script_path
 
         if not loaded_axes:

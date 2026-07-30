@@ -15,6 +15,14 @@ AXIS_SUFFIXES = {
 }
 
 _SORTED_SUFFIXES: list[str] | None = None
+_EMBEDDED_AXIS_ID_MAP = {
+    "L0": "main",
+    "L1": "surge",
+    "L2": "sway",
+    "R0": "twist",
+    "R1": "roll",
+    "R2": "pitch",
+}
 
 
 def _get_sorted_suffixes() -> list[str]:
@@ -51,19 +59,54 @@ def axis_name_from_file(path: Path) -> str | None:
     return None
 
 
+def load_script_axes(
+    script_path: Path,
+    suffixes: set[str] | None = None,
+) -> dict[str, list[FunscriptAction]]:
+    """Load classic single-axis files or merged embedded-axis files into named axes."""
+    from pmv_funscript_io import read_embedded_funscript_axes, read_funscript
+
+    if suffixes is None:
+        suffixes = AXIS_SUFFIXES
+
+    base_stem, suffix = strip_axis_suffix(script_path.stem)
+    del base_stem  # base is not needed after inferring the direct file axis.
+    direct_axis_name = suffix if suffix is not None else "main"
+
+    axes: dict[str, list[FunscriptAction]] = {}
+    direct_actions, _ = read_funscript(script_path)
+    if direct_actions and direct_axis_name in suffixes:
+        axes[direct_axis_name] = direct_actions
+
+    embedded_axes = read_embedded_funscript_axes(script_path)
+    for axis_id, embedded_actions in embedded_axes.items():
+        axis_name = _EMBEDDED_AXIS_ID_MAP.get(axis_id)
+        if axis_name is None or axis_name not in suffixes:
+            continue
+        if axis_name == "main" and axes.get("main"):
+            continue
+        axes[axis_name] = embedded_actions
+
+    return axes
+
+
 def discover_sibling_axes(
     script_path: Path,
     suffixes: set[str] | None = None,
 ) -> dict[str, list[FunscriptAction]]:
     """Find sibling axis funscript files and return {axis_name: actions}."""
-    from pmv_funscript_io import read_funscript
-
     if suffixes is None:
         suffixes = AXIS_SUFFIXES
 
     base_stem, _selected_axis = strip_axis_suffix(script_path.stem)
     folder = script_path.parent
     axes: dict[str, list[FunscriptAction]] = {}
+
+    embedded_axes = load_script_axes(script_path, suffixes)
+    for axis_name, actions in embedded_axes.items():
+        if axis_name != "main":
+            axes[axis_name] = actions
+
     for suffix in suffixes:
         if suffix == "main":
             candidate = folder / f"{base_stem}.funscript"
@@ -74,9 +117,12 @@ def discover_sibling_axes(
         if candidate == script_path:
             continue
         try:
-            sibling_actions, _ = read_funscript(candidate)
-            if sibling_actions:
-                axes[suffix] = sibling_actions
+            loaded_axes = load_script_axes(candidate, suffixes)
+            for axis_name, sibling_actions in loaded_axes.items():
+                if axis_name == "main" and suffix != "main":
+                    continue
+                if sibling_actions:
+                    axes[axis_name] = sibling_actions
         except Exception:
             pass
     return axes
@@ -91,8 +137,6 @@ def load_folder(
     Returns {axis_name: actions} for the first base name found.
     Files with no recognized suffix are treated as 'main'.
     """
-    from pmv_funscript_io import read_funscript
-
     if suffixes is None:
         suffixes = AXIS_SUFFIXES
 
@@ -110,12 +154,11 @@ def load_folder(
             target_base = base_stem.lower()
         if base_stem.lower() != target_base:
             continue
-
-        axis_name = suffix if suffix is not None else "main"
         try:
-            actions, _ = read_funscript(path)
-            if actions:
-                axes[axis_name] = actions
+            loaded_axes = load_script_axes(path, suffixes)
+            for axis_name, actions in loaded_axes.items():
+                if actions:
+                    axes[axis_name] = actions
         except Exception:
             pass
 
